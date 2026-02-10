@@ -1,0 +1,17 @@
+[package]
+name = "rust-gui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wgpu = "28.0.0"
+bytemuck = { version = "1.14", features = ["derive"] }
+once_cell = "1.21.3"
+glyphon = "0.10"
+rust-gui-rsx = { path = "rsx-macro" }
+
+[lib]
+
+[dev-dependencies]
+winit = "0.30.12"
+pollster = "0.3"
