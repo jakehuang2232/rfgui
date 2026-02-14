@@ -13,7 +13,9 @@ pub fn reconcile(old: Option<&RsxNode>, new: &RsxNode) -> Vec<Patch> {
     };
 
     match (old, new) {
-        (RsxNode::Element(old_node), RsxNode::Element(new_node)) => reconcile_element(old_node, new_node),
+        (RsxNode::Element(old_node), RsxNode::Element(new_node)) => {
+            reconcile_element(old_node, new_node)
+        }
         (RsxNode::Text(a), RsxNode::Text(b)) => {
             if a == b {
                 Vec::new()

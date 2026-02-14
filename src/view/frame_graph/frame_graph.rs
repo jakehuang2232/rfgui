@@ -1,9 +1,10 @@
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::buffer_resource::{BufferDesc, BufferHandle};
-use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
 use super::texture_resource::{TextureDesc, TextureHandle};
+use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
 use crate::view::viewport::Viewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -56,7 +57,10 @@ impl FrameGraph {
         handle
     }
 
-    pub fn declare_texture<Tag>(&mut self, desc: TextureDesc) -> super::slot::OutSlot<super::texture_resource::TextureResource, Tag> {
+    pub fn declare_texture<Tag>(
+        &mut self,
+        desc: TextureDesc,
+    ) -> super::slot::OutSlot<super::texture_resource::TextureResource, Tag> {
         let handle = TextureHandle(self.textures.len() as u32);
         self.textures.push(desc);
         super::slot::OutSlot::with_handle(handle)
@@ -147,7 +151,23 @@ impl FrameGraph {
         }
         let mut ctx = PassContext::new(viewport, &self.textures, &self.buffers, &mut self.cache);
         for &index in &self.order {
-            self.passes[index].pass.execute(&mut ctx);
+            let pass_name = self.passes[index].pass.name();
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                self.passes[index].pass.execute(&mut ctx);
+            }));
+            if let Err(payload) = result {
+                let detail = if let Some(message) = payload.downcast_ref::<&str>() {
+                    *message
+                } else if let Some(message) = payload.downcast_ref::<String>() {
+                    message.as_str()
+                } else {
+                    "unknown panic payload"
+                };
+                eprintln!(
+                    "[warn] render pass panicked and was skipped: {} ({})",
+                    pass_name, detail
+                );
+            }
         }
         Ok(())
     }
@@ -167,7 +187,12 @@ impl<'a, 'b> PassContext<'a, 'b> {
         buffers: &'b [BufferDesc],
         cache: &'b mut ResourceCache,
     ) -> Self {
-        Self { viewport, textures, buffers, cache }
+        Self {
+            viewport,
+            textures,
+            buffers,
+            cache,
+        }
     }
 }
 
@@ -191,7 +216,11 @@ impl ResourceCache {
         }
     }
 
-    pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(&mut self, key: u64, create: F) -> &mut T {
+    pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(
+        &mut self,
+        key: u64,
+        create: F,
+    ) -> &mut T {
         let entry_key = (TypeId::of::<T>(), key);
         if !self.store.contains_key(&entry_key) {
             self.store.insert(entry_key, Box::new(create()));

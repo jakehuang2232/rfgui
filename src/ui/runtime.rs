@@ -60,4 +60,8 @@ impl<B: RenderBackend> UiRuntime<B> {
     pub fn into_backend(self) -> B {
         self.backend
     }
+
+    pub fn request_redraw(&mut self) -> Result<(), String> {
+        self.backend.request_redraw()
+    }
 }

@@ -4,14 +4,14 @@ use crate::view::frame_graph::builder::BuildContext;
 pub mod clear_pass;
 pub mod composite_layer_pass;
 pub mod draw_rect_pass;
-pub(crate) mod render_target_store;
+pub(crate) mod render_target;
 pub mod text_pass;
 pub use clear_pass::ClearPass;
 pub use composite_layer_pass::{CompositeLayerPass, LayerOut, LayerTag};
 pub use draw_rect_pass::DrawRectPass;
 pub use text_pass::{TextPass, prewarm_text_pipeline};
 
-pub trait RenderPass{
+pub trait RenderPass {
     type Input: Default;
     type Output: Default;
 
@@ -28,6 +28,7 @@ pub trait RenderPass{
 pub trait RenderPassDyn {
     fn build(&mut self, builder: &mut BuildContext);
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
+    fn name(&self) -> &'static str;
 }
 
 pub struct PassWrapper<P: RenderPass> {
@@ -41,5 +42,9 @@ impl<P: RenderPass> RenderPassDyn for PassWrapper<P> {
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
         self.pass.execute(ctx);
+    }
+
+    fn name(&self) -> &'static str {
+        std::any::type_name::<P>()
     }
 }

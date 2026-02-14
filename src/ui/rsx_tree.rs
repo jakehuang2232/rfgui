@@ -1,3 +1,9 @@
+use crate::Style;
+use crate::ui::{
+    BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
+    MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp,
+};
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum RsxNode {
     Element(RsxElementNode),
@@ -151,6 +157,15 @@ pub enum PropValue {
     I64(i64),
     F64(f64),
     String(String),
+    Style(Style),
+    OnMouseDown(MouseDownHandlerProp),
+    OnMouseUp(MouseUpHandlerProp),
+    OnMouseMove(MouseMoveHandlerProp),
+    OnClick(ClickHandlerProp),
+    OnKeyDown(KeyDownHandlerProp),
+    OnKeyUp(KeyUpHandlerProp),
+    OnFocus(FocusHandlerProp),
+    OnBlur(BlurHandlerProp),
 }
 
 pub trait IntoPropValue {
@@ -209,6 +224,60 @@ impl From<String> for PropValue {
     }
 }
 
+impl From<Style> for PropValue {
+    fn from(value: Style) -> Self {
+        PropValue::Style(value)
+    }
+}
+
+impl From<MouseDownHandlerProp> for PropValue {
+    fn from(value: MouseDownHandlerProp) -> Self {
+        PropValue::OnMouseDown(value)
+    }
+}
+
+impl From<MouseUpHandlerProp> for PropValue {
+    fn from(value: MouseUpHandlerProp) -> Self {
+        PropValue::OnMouseUp(value)
+    }
+}
+
+impl From<MouseMoveHandlerProp> for PropValue {
+    fn from(value: MouseMoveHandlerProp) -> Self {
+        PropValue::OnMouseMove(value)
+    }
+}
+
+impl From<ClickHandlerProp> for PropValue {
+    fn from(value: ClickHandlerProp) -> Self {
+        PropValue::OnClick(value)
+    }
+}
+
+impl From<KeyDownHandlerProp> for PropValue {
+    fn from(value: KeyDownHandlerProp) -> Self {
+        PropValue::OnKeyDown(value)
+    }
+}
+
+impl From<KeyUpHandlerProp> for PropValue {
+    fn from(value: KeyUpHandlerProp) -> Self {
+        PropValue::OnKeyUp(value)
+    }
+}
+
+impl From<FocusHandlerProp> for PropValue {
+    fn from(value: FocusHandlerProp) -> Self {
+        PropValue::OnFocus(value)
+    }
+}
+
+impl From<BlurHandlerProp> for PropValue {
+    fn from(value: BlurHandlerProp) -> Self {
+        PropValue::OnBlur(value)
+    }
+}
+
 impl IntoPropValue for PropValue {
     fn into_prop_value(self) -> PropValue {
         self
@@ -260,6 +329,60 @@ impl IntoPropValue for &str {
 impl IntoPropValue for String {
     fn into_prop_value(self) -> PropValue {
         PropValue::String(self)
+    }
+}
+
+impl IntoPropValue for Style {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::Style(self)
+    }
+}
+
+impl IntoPropValue for MouseDownHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnMouseDown(self)
+    }
+}
+
+impl IntoPropValue for MouseUpHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnMouseUp(self)
+    }
+}
+
+impl IntoPropValue for MouseMoveHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnMouseMove(self)
+    }
+}
+
+impl IntoPropValue for ClickHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnClick(self)
+    }
+}
+
+impl IntoPropValue for KeyDownHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnKeyDown(self)
+    }
+}
+
+impl IntoPropValue for KeyUpHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnKeyUp(self)
+    }
+}
+
+impl IntoPropValue for FocusHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnFocus(self)
+    }
+}
+
+impl IntoPropValue for BlurHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnBlur(self)
     }
 }
 

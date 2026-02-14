@@ -17,13 +17,19 @@ pub struct InSlot<R: ResourceType, Tag> {
 
 impl<R: ResourceType, Tag> Default for OutSlot<R, Tag> {
     fn default() -> Self {
-        Self { handle: None, _pd: PhantomData }
+        Self {
+            handle: None,
+            _pd: PhantomData,
+        }
     }
 }
 
 impl<R: ResourceType, Tag> Default for InSlot<R, Tag> {
     fn default() -> Self {
-        Self { handle: None, _pd: PhantomData }
+        Self {
+            handle: None,
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -33,7 +39,10 @@ impl<R: ResourceType, Tag> OutSlot<R, Tag> {
     }
 
     pub(crate) fn with_handle(handle: R::Handle) -> Self {
-        Self { handle: Some(handle), _pd: PhantomData }
+        Self {
+            handle: Some(handle),
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -43,6 +52,9 @@ impl<R: ResourceType, Tag> InSlot<R, Tag> {
     }
 
     pub(crate) fn with_handle(handle: R::Handle) -> Self {
-        Self { handle: Some(handle), _pd: PhantomData }
+        Self {
+            handle: Some(handle),
+            _pd: PhantomData,
+        }
     }
 }

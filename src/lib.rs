@@ -1,6 +1,7 @@
 mod style;
-pub mod view;
+pub mod transition;
 pub mod ui;
+pub mod view;
 
-pub use view::*;
 pub use style::*;
+pub use view::*;

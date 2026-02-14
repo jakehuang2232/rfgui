@@ -1,10 +1,11 @@
-use crate::view::frame_graph::builder::BuildContext;
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::PassContext;
+use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
-use crate::view::render_pass::render_target_store::render_target_view;
 use crate::view::render_pass::RenderPass;
+use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::render_target::render_target_view;
 
 pub struct ClearPass {
     color: [f32; 4],
@@ -97,22 +98,36 @@ impl RenderPass for ClearPass {
             None => return,
         };
         let color_view = offscreen_view.as_ref().unwrap_or(parts.view);
-        let _pass = parts.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(color),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target: None,
-            })],
-            depth_stencil_attachment: parts.depth_stencil_attachment(
-                wgpu::LoadOp::Clear(1.0),
-                wgpu::LoadOp::Clear(0),
-            ),
-            ..Default::default()
-        });
+        let _pass = parts
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                    resolve_target: None,
+                })],
+                depth_stencil_attachment: parts
+                    .depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), wgpu::LoadOp::Clear(0)),
+                ..Default::default()
+            });
+    }
+}
+
+impl RenderTargetPass for ClearPass {
+    fn set_input(&mut self, input: RenderTargetIn) {
+        ClearPass::set_input(self, input);
+    }
+
+    fn set_output(&mut self, output: RenderTargetOut) {
+        ClearPass::set_output(self, output);
+    }
+
+    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
+        ClearPass::set_color_target(self, color_target);
     }
 }
