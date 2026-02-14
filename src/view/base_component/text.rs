@@ -1,41 +1,45 @@
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
-use crate::{Color, HexColor};
+use crate::{ColorLike, HexColor};
 
-use super::{ElementTrait, UiBuildContext};
-
-#[derive(Clone, Copy, Debug)]
-struct Position {
-    x: f32,
-    y: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Size {
-    width: f32,
-    height: f32,
-}
+use super::{
+    BoxModelSnapshot, ElementCore, ElementTrait, EventTarget, Layoutable, Renderable,
+    UiBuildContext,
+};
 
 pub struct Text {
-    position: Position,
-    size: Size,
-    layout_position: Position,
-    layout_size: Size,
-    should_render: bool,
+    core: ElementCore,
     content: String,
-    color: Box<dyn Color>,
+    color: Box<dyn ColorLike>,
     font_families: Vec<String>,
     font_size: f32,
     line_height: f32,
     opacity: f32,
+    auto_width: bool,
+    auto_height: bool,
 }
 
 impl Text {
     pub fn from_content(content: impl Into<String>) -> Self {
-        Self::new(0.0, 0.0, 10_000.0, 10_000.0, content)
+        let mut text = Self::new(0.0, 0.0, 10_000.0, 10_000.0, content);
+        text.set_auto_width(true);
+        text.set_auto_height(true);
+        text
     }
 
-    pub fn new(
+    pub fn from_content_with_id(id: u64, content: impl Into<String>) -> Self {
+        let mut text = Self::new_with_id(id, 0.0, 0.0, 10_000.0, 10_000.0, content);
+        text.set_auto_width(true);
+        text.set_auto_height(true);
+        text
+    }
+
+    pub fn new(x: f32, y: f32, width: f32, height: f32, content: impl Into<String>) -> Self {
+        Self::new_with_id(0, x, y, width, height, content)
+    }
+
+    pub fn new_with_id(
+        id: u64,
         x: f32,
         y: f32,
         width: f32,
@@ -43,36 +47,47 @@ impl Text {
         content: impl Into<String>,
     ) -> Self {
         Self {
-            position: Position { x, y },
-            size: Size { width, height },
-            layout_position: Position { x, y },
-            layout_size: Size {
-                width: width.max(0.0),
-                height: height.max(0.0),
+            core: if id == 0 {
+                ElementCore::new(x, y, width, height)
+            } else {
+                ElementCore::new_with_id(id, x, y, width, height)
             },
-            should_render: true,
             content: content.into(),
             color: Box::new(HexColor::new("#111111")),
             font_families: Vec::new(),
             font_size: 16.0,
             line_height: 1.25,
             opacity: 1.0,
+            auto_width: false,
+            auto_height: false,
         }
     }
 
     pub fn set_position(&mut self, x: f32, y: f32) {
-        self.position = Position { x, y };
+        self.core.set_position(x, y);
     }
 
     pub fn set_size(&mut self, width: f32, height: f32) {
-        self.size = Size { width, height };
+        self.core.set_size(width, height);
+        self.auto_width = false;
+        self.auto_height = false;
+    }
+
+    pub fn set_width(&mut self, width: f32) {
+        self.core.set_width(width);
+        self.auto_width = false;
+    }
+
+    pub fn set_height(&mut self, height: f32) {
+        self.core.set_height(height);
+        self.auto_height = false;
     }
 
     pub fn set_text(&mut self, content: impl Into<String>) {
         self.content = content.into();
     }
 
-    pub fn set_color<T: Color + 'static>(&mut self, color: T) {
+    pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
     }
 
@@ -112,47 +127,151 @@ impl Text {
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
     }
+
+    pub fn set_auto_width(&mut self, auto: bool) {
+        self.auto_width = auto;
+    }
+
+    pub fn set_auto_height(&mut self, auto: bool) {
+        self.auto_height = auto;
+    }
+}
+
+fn estimate_char_width_px(ch: char, font_size: f32) -> f32 {
+    // Rough intrinsic-width estimate:
+    // - CJK / fullwidth glyphs are near 1em
+    // - ASCII letters/digits are narrower
+    // - Whitespace is the narrowest
+    if ch == '\t' {
+        return font_size * 2.0;
+    }
+    if ch.is_whitespace() {
+        return font_size * 0.33;
+    }
+    if ch.is_ascii() {
+        return font_size * 0.56;
+    }
+    font_size * 1.0
+}
+
+fn estimate_line_width_px(line: &str, font_size: f32) -> f32 {
+    line.chars().map(|ch| estimate_char_width_px(ch, font_size)).sum()
 }
 
 impl ElementTrait for Text {
-    fn calculate_layout(
-        &mut self,
-        available_width: f32,
-        available_height: f32,
-        parent_x: f32,
-        parent_y: f32,
-    ) {
-        let available_width = available_width.max(0.0);
-        let available_height = available_height.max(0.0);
-
-        self.layout_size = Size {
-            width: self.size.width.max(0.0),
-            height: self.size.height.max(0.0),
-        };
-        self.layout_position = Position {
-            x: parent_x + self.position.x,
-            y: parent_y + self.position.y,
-        };
-
-        let parent_left = parent_x;
-        let parent_top = parent_y;
-        let parent_right = parent_x + available_width;
-        let parent_bottom = parent_y + available_height;
-        let self_left = self.layout_position.x;
-        let self_top = self.layout_position.y;
-        let self_right = self.layout_position.x + self.layout_size.width;
-        let self_bottom = self.layout_position.y + self.layout_size.height;
-
-        self.should_render = self.layout_size.width > 0.0
-            && self.layout_size.height > 0.0
-            && self_right > parent_left
-            && self_left < parent_right
-            && self_bottom > parent_top
-            && self_top < parent_bottom;
+    fn id(&self) -> u64 {
+        self.core.id
     }
 
+    fn parent_id(&self) -> Option<u64> {
+        self.core.parent_id
+    }
+
+    fn set_parent_id(&mut self, parent_id: Option<u64>) {
+        self.core.parent_id = parent_id;
+    }
+
+    fn box_model_snapshot(&self) -> BoxModelSnapshot {
+        BoxModelSnapshot {
+            node_id: self.core.id,
+            parent_id: self.core.parent_id,
+            x: self.core.layout_position.x,
+            y: self.core.layout_position.y,
+            width: self.core.layout_size.width,
+            height: self.core.layout_size.height,
+            border_radius: 0.0,
+            should_render: self.core.should_render,
+        }
+    }
+
+    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> {
+        None
+    }
+
+    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> {
+        None
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+impl EventTarget for Text {}
+
+impl Layoutable for Text {
+    fn measured_size(&self) -> (f32, f32) {
+        (self.core.size.width, self.core.size.height)
+    }
+
+    fn set_layout_width(&mut self, width: f32) {
+        self.core.set_width(width);
+    }
+
+    fn set_layout_height(&mut self, height: f32) {
+        self.core.set_height(height);
+    }
+
+    fn set_layout_offset(&mut self, x: f32, y: f32) {
+        self.core.set_position(x, y);
+    }
+
+    fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
+        if !self.auto_width && !self.auto_height {
+            return;
+        }
+        let lines: Vec<&str> = self.content.lines().collect();
+        let line_count = lines.len().max(1);
+        let line_px = (self.font_size * self.line_height.max(0.1)).max(1.0);
+        if self.auto_width {
+            let intrinsic_width = lines
+                .iter()
+                .map(|line| estimate_line_width_px(line, self.font_size))
+                .fold(0.0_f32, f32::max)
+                .max(1.0);
+            let available = constraints.max_width.max(1.0);
+            self.core.set_width(intrinsic_width.min(available));
+        }
+        if self.auto_height {
+            let effective_width = if self.auto_width {
+                self.core.size.width.max(1.0)
+            } else {
+                self.core.size.width.min(constraints.max_width.max(1.0)).max(1.0)
+            };
+            let wrapped_lines = if lines.is_empty() {
+                1
+            } else {
+                lines
+                    .iter()
+                    .map(|line| {
+                        let line_width = estimate_line_width_px(line, self.font_size);
+                        (line_width / effective_width).ceil().max(1.0) as usize
+                    })
+                    .sum::<usize>()
+            };
+            let resolved_lines = wrapped_lines.max(line_count);
+            self.core.set_height((line_px * resolved_lines as f32).max(1.0));
+        }
+    }
+
+    fn place(&mut self, placement: crate::view::base_component::LayoutPlacement) {
+        self.core.calculate_layout(
+            placement.available_width,
+            placement.available_height,
+            placement.parent_x,
+            placement.parent_y,
+            true,
+        );
+    }
+}
+
+impl Renderable for Text {
     fn build(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
-        if !self.should_render || self.content.is_empty() {
+        if !self.core.should_render || self.content.is_empty() {
             return;
         }
 
@@ -163,10 +282,10 @@ impl ElementTrait for Text {
 
         let mut pass = TextPass::new(
             self.content.clone(),
-            self.layout_position.x,
-            self.layout_position.y,
-            self.layout_size.width,
-            self.layout_size.height,
+            self.core.layout_position.x,
+            self.core.layout_position.y,
+            self.core.layout_size.width,
+            self.core.layout_size.height,
             self.color.to_rgba_f32(),
             opacity,
             self.font_size,
@@ -175,5 +294,83 @@ impl ElementTrait for Text {
         );
         pass.set_scissor_rect(None);
         ctx.push_pass(graph, pass);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ElementTrait, Layoutable, Text};
+    use crate::view::base_component::{LayoutConstraints, LayoutPlacement};
+
+    #[test]
+    fn layout_clamps_to_parent_available_area() {
+        let mut text = Text::new(0.0, 0.0, 10_000.0, 10_000.0, "demo");
+        text.set_position(8.0, 4.0);
+        text.measure(LayoutConstraints {
+            max_width: 240.0,
+            max_height: 140.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(140.0),
+        });
+        text.place(LayoutPlacement {
+            parent_x: 40.0,
+            parent_y: 40.0,
+            available_width: 240.0,
+            available_height: 140.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(140.0),
+        });
+
+        let snapshot = text.box_model_snapshot();
+        assert_eq!(snapshot.x, 48.0);
+        assert_eq!(snapshot.y, 44.0);
+        assert_eq!(snapshot.width, 232.0);
+        assert_eq!(snapshot.height, 136.0);
+    }
+
+    #[test]
+    fn auto_height_accounts_for_wrapped_lines() {
+        let mut text = Text::from_content("123456789012345678901234567890");
+        text.set_width(60.0);
+        text.set_auto_height(true);
+        text.measure(LayoutConstraints {
+            max_width: 60.0,
+            max_height: 200.0,
+            percent_base_width: Some(60.0),
+            percent_base_height: Some(200.0),
+        });
+        text.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            available_width: 60.0,
+            available_height: 200.0,
+            percent_base_width: Some(60.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let snapshot = text.box_model_snapshot();
+        assert_eq!(snapshot.width, 60.0);
+        assert!(snapshot.height > 20.0);
+    }
+
+    #[test]
+    fn auto_width_for_cjk_text_is_not_underestimated() {
+        let mut text = Text::from_content("這是一段中文");
+        text.measure(LayoutConstraints {
+            max_width: 300.0,
+            max_height: 200.0,
+            percent_base_width: Some(300.0),
+            percent_base_height: Some(200.0),
+        });
+        text.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            available_width: 300.0,
+            available_height: 200.0,
+            percent_base_width: Some(300.0),
+            percent_base_height: Some(200.0),
+        });
+        let snapshot = text.box_model_snapshot();
+        assert!(snapshot.width >= 80.0);
     }
 }

@@ -1,17 +1,17 @@
 use std::sync::{Mutex, OnceLock};
 
+use crate::render_pass::render_target::RenderTargetPass;
+use crate::view::frame_graph::PassContext;
+use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::slot::OutSlot;
+use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
+use crate::view::render_pass::RenderPass;
+use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::render_target::render_target_view;
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport as GlyphonViewport,
 };
-
-use crate::view::frame_graph::builder::BuildContext;
-use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
-use crate::view::frame_graph::PassContext;
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
-use crate::view::render_pass::render_target_store::render_target_view;
-use crate::view::render_pass::RenderPass;
 
 pub struct TextPass {
     content: String,
@@ -144,7 +144,13 @@ impl RenderPass for TextPass {
 
         let mut global = text_resources(device, queue, format);
         let resources = global.resources.as_mut().unwrap();
-        resources.prepare_buffer(
+        let mut renderer = TextRenderer::new(
+            &mut resources.atlas,
+            device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
+        let buffer = resources.prepare_buffer(
             self.content.as_str(),
             self.width,
             self.height,
@@ -152,32 +158,51 @@ impl RenderPass for TextPass {
             self.line_height,
             self.font_families.as_slice(),
         );
-        resources
-            .viewport
-            .update(queue, Resolution { width: screen_w, height: screen_h });
+        resources.viewport.update(
+            queue,
+            Resolution {
+                width: screen_w,
+                height: screen_h,
+            },
+        );
 
-        let left = self.x.max(0.0);
-        let top = self.y.max(0.0);
-        let right = (self.x + self.width).max(left);
-        let bottom = (self.y + self.height).max(top);
+        let viewport_bounds = [0.0, 0.0, screen_w as f32, screen_h as f32];
+        let text_bounds = [
+            self.x,
+            self.y,
+            (self.x + self.width).max(self.x),
+            (self.y + self.height).max(self.y),
+        ];
+        let mut clipped = intersect_rect(text_bounds, viewport_bounds);
+        if let Some([sx, sy, sw, sh]) = self.scissor_rect {
+            let scissor_bounds = [
+                sx as f32,
+                sy as f32,
+                sx.saturating_add(sw) as f32,
+                sy.saturating_add(sh) as f32,
+            ];
+            clipped = intersect_rect(clipped, scissor_bounds);
+        }
+        if clipped[2] <= clipped[0] || clipped[3] <= clipped[1] {
+            return;
+        }
 
         let text_area = TextArea {
-            buffer: &resources.buffer,
-            left,
-            top,
+            buffer: &buffer,
+            left: self.x,
+            top: self.y,
             scale: 1.0,
             bounds: TextBounds {
-                left: left as i32,
-                top: top as i32,
-                right: right as i32,
-                bottom: bottom as i32,
+                left: clipped[0].floor() as i32,
+                top: clipped[1].floor() as i32,
+                right: clipped[2].ceil() as i32,
+                bottom: clipped[3].ceil() as i32,
             },
             default_color: to_glyphon_color(self.color, self.opacity),
             custom_glyphs: &[],
         };
 
-        if resources
-            .renderer
+        if renderer
             .prepare(
                 device,
                 queue,
@@ -198,28 +223,46 @@ impl RenderPass for TextPass {
         };
 
         let color_view = offscreen_view.as_ref().unwrap_or(parts.view);
-        let mut pass = parts.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("TextPass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target: None,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
+        let mut pass = parts
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("TextPass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                    resolve_target: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
 
         if let Some([x, y, width, height]) = self.scissor_rect {
             pass.set_scissor_rect(x, y, width, height);
         }
 
-        let _ = resources
-            .renderer
-            .render(&resources.atlas, &resources.viewport, &mut pass);
+        let _ = renderer.render(&resources.atlas, &resources.viewport, &mut pass);
+    }
+}
+
+impl RenderTargetPass for TextPass {
+    fn set_input(&mut self, input: RenderTargetIn) {
+        TextPass::set_input(self, input);
+    }
+
+    fn set_output(&mut self, output: RenderTargetOut) {
+        TextPass::set_output(self, output);
+    }
+
+    fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
+        TextPass::set_scissor_rect(self, scissor_rect);
+    }
+
+    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
+        TextPass::set_color_target(self, color_target);
     }
 }
 
@@ -232,13 +275,19 @@ fn to_glyphon_color(color: [f32; 4], opacity: f32) -> GlyphonColor {
     GlyphonColor::rgba(to_u8(color[0]), to_u8(color[1]), to_u8(color[2]), alpha)
 }
 
+fn intersect_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let left = a[0].max(b[0]);
+    let top = a[1].max(b[1]);
+    let right = a[2].min(b[2]);
+    let bottom = a[3].min(b[3]);
+    [left, top, right, bottom]
+}
+
 struct TextResources {
     font_system: FontSystem,
     swash_cache: SwashCache,
     atlas: TextAtlas,
-    renderer: TextRenderer,
     viewport: GlyphonViewport,
-    buffer: Buffer,
     format: wgpu::TextureFormat,
 }
 
@@ -249,17 +298,12 @@ impl TextResources {
         let cache = Cache::new(device);
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
         let viewport = GlyphonViewport::new(device, &cache);
-        let renderer = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
-        let metrics = Metrics::new(16.0, 16.0 * 1.25);
-        let buffer = Buffer::new(&mut font_system, metrics);
 
         Self {
             font_system,
             swash_cache,
             atlas,
-            renderer,
             viewport,
-            buffer,
             format,
         }
     }
@@ -272,13 +316,20 @@ impl TextResources {
         font_size: f32,
         line_height: f32,
         font_families: &[String],
-    ) {
-        self.buffer.set_metrics(
+    ) -> Buffer {
+        let mut buffer = Buffer::new(
             &mut self.font_system,
-            Metrics::new(font_size.max(1.0), (font_size * line_height.max(0.8)).max(1.0)),
+            Metrics::new(
+                font_size.max(1.0),
+                (font_size * line_height.max(0.8)).max(1.0),
+            ),
         );
-        self.buffer
-            .set_size(&mut self.font_system, Some(width.max(1.0)), Some(height.max(1.0)));
+        buffer.set_wrap(&mut self.font_system, glyphon::Wrap::WordOrGlyph);
+        buffer.set_size(
+            &mut self.font_system,
+            Some(width.max(1.0)),
+            Some(height.max(1.0)),
+        );
 
         let attrs = if let Some(first) = font_families.first() {
             Attrs::new().family(Family::Name(first.as_str()))
@@ -286,9 +337,15 @@ impl TextResources {
             Attrs::new()
         };
 
-        self.buffer
-            .set_text(&mut self.font_system, content, &attrs, Shaping::Advanced, None);
-        self.buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer.set_text(
+            &mut self.font_system,
+            content,
+            &attrs,
+            Shaping::Advanced,
+            Some(glyphon::cosmic_text::Align::Left),
+        );
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer
     }
 }
 
@@ -321,6 +378,10 @@ fn text_resources<'a>(
     guard
 }
 
-pub fn prewarm_text_pipeline(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
+pub fn prewarm_text_pipeline(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+) {
     drop(text_resources(device, queue, format));
 }

@@ -3,7 +3,7 @@ use super::frame_graph::{FrameGraphError, ResourceHandle};
 use super::slot::{InSlot, OutSlot};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
 
-pub struct BuildContext<'a>{
+pub struct BuildContext<'a> {
     pub(crate) textures: &'a mut Vec<TextureDesc>,
     pub(crate) buffers: &'a mut Vec<BufferDesc>,
     pub(crate) reads: &'a mut Vec<ResourceHandle>,
@@ -37,7 +37,8 @@ impl<'a> BuildContext<'a> {
                 self.reads.push(ResourceHandle::Texture(handle));
             }
             None => {
-                self.build_errors.push(FrameGraphError::MissingInput("texture slot has no handle"));
+                self.build_errors
+                    .push(FrameGraphError::MissingInput("texture slot has no handle"));
             }
         }
     }
@@ -53,7 +54,8 @@ impl<'a> BuildContext<'a> {
                 self.reads.push(ResourceHandle::Buffer(handle));
             }
             None => {
-                self.build_errors.push(FrameGraphError::MissingInput("buffer slot has no handle"));
+                self.build_errors
+                    .push(FrameGraphError::MissingInput("buffer slot has no handle"));
             }
         }
     }
@@ -64,7 +66,8 @@ impl<'a> BuildContext<'a> {
                 self.writes.push(ResourceHandle::Texture(handle));
             }
             None => {
-                self.build_errors.push(FrameGraphError::MissingOutput("texture slot has no handle"));
+                self.build_errors
+                    .push(FrameGraphError::MissingOutput("texture slot has no handle"));
             }
         }
     }
@@ -75,7 +78,8 @@ impl<'a> BuildContext<'a> {
                 self.writes.push(ResourceHandle::Buffer(handle));
             }
             None => {
-                self.build_errors.push(FrameGraphError::MissingOutput("buffer slot has no handle"));
+                self.build_errors
+                    .push(FrameGraphError::MissingOutput("buffer slot has no handle"));
             }
         }
     }

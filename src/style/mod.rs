@@ -1,18 +1,11 @@
-mod color;
 mod background;
+mod color;
+mod computed_style;
+mod layout_state;
+mod parsed_style;
 
-pub use color::*;
 pub use background::*;
-
-pub enum Style {
-    Background(Background),
-}
-
-pub struct Styles {
-    styles: Vec<Style>,
-}
-
-pub struct Class {
-    label: String,
-    styles: Styles,
-}
+pub use color::*;
+pub use computed_style::*;
+pub use layout_state::*;
+pub use parsed_style::*;

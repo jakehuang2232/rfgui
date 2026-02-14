@@ -1,12 +1,12 @@
-use wgpu::util::DeviceExt;
-
+use crate::render_pass::render_target::RenderTargetPass;
+use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
-use crate::view::frame_graph::PassContext;
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
-use crate::view::render_pass::render_target_store::render_target_view;
 use crate::view::render_pass::RenderPass;
+use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::render_target::render_target_view;
+use wgpu::util::DeviceExt;
 
 const COMPOSITE_LAYER_RESOURCES: u64 = 201;
 
@@ -18,7 +18,7 @@ pub type LayerOut = OutSlot<TextureResource, LayerTag>;
 pub struct CompositeLayerPass {
     rect_pos: [f32; 2],
     rect_size: [f32; 2],
-    radius: f32,
+    corner_radii: [f32; 4], // [top_left, top_right, bottom_right, bottom_left]
     opacity: f32,
     scissor_rect: Option<[u32; 4]>,
     color_target: Option<TextureHandle>,
@@ -41,7 +41,8 @@ pub struct CompositeLayerOutput {
 #[repr(C)]
 struct CompositeUniform {
     rect_pos_size: [f32; 4],
-    screen_radius_opacity: [f32; 4],
+    screen_size_opacity: [f32; 4],
+    corner_radii: [f32; 4],
 }
 
 struct CompositeLayerResources {
@@ -52,11 +53,17 @@ struct CompositeLayerResources {
 }
 
 impl CompositeLayerPass {
-    pub fn new(rect_pos: [f32; 2], rect_size: [f32; 2], radius: f32, opacity: f32, layer: LayerOut) -> Self {
+    pub fn new(
+        rect_pos: [f32; 2],
+        rect_size: [f32; 2],
+        corner_radii: [f32; 4],
+        opacity: f32,
+        layer: LayerOut,
+    ) -> Self {
         Self {
             rect_pos,
             rect_size,
-            radius,
+            corner_radii,
             opacity,
             scissor_rect: None,
             color_target: None,
@@ -143,8 +150,14 @@ impl RenderPass for CompositeLayerPass {
 
         let (screen_w, screen_h) = ctx.viewport.surface_size();
         let uniform = CompositeUniform {
-            rect_pos_size: [self.rect_pos[0], self.rect_pos[1], self.rect_size[0], self.rect_size[1]],
-            screen_radius_opacity: [screen_w as f32, screen_h as f32, self.radius, self.opacity],
+            rect_pos_size: [
+                self.rect_pos[0],
+                self.rect_pos[1],
+                self.rect_size[0],
+                self.rect_size[1],
+            ],
+            screen_size_opacity: [screen_w as f32, screen_h as f32, self.opacity, 0.0],
+            corner_radii: self.corner_radii,
         };
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("CompositeLayer Uniform Buffer"),
@@ -177,26 +190,46 @@ impl RenderPass for CompositeLayerPass {
         };
         let color_view = offscreen_view.as_ref().unwrap_or(parts.view);
 
-        let mut pass = parts.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("CompositeLayer"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target: None,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
+        let mut pass = parts
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("CompositeLayer"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                    resolve_target: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
         if let Some([x, y, width, height]) = self.scissor_rect {
             pass.set_scissor_rect(x, y, width, height);
         }
         pass.set_pipeline(&resources.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..6, 0..1);
+    }
+}
+
+impl RenderTargetPass for CompositeLayerPass {
+    fn set_input(&mut self, input: RenderTargetIn) {
+        CompositeLayerPass::set_input(self, input);
+    }
+
+    fn set_output(&mut self, output: RenderTargetOut) {
+        CompositeLayerPass::set_output(self, output);
+    }
+
+    fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
+        CompositeLayerPass::set_scissor_rect(self, scissor_rect);
+    }
+
+    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
+        CompositeLayerPass::set_color_target(self, color_target);
     }
 }
 
@@ -231,7 +264,9 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<CompositeUniform>() as u64),
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<CompositeUniform>() as u64,
+                    ),
                 },
                 count: None,
             },
@@ -243,8 +278,9 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
+        // Use nearest sampling for 1:1 UI compositing to avoid edge bleed halos.
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });

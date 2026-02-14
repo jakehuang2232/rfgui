@@ -1,6 +1,7 @@
 use super::slot::ResourceType;
 
-pub struct TextureDesc{
+#[derive(Clone, Copy)]
+pub struct TextureDesc {
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
@@ -24,6 +25,27 @@ impl TextureDesc {
         format: wgpu::TextureFormat,
         dimension: wgpu::TextureDimension,
     ) -> Self {
-        Self { width, height, format, dimension }
+        Self {
+            width,
+            height,
+            format,
+            dimension,
+        }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    pub fn dimension(&self) -> wgpu::TextureDimension {
+        self.dimension
     }
 }

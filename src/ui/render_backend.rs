@@ -16,4 +16,5 @@ pub trait RenderBackend {
         children: &[RsxNode],
     ) -> Result<(), String>;
     fn draw_frame(&mut self) -> Result<(), String>;
+    fn request_redraw(&mut self) -> Result<(), String>;
 }

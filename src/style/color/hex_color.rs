@@ -1,4 +1,7 @@
-use crate::{srgb_to_linear_f32, style::color::Color};
+use crate::{
+    srgb_to_linear_f32,
+    style::color::ColorLike,
+};
 use std::borrow::Cow;
 
 pub struct HexColor<'a> {
@@ -85,12 +88,31 @@ impl<'a> HexColor<'a> {
     }
 }
 
-impl<'a> Color for HexColor<'a> {
+impl<'a> ColorLike for HexColor<'a> {
+    fn box_clone(&self) -> Box<dyn ColorLike> {
+        Box::new(HexColor::new(self.raw.to_string()))
+    }
+
     fn to_rgba_f32(&self) -> [f32; 4] {
         self.value
     }
 }
 
+struct ColorNone {}
+
+impl ColorLike for ColorNone {
+    fn box_clone(&self) -> Box<dyn ColorLike> {
+        Box::new(ColorNone {})
+    }
+
+    fn to_rgba_f32(&self) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
+    fn to_rgba_u8(&self) -> [u8; 4] {
+        [0, 0, 0, 0]
+    }
+}
 
 fn hex_1_to_u8(c: u8) -> u8 {
     match c {

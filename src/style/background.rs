@@ -1,5 +1,5 @@
-use crate::style::color::Color;
+use crate::style::color::ColorLike;
 
 pub enum Background {
-    Color(Box<dyn Color>),
+    Color(Box<dyn ColorLike>),
 }
