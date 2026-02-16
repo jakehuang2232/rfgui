@@ -169,35 +169,35 @@ fn convert_container_element(node: &RsxElementNode, path: &[usize]) -> Result<Bo
             "style" => element.apply_style(as_style(value, key)?),
             "on_mouse_down" => {
                 let handler = as_mouse_down_handler(value, key)?;
-                element.on_mouse_down(move |event| handler.call(event));
+                element.on_mouse_down(move |event, _control| handler.call(event));
             }
             "on_mouse_up" => {
                 let handler = as_mouse_up_handler(value, key)?;
-                element.on_mouse_up(move |event| handler.call(event));
+                element.on_mouse_up(move |event, _control| handler.call(event));
             }
             "on_mouse_move" => {
                 let handler = as_mouse_move_handler(value, key)?;
-                element.on_mouse_move(move |event| handler.call(event));
+                element.on_mouse_move(move |event, _control| handler.call(event));
             }
             "on_click" => {
                 let handler = as_click_handler(value, key)?;
-                element.on_click(move |event| handler.call(event));
+                element.on_click(move |event, _control| handler.call(event));
             }
             "on_key_down" => {
                 let handler = as_key_down_handler(value, key)?;
-                element.on_key_down(move |event| handler.call(event));
+                element.on_key_down(move |event, _control| handler.call(event));
             }
             "on_key_up" => {
                 let handler = as_key_up_handler(value, key)?;
-                element.on_key_up(move |event| handler.call(event));
+                element.on_key_up(move |event, _control| handler.call(event));
             }
             "on_focus" => {
                 let handler = as_focus_handler(value, key)?;
-                element.on_focus(move |event| handler.call(event));
+                element.on_focus(move |event, _control| handler.call(event));
             }
             "on_blur" => {
                 let handler = as_blur_handler(value, key)?;
-                element.on_blur(move |event| handler.call(event));
+                element.on_blur(move |event, _control| handler.call(event));
             }
             _ => return Err(format!("unknown prop `{}` on <{}>", key, node.tag)),
         }
