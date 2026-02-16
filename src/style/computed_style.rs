@@ -1,6 +1,6 @@
 use crate::style::color::Color;
 use crate::style::parsed_style::{
-    AlignItems, Display, FlexDirection, FlexWrap, JustifyContent, Length, ParsedValue, Position,
+    AlignItems, Display, FlowDirection, FlowWrap, JustifyContent, Length, ParsedValue, Position,
     PropertyId, ScrollDirection, Style, Transitions,
 };
 
@@ -29,8 +29,8 @@ pub struct CornerRadii<T> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
     pub display: Display,
-    pub flex_direction: FlexDirection,
-    pub flex_wrap: FlexWrap,
+    pub flow_direction: FlowDirection,
+    pub flow_wrap: FlowWrap,
     pub justify_content: JustifyContent,
     pub align_items: AlignItems,
     pub position: Position,
@@ -63,8 +63,8 @@ impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             display: Display::Block,
-            flex_direction: FlexDirection::Row,
-            flex_wrap: FlexWrap::NoWrap,
+            flow_direction: FlowDirection::Row,
+            flow_wrap: FlowWrap::NoWrap,
             justify_content: JustifyContent::Start,
             align_items: AlignItems::Start,
             position: Position::Static,
@@ -137,14 +137,14 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                     computed.display = *value;
                 }
             }
-            PropertyId::FlexDirection => {
-                if let ParsedValue::FlexDirection(value) = &declaration.value {
-                    computed.flex_direction = *value;
+            PropertyId::FlowDirection => {
+                if let ParsedValue::FlowDirection(value) = &declaration.value {
+                    computed.flow_direction = *value;
                 }
             }
-            PropertyId::FlexWrap => {
-                if let ParsedValue::FlexWrap(value) = &declaration.value {
-                    computed.flex_wrap = *value;
+            PropertyId::FlowWrap => {
+                if let ParsedValue::FlowWrap(value) = &declaration.value {
+                    computed.flow_wrap = *value;
                 }
             }
             PropertyId::JustifyContent => {

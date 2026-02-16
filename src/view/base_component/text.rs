@@ -3,12 +3,17 @@ use crate::view::render_pass::TextPass;
 use crate::{ColorLike, HexColor};
 
 use super::{
-    BoxModelSnapshot, ElementCore, ElementTrait, EventTarget, Layoutable, Renderable,
+    BoxModelSnapshot, Element, ElementTrait, EventTarget, Layoutable, Position, Renderable, Size,
     UiBuildContext,
 };
 
 pub struct Text {
-    core: ElementCore,
+    element: Element,
+    position: Position,
+    size: Size,
+    layout_position: Position,
+    layout_size: Size,
+    should_render: bool,
     content: String,
     color: Box<dyn ColorLike>,
     font_families: Vec<String>,
@@ -47,11 +52,15 @@ impl Text {
         content: impl Into<String>,
     ) -> Self {
         Self {
-            core: if id == 0 {
-                ElementCore::new(x, y, width, height)
-            } else {
-                ElementCore::new_with_id(id, x, y, width, height)
+            element: Element::new_with_id(id, x, y, width, height),
+            position: Position { x, y },
+            size: Size { width, height },
+            layout_position: Position { x, y },
+            layout_size: Size {
+                width: width.max(0.0),
+                height: height.max(0.0),
             },
+            should_render: true,
             content: content.into(),
             color: Box::new(HexColor::new("#111111")),
             font_families: Vec::new(),
@@ -64,22 +73,26 @@ impl Text {
     }
 
     pub fn set_position(&mut self, x: f32, y: f32) {
-        self.core.set_position(x, y);
+        self.position = Position { x, y };
+        self.element.set_position(x, y);
     }
 
     pub fn set_size(&mut self, width: f32, height: f32) {
-        self.core.set_size(width, height);
+        self.size = Size { width, height };
+        self.element.set_size(width, height);
         self.auto_width = false;
         self.auto_height = false;
     }
 
     pub fn set_width(&mut self, width: f32) {
-        self.core.set_width(width);
+        self.size.width = width;
+        self.element.set_width(width);
         self.auto_width = false;
     }
 
     pub fn set_height(&mut self, height: f32) {
-        self.core.set_height(height);
+        self.size.height = height;
+        self.element.set_height(height);
         self.auto_height = false;
     }
 
@@ -160,27 +173,27 @@ fn estimate_line_width_px(line: &str, font_size: f32) -> f32 {
 
 impl ElementTrait for Text {
     fn id(&self) -> u64 {
-        self.core.id
+        self.element.id()
     }
 
     fn parent_id(&self) -> Option<u64> {
-        self.core.parent_id
+        self.element.parent_id()
     }
 
     fn set_parent_id(&mut self, parent_id: Option<u64>) {
-        self.core.parent_id = parent_id;
+        self.element.set_parent_id(parent_id);
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         BoxModelSnapshot {
-            node_id: self.core.id,
-            parent_id: self.core.parent_id,
-            x: self.core.layout_position.x,
-            y: self.core.layout_position.y,
-            width: self.core.layout_size.width,
-            height: self.core.layout_size.height,
+            node_id: self.element.id(),
+            parent_id: self.element.parent_id(),
+            x: self.layout_position.x,
+            y: self.layout_position.y,
+            width: self.layout_size.width,
+            height: self.layout_size.height,
             border_radius: 0.0,
-            should_render: self.core.should_render,
+            should_render: self.should_render,
         }
     }
 
@@ -201,23 +214,90 @@ impl ElementTrait for Text {
     }
 }
 
-impl EventTarget for Text {}
+impl EventTarget for Text {
+    fn dispatch_mouse_down(
+        &mut self,
+        event: &mut crate::ui::MouseDownEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_mouse_down(event, control);
+    }
+
+    fn dispatch_mouse_up(
+        &mut self,
+        event: &mut crate::ui::MouseUpEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_mouse_up(event, control);
+    }
+
+    fn dispatch_mouse_move(
+        &mut self,
+        event: &mut crate::ui::MouseMoveEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_mouse_move(event, control);
+    }
+
+    fn dispatch_click(
+        &mut self,
+        event: &mut crate::ui::ClickEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_click(event, control);
+    }
+
+    fn dispatch_key_down(
+        &mut self,
+        event: &mut crate::ui::KeyDownEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_key_down(event, control);
+    }
+
+    fn dispatch_key_up(
+        &mut self,
+        event: &mut crate::ui::KeyUpEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_key_up(event, control);
+    }
+
+    fn dispatch_focus(
+        &mut self,
+        event: &mut crate::ui::FocusEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_focus(event, control);
+    }
+
+    fn dispatch_blur(
+        &mut self,
+        event: &mut crate::ui::BlurEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) {
+        self.element.dispatch_blur(event, control);
+    }
+}
 
 impl Layoutable for Text {
     fn measured_size(&self) -> (f32, f32) {
-        (self.core.size.width, self.core.size.height)
+        (self.size.width, self.size.height)
     }
 
     fn set_layout_width(&mut self, width: f32) {
-        self.core.set_width(width);
+        self.size.width = width;
+        self.element.set_width(width);
     }
 
     fn set_layout_height(&mut self, height: f32) {
-        self.core.set_height(height);
+        self.size.height = height;
+        self.element.set_height(height);
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {
-        self.core.set_position(x, y);
+        self.position = Position { x, y };
+        self.element.set_position(x, y);
     }
 
     fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
@@ -234,13 +314,14 @@ impl Layoutable for Text {
                 .fold(0.0_f32, f32::max)
                 .max(1.0);
             let available = constraints.max_width.max(1.0);
-            self.core.set_width(intrinsic_width.min(available));
+            self.size.width = intrinsic_width.min(available);
+            self.element.set_width(self.size.width);
         }
         if self.auto_height {
             let effective_width = if self.auto_width {
-                self.core.size.width.max(1.0)
+                self.size.width.max(1.0)
             } else {
-                self.core.size.width.min(constraints.max_width.max(1.0)).max(1.0)
+                self.size.width.min(constraints.max_width.max(1.0)).max(1.0)
             };
             let wrapped_lines = if lines.is_empty() {
                 1
@@ -254,24 +335,45 @@ impl Layoutable for Text {
                     .sum::<usize>()
             };
             let resolved_lines = wrapped_lines.max(line_count);
-            self.core.set_height((line_px * resolved_lines as f32).max(1.0));
+            self.size.height = (line_px * resolved_lines as f32).max(1.0);
+            self.element.set_height(self.size.height);
         }
     }
 
     fn place(&mut self, placement: crate::view::base_component::LayoutPlacement) {
-        self.core.calculate_layout(
-            placement.available_width,
-            placement.available_height,
-            placement.parent_x,
-            placement.parent_y,
-            true,
-        );
+        let available_width = placement.available_width.max(0.0);
+        let available_height = placement.available_height.max(0.0);
+        let max_width = (available_width - self.position.x.max(0.0)).max(0.0);
+        let max_height = (available_height - self.position.y.max(0.0)).max(0.0);
+        self.layout_size = Size {
+            width: self.size.width.max(0.0).min(max_width),
+            height: self.size.height.max(0.0).min(max_height),
+        };
+        self.layout_position = Position {
+            x: placement.parent_x + self.position.x,
+            y: placement.parent_y + self.position.y,
+        };
+
+        let parent_left = placement.parent_x;
+        let parent_top = placement.parent_y;
+        let parent_right = placement.parent_x + available_width;
+        let parent_bottom = placement.parent_y + available_height;
+        let self_left = self.layout_position.x;
+        let self_top = self.layout_position.y;
+        let self_right = self.layout_position.x + self.layout_size.width;
+        let self_bottom = self.layout_position.y + self.layout_size.height;
+        self.should_render = self.layout_size.width > 0.0
+            && self.layout_size.height > 0.0
+            && self_right > parent_left
+            && self_left < parent_right
+            && self_bottom > parent_top
+            && self_top < parent_bottom;
     }
 }
 
 impl Renderable for Text {
     fn build(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
-        if !self.core.should_render || self.content.is_empty() {
+        if !self.should_render || self.content.is_empty() {
             return;
         }
 
@@ -282,10 +384,10 @@ impl Renderable for Text {
 
         let mut pass = TextPass::new(
             self.content.clone(),
-            self.core.layout_position.x,
-            self.core.layout_position.y,
-            self.core.layout_size.width,
-            self.core.layout_size.height,
+            self.layout_position.x,
+            self.layout_position.y,
+            self.layout_size.width,
+            self.layout_size.height,
             self.color.to_rgba_f32(),
             opacity,
             self.font_size,

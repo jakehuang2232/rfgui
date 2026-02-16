@@ -2,7 +2,7 @@ use super::{ElementCore, Position, Size};
 use crate::ColorLike;
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::style::{
-    AlignItems, Color, ComputedStyle, Display, FlexDirection, FlexWrap, JustifyContent, Length,
+    AlignItems, Color, ComputedStyle, Display, FlowDirection, FlowWrap, JustifyContent, Length,
     ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
@@ -250,6 +250,18 @@ pub trait EventTarget {
     fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_text_input(
+        &mut self,
+        _event: &mut crate::ui::TextInputEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
+    fn dispatch_ime_preedit(
+        &mut self,
+        _event: &mut crate::ui::ImePreeditEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
     fn dispatch_focus(&mut self, _event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_blur(&mut self, _event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {}
     fn cancel_pointer_interaction(&mut self) -> bool {
@@ -268,6 +280,9 @@ pub trait EventTarget {
         (0.0, 0.0)
     }
     fn set_scroll_offset(&mut self, _offset: (f32, f32)) {}
+    fn ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        None
+    }
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
         Vec::new()
     }
@@ -348,8 +363,12 @@ pub struct Element {
     has_layout_snapshot: bool,
     layout_transition_override_x: Option<f32>,
     layout_transition_override_y: Option<f32>,
+    layout_transition_override_width: Option<f32>,
+    layout_transition_override_height: Option<f32>,
     layout_transition_target_x: Option<f32>,
     layout_transition_target_y: Option<f32>,
+    layout_transition_target_width: Option<f32>,
+    layout_transition_target_height: Option<f32>,
     last_parent_layout_x: f32,
     last_parent_layout_y: f32,
     is_hovered: bool,
@@ -419,7 +438,7 @@ impl EventTarget for Element {
     }
 
     fn dispatch_mouse_up(&mut self, event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
-        self.handle_scrollbar_mouse_up(event);
+        self.handle_scrollbar_mouse_up(event, _control);
         for handler in &mut self.mouse_up_handlers {
             handler(event, _control);
         }
@@ -586,8 +605,9 @@ impl Layoutable for Element {
             let p_t = resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
             let p_b = resolve_px_or_zero(self.computed_style.padding.bottom, proposal.percent_base_height);
 
-            let inner_w = (self.core.size.width - bw_l - bw_r - p_l - p_r).max(0.0);
-            let inner_h = (self.core.size.height - bw_t - bw_b - p_t - p_b).max(0.0);
+            let (layout_w, layout_h) = self.current_layout_transition_size();
+            let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
+            let inner_h = (layout_h - bw_t - bw_b - p_t - p_b).max(0.0);
 
             let (child_available_width, child_available_height) = match self.scroll_direction {
                 ScrollDirection::None => (inner_w, inner_h),
@@ -672,7 +692,7 @@ impl Layoutable for Element {
     }
 
     fn measured_size(&self) -> (f32, f32) {
-        (self.core.size.width, self.core.size.height)
+        self.current_layout_transition_size()
     }
 
     fn set_layout_width(&mut self, width: f32) {
@@ -790,6 +810,17 @@ impl Renderable for Element {
 }
 
 impl Element {
+    fn current_layout_transition_size(&self) -> (f32, f32) {
+        (
+            self.layout_transition_override_width
+                .unwrap_or(self.core.size.width)
+                .max(0.0),
+            self.layout_transition_override_height
+                .unwrap_or(self.core.size.height)
+                .max(0.0),
+        )
+    }
+
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self::new_with_id(0, x, y, width, height)
     }
@@ -849,8 +880,12 @@ impl Element {
             has_layout_snapshot: false,
             layout_transition_override_x: None,
             layout_transition_override_y: None,
+            layout_transition_override_width: None,
+            layout_transition_override_height: None,
             layout_transition_target_x: None,
             layout_transition_target_y: None,
+            layout_transition_target_width: None,
+            layout_transition_target_height: None,
             last_parent_layout_x: x,
             last_parent_layout_y: y,
             is_hovered: false,
@@ -920,10 +955,20 @@ impl Element {
         self.layout_transition_override_y = Some(value);
     }
 
+    pub fn set_layout_transition_width(&mut self, value: f32) {
+        self.layout_transition_override_width = Some(value.max(0.0));
+    }
+
+    pub fn set_layout_transition_height(&mut self, value: f32) {
+        self.layout_transition_override_height = Some(value.max(0.0));
+    }
+
     pub fn seed_layout_transition_snapshot(
         &mut self,
         layout_x: f32,
         layout_y: f32,
+        layout_width: f32,
+        layout_height: f32,
         parent_layout_x: f32,
         parent_layout_y: f32,
     ) {
@@ -931,13 +976,21 @@ impl Element {
             x: layout_x,
             y: layout_y,
         };
+        self.core.layout_size = Size {
+            width: layout_width.max(0.0),
+            height: layout_height.max(0.0),
+        };
         self.last_parent_layout_x = parent_layout_x;
         self.last_parent_layout_y = parent_layout_y;
         self.has_layout_snapshot = true;
         self.layout_transition_override_x = None;
         self.layout_transition_override_y = None;
+        self.layout_transition_override_width = None;
+        self.layout_transition_override_height = None;
         self.layout_transition_target_x = None;
         self.layout_transition_target_y = None;
+        self.layout_transition_target_width = None;
+        self.layout_transition_target_height = None;
     }
 
     pub fn set_border_top_color(&mut self, color: Color) {
@@ -1489,6 +1542,7 @@ impl Element {
                     grab_offset: local_y - thumb.y,
                     reanchor_on_first_move: false,
                 });
+                control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
                 return;
             }
@@ -1510,6 +1564,7 @@ impl Element {
                     grab_offset: grab,
                     reanchor_on_first_move: true,
                 });
+                control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
                 return;
             }
@@ -1523,6 +1578,7 @@ impl Element {
                     grab_offset: local_x - thumb.x,
                     reanchor_on_first_move: false,
                 });
+                control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
                 return;
             }
@@ -1544,6 +1600,7 @@ impl Element {
                     grab_offset: grab,
                     reanchor_on_first_move: true,
                 });
+                control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
             }
         }
@@ -1607,11 +1664,16 @@ impl Element {
         }
     }
 
-    fn handle_scrollbar_mouse_up(&mut self, event: &MouseUpEvent) {
+    fn handle_scrollbar_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        control: &mut ViewportControl<'_>,
+    ) {
         if event.mouse.button != Some(UiMouseButton::Left) {
             return;
         }
         if self.scrollbar_drag.take().is_some() {
+            control.release_pointer_capture(self.core.id);
             self.note_scrollbar_interaction();
         }
     }
@@ -1720,6 +1782,13 @@ impl Element {
         self.core.parent_id
     }
 
+    pub(crate) fn child_layout_origin(&self) -> (f32, f32) {
+        (
+            self.layout_inner_position.x - self.scroll_offset.x,
+            self.layout_inner_position.y - self.scroll_offset.y,
+        )
+    }
+
     pub fn add_child(&mut self, child: Box<dyn ElementTrait>) {
         let mut child = child;
         if child.parent_id() != Some(self.core.id) {
@@ -1740,8 +1809,9 @@ impl Element {
         let p_t = resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
         let p_b = resolve_px_or_zero(self.computed_style.padding.bottom, proposal.percent_base_height);
 
-        let inner_w = (self.core.size.width - bw_l - bw_r - p_l - p_r).max(0.0);
-        let inner_h = (self.core.size.height - bw_t - bw_b - p_t - p_b).max(0.0);
+        let (layout_w, layout_h) = self.current_layout_transition_size();
+        let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
+        let inner_h = (layout_h - bw_t - bw_b - p_t - p_b).max(0.0);
 
         let (child_available_width, child_available_height) = match self.scroll_direction {
             ScrollDirection::None => (inner_w, inner_h),
@@ -1778,8 +1848,8 @@ impl Element {
     }
 
     fn compute_flex_info(&self, inner_w: f32, inner_h: f32) -> FlexLayoutInfo {
-        let is_row = matches!(self.computed_style.flex_direction, FlexDirection::Row);
-        let wrap = matches!(self.computed_style.flex_wrap, FlexWrap::Wrap);
+        let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
+        let wrap = matches!(self.computed_style.flow_wrap, FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
         let gap_base = if is_row { inner_w } else { inner_h };
         let gap = resolve_px(self.computed_style.gap, gap_base);
@@ -2179,8 +2249,9 @@ impl Element {
         let p_t = resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
         let p_b = resolve_px_or_zero(self.computed_style.padding.bottom, proposal.percent_base_height);
 
-        let inner_w = (self.core.size.width - bw_l - bw_r - p_l - p_r).max(0.0);
-        let inner_h = (self.core.size.height - bw_t - bw_b - p_t - p_b).max(0.0);
+        let (layout_w, layout_h) = self.current_layout_transition_size();
+        let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
+        let inner_h = (layout_h - bw_t - bw_b - p_t - p_b).max(0.0);
 
         match self.scroll_direction {
             ScrollDirection::None => (inner_w, inner_h),
@@ -2253,6 +2324,28 @@ impl Element {
                         | TransitionProperty::Y
                 )
             });
+        let has_width_transition = self
+            .computed_style
+            .transition
+            .as_slice()
+            .iter()
+            .any(|t| {
+                matches!(
+                    t.property,
+                    TransitionProperty::All | TransitionProperty::Width
+                )
+            });
+        let has_height_transition = self
+            .computed_style
+            .transition
+            .as_slice()
+            .iter()
+            .any(|t| {
+                matches!(
+                    t.property,
+                    TransitionProperty::All | TransitionProperty::Height
+                )
+            });
         if !has_x_transition {
             self.layout_transition_override_x = None;
             self.layout_transition_target_x = None;
@@ -2261,8 +2354,20 @@ impl Element {
             self.layout_transition_override_y = None;
             self.layout_transition_target_y = None;
         }
+        if !has_width_transition {
+            self.layout_transition_override_width = None;
+            self.layout_transition_target_width = None;
+        }
+        if !has_height_transition {
+            self.layout_transition_override_height = None;
+            self.layout_transition_target_height = None;
+        }
         let prev_rel_x = self.core.layout_position.x - self.last_parent_layout_x;
         let prev_rel_y = self.core.layout_position.y - self.last_parent_layout_y;
+        let target_width = self.core.size.width.max(0.0);
+        let target_height = self.core.size.height.max(0.0);
+        let prev_width = self.core.layout_size.width.max(0.0);
+        let prev_height = self.core.layout_size.height.max(0.0);
         if self
             .layout_transition_target_x
             .is_some_and(|target| approx_eq(prev_rel_x, target))
@@ -2277,24 +2382,44 @@ impl Element {
             self.layout_transition_target_y = None;
             self.layout_transition_override_y = None;
         }
+        if self
+            .layout_transition_target_width
+            .is_some_and(|target| approx_eq(prev_width, target))
+        {
+            self.layout_transition_target_width = None;
+            self.layout_transition_override_width = None;
+        }
+        if self
+            .layout_transition_target_height
+            .is_some_and(|target| approx_eq(prev_height, target))
+        {
+            self.layout_transition_target_height = None;
+            self.layout_transition_override_height = None;
+        }
         
         if self.has_layout_snapshot {
             self.collect_layout_transition_requests(
                 prev_rel_x,
                 prev_rel_y,
+                prev_width,
+                prev_height,
                 target_rel_x,
                 target_rel_y,
+                target_width,
+                target_height,
             );
         }
         self.has_layout_snapshot = true;
 
         let frame_rel_x = self.layout_transition_override_x.unwrap_or(target_rel_x);
         let frame_rel_y = self.layout_transition_override_y.unwrap_or(target_rel_y);
+        let frame_width = self.layout_transition_override_width.unwrap_or(target_width);
+        let frame_height = self.layout_transition_override_height.unwrap_or(target_height);
         let frame = LayoutFrame {
             x: parent_x + frame_rel_x,
             y: parent_y + frame_rel_y,
-            width: self.core.size.width.max(0.0),
-            height: self.core.size.height.max(0.0),
+            width: frame_width,
+            height: frame_height,
         };
         self.core.layout_position = Position {
             x: frame.x,
@@ -2326,8 +2451,12 @@ impl Element {
         &mut self,
         prev_rel_x: f32,
         prev_rel_y: f32,
+        prev_width: f32,
+        prev_height: f32,
         target_rel_x: f32,
         target_rel_y: f32,
+        target_width: f32,
+        target_height: f32,
     ) {
         for transition in self.computed_style.transition.as_slice() {
             let runtime = RuntimeLayoutTransition {
@@ -2336,6 +2465,60 @@ impl Element {
                 timing: map_transition_timing(transition.timing),
             };
             match transition.property {
+                TransitionProperty::All => {
+                    let should_start_x = self
+                        .layout_transition_target_x
+                        .is_none_or(|active| !approx_eq(active, target_rel_x));
+                    if should_start_x && !approx_eq(prev_rel_x, target_rel_x) {
+                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                            target: self.core.id,
+                            field: LayoutField::X,
+                            from: prev_rel_x,
+                            to: target_rel_x,
+                            transition: runtime,
+                        });
+                        self.layout_transition_target_x = Some(target_rel_x);
+                    }
+                    let should_start_y = self
+                        .layout_transition_target_y
+                        .is_none_or(|active| !approx_eq(active, target_rel_y));
+                    if should_start_y && !approx_eq(prev_rel_y, target_rel_y) {
+                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                            target: self.core.id,
+                            field: LayoutField::Y,
+                            from: prev_rel_y,
+                            to: target_rel_y,
+                            transition: runtime,
+                        });
+                        self.layout_transition_target_y = Some(target_rel_y);
+                    }
+                    let should_start_width = self
+                        .layout_transition_target_width
+                        .is_none_or(|active| !approx_eq(active, target_width));
+                    if should_start_width && !approx_eq(prev_width, target_width) {
+                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                            target: self.core.id,
+                            field: LayoutField::Width,
+                            from: prev_width,
+                            to: target_width,
+                            transition: runtime,
+                        });
+                        self.layout_transition_target_width = Some(target_width);
+                    }
+                    let should_start_height = self
+                        .layout_transition_target_height
+                        .is_none_or(|active| !approx_eq(active, target_height));
+                    if should_start_height && !approx_eq(prev_height, target_height) {
+                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                            target: self.core.id,
+                            field: LayoutField::Height,
+                            from: prev_height,
+                            to: target_height,
+                            transition: runtime,
+                        });
+                        self.layout_transition_target_height = Some(target_height);
+                    }
+                }
                 TransitionProperty::Position => {
                     let should_start_x = self
                         .layout_transition_target_x
@@ -2362,6 +2545,36 @@ impl Element {
                             transition: runtime,
                         });
                         self.layout_transition_target_y = Some(target_rel_y);
+                    }
+                }
+                TransitionProperty::Width => {
+                    let should_start_width = self
+                        .layout_transition_target_width
+                        .is_none_or(|active| !approx_eq(active, target_width));
+                    if should_start_width && !approx_eq(prev_width, target_width) {
+                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                            target: self.core.id,
+                            field: LayoutField::Width,
+                            from: prev_width,
+                            to: target_width,
+                            transition: runtime,
+                        });
+                        self.layout_transition_target_width = Some(target_width);
+                    }
+                }
+                TransitionProperty::Height => {
+                    let should_start_height = self
+                        .layout_transition_target_height
+                        .is_none_or(|active| !approx_eq(active, target_height));
+                    if should_start_height && !approx_eq(prev_height, target_height) {
+                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                            target: self.core.id,
+                            field: LayoutField::Height,
+                            from: prev_height,
+                            to: target_height,
+                            transition: runtime,
+                        });
+                        self.layout_transition_target_height = Some(target_height);
                     }
                 }
                 TransitionProperty::X | TransitionProperty::PositionX => {
@@ -2458,7 +2671,7 @@ impl Element {
             self.compute_flex_info(self.layout_inner_size.width, self.layout_inner_size.height)
         };
 
-        let is_row = matches!(self.computed_style.flex_direction, FlexDirection::Row);
+        let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
         let main_limit = if is_row { self.layout_inner_size.width } else { self.layout_inner_size.height };
         let cross_limit = if is_row { self.layout_inner_size.height } else { self.layout_inner_size.width };
         let gap_base = if is_row { self.layout_inner_size.width } else { self.layout_inner_size.height };
@@ -2672,8 +2885,9 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
 
 #[cfg(test)]
 mod tests {
-    use super::{Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable};
-    use crate::style::{ParsedValue, PropertyId};
+    use super::{Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable};
+    use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
+    use crate::transition::LayoutField;
     use crate::{Border, Color, Length, Style};
 
     #[test]
@@ -2810,5 +3024,58 @@ mod tests {
         let snapshot_known = known_parent.children().expect("child")[0].box_model_snapshot();
         assert_eq!(snapshot_known.width, 120.0);
         assert_eq!(snapshot_known.height, 60.0);
+    }
+
+    #[test]
+    fn width_and_height_emit_layout_transition_requests() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::All,
+                200,
+            ))),
+        );
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        let _ = el.take_layout_transition_requests();
+
+        let mut next_style = Style::new();
+        next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
+        next_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(90.0)));
+        el.apply_style(next_style);
+        el.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let reqs = el.take_layout_transition_requests();
+        assert!(reqs.iter().any(|r| r.field == LayoutField::Width));
+        assert!(reqs.iter().any(|r| r.field == LayoutField::Height));
     }
 }

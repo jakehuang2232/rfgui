@@ -127,6 +127,19 @@ pub struct KeyUpEvent {
     pub key: KeyEventData,
 }
 
+#[derive(Debug, Clone)]
+pub struct TextInputEvent {
+    pub meta: EventMeta,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImePreeditEvent {
+    pub meta: EventMeta,
+    pub text: String,
+    pub cursor: Option<(usize, usize)>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FocusEvent {
     pub meta: EventMeta,

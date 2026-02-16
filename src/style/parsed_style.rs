@@ -5,8 +5,8 @@ use std::ops::Add;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropertyId {
     Display,
-    FlexDirection,
-    FlexWrap,
+    FlowDirection,
+    FlowWrap,
     JustifyContent,
     AlignItems,
     Position,
@@ -173,13 +173,13 @@ pub enum Display {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlexDirection {
+pub enum FlowDirection {
     Row,
     Column,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlexWrap {
+pub enum FlowWrap {
     NoWrap,
     Wrap,
 }
@@ -655,8 +655,8 @@ impl Opacity {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedValue {
     Display(Display),
-    FlexDirection(FlexDirection),
-    FlexWrap(FlexWrap),
+    FlowDirection(FlowDirection),
+    FlowWrap(FlowWrap),
     JustifyContent(JustifyContent),
     AlignItems(AlignItems),
     ScrollDirection(ScrollDirection),

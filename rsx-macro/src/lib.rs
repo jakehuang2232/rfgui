@@ -381,26 +381,26 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.display 需要表達式值");
             },
         },
-        "flex_direction" => match &entry.value {
+        "flow_direction" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::FlexDirection,
-                    ::rust_gui::ParsedValue::FlexDirection(#value),
+                    ::rust_gui::PropertyId::FlowDirection,
+                    ::rust_gui::ParsedValue::FlowDirection(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.flex_direction 需要表達式值");
+                compile_error!("style.flow_direction 需要表達式值");
             },
         },
-        "flex_wrap" => match &entry.value {
+        "flow_wrap" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::FlexWrap,
-                    ::rust_gui::ParsedValue::FlexWrap(#value),
+                    ::rust_gui::PropertyId::FlowWrap,
+                    ::rust_gui::ParsedValue::FlowWrap(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.flex_wrap 需要表達式值");
+                compile_error!("style.flow_wrap 需要表達式值");
             },
         },
         "justify_content" => match &entry.value {
