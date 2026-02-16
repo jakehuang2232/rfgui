@@ -40,10 +40,51 @@ pub enum MouseButton {
 #[derive(Debug, Clone, Default)]
 struct InputState {
     focused_node_id: Option<u64>,
+    selects: Vec<u64>,
     hovered_node_id: Option<u64>,
     mouse_position_viewport: Option<(f32, f32)>,
     pressed_mouse_buttons: HashSet<MouseButton>,
     pressed_keys: HashSet<String>,
+}
+
+pub struct ViewportControl<'a> {
+    viewport: &'a mut Viewport,
+}
+
+impl<'a> ViewportControl<'a> {
+    pub fn new(viewport: &'a mut Viewport) -> Self {
+        Self { viewport }
+    }
+
+    pub fn request_redraw(&mut self) {
+        self.viewport.request_redraw();
+    }
+
+    pub fn set_focus(&mut self, node_id: Option<u64>) {
+        self.viewport.set_focused_node_id(node_id);
+    }
+
+    pub fn set_scroll_transition(&mut self, transition: ScrollTransition) {
+        self.viewport.scroll_transition = transition;
+    }
+
+    pub fn set_selects(&mut self, selects: Vec<u64>) {
+        self.viewport.set_selects(selects);
+    }
+
+    pub fn start_scroll_track(
+        &mut self,
+        target: TrackTarget,
+        axis: ScrollAxis,
+        from: f32,
+        to: f32,
+    ) -> bool {
+        self.viewport.start_scroll_track(target, axis, from, to)
+    }
+
+    pub fn cancel_scroll_track(&mut self, target: TrackTarget, axis: ScrollAxis) {
+        self.viewport.cancel_scroll_track(target, axis);
+    }
 }
 
 struct TransitionHostAdapter<'a> {
@@ -118,6 +159,45 @@ pub struct Viewport {
 }
 
 impl Viewport {
+    fn cancel_pointer_interactions(roots: &mut [Box<dyn super::base_component::ElementTrait>]) -> bool {
+        let mut changed = false;
+        for root in roots.iter_mut() {
+            changed |= super::base_component::cancel_pointer_interactions(root.as_mut());
+        }
+        changed
+    }
+
+    fn start_scroll_track(&mut self, target: TrackTarget, axis: ScrollAxis, from: f32, to: f32) -> bool {
+        if (to - from).abs() <= 0.001 {
+            return false;
+        }
+        let mut host = TransitionHostAdapter {
+            registered_channels: &self.transition_channels,
+            claims: &mut self.transition_claims,
+        };
+        if self
+            .scroll_transition_plugin
+            .start_scroll_track(&mut host, target, axis, from, to, self.scroll_transition)
+            .is_err()
+        {
+            return false;
+        }
+        self.request_redraw();
+        true
+    }
+
+    fn cancel_scroll_track(&mut self, target: TrackTarget, axis: ScrollAxis) {
+        let key = TrackKey {
+            target,
+            channel: axis.channel_id(),
+        };
+        let mut host = TransitionHostAdapter {
+            registered_channels: &self.transition_channels,
+            claims: &mut self.transition_claims,
+        };
+        self.scroll_transition_plugin.cancel_track(key, &mut host);
+    }
+
     fn apply_hover_target(
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
         target: Option<u64>,
@@ -628,14 +708,23 @@ impl Viewport {
         self.input_state.focused_node_id
     }
 
+    pub fn set_selects(&mut self, selects: Vec<u64>) {
+        self.input_state.selects = selects;
+    }
+
+    pub fn selects(&self) -> &[u64] {
+        &self.input_state.selects
+    }
+
     pub fn set_mouse_position_viewport(&mut self, x: f32, y: f32) {
         self.input_state.mouse_position_viewport = Some((x, y));
     }
 
     pub fn clear_mouse_position_viewport(&mut self) {
         self.input_state.mouse_position_viewport = None;
-        let changed = Self::apply_hover_target(&mut self.ui_roots, None);
-        if changed {
+        let hover_changed = Self::apply_hover_target(&mut self.ui_roots, None);
+        let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
+        if hover_changed || pointer_changed {
             self.request_redraw();
         }
     }
@@ -679,6 +768,11 @@ impl Viewport {
 
     pub fn clear_input_state(&mut self) {
         self.input_state = InputState::default();
+        let hover_changed = Self::apply_hover_target(&mut self.ui_roots, None);
+        let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
+        if hover_changed || pointer_changed {
+            self.request_redraw();
+        }
     }
 
     pub fn dispatch_mouse_down_event(&mut self, button: MouseButton) -> bool {
@@ -698,13 +792,22 @@ impl Viewport {
                 modifiers: current_key_modifiers(),
             },
         };
+        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_mouse_down_from_hit_test(root.as_mut(), &mut event) {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_mouse_down_from_hit_test(
+                    root.as_mut(),
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled {
             self.request_redraw();
         }
@@ -713,6 +816,10 @@ impl Viewport {
 
     pub fn dispatch_mouse_up_event(&mut self, button: MouseButton) -> bool {
         let Some((x, y)) = self.mouse_position_viewport() else {
+            let changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
+            if changed {
+                self.request_redraw();
+            }
             return false;
         };
         let buttons = self.current_ui_mouse_buttons();
@@ -728,13 +835,22 @@ impl Viewport {
                 modifiers: current_key_modifiers(),
             },
         };
+        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_mouse_up_from_hit_test(root.as_mut(), &mut event) {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_mouse_up_from_hit_test(
+                    root.as_mut(),
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled {
             self.request_redraw();
         }
@@ -745,15 +861,15 @@ impl Viewport {
         let Some((x, y)) = self.mouse_position_viewport() else {
             return false;
         };
-        let hover_target = self
-            .ui_roots
+        let mut roots = std::mem::take(&mut self.ui_roots);
+        let hover_target = roots
             .iter()
             .rev()
             .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y));
         if self.input_state.hovered_node_id != hover_target {
             self.input_state.hovered_node_id = hover_target;
         }
-        let hover_changed = Self::apply_hover_target(&mut self.ui_roots, hover_target);
+        let hover_changed = Self::apply_hover_target(&mut roots, hover_target);
         let buttons = self.current_ui_mouse_buttons();
         let mut event = MouseMoveEvent {
             meta: EventMeta::new(0),
@@ -768,12 +884,20 @@ impl Viewport {
             },
         };
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_mouse_move_from_hit_test(root.as_mut(), &mut event) {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_mouse_move_from_hit_test(
+                    root.as_mut(),
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled || hover_changed {
             self.request_redraw();
         }
@@ -797,13 +921,22 @@ impl Viewport {
                 modifiers: current_key_modifiers(),
             },
         };
+        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_click_from_hit_test(root.as_mut(), &mut event) {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_click_from_hit_test(
+                    root.as_mut(),
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled {
             self.request_redraw();
         }
@@ -892,14 +1025,23 @@ impl Viewport {
                 modifiers: current_key_modifiers(),
             },
         };
+        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_key_down_bubble(root.as_mut(), target_id, &mut event)
-            {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_key_down_bubble(
+                    root.as_mut(),
+                    target_id,
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled {
             self.request_redraw();
         }
@@ -919,13 +1061,23 @@ impl Viewport {
                 modifiers: current_key_modifiers(),
             },
         };
+        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_key_up_bubble(root.as_mut(), target_id, &mut event) {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_key_up_bubble(
+                    root.as_mut(),
+                    target_id,
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled {
             self.request_redraw();
         }
@@ -936,13 +1088,23 @@ impl Viewport {
         let mut event = FocusEvent {
             meta: EventMeta::new(target_id),
         };
+        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_focus_bubble(root.as_mut(), target_id, &mut event) {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_focus_bubble(
+                    root.as_mut(),
+                    target_id,
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled {
             self.request_redraw();
         }
@@ -953,13 +1115,23 @@ impl Viewport {
         let mut event = BlurEvent {
             meta: EventMeta::new(target_id),
         };
+        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
-        for root in self.ui_roots.iter_mut().rev() {
-            if super::base_component::dispatch_blur_bubble(root.as_mut(), target_id, &mut event) {
-                handled = true;
-                break;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_blur_bubble(
+                    root.as_mut(),
+                    target_id,
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
             }
         }
+        self.ui_roots = roots;
         if handled {
             self.request_redraw();
         }

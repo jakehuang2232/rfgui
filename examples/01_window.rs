@@ -74,7 +74,7 @@ fn MainScene() -> RsxNode {
                     border: Border::uniform(Length::px(20.0), &Color::hex("#61afef")),
                 },
                 transition: [
-                    Transition::new(TransitionProperty::Position, 500),
+                    Transition::new(TransitionProperty::Position, 1000).ease_in_out(),
                 ],
             }}>
                 <Element style={{

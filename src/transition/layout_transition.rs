@@ -230,3 +230,108 @@ impl Transition<TrackTarget> for LayoutTransitionPlugin {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    struct TestHost {
+        registered_channels: HashSet<ChannelId>,
+        claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+    }
+
+    impl TestHost {
+        fn with_channels(channels: &[ChannelId]) -> Self {
+            Self {
+                registered_channels: channels.iter().copied().collect(),
+                claims: HashMap::new(),
+            }
+        }
+    }
+
+    impl TransitionHost<TrackTarget> for TestHost {
+        fn is_channel_registered(&self, channel: ChannelId) -> bool {
+            self.registered_channels.contains(&channel)
+        }
+
+        fn claim_track(
+            &mut self,
+            plugin_id: TransitionPluginId,
+            key: TrackKey<TrackTarget>,
+            mode: ClaimMode,
+        ) -> bool {
+            if let Some(current) = self.claims.get(&key).copied() {
+                if current == plugin_id {
+                    return true;
+                }
+                if matches!(mode, ClaimMode::Replace) {
+                    self.claims.insert(key, plugin_id);
+                    return true;
+                }
+                return false;
+            }
+            self.claims.insert(key, plugin_id);
+            true
+        }
+
+        fn release_track_claim(&mut self, plugin_id: TransitionPluginId, key: TrackKey<TrackTarget>) {
+            if self.claims.get(&key).copied() == Some(plugin_id) {
+                self.claims.remove(&key);
+            }
+        }
+
+        fn release_all_claims(&mut self, plugin_id: TransitionPluginId) {
+            self.claims.retain(|_, owner| *owner != plugin_id);
+        }
+    }
+
+    #[test]
+    fn start_layout_track_overwrites_same_target_and_channel() {
+        let mut plugin = LayoutTransitionPlugin::new();
+        let mut host = TestHost::with_channels(&[
+            CHANNEL_LAYOUT_X,
+            CHANNEL_LAYOUT_Y,
+            CHANNEL_LAYOUT_WIDTH,
+            CHANNEL_LAYOUT_HEIGHT,
+        ]);
+
+        let target = 7_u64;
+        let field = LayoutField::X;
+
+        plugin
+            .start_layout_track(
+                &mut host,
+                target,
+                field,
+                0.0,
+                100.0,
+                LayoutTransition::new(1_000),
+            )
+            .expect("first track should start");
+        plugin
+            .start_layout_track(
+                &mut host,
+                target,
+                field,
+                10.0,
+                20.0,
+                LayoutTransition::new(250),
+            )
+            .expect("second track should overwrite first one");
+
+        let key = TrackKey {
+            target,
+            channel: field.channel_id(),
+        };
+        let state = plugin
+            .tracks
+            .get(&key)
+            .copied()
+            .expect("track should exist after overwrite");
+        assert_eq!(plugin.tracks.len(), 1);
+        assert_eq!(state.from, 10.0);
+        assert_eq!(state.to, 20.0);
+        assert_eq!(state.transition.duration_ms, 250);
+    }
+}

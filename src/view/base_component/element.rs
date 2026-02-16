@@ -6,8 +6,9 @@ use crate::style::{
     ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
-    LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, StyleField,
-    StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue, TimeFunction,
+    LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
+    StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue,
+    TimeFunction,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
@@ -15,6 +16,7 @@ use crate::ui::{
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{FrameGraph, InSlot, RenderPass, TextureDesc};
+use crate::view::viewport::ViewportControl;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::{ClearPass, CompositeLayerPass, DrawRectPass, LayerOut, LayerTag};
 use std::sync::OnceLock;
@@ -119,6 +121,7 @@ enum ScrollbarAxis {
 struct ScrollbarDragState {
     axis: ScrollbarAxis,
     grab_offset: f32,
+    reanchor_on_first_move: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -241,14 +244,17 @@ pub trait Layoutable {
 }
 
 pub trait EventTarget {
-    fn dispatch_mouse_down(&mut self, _event: &mut MouseDownEvent) {}
-    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent) {}
-    fn dispatch_mouse_move(&mut self, _event: &mut MouseMoveEvent) {}
-    fn dispatch_click(&mut self, _event: &mut ClickEvent) {}
-    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent) {}
-    fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent) {}
-    fn dispatch_focus(&mut self, _event: &mut FocusEvent) {}
-    fn dispatch_blur(&mut self, _event: &mut BlurEvent) {}
+    fn dispatch_mouse_down(&mut self, _event: &mut MouseDownEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_mouse_move(&mut self, _event: &mut MouseMoveEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_focus(&mut self, _event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_blur(&mut self, _event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {}
+    fn cancel_pointer_interaction(&mut self) -> bool {
+        false
+    }
     fn set_hovered(&mut self, _hovered: bool) -> bool {
         false
     }
@@ -298,14 +304,14 @@ pub struct BoxModelSnapshot {
     pub should_render: bool,
 }
 
-type MouseDownHandler = Box<dyn FnMut(&mut MouseDownEvent)>;
-type MouseUpHandler = Box<dyn FnMut(&mut MouseUpEvent)>;
-type MouseMoveHandler = Box<dyn FnMut(&mut MouseMoveEvent)>;
-type ClickHandler = Box<dyn FnMut(&mut ClickEvent)>;
-type KeyDownHandler = Box<dyn FnMut(&mut KeyDownEvent)>;
-type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent)>;
-type FocusHandler = Box<dyn FnMut(&mut FocusEvent)>;
-type BlurHandler = Box<dyn FnMut(&mut BlurEvent)>;
+type MouseDownHandler = Box<dyn FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>)>;
+type MouseUpHandler = Box<dyn FnMut(&mut MouseUpEvent, &mut ViewportControl<'_>)>;
+type MouseMoveHandler = Box<dyn FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>)>;
+type ClickHandler = Box<dyn FnMut(&mut ClickEvent, &mut ViewportControl<'_>)>;
+type KeyDownHandler = Box<dyn FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>)>;
+type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>)>;
+type FocusHandler = Box<dyn FnMut(&mut FocusEvent, &mut ViewportControl<'_>)>;
+type BlurHandler = Box<dyn FnMut(&mut BlurEvent, &mut ViewportControl<'_>)>;
 
 #[derive(Clone, Debug)]
 struct FlexLayoutInfo {
@@ -405,55 +411,59 @@ impl ElementTrait for Element {
 }
 
 impl EventTarget for Element {
-    fn dispatch_mouse_down(&mut self, event: &mut MouseDownEvent) {
-        self.handle_scrollbar_mouse_down(event);
+    fn dispatch_mouse_down(&mut self, event: &mut MouseDownEvent, _control: &mut ViewportControl<'_>) {
+        self.handle_scrollbar_mouse_down(event, _control);
         for handler in &mut self.mouse_down_handlers {
-            handler(event);
+            handler(event, _control);
         }
     }
 
-    fn dispatch_mouse_up(&mut self, event: &mut MouseUpEvent) {
+    fn dispatch_mouse_up(&mut self, event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
         self.handle_scrollbar_mouse_up(event);
         for handler in &mut self.mouse_up_handlers {
-            handler(event);
+            handler(event, _control);
         }
     }
 
-    fn dispatch_mouse_move(&mut self, event: &mut MouseMoveEvent) {
-        self.handle_scrollbar_mouse_move(event);
+    fn dispatch_mouse_move(&mut self, event: &mut MouseMoveEvent, _control: &mut ViewportControl<'_>) {
+        self.handle_scrollbar_mouse_move(event, _control);
         for handler in &mut self.mouse_move_handlers {
-            handler(event);
+            handler(event, _control);
         }
     }
 
-    fn dispatch_click(&mut self, event: &mut ClickEvent) {
+    fn dispatch_click(&mut self, event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {
         for handler in &mut self.click_handlers {
-            handler(event);
+            handler(event, _control);
         }
     }
 
-    fn dispatch_key_down(&mut self, event: &mut KeyDownEvent) {
+    fn dispatch_key_down(&mut self, event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
         for handler in &mut self.key_down_handlers {
-            handler(event);
+            handler(event, _control);
         }
     }
 
-    fn dispatch_key_up(&mut self, event: &mut KeyUpEvent) {
+    fn dispatch_key_up(&mut self, event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {
         for handler in &mut self.key_up_handlers {
-            handler(event);
+            handler(event, _control);
         }
     }
 
-    fn dispatch_focus(&mut self, event: &mut FocusEvent) {
+    fn dispatch_focus(&mut self, event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {
         for handler in &mut self.focus_handlers {
-            handler(event);
+            handler(event, _control);
         }
     }
 
-    fn dispatch_blur(&mut self, event: &mut BlurEvent) {
+    fn dispatch_blur(&mut self, event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {
         for handler in &mut self.blur_handlers {
-            handler(event);
+            handler(event, _control);
         }
+    }
+
+    fn cancel_pointer_interaction(&mut self) -> bool {
+        self.scrollbar_drag.take().is_some()
     }
 
     fn set_hovered(&mut self, hovered: bool) -> bool {
@@ -1394,43 +1404,15 @@ impl Element {
         mouse_local_y: f32,
         grab_offset: f32,
     ) -> bool {
-        let (inner_x, inner_y) = self.local_inner_origin();
-        let geometry = self.scrollbar_geometry(inner_x, inner_y);
-        let (track, thumb) = match axis {
-            ScrollbarAxis::Vertical => (geometry.vertical_track, geometry.vertical_thumb),
-            ScrollbarAxis::Horizontal => (geometry.horizontal_track, geometry.horizontal_thumb),
-        };
-        let (Some(track), Some(thumb)) = (track, thumb) else {
+        let Some(next_scroll) =
+            self.scroll_value_from_drag(axis, mouse_local_x, mouse_local_y, grab_offset)
+        else {
             return false;
         };
-        let (mouse_axis, track_axis, track_len, thumb_len, max_scroll, current_scroll) = match axis {
-            ScrollbarAxis::Vertical => (
-                mouse_local_y,
-                track.y,
-                track.height,
-                thumb.height,
-                self.max_scroll().1,
-                self.scroll_offset.y,
-            ),
-            ScrollbarAxis::Horizontal => (
-                mouse_local_x,
-                track.x,
-                track.width,
-                thumb.width,
-                self.max_scroll().0,
-                self.scroll_offset.x,
-            ),
+        let current_scroll = match axis {
+            ScrollbarAxis::Vertical => self.scroll_offset.y,
+            ScrollbarAxis::Horizontal => self.scroll_offset.x,
         };
-        if track_len <= 0.0 || max_scroll <= 0.0 {
-            return false;
-        }
-        let travel = (track_len - thumb_len).max(0.0);
-        if travel <= 0.0 {
-            return false;
-        }
-        let thumb_start = (mouse_axis - grab_offset).clamp(track_axis, track_axis + travel);
-        let ratio = ((thumb_start - track_axis) / travel).clamp(0.0, 1.0);
-        let next_scroll = ratio * max_scroll;
         let changed = !approx_eq(next_scroll, current_scroll);
         match axis {
             ScrollbarAxis::Vertical => self.scroll_offset.y = next_scroll,
@@ -1439,7 +1421,55 @@ impl Element {
         changed
     }
 
-    fn handle_scrollbar_mouse_down(&mut self, event: &MouseDownEvent) {
+    fn scroll_value_from_drag(
+        &self,
+        axis: ScrollbarAxis,
+        mouse_local_x: f32,
+        mouse_local_y: f32,
+        grab_offset: f32,
+    ) -> Option<f32> {
+        let (inner_x, inner_y) = self.local_inner_origin();
+        let geometry = self.scrollbar_geometry(inner_x, inner_y);
+        let (track, thumb) = match axis {
+            ScrollbarAxis::Vertical => (geometry.vertical_track, geometry.vertical_thumb),
+            ScrollbarAxis::Horizontal => (geometry.horizontal_track, geometry.horizontal_thumb),
+        };
+        let (Some(track), Some(thumb)) = (track, thumb) else {
+            return None;
+        };
+        let (mouse_axis, track_axis, track_len, thumb_len, max_scroll) = match axis {
+            ScrollbarAxis::Vertical => (
+                mouse_local_y,
+                track.y,
+                track.height,
+                thumb.height,
+                self.max_scroll().1,
+            ),
+            ScrollbarAxis::Horizontal => (
+                mouse_local_x,
+                track.x,
+                track.width,
+                thumb.width,
+                self.max_scroll().0,
+            ),
+        };
+        if track_len <= 0.0 || max_scroll <= 0.0 {
+            return None;
+        }
+        let travel = (track_len - thumb_len).max(0.0);
+        if travel <= 0.0 {
+            return None;
+        }
+        let thumb_start = (mouse_axis - grab_offset).clamp(track_axis, track_axis + travel);
+        let ratio = ((thumb_start - track_axis) / travel).clamp(0.0, 1.0);
+        Some(ratio * max_scroll)
+    }
+
+    fn handle_scrollbar_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        control: &mut ViewportControl<'_>,
+    ) {
         if event.mouse.button != Some(UiMouseButton::Left) {
             return;
         }
@@ -1453,9 +1483,11 @@ impl Element {
 
         if let Some(thumb) = geometry.vertical_thumb {
             if thumb.contains(local_x, local_y) {
+                control.cancel_scroll_track(self.core.id, ScrollAxis::Y);
                 self.scrollbar_drag = Some(ScrollbarDragState {
                     axis: ScrollbarAxis::Vertical,
                     grab_offset: local_y - thumb.y,
+                    reanchor_on_first_move: false,
                 });
                 self.note_scrollbar_interaction();
                 return;
@@ -1467,15 +1499,16 @@ impl Element {
                     .vertical_thumb
                     .map(|thumb| thumb.height * 0.5)
                     .unwrap_or(0.0);
-                let _ = self.update_scroll_from_drag(
-                    ScrollbarAxis::Vertical,
-                    local_x,
-                    local_y,
-                    grab,
-                );
+                if let Some(to) =
+                    self.scroll_value_from_drag(ScrollbarAxis::Vertical, local_x, local_y, grab)
+                {
+                    let from = self.scroll_offset.y;
+                    let _ = control.start_scroll_track(self.core.id, ScrollAxis::Y, from, to);
+                }
                 self.scrollbar_drag = Some(ScrollbarDragState {
                     axis: ScrollbarAxis::Vertical,
                     grab_offset: grab,
+                    reanchor_on_first_move: true,
                 });
                 self.note_scrollbar_interaction();
                 return;
@@ -1484,9 +1517,11 @@ impl Element {
 
         if let Some(thumb) = geometry.horizontal_thumb {
             if thumb.contains(local_x, local_y) {
+                control.cancel_scroll_track(self.core.id, ScrollAxis::X);
                 self.scrollbar_drag = Some(ScrollbarDragState {
                     axis: ScrollbarAxis::Horizontal,
                     grab_offset: local_x - thumb.x,
+                    reanchor_on_first_move: false,
                 });
                 self.note_scrollbar_interaction();
                 return;
@@ -1498,23 +1533,51 @@ impl Element {
                     .horizontal_thumb
                     .map(|thumb| thumb.width * 0.5)
                     .unwrap_or(0.0);
-                let _ = self.update_scroll_from_drag(
-                    ScrollbarAxis::Horizontal,
-                    local_x,
-                    local_y,
-                    grab,
-                );
+                if let Some(to) =
+                    self.scroll_value_from_drag(ScrollbarAxis::Horizontal, local_x, local_y, grab)
+                {
+                    let from = self.scroll_offset.x;
+                    let _ = control.start_scroll_track(self.core.id, ScrollAxis::X, from, to);
+                }
                 self.scrollbar_drag = Some(ScrollbarDragState {
                     axis: ScrollbarAxis::Horizontal,
                     grab_offset: grab,
+                    reanchor_on_first_move: true,
                 });
                 self.note_scrollbar_interaction();
             }
         }
     }
 
-    fn handle_scrollbar_mouse_move(&mut self, event: &MouseMoveEvent) {
+    fn handle_scrollbar_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        control: &mut ViewportControl<'_>,
+    ) {
         if let Some(drag) = self.scrollbar_drag {
+            let mut drag = drag;
+            match drag.axis {
+                ScrollbarAxis::Vertical => control.cancel_scroll_track(self.core.id, ScrollAxis::Y),
+                ScrollbarAxis::Horizontal => {
+                    control.cancel_scroll_track(self.core.id, ScrollAxis::X)
+                }
+            }
+            if drag.reanchor_on_first_move {
+                let (inner_x, inner_y) = self.local_inner_origin();
+                let geometry = self.scrollbar_geometry(inner_x, inner_y);
+                drag.grab_offset = match drag.axis {
+                    ScrollbarAxis::Vertical => geometry
+                        .vertical_thumb
+                        .map(|thumb| (event.mouse.local_y - thumb.y).clamp(0.0, thumb.height))
+                        .unwrap_or(drag.grab_offset),
+                    ScrollbarAxis::Horizontal => geometry
+                        .horizontal_thumb
+                        .map(|thumb| (event.mouse.local_x - thumb.x).clamp(0.0, thumb.width))
+                        .unwrap_or(drag.grab_offset),
+                };
+                drag.reanchor_on_first_move = false;
+                self.scrollbar_drag = Some(drag);
+            }
             let changed = self.update_scroll_from_drag(
                 drag.axis,
                 event.mouse.local_x,
@@ -1595,56 +1658,56 @@ impl Element {
 
     pub fn on_mouse_down<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseDownEvent) + 'static,
+        F: FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.mouse_down_handlers.push(Box::new(handler));
     }
 
     pub fn on_mouse_up<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseUpEvent) + 'static,
+        F: FnMut(&mut MouseUpEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.mouse_up_handlers.push(Box::new(handler));
     }
 
     pub fn on_mouse_move<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseMoveEvent) + 'static,
+        F: FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.mouse_move_handlers.push(Box::new(handler));
     }
 
     pub fn on_click<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut ClickEvent) + 'static,
+        F: FnMut(&mut ClickEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.click_handlers.push(Box::new(handler));
     }
 
     pub fn on_key_down<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut KeyDownEvent) + 'static,
+        F: FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.key_down_handlers.push(Box::new(handler));
     }
 
     pub fn on_key_up<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut KeyUpEvent) + 'static,
+        F: FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.key_up_handlers.push(Box::new(handler));
     }
 
     pub fn on_focus<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut FocusEvent) + 'static,
+        F: FnMut(&mut FocusEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.focus_handlers.push(Box::new(handler));
     }
 
     pub fn on_blur<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut BlurEvent) + 'static,
+        F: FnMut(&mut BlurEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.blur_handlers.push(Box::new(handler));
     }

@@ -5,6 +5,7 @@ use crate::ui::{
 use crate::transition::{
     LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue,
 };
+use crate::view::viewport::ViewportControl;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -127,42 +128,49 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
 pub fn dispatch_mouse_down_from_hit_test(
     root: &mut dyn ElementTrait,
     event: &mut MouseDownEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
-    dispatch_mouse_down_bubble(root, target_id, event)
+    dispatch_mouse_down_bubble(root, target_id, event, control)
 }
 
 pub fn dispatch_mouse_up_from_hit_test(
     root: &mut dyn ElementTrait,
     event: &mut MouseUpEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
-    dispatch_mouse_up_bubble(root, target_id, event)
+    dispatch_mouse_up_bubble(root, target_id, event, control)
 }
 
 pub fn dispatch_mouse_move_from_hit_test(
     root: &mut dyn ElementTrait,
     event: &mut MouseMoveEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
-    dispatch_mouse_move_bubble(root, target_id, event)
+    dispatch_mouse_move_bubble(root, target_id, event, control)
 }
 
-pub fn dispatch_click_from_hit_test(root: &mut dyn ElementTrait, event: &mut ClickEvent) -> bool {
+pub fn dispatch_click_from_hit_test(
+    root: &mut dyn ElementTrait,
+    event: &mut ClickEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
     let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
-    dispatch_click_bubble(root, target_id, event)
+    dispatch_click_bubble(root, target_id, event, control)
 }
 
 pub fn dispatch_scroll_from_hit_test(
@@ -383,42 +391,61 @@ pub fn update_hover_state(root: &mut dyn ElementTrait, target_id: Option<u64>) -
     walk(root, target_id).1
 }
 
+pub fn cancel_pointer_interactions(root: &mut dyn ElementTrait) -> bool {
+    fn walk(node: &mut dyn ElementTrait) -> bool {
+        let mut changed = node.cancel_pointer_interaction();
+        if let Some(children) = node.children_mut() {
+            for child in children.iter_mut().rev() {
+                changed |= walk(child.as_mut());
+            }
+        }
+        changed
+    }
+
+    walk(root)
+}
+
 pub fn dispatch_key_down_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut KeyDownEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_key_down_impl(root, target_id, event)
+    dispatch_key_down_impl(root, target_id, event, control)
 }
 
 pub fn dispatch_key_up_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut KeyUpEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_key_up_impl(root, target_id, event)
+    dispatch_key_up_impl(root, target_id, event, control)
 }
 
 pub fn dispatch_focus_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut FocusEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_focus_impl(root, target_id, event)
+    dispatch_focus_impl(root, target_id, event, control)
 }
 
 pub fn dispatch_blur_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut BlurEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_blur_impl(root, target_id, event)
+    dispatch_blur_impl(root, target_id, event, control)
 }
 
 fn dispatch_mouse_down_bubble(
     node: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut MouseDownEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
@@ -427,7 +454,7 @@ fn dispatch_mouse_down_bubble(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_mouse_down_bubble(child.as_mut(), target_id, event) {
+                if dispatch_mouse_down_bubble(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -442,7 +469,7 @@ fn dispatch_mouse_down_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
-    node.dispatch_mouse_down(event);
+    node.dispatch_mouse_down(event, control);
     true
 }
 
@@ -450,6 +477,7 @@ fn dispatch_mouse_up_bubble(
     node: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut MouseUpEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
@@ -458,7 +486,7 @@ fn dispatch_mouse_up_bubble(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_mouse_up_bubble(child.as_mut(), target_id, event) {
+                if dispatch_mouse_up_bubble(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -473,7 +501,7 @@ fn dispatch_mouse_up_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
-    node.dispatch_mouse_up(event);
+    node.dispatch_mouse_up(event, control);
     true
 }
 
@@ -481,6 +509,7 @@ fn dispatch_mouse_move_bubble(
     node: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut MouseMoveEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
@@ -489,7 +518,7 @@ fn dispatch_mouse_move_bubble(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_mouse_move_bubble(child.as_mut(), target_id, event) {
+                if dispatch_mouse_move_bubble(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -504,7 +533,7 @@ fn dispatch_mouse_move_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
-    node.dispatch_mouse_move(event);
+    node.dispatch_mouse_move(event, control);
     true
 }
 
@@ -512,6 +541,7 @@ fn dispatch_click_bubble(
     node: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut ClickEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
@@ -520,7 +550,7 @@ fn dispatch_click_bubble(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_click_bubble(child.as_mut(), target_id, event) {
+                if dispatch_click_bubble(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -535,7 +565,7 @@ fn dispatch_click_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
-    node.dispatch_click(event);
+    node.dispatch_click(event, control);
     true
 }
 
@@ -608,6 +638,7 @@ fn dispatch_key_down_impl(
     node: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut KeyDownEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let node_id = node.id();
     let mut found = node_id == target_id;
@@ -615,7 +646,7 @@ fn dispatch_key_down_impl(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_key_down_impl(child.as_mut(), target_id, event) {
+                if dispatch_key_down_impl(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -628,7 +659,7 @@ fn dispatch_key_down_impl(
     }
 
     event.meta.set_current_target_id(node_id);
-    node.dispatch_key_down(event);
+    node.dispatch_key_down(event, control);
     true
 }
 
@@ -636,6 +667,7 @@ fn dispatch_key_up_impl(
     node: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut KeyUpEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let node_id = node.id();
     let mut found = node_id == target_id;
@@ -643,7 +675,7 @@ fn dispatch_key_up_impl(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_key_up_impl(child.as_mut(), target_id, event) {
+                if dispatch_key_up_impl(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -656,7 +688,7 @@ fn dispatch_key_up_impl(
     }
 
     event.meta.set_current_target_id(node_id);
-    node.dispatch_key_up(event);
+    node.dispatch_key_up(event, control);
     true
 }
 
@@ -664,6 +696,7 @@ fn dispatch_focus_impl(
     node: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut FocusEvent,
+    control: &mut ViewportControl<'_>,
 ) -> bool {
     let node_id = node.id();
     let mut found = node_id == target_id;
@@ -671,7 +704,7 @@ fn dispatch_focus_impl(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_focus_impl(child.as_mut(), target_id, event) {
+                if dispatch_focus_impl(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -684,18 +717,23 @@ fn dispatch_focus_impl(
     }
 
     event.meta.set_current_target_id(node_id);
-    node.dispatch_focus(event);
+    node.dispatch_focus(event, control);
     true
 }
 
-fn dispatch_blur_impl(node: &mut dyn ElementTrait, target_id: u64, event: &mut BlurEvent) -> bool {
+fn dispatch_blur_impl(
+    node: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut BlurEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
     let node_id = node.id();
     let mut found = node_id == target_id;
 
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_blur_impl(child.as_mut(), target_id, event) {
+                if dispatch_blur_impl(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -708,7 +746,7 @@ fn dispatch_blur_impl(node: &mut dyn ElementTrait, target_id: u64, event: &mut B
     }
 
     event.meta.set_current_target_id(node_id);
-    node.dispatch_blur(event);
+    node.dispatch_blur(event, control);
     true
 }
 
