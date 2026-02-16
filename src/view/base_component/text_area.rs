@@ -3,6 +3,7 @@ use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::{ColorLike, HexColor};
 use glyphon::cosmic_text::{Affinity, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
+use std::time::{Duration, Instant};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -36,6 +37,15 @@ pub struct TextArea {
     ime_preedit_cursor: Option<(usize, usize)>,
     cached_ime_cursor_rect: Option<(f32, f32, f32, f32)>,
     vertical_cursor_x_opt: Option<i32>,
+    glyph_font_system: FontSystem,
+    glyph_buffer: GlyphBuffer,
+    glyph_layout_valid: bool,
+    glyph_cache_text: String,
+    glyph_cache_width: f32,
+    glyph_cache_font_size: f32,
+    glyph_cache_line_height_px: f32,
+    glyph_cache_font_families: Vec<String>,
+    caret_blink_started_at: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +81,18 @@ impl TextArea {
         height: f32,
         content: impl Into<String>,
     ) -> Self {
+        let mut glyph_font_system = FontSystem::new();
+        let initial_font_size = 16.0_f32;
+        let initial_line_height_ratio = 1.25_f32;
+        let initial_line_height_px =
+            (initial_font_size * initial_line_height_ratio.max(0.8)).max(1.0);
+        let mut glyph_buffer = GlyphBuffer::new(
+            &mut glyph_font_system,
+            Metrics::new(initial_font_size.max(1.0), initial_line_height_px),
+        );
+        glyph_buffer.set_wrap(&mut glyph_font_system, Wrap::WordOrGlyph);
+        glyph_buffer.set_size(&mut glyph_font_system, Some(width.max(1.0)), None);
+
         let mut text_area = Self {
             element: Element::new_with_id(id, x, y, width, height),
             position: Position { x, y },
@@ -101,14 +123,45 @@ impl TextArea {
             ime_preedit_cursor: None,
             cached_ime_cursor_rect: None,
             vertical_cursor_x_opt: None,
+            glyph_font_system,
+            glyph_buffer,
+            glyph_layout_valid: false,
+            glyph_cache_text: String::new(),
+            glyph_cache_width: width.max(1.0),
+            glyph_cache_font_size: initial_font_size,
+            glyph_cache_line_height_px: initial_line_height_px,
+            glyph_cache_font_families: Vec::new(),
+            caret_blink_started_at: Instant::now(),
         };
         text_area.set_text(content);
         text_area
     }
 
+    fn reset_caret_blink(&mut self) {
+        self.caret_blink_started_at = Instant::now();
+    }
+
+    fn should_draw_caret(&self) -> bool {
+        if !self.is_focused {
+            return false;
+        }
+        const CARET_BLINK_PERIOD: Duration = Duration::from_millis(1060);
+        const CARET_BLINK_VISIBLE: Duration = Duration::from_millis(530);
+        let period_ms = CARET_BLINK_PERIOD.as_millis();
+        let visible_ms = CARET_BLINK_VISIBLE.as_millis();
+        let elapsed_ms = self.caret_blink_started_at.elapsed().as_millis();
+        (elapsed_ms % period_ms) < visible_ms
+    }
+
+    fn invalidate_glyph_layout(&mut self) {
+        self.glyph_layout_valid = false;
+        self.cached_ime_cursor_rect = None;
+    }
+
     pub fn set_position(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
+        self.cached_ime_cursor_rect = None;
     }
 
     pub fn set_size(&mut self, width: f32, height: f32) {
@@ -116,18 +169,21 @@ impl TextArea {
         self.element.set_size(width, height);
         self.auto_width = false;
         self.auto_height = false;
+        self.invalidate_glyph_layout();
     }
 
     pub fn set_width(&mut self, width: f32) {
         self.size.width = width;
         self.element.set_width(width);
         self.auto_width = false;
+        self.invalidate_glyph_layout();
     }
 
     pub fn set_height(&mut self, height: f32) {
         self.size.height = height;
         self.element.set_height(height);
         self.auto_height = false;
+        self.cached_ime_cursor_rect = None;
     }
 
     pub fn set_text(&mut self, content: impl Into<String>) {
@@ -136,6 +192,8 @@ impl TextArea {
             self.content = truncate_to_chars(&self.content, max_length);
         }
         self.clear_vertical_goal();
+        self.reset_caret_blink();
+        self.invalidate_glyph_layout();
         self.clamp_cursor();
         self.clamp_scroll();
     }
@@ -152,6 +210,7 @@ impl TextArea {
         self.max_length = max_length;
         if let Some(limit) = max_length {
             self.content = truncate_to_chars(&self.content, limit);
+            self.invalidate_glyph_layout();
             self.clamp_cursor();
             self.clamp_scroll();
         }
@@ -171,10 +230,12 @@ impl TextArea {
             .collect();
 
         self.font_families = families;
+        self.invalidate_glyph_layout();
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
         self.font_size = font_size;
+        self.invalidate_glyph_layout();
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
@@ -193,6 +254,7 @@ impl TextArea {
         self.multiline = multiline;
         self.content = normalize_multiline(self.content.clone(), self.multiline);
         self.clear_vertical_goal();
+        self.invalidate_glyph_layout();
         self.clamp_cursor();
         self.clamp_scroll();
     }
@@ -204,7 +266,7 @@ impl TextArea {
     fn clear_preedit(&mut self) {
         self.ime_preedit.clear();
         self.ime_preedit_cursor = None;
-        self.cached_ime_cursor_rect = None;
+        self.invalidate_glyph_layout();
     }
 
     fn clear_vertical_goal(&mut self) {
@@ -214,7 +276,7 @@ impl TextArea {
     fn set_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) {
         self.ime_preedit = normalize_multiline(text, self.multiline);
         self.ime_preedit_cursor = cursor;
-        self.cached_ime_cursor_rect = None;
+        self.invalidate_glyph_layout();
     }
 
     fn effective_width(&self) -> f32 {
@@ -271,7 +333,8 @@ impl TextArea {
         let insert_at = byte_index_at_char(&self.content, self.cursor_char);
         self.content.insert_str(insert_at, &incoming);
         self.cursor_char += incoming.chars().count();
-        self.cached_ime_cursor_rect = None;
+        self.reset_caret_blink();
+        self.invalidate_glyph_layout();
         self.clear_vertical_goal();
         true
     }
@@ -284,7 +347,8 @@ impl TextArea {
         let start = byte_index_at_char(&self.content, self.cursor_char - 1);
         self.content.replace_range(start..end, "");
         self.cursor_char -= 1;
-        self.cached_ime_cursor_rect = None;
+        self.reset_caret_blink();
+        self.invalidate_glyph_layout();
         self.clear_vertical_goal();
         true
     }
@@ -297,7 +361,8 @@ impl TextArea {
         let start = byte_index_at_char(&self.content, self.cursor_char);
         let end = byte_index_at_char(&self.content, self.cursor_char + 1);
         self.content.replace_range(start..end, "");
-        self.cached_ime_cursor_rect = None;
+        self.reset_caret_blink();
+        self.invalidate_glyph_layout();
         self.clear_vertical_goal();
         true
     }
@@ -307,6 +372,7 @@ impl TextArea {
             return false;
         }
         self.cursor_char -= 1;
+        self.reset_caret_blink();
         self.cached_ime_cursor_rect = None;
         self.clear_vertical_goal();
         true
@@ -318,6 +384,7 @@ impl TextArea {
             return false;
         }
         self.cursor_char += 1;
+        self.reset_caret_blink();
         self.cached_ime_cursor_rect = None;
         self.clear_vertical_goal();
         true
@@ -414,16 +481,17 @@ impl TextArea {
 
     fn set_cursor_from_local_position(&mut self, local_x: f32, local_y: f32) {
         let composed = self.composed_text();
-        let (_font_system, buffer) = self.build_glyph_buffer(composed.as_str());
+        self.ensure_glyph_layout(composed.as_str());
         let hit_x = local_x.max(0.0);
         let hit_y = (local_y + self.scroll_y).max(0.0);
-        if let Some(cursor) = buffer.hit(hit_x, hit_y) {
+        if let Some(cursor) = self.glyph_buffer.hit(hit_x, hit_y) {
             let composed_char =
                 self.cursor_char_from_line_index_for_text(composed.as_str(), cursor.line, cursor.index);
             self.cursor_char = self.cursor_char_from_composed(composed_char);
         } else {
             self.cursor_char = self.content.chars().count();
         }
+        self.reset_caret_blink();
         self.cached_ime_cursor_rect = None;
         self.clear_vertical_goal();
         self.ensure_cursor_visible();
@@ -472,24 +540,31 @@ impl TextArea {
         (composed, self.color.to_rgba_f32())
     }
 
-    fn caret_screen_position(&self) -> Option<(f32, f32)> {
+    fn caret_screen_position(&mut self) -> Option<(f32, f32)> {
         if !self.is_focused {
             return None;
         }
         let composed = self.composed_text();
         let caret_byte = self.caret_byte_in_composed(composed.as_str())?;
-        let (mut font_system, mut buffer) = self.build_glyph_buffer(composed.as_str());
+        self.ensure_glyph_layout(composed.as_str());
         let (cursor_line, cursor_index) = line_and_index_from_byte(composed.as_str(), caret_byte);
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
-            let Some(layout_cursor) = buffer.layout_cursor(&mut font_system, cursor) else {
+            let Some(layout_cursor) = self
+                .glyph_buffer
+                .layout_cursor(&mut self.glyph_font_system, cursor)
+            else {
                 continue;
             };
             if layout_cursor.line != cursor_line {
                 continue;
             }
             if let Some(run) =
-                find_layout_run_by_line_layout(&buffer, layout_cursor.line, layout_cursor.layout)
+                find_layout_run_by_line_layout(
+                    &self.glyph_buffer,
+                    layout_cursor.line,
+                    layout_cursor.layout,
+                )
             {
                 if let Some(x) = caret_x_in_layout_run(cursor_index, &run) {
                     return Some((
@@ -500,36 +575,56 @@ impl TextArea {
             }
         }
 
-        let fallback_y = fallback_line_top_for_cursor_line(&buffer, cursor_line).unwrap_or(0.0);
+        let fallback_y = fallback_line_top_for_cursor_line(&self.glyph_buffer, cursor_line).unwrap_or(0.0);
         Some((
             self.layout_position.x,
             self.layout_position.y + fallback_y - self.scroll_y,
         ))
     }
 
-    fn build_glyph_buffer(&self, text: &str) -> (FontSystem, GlyphBuffer) {
-        let mut font_system = FontSystem::new();
-        let metrics = Metrics::new(
-            self.font_size.max(1.0),
-            (self.font_size * self.line_height.max(0.8)).max(1.0),
+    fn ensure_glyph_layout(&mut self, text: &str) {
+        let width = self.effective_width();
+        let font_size = self.font_size.max(1.0);
+        let line_height_px = (self.font_size * self.line_height.max(0.8)).max(1.0);
+        let needs_rebuild = !self.glyph_layout_valid
+            || self.glyph_cache_text != text
+            || (self.glyph_cache_width - width).abs() > 0.01
+            || (self.glyph_cache_font_size - font_size).abs() > 0.01
+            || (self.glyph_cache_line_height_px - line_height_px).abs() > 0.01
+            || self.glyph_cache_font_families != self.font_families;
+        if !needs_rebuild {
+            return;
+        }
+
+        self.glyph_buffer = GlyphBuffer::new(
+            &mut self.glyph_font_system,
+            Metrics::new(font_size, line_height_px),
         );
-        let mut buffer = GlyphBuffer::new(&mut font_system, metrics);
-        buffer.set_wrap(&mut font_system, Wrap::WordOrGlyph);
-        buffer.set_size(&mut font_system, Some(self.effective_width()), None);
+        self.glyph_buffer
+            .set_wrap(&mut self.glyph_font_system, Wrap::WordOrGlyph);
+        self.glyph_buffer
+            .set_size(&mut self.glyph_font_system, Some(width), None);
         let attrs = if let Some(first) = self.font_families.first() {
             Attrs::new().family(Family::Name(first.as_str()))
         } else {
             Attrs::new()
         };
-        buffer.set_text(
-            &mut font_system,
+        self.glyph_buffer.set_text(
+            &mut self.glyph_font_system,
             text,
             &attrs,
             Shaping::Advanced,
             Some(glyphon::cosmic_text::Align::Left),
         );
-        buffer.shape_until_scroll(&mut font_system, false);
-        (font_system, buffer)
+        self.glyph_buffer
+            .shape_until_scroll(&mut self.glyph_font_system, false);
+
+        self.glyph_layout_valid = true;
+        self.glyph_cache_text = text.to_string();
+        self.glyph_cache_width = width;
+        self.glyph_cache_font_size = font_size;
+        self.glyph_cache_line_height_px = line_height_px;
+        self.glyph_cache_font_families = self.font_families.clone();
     }
 
     fn composed_text(&self) -> String {
@@ -666,14 +761,17 @@ impl TextArea {
             return false;
         }
 
-        let text = self.content.as_str();
-        let caret_byte = byte_index_at_char(text, self.cursor_char);
-        let (line, index) = line_and_index_from_byte(text, caret_byte);
-        let (mut font_system, mut buffer) = self.build_glyph_buffer(text);
+        let text = self.content.clone();
+        let caret_byte = byte_index_at_char(text.as_str(), self.cursor_char);
+        let (line, index) = line_and_index_from_byte(text.as_str(), caret_byte);
+        self.ensure_glyph_layout(text.as_str());
         let mut layout_cursor_opt = None;
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(line, index, affinity);
-            let Some(layout_cursor) = buffer.layout_cursor(&mut font_system, cursor) else {
+            let Some(layout_cursor) = self
+                .glyph_buffer
+                .layout_cursor(&mut self.glyph_font_system, cursor)
+            else {
                 continue;
             };
             if layout_cursor.line == line {
@@ -685,7 +783,7 @@ impl TextArea {
             return false;
         };
 
-        let runs = collect_run_positions(&buffer);
+        let runs = collect_run_positions(&self.glyph_buffer);
         let Some(current_run_idx) = runs
             .iter()
             .position(|run| run.line_i == layout_cursor.line && run.layout_i == layout_cursor.layout)
@@ -702,7 +800,11 @@ impl TextArea {
             return false;
         };
 
-        let current_local_x = find_layout_run_by_line_layout(&buffer, layout_cursor.line, layout_cursor.layout)
+        let current_local_x = find_layout_run_by_line_layout(
+            &self.glyph_buffer,
+            layout_cursor.line,
+            layout_cursor.layout,
+        )
             .and_then(|run| caret_x_in_layout_run(index, &run))
             .unwrap_or(0.0);
         let desired_x = self
@@ -712,17 +814,21 @@ impl TextArea {
 
         let target_run = runs[target_run_idx];
         let target_y = target_run.line_top + target_run.line_height * 0.5;
-        let Some(next_cursor) = buffer.hit(desired_x.max(0.0), target_y) else {
+        let Some(next_cursor) = self.glyph_buffer.hit(desired_x.max(0.0), target_y) else {
             return false;
         };
 
-        let next_char =
-            self.cursor_char_from_line_index_for_text(text, next_cursor.line, next_cursor.index);
+        let next_char = self.cursor_char_from_line_index_for_text(
+            text.as_str(),
+            next_cursor.line,
+            next_cursor.index,
+        );
         if next_char == self.cursor_char {
             self.vertical_cursor_x_opt = Some(desired_x.round() as i32);
             return false;
         }
         self.cursor_char = next_char;
+        self.reset_caret_blink();
         self.cached_ime_cursor_rect = None;
         self.vertical_cursor_x_opt = Some(desired_x.round() as i32);
         true
@@ -995,6 +1101,7 @@ impl EventTarget for TextArea {
     ) {
         control.set_focus(Some(self.id()));
         self.is_focused = true;
+        self.reset_caret_blink();
         self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
         self.element.dispatch_mouse_down(event, control);
         event.meta.stop_propagation();
@@ -1084,6 +1191,7 @@ impl EventTarget for TextArea {
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         self.is_focused = true;
+        self.reset_caret_blink();
         self.element.dispatch_focus(event, control);
     }
 
@@ -1094,6 +1202,7 @@ impl EventTarget for TextArea {
     ) {
         self.is_focused = false;
         self.cached_ime_cursor_rect = None;
+        self.glyph_layout_valid = false;
         self.clear_preedit();
         self.element.dispatch_blur(event, control);
     }
@@ -1150,11 +1259,13 @@ impl Layoutable for TextArea {
     fn set_layout_width(&mut self, width: f32) {
         self.size.width = width;
         self.element.set_width(width);
+        self.invalidate_glyph_layout();
     }
 
     fn set_layout_height(&mut self, height: f32) {
         self.size.height = height;
         self.element.set_height(height);
+        self.cached_ime_cursor_rect = None;
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {
@@ -1212,6 +1323,7 @@ impl Layoutable for TextArea {
     }
 
     fn place(&mut self, placement: LayoutPlacement) {
+        let prev_layout_width = self.layout_size.width;
         let available_width = placement.available_width.max(0.0);
         let available_height = placement.available_height.max(0.0);
         let max_width = (available_width - self.position.x.max(0.0)).max(0.0);
@@ -1240,6 +1352,9 @@ impl Layoutable for TextArea {
             && self_bottom > parent_top
             && self_top < parent_bottom;
 
+        if (prev_layout_width - self.layout_size.width).abs() > 0.01 {
+            self.invalidate_glyph_layout();
+        }
         self.clamp_scroll();
     }
 }
@@ -1282,6 +1397,10 @@ impl Renderable for TextArea {
         }
 
         if let Some((caret_x, caret_y)) = self.caret_screen_position() {
+            self.cached_ime_cursor_rect = Some((caret_x, caret_y, 1.0, self.line_height_px()));
+            if !self.should_draw_caret() {
+                return;
+            }
             let mut caret_pass = DrawRectPass::new(
                 [caret_x, caret_y],
                 [1.0, self.line_height_px()],
@@ -1290,7 +1409,6 @@ impl Renderable for TextArea {
             );
             caret_pass.set_scissor_rect(clip);
             ctx.push_pass(graph, caret_pass);
-            self.cached_ime_cursor_rect = Some((caret_x, caret_y, 1.0, self.line_height_px()));
         } else {
             self.cached_ime_cursor_rect = None;
         }
