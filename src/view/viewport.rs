@@ -8,8 +8,8 @@ use wgpu::{
 
 use crate::ui::{
     BlurEvent, ClickEvent, EventMeta, FocusEvent, KeyDownEvent, KeyEventData, KeyModifiers,
-    KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent, MouseEventData, MouseMoveEvent,
-    MouseUpEvent, RsxNode,
+    ImePreeditEvent, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent, MouseEventData,
+    MouseMoveEvent, MouseUpEvent, RsxNode, TextInputEvent,
 };
 use crate::transition::{
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y,
@@ -41,6 +41,7 @@ pub enum MouseButton {
 struct InputState {
     focused_node_id: Option<u64>,
     selects: Vec<u64>,
+    pointer_capture_node_id: Option<u64>,
     hovered_node_id: Option<u64>,
     mouse_position_viewport: Option<(f32, f32)>,
     pressed_mouse_buttons: HashSet<MouseButton>,
@@ -84,6 +85,16 @@ impl<'a> ViewportControl<'a> {
 
     pub fn cancel_scroll_track(&mut self, target: TrackTarget, axis: ScrollAxis) {
         self.viewport.cancel_scroll_track(target, axis);
+    }
+
+    pub fn set_pointer_capture(&mut self, node_id: u64) {
+        self.viewport.set_pointer_capture_node_id(Some(node_id));
+    }
+
+    pub fn release_pointer_capture(&mut self, node_id: u64) {
+        if self.viewport.pointer_capture_node_id() == Some(node_id) {
+            self.viewport.set_pointer_capture_node_id(None);
+        }
     }
 }
 
@@ -146,6 +157,7 @@ pub struct Viewport {
     frame_stats: FrameStats,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
     input_state: InputState,
+    dispatched_focus_node_id: Option<u64>,
     ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
     scroll_offsets: HashMap<u64, (f32, f32)>,
     last_rsx_root: Option<RsxNode>,
@@ -404,6 +416,7 @@ impl Viewport {
             frame_stats: FrameStats::new_from_env(),
             frame_box_models: Vec::new(),
             input_state: InputState::default(),
+            dispatched_focus_node_id: None,
             ui_roots: Vec::new(),
             scroll_offsets: HashMap::new(),
             last_rsx_root: None,
@@ -651,6 +664,7 @@ impl Viewport {
                 &layout_snapshots,
             );
         }
+        self.sync_focus_dispatch();
         let mut roots = std::mem::take(&mut self.ui_roots);
         Self::apply_hover_target(&mut roots, self.input_state.hovered_node_id);
         let transition_changed_before_render = self.run_transition_plugins(&mut roots);
@@ -708,6 +722,14 @@ impl Viewport {
         self.input_state.focused_node_id
     }
 
+    pub fn set_pointer_capture_node_id(&mut self, node_id: Option<u64>) {
+        self.input_state.pointer_capture_node_id = node_id;
+    }
+
+    pub fn pointer_capture_node_id(&self) -> Option<u64> {
+        self.input_state.pointer_capture_node_id
+    }
+
     pub fn set_selects(&mut self, selects: Vec<u64>) {
         self.input_state.selects = selects;
     }
@@ -722,6 +744,7 @@ impl Viewport {
 
     pub fn clear_mouse_position_viewport(&mut self) {
         self.input_state.mouse_position_viewport = None;
+        self.input_state.pointer_capture_node_id = None;
         let hover_changed = Self::apply_hover_target(&mut self.ui_roots, None);
         let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
         if hover_changed || pointer_changed {
@@ -767,7 +790,10 @@ impl Viewport {
     }
 
     pub fn clear_input_state(&mut self) {
+        self.set_focused_node_id(None);
+        self.sync_focus_dispatch();
         self.input_state = InputState::default();
+        self.dispatched_focus_node_id = None;
         let hover_changed = Self::apply_hover_target(&mut self.ui_roots, None);
         let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
         if hover_changed || pointer_changed {
@@ -808,7 +834,12 @@ impl Viewport {
             }
         }
         self.ui_roots = roots;
+        self.sync_focus_dispatch();
         if handled {
+            self.request_redraw();
+        } else if self.focused_node_id().is_some() {
+            self.set_focused_node_id(None);
+            self.sync_focus_dispatch();
             self.request_redraw();
         }
         handled
@@ -816,6 +847,7 @@ impl Viewport {
 
     pub fn dispatch_mouse_up_event(&mut self, button: MouseButton) -> bool {
         let Some((x, y)) = self.mouse_position_viewport() else {
+            self.input_state.pointer_capture_node_id = None;
             let changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
             if changed {
                 self.request_redraw();
@@ -839,14 +871,29 @@ impl Viewport {
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
-            for root in roots.iter_mut().rev() {
-                if super::base_component::dispatch_mouse_up_from_hit_test(
-                    root.as_mut(),
-                    &mut event,
-                    &mut control,
-                ) {
-                    handled = true;
-                    break;
+            if let Some(target_id) = control.viewport.pointer_capture_node_id() {
+                for root in roots.iter_mut().rev() {
+                    if super::base_component::dispatch_mouse_up_to_target(
+                        root.as_mut(),
+                        target_id,
+                        &mut event,
+                        &mut control,
+                    ) {
+                        handled = true;
+                        break;
+                    }
+                }
+                control.viewport.set_pointer_capture_node_id(None);
+            } else {
+                for root in roots.iter_mut().rev() {
+                    if super::base_component::dispatch_mouse_up_from_hit_test(
+                        root.as_mut(),
+                        &mut event,
+                        &mut control,
+                    ) {
+                        handled = true;
+                        break;
+                    }
                 }
             }
         }
@@ -886,14 +933,31 @@ impl Viewport {
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
-            for root in roots.iter_mut().rev() {
-                if super::base_component::dispatch_mouse_move_from_hit_test(
-                    root.as_mut(),
-                    &mut event,
-                    &mut control,
-                ) {
-                    handled = true;
-                    break;
+            if let Some(target_id) = control.viewport.pointer_capture_node_id() {
+                for root in roots.iter_mut().rev() {
+                    if super::base_component::dispatch_mouse_move_to_target(
+                        root.as_mut(),
+                        target_id,
+                        &mut event,
+                        &mut control,
+                    ) {
+                        handled = true;
+                        break;
+                    }
+                }
+                if !handled {
+                    control.viewport.set_pointer_capture_node_id(None);
+                }
+            } else {
+                for root in roots.iter_mut().rev() {
+                    if super::base_component::dispatch_mouse_move_from_hit_test(
+                        root.as_mut(),
+                        &mut event,
+                        &mut control,
+                    ) {
+                        handled = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1084,6 +1148,76 @@ impl Viewport {
         handled
     }
 
+    pub fn dispatch_text_input_event(&mut self, text: String) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let Some(target_id) = self.focused_node_id() else {
+            return false;
+        };
+        let mut event = TextInputEvent {
+            meta: EventMeta::new(target_id),
+            text,
+        };
+        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut handled = false;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_text_input_bubble(
+                    root.as_mut(),
+                    target_id,
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
+            }
+        }
+        self.ui_roots = roots;
+        if handled {
+            self.request_redraw();
+        }
+        handled
+    }
+
+    pub fn dispatch_ime_preedit_event(
+        &mut self,
+        text: String,
+        cursor: Option<(usize, usize)>,
+    ) -> bool {
+        let Some(target_id) = self.focused_node_id() else {
+            return false;
+        };
+        let mut event = ImePreeditEvent {
+            meta: EventMeta::new(target_id),
+            text,
+            cursor,
+        };
+        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut handled = false;
+        {
+            let mut control = ViewportControl::new(self);
+            for root in roots.iter_mut().rev() {
+                if super::base_component::dispatch_ime_preedit_bubble(
+                    root.as_mut(),
+                    target_id,
+                    &mut event,
+                    &mut control,
+                ) {
+                    handled = true;
+                    break;
+                }
+            }
+        }
+        self.ui_roots = roots;
+        if handled {
+            self.request_redraw();
+        }
+        handled
+    }
+
     pub fn dispatch_focus_event(&mut self, target_id: u64) -> bool {
         let mut event = FocusEvent {
             meta: EventMeta::new(target_id),
@@ -1146,6 +1280,40 @@ impl Viewport {
             back: self.is_mouse_button_pressed(MouseButton::Back),
             forward: self.is_mouse_button_pressed(MouseButton::Forward),
         }
+    }
+
+    pub fn focused_ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        let target_id = self.focused_node_id()?;
+        for root in self.ui_roots.iter().rev() {
+            if let Some(rect) = super::base_component::get_ime_cursor_rect_by_id(
+                root.as_ref(),
+                target_id,
+            ) {
+                return Some(rect);
+            }
+        }
+        None
+    }
+
+    fn sync_focus_dispatch(&mut self) {
+        if self.ui_roots.is_empty() {
+            return;
+        }
+
+        let desired = self.input_state.focused_node_id;
+        let dispatched = self.dispatched_focus_node_id;
+        if desired == dispatched {
+            return;
+        }
+
+        if let Some(prev_id) = dispatched {
+            let _ = self.dispatch_blur_event(prev_id);
+        }
+        if let Some(next_id) = desired {
+            let _ = self.dispatch_focus_event(next_id);
+        }
+
+        self.dispatched_focus_node_id = desired;
     }
 
     fn begin_frame(&mut self) -> bool {

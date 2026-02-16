@@ -120,7 +120,14 @@ impl RenderPass for TextPass {
     }
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
-        if self.content.is_empty() || self.width <= 0.0 || self.height <= 0.0 {
+        if self.content.is_empty()
+            || self.width <= 0.0
+            || self.height <= 0.0
+            || !self.x.is_finite()
+            || !self.y.is_finite()
+            || !self.width.is_finite()
+            || !self.height.is_finite()
+        {
             return;
         }
 
@@ -166,41 +173,26 @@ impl RenderPass for TextPass {
             },
         );
 
-        let viewport_bounds = [0.0, 0.0, screen_w as f32, screen_h as f32];
-        let text_bounds = [
+        let bounds = match resolve_text_bounds(
             self.x,
             self.y,
-            (self.x + self.width).max(self.x),
-            (self.y + self.height).max(self.y),
-        ];
-        let mut clipped = intersect_rect(text_bounds, viewport_bounds);
-        if let Some([sx, sy, sw, sh]) = self.scissor_rect {
-            let scissor_bounds = [
-                sx as f32,
-                sy as f32,
-                sx.saturating_add(sw) as f32,
-                sy.saturating_add(sh) as f32,
-            ];
-            clipped = intersect_rect(clipped, scissor_bounds);
-        }
-        if clipped[2] <= clipped[0] || clipped[3] <= clipped[1] {
-            return;
-        }
-
-        let text_area = TextArea {
-            buffer: &buffer,
-            left: self.x,
-            top: self.y,
-            scale: 1.0,
-            bounds: TextBounds {
-                left: clipped[0].floor() as i32,
-                top: clipped[1].floor() as i32,
-                right: clipped[2].ceil() as i32,
-                bottom: clipped[3].ceil() as i32,
-            },
-            default_color: to_glyphon_color(self.color, self.opacity),
-            custom_glyphs: &[],
+            self.width,
+            self.height,
+            screen_w,
+            screen_h,
+            self.scissor_rect,
+        ) {
+            Some(bounds) => bounds,
+            None => return,
         };
+
+        let text_area = build_text_area(
+            &buffer,
+            self.x,
+            self.y,
+            bounds,
+            to_glyphon_color(self.color, self.opacity),
+        );
 
         if renderer
             .prepare(
@@ -283,6 +275,59 @@ fn intersect_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [left, top, right, bottom]
 }
 
+fn resolve_text_bounds(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    screen_w: u32,
+    screen_h: u32,
+    scissor_rect: Option<[u32; 4]>,
+) -> Option<TextBounds> {
+    let viewport_bounds = [0.0, 0.0, screen_w as f32, screen_h as f32];
+    let text_bounds = [x, y, (x + width).max(x), (y + height).max(y)];
+    let mut clipped = intersect_rect(text_bounds, viewport_bounds);
+
+    if let Some([sx, sy, sw, sh]) = scissor_rect {
+        let scissor_bounds = [
+            sx as f32,
+            sy as f32,
+            sx.saturating_add(sw) as f32,
+            sy.saturating_add(sh) as f32,
+        ];
+        clipped = intersect_rect(clipped, scissor_bounds);
+    }
+
+    if clipped[2] <= clipped[0] || clipped[3] <= clipped[1] {
+        return None;
+    }
+
+    Some(TextBounds {
+        left: clipped[0].floor() as i32,
+        top: clipped[1].floor() as i32,
+        right: clipped[2].ceil() as i32,
+        bottom: clipped[3].ceil() as i32,
+    })
+}
+
+fn build_text_area<'a>(
+    buffer: &'a Buffer,
+    left: f32,
+    top: f32,
+    bounds: TextBounds,
+    default_color: GlyphonColor,
+) -> TextArea<'a> {
+    TextArea {
+        buffer,
+        left,
+        top,
+        scale: 1.0,
+        bounds,
+        default_color,
+        custom_glyphs: &[],
+    }
+}
+
 struct TextResources {
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -293,10 +338,10 @@ struct TextResources {
 
 impl TextResources {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let mut font_system = FontSystem::new();
+        let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
-        let mut atlas = TextAtlas::new(device, queue, &cache, format);
+        let atlas = TextAtlas::new(device, queue, &cache, format);
         let viewport = GlyphonViewport::new(device, &cache);
 
         Self {

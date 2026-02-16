@@ -1,6 +1,6 @@
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent,
+    MouseUpEvent, TextInputEvent, ImePreeditEvent,
 };
 use crate::transition::{
     LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue,
@@ -12,10 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod core;
 mod element;
 mod text;
+mod text_area;
 
 pub(crate) use core::*;
 pub use element::*;
 pub use text::*;
+pub use text_area::*;
 
 fn next_ui_node_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -41,6 +43,8 @@ pub(crate) fn collect_box_models(root: &dyn ElementTrait) -> Vec<BoxModelSnapsho
 pub struct LayoutTransitionSnapshotSeed {
     pub layout_x: f32,
     pub layout_y: f32,
+    pub layout_width: f32,
+    pub layout_height: f32,
     pub parent_layout_x: f32,
     pub parent_layout_y: f32,
 }
@@ -48,32 +52,44 @@ pub struct LayoutTransitionSnapshotSeed {
 pub fn collect_layout_transition_snapshots(
     roots: &[Box<dyn ElementTrait>],
 ) -> HashMap<u64, LayoutTransitionSnapshotSeed> {
-    let mut snapshots = Vec::new();
-    for root in roots {
-        snapshots.extend(collect_box_models(root.as_ref()));
-    }
-
-    let mut by_id = HashMap::new();
-    for snapshot in &snapshots {
-        by_id.insert(snapshot.node_id, *snapshot);
-    }
-
     let mut out = HashMap::new();
-    for snapshot in snapshots {
-        let (parent_layout_x, parent_layout_y) = snapshot
-            .parent_id
-            .and_then(|parent_id| by_id.get(&parent_id).map(|p| (p.x, p.y)))
-            .unwrap_or((0.0, 0.0));
+
+    fn walk(
+        node: &dyn ElementTrait,
+        parent_layout_x: f32,
+        parent_layout_y: f32,
+        out: &mut HashMap<u64, LayoutTransitionSnapshotSeed>,
+    ) {
+        let snapshot = node.box_model_snapshot();
         out.insert(
-            snapshot.node_id,
+            node.id(),
             LayoutTransitionSnapshotSeed {
                 layout_x: snapshot.x,
                 layout_y: snapshot.y,
+                layout_width: snapshot.width,
+                layout_height: snapshot.height,
                 parent_layout_x,
                 parent_layout_y,
             },
         );
+
+        let (next_parent_x, next_parent_y) = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::child_layout_origin)
+            .unwrap_or((snapshot.x, snapshot.y));
+
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child.as_ref(), next_parent_x, next_parent_y, out);
+            }
+        }
     }
+
+    for root in roots {
+        walk(root.as_ref(), 0.0, 0.0, &mut out);
+    }
+
     out
 }
 
@@ -87,6 +103,8 @@ pub fn seed_layout_transition_snapshots(
                 element.seed_layout_transition_snapshot(
                     seed.layout_x,
                     seed.layout_y,
+                    seed.layout_width,
+                    seed.layout_height,
                     seed.parent_layout_x,
                     seed.parent_layout_y,
                 );
@@ -149,6 +167,16 @@ pub fn dispatch_mouse_up_from_hit_test(
     dispatch_mouse_up_bubble(root, target_id, event, control)
 }
 
+pub fn dispatch_mouse_up_to_target(
+    root: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut MouseUpEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    event.meta.set_target_id(target_id);
+    dispatch_mouse_up_bubble(root, target_id, event, control)
+}
+
 pub fn dispatch_mouse_move_from_hit_test(
     root: &mut dyn ElementTrait,
     event: &mut MouseMoveEvent,
@@ -157,6 +185,16 @@ pub fn dispatch_mouse_move_from_hit_test(
     let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
         return false;
     };
+    event.meta.set_target_id(target_id);
+    dispatch_mouse_move_bubble(root, target_id, event, control)
+}
+
+pub fn dispatch_mouse_move_to_target(
+    root: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut MouseMoveEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
     event.meta.set_target_id(target_id);
     dispatch_mouse_move_bubble(root, target_id, event, control)
 }
@@ -354,7 +392,8 @@ pub fn set_layout_field_by_id(
             match field {
                 LayoutField::X => element.set_layout_transition_x(value),
                 LayoutField::Y => element.set_layout_transition_y(value),
-                LayoutField::Width | LayoutField::Height => return false,
+                LayoutField::Width => element.set_layout_transition_width(value),
+                LayoutField::Height => element.set_layout_transition_height(value),
             }
             return true;
         }
@@ -421,6 +460,24 @@ pub fn dispatch_key_up_bubble(
     control: &mut ViewportControl<'_>,
 ) -> bool {
     dispatch_key_up_impl(root, target_id, event, control)
+}
+
+pub fn dispatch_text_input_bubble(
+    root: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut TextInputEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    dispatch_text_input_impl(root, target_id, event, control)
+}
+
+pub fn dispatch_ime_preedit_bubble(
+    root: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut ImePreeditEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    dispatch_ime_preedit_impl(root, target_id, event, control)
 }
 
 pub fn dispatch_focus_bubble(
@@ -721,6 +778,64 @@ fn dispatch_focus_impl(
     true
 }
 
+fn dispatch_text_input_impl(
+    node: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut TextInputEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let node_id = node.id();
+    let mut found = node_id == target_id;
+
+    if !found {
+        if let Some(children) = node.children_mut() {
+            for child in children.iter_mut().rev() {
+                if dispatch_text_input_impl(child.as_mut(), target_id, event, control) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if !found || event.meta.propagation_stopped() {
+        return found;
+    }
+
+    event.meta.set_current_target_id(node_id);
+    node.dispatch_text_input(event, control);
+    true
+}
+
+fn dispatch_ime_preedit_impl(
+    node: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut ImePreeditEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let node_id = node.id();
+    let mut found = node_id == target_id;
+
+    if !found {
+        if let Some(children) = node.children_mut() {
+            for child in children.iter_mut().rev() {
+                if dispatch_ime_preedit_impl(child.as_mut(), target_id, event, control) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if !found || event.meta.propagation_stopped() {
+        return found;
+    }
+
+    event.meta.set_current_target_id(node_id);
+    node.dispatch_ime_preedit(event, control);
+    true
+}
+
 fn dispatch_blur_impl(
     node: &mut dyn ElementTrait,
     target_id: u64,
@@ -797,4 +912,21 @@ fn distance_sq(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
     let dx = x1 - x2;
     let dy = y1 - y2;
     dx * dx + dy * dy
+}
+
+pub fn get_ime_cursor_rect_by_id(
+    root: &dyn ElementTrait,
+    node_id: u64,
+) -> Option<(f32, f32, f32, f32)> {
+    if root.id() == node_id {
+        return root.ime_cursor_rect();
+    }
+    if let Some(children) = root.children() {
+        for child in children {
+            if let Some(rect) = get_ime_cursor_rect_by_id(child.as_ref(), node_id) {
+                return Some(rect);
+            }
+        }
+    }
+    None
 }

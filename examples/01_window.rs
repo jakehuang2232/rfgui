@@ -2,15 +2,15 @@ use rust_gui::{Transition, TransitionProperty};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use rust_gui::ui::host::{Element, Text};
+use rust_gui::ui::host::{Element, Text, TextArea};
 use rust_gui::ui::{RsxNode, component, on_click, rsx};
 use rust_gui::{
-    Border, BorderRadius, Color, Display, FlexDirection, FlexWrap, HexColor, Length, Padding,
+    Border, BorderRadius, Color, Display, FlowDirection, FlowWrap, HexColor, Length, Padding,
     ScrollDirection, Viewport,
 };
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::Key;
 use winit::window::{Window, WindowId};
@@ -28,8 +28,8 @@ fn MainScene() -> RsxNode {
             width: Length::percent(100.0),
             height: Length::percent(100.0),
             display: Display::Flow,
-            flex_direction: FlexDirection::Row,
-            flex_wrap: FlexWrap::Wrap,
+            flow_direction: FlowDirection::Row,
+            flow_wrap: FlowWrap::Wrap,
             gap: Length::px(24.0),
             padding: Padding::uniform(Length::px(20.0)),
             scroll_direction: ScrollDirection::Vertical,
@@ -46,14 +46,27 @@ fn MainScene() -> RsxNode {
                 外框
             </Element>
             <Element style={{
-                width: Length::px(100.0),
-                height: Length::px(100.0),
+                width: Length::px(150.0),
+                height: Length::px(150.0),
                 background: "#61afef",
                 border_radius: BorderRadius::uniform(Length::px(10.0))
                     .top_right(Length::px(32.0))
                     .bottom_left(Length::percent(90.0)),
             }}>
                 圓角
+            </Element>
+            <Element style={{
+                width: Length::percent(50.0),
+                height: Length::px(150.0),
+                background: "#61afef",
+                border_radius: BorderRadius::uniform(Length::px(10.0))
+                    .top_right(Length::px(32.0))
+                    .bottom_left(Length::percent(90.0)),
+                transition: [
+                    Transition::new(TransitionProperty::All, 1000),
+                ]
+            }}>
+                百分比寬度
             </Element>
             <Element style={{
                 width: Length::px(150.0),
@@ -75,6 +88,7 @@ fn MainScene() -> RsxNode {
                 },
                 transition: [
                     Transition::new(TransitionProperty::Position, 1000).ease_in_out(),
+                    Transition::new(TransitionProperty::BorderColor, 1000).ease_in_out()
                 ],
             }}>
                 <Element style={{
@@ -101,8 +115,8 @@ fn MainScene() -> RsxNode {
                 border: Border::uniform(Length::px(8.0), &Color::hex("#21252b")),
                 border_radius: 50,
                 display: Display::Flow,
-                flex_direction: FlexDirection::Row,
-                flex_wrap: FlexWrap::Wrap,
+                flow_direction: FlowDirection::Row,
+                flow_wrap: FlowWrap::Wrap,
                 gap: Length::px(8.0),
                 padding: Padding::uniform(Length::px(8.0)),
             }}>
@@ -134,17 +148,17 @@ fn MainScene() -> RsxNode {
                     </Element>
                 </Element>
             </Element>
-            <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#61afef7f", border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")), border_radius: 16, scroll_direction: ScrollDirection::Vertical }}>
+            <Element style={{
+                width: Length::px(150.0),
+                height: Length::px(150.0),
+                background: "#61afef7f",
+                border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
+                border_radius: 16,
+                scroll_direction: ScrollDirection::Vertical,
+            }}>
                 <Text x=10 y=10 font_size=16 color="#21252b" font="Noto Sans CJK TC">
                     背景透明度嵌套
                 </Text>
-                <Text x=10 y=34 font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 1</Text>
-                <Text x=10 y=52 font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 2</Text>
-                <Text x=10 y=70 font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 3</Text>
-                <Text x=10 y=88 font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 4</Text>
-                <Text x=10 y=106 font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 5</Text>
-                <Text x=10 y=124 font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 6</Text>
-                <Text x=10 y=142 font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 7</Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 1 }}>
                     <Element style={{
                         width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
@@ -153,6 +167,43 @@ fn MainScene() -> RsxNode {
                         </Text>
                     </Element>
                 </Element>
+            </Element>
+            <Element style={{
+                width: Length::px(150.0),
+                height: Length::px(150.0),
+                background: "#61afef",
+                border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
+                border_radius: 16,
+                scroll_direction: ScrollDirection::Vertical,
+                display: Display::Flow,
+                flow_direction: FlowDirection::Column,
+            }}>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 1</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 2</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 3</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 4</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 5</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 6</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 7</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 8</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 9</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 10</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 11</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 12</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 13</Text>
+
+            </Element>
+            <Element style={{ width: Length::px(320.0), height: Length::px(170.0), background: "#2c313c", border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")), border_radius: 16 }}>
+                <Text x=12 y=10 font_size=14 color="#e5e9f0" font="Noto Sans CJK TC">TextArea 測試</Text>
+                <TextArea x=12 y=34 width=296 height=54 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=true placeholder="請輸入多行內容...">
+                    第一行: multiline=true
+                    第二行: 保留換行
+                    這是一行很長的內容test test test test test test test test test test test test test
+                </TextArea>
+                <TextArea x=12 y=98 width=296 height=26 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=false read_only=true>
+                    multiline=false
+                    換行應該會被轉成空白
+                </TextArea>
             </Element>
         </Element>
     }
@@ -163,11 +214,57 @@ struct App {
     window: Option<Arc<Window>>,
     viewport: Option<Viewport>,
     app: Option<RsxNode>,
+    ime_dirty: bool,
+    last_ime_focus_id: Option<u64>,
+    last_ime_allowed: bool,
+    last_ime_area: Option<(i32, i32, u32, u32)>,
 }
 
 impl App {
     fn rebuild_app(&mut self) {
         self.app = Some(rsx! { <MainScene /> });
+    }
+
+    fn mark_ime_dirty(&mut self) {
+        self.ime_dirty = true;
+    }
+
+    fn sync_ime_state(&mut self, force: bool) {
+        let (Some(window), Some(viewport)) = (&self.window, &self.viewport) else {
+            return;
+        };
+
+        let focused_id = viewport.focused_node_id();
+        if !force && !self.ime_dirty && focused_id == self.last_ime_focus_id {
+            return;
+        }
+        self.last_ime_focus_id = focused_id;
+
+        let mut next_area = None;
+        if let Some((x, y, w, h)) = viewport.focused_ime_cursor_rect() {
+            next_area = Some((
+                x.max(0.0).round() as i32,
+                y.max(0.0).round() as i32,
+                w.max(1.0).ceil() as u32,
+                h.max(1.0).ceil() as u32,
+            ));
+        }
+        let next_allowed = next_area.is_some();
+
+        if self.last_ime_allowed != next_allowed {
+            window.set_ime_allowed(next_allowed);
+            self.last_ime_allowed = next_allowed;
+        }
+
+        if let Some((x, y, w, h)) = next_area {
+            if self.last_ime_area != Some((x, y, w, h)) {
+                let pos = PhysicalPosition::new(x, y);
+                let size = PhysicalSize::new(w, h);
+                window.set_ime_cursor_area(pos, size);
+            }
+        }
+        self.last_ime_area = next_area;
+        self.ime_dirty = false;
     }
 }
 
@@ -184,9 +281,14 @@ impl ApplicationHandler for App {
         viewport.set_clear_color(Box::new(HexColor::new("#282c34")));
         pollster::block_on(viewport.set_window(window.clone()));
         pollster::block_on(viewport.create_surface());
+        window.set_ime_allowed(false);
 
         self.window = Some(window);
         self.viewport = Some(viewport);
+        self.ime_dirty = true;
+        self.last_ime_focus_id = None;
+        self.last_ime_allowed = false;
+        self.last_ime_area = None;
         self.rebuild_app();
     }
 
@@ -206,6 +308,7 @@ impl ApplicationHandler for App {
                     viewport.set_size(size.width, size.height);
                     viewport.request_redraw();
                 }
+                self.mark_ime_dirty();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let (Some(window), Some(viewport)) = (&self.window, &mut self.viewport) {
@@ -214,11 +317,13 @@ impl ApplicationHandler for App {
                     viewport.set_size(size.width, size.height);
                     viewport.request_redraw();
                 }
+                self.mark_ime_dirty();
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(viewport), Some(app)) = (&mut self.viewport, &self.app) {
                     let _ = viewport.render_rsx(&app);
                 }
+                self.mark_ime_dirty();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(viewport) = &mut self.viewport {
@@ -239,6 +344,7 @@ impl ApplicationHandler for App {
                     };
                     viewport.dispatch_mouse_wheel_event(-dx, -dy);
                 }
+                self.mark_ime_dirty();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let mut should_rebuild = false;
@@ -255,6 +361,7 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                self.mark_ime_dirty();
                 if should_rebuild {
                     self.rebuild_app();
                     if let Some(viewport) = &mut self.viewport {
@@ -274,11 +381,31 @@ impl ApplicationHandler for App {
                         viewport.dispatch_key_up_event(key, code, event.repeat);
                     }
                 }
+                self.mark_ime_dirty();
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if let Some(viewport) = &mut self.viewport {
+                    viewport.dispatch_text_input_event(text);
+                }
+                self.mark_ime_dirty();
+            }
+            WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+                if let Some(viewport) = &mut self.viewport {
+                    viewport.dispatch_ime_preedit_event(text, cursor);
+                }
+                self.mark_ime_dirty();
+            }
+            WindowEvent::Ime(Ime::Disabled) => {
+                if let Some(viewport) = &mut self.viewport {
+                    viewport.dispatch_ime_preedit_event(String::new(), None);
+                }
+                self.mark_ime_dirty();
             }
             WindowEvent::Focused(false) => {
                 if let Some(viewport) = &mut self.viewport {
                     viewport.clear_input_state();
                 }
+                self.mark_ime_dirty();
             }
             _ => (),
         }
@@ -288,6 +415,7 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
         }
+        self.sync_ime_state(false);
     }
 }
 

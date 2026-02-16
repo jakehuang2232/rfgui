@@ -2,7 +2,7 @@ use crate::HexColor;
 use crate::Style;
 use crate::ui::{PropValue, RenderBackend, RsxElementNode, RsxNode};
 use crate::view::Viewport;
-use crate::view::base_component::{Element, ElementTrait, Text};
+use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
 
 pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
     let mut nodes = rsx_to_elements(root)?;
@@ -143,6 +143,7 @@ fn convert_node(node: &RsxNode, path: &[usize]) -> Result<Box<dyn ElementTrait>,
 fn convert_element(node: &RsxElementNode, path: &[usize]) -> Result<Box<dyn ElementTrait>, String> {
     match node.tag.as_str() {
         "Text" => convert_text_element(node, path),
+        "TextArea" => convert_text_area_element(node, path),
         _ => convert_container_element(node, path),
     }
 }
@@ -270,6 +271,77 @@ fn convert_text_element(node: &RsxElementNode, path: &[usize]) -> Result<Box<dyn
     Ok(Box::new(text))
 }
 
+fn convert_text_area_element(
+    node: &RsxElementNode,
+    path: &[usize],
+) -> Result<Box<dyn ElementTrait>, String> {
+    let mut text_content = String::new();
+    let mut placeholder = String::new();
+    let mut text_area = TextArea::from_content_with_id(stable_node_id(path, "TextArea"), "");
+    let mut x: Option<f32> = None;
+    let mut y: Option<f32> = None;
+    let mut width: Option<f32> = None;
+    let mut height: Option<f32> = None;
+
+    for (key, value) in &node.props {
+        match key.as_str() {
+            "content" => {
+                text_content = as_owned_string(value, key)?;
+            }
+            "placeholder" => {
+                placeholder = as_owned_string(value, key)?;
+            }
+            "x" => {
+                x = Some(as_f32(value, key)?);
+            }
+            "y" => {
+                y = Some(as_f32(value, key)?);
+            }
+            "width" => {
+                width = Some(as_f32(value, key)?);
+            }
+            "height" => {
+                height = Some(as_f32(value, key)?);
+            }
+            "font_size" => text_area.set_font_size(as_f32(value, key)?),
+            "font" => text_area.set_font(as_string(value, key)?),
+            "color" => text_area.set_color(HexColor::new(as_owned_string(value, key)?)),
+            "opacity" => text_area.set_opacity(as_f32(value, key)?),
+            "multiline" => text_area.set_multiline(as_bool(value, key)?),
+            "read_only" => text_area.set_read_only(as_bool(value, key)?),
+            "max_length" => text_area.set_max_length(as_usize(value, key)?),
+            _ => return Err(format!("unknown prop `{}` on <TextArea>", key,)),
+        }
+    }
+
+    text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
+    if let Some(width) = width {
+        text_area.set_width(width);
+    } else {
+        text_area.set_auto_width(true);
+    }
+    if let Some(height) = height {
+        text_area.set_height(height);
+    } else {
+        text_area.set_auto_height(true);
+    }
+
+    if text_content.is_empty() {
+        for child in &node.children {
+            match child {
+                RsxNode::Text(content) => text_content.push_str(content),
+                _ => return Err("<TextArea> children must be text".to_string()),
+            }
+        }
+    }
+
+    text_area.set_text(text_content);
+    if !placeholder.is_empty() {
+        text_area.set_placeholder(placeholder);
+    }
+    Ok(Box::new(text_area))
+}
+
 fn stable_node_id(path: &[usize], kind: &str) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
@@ -316,6 +388,33 @@ fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
 
 fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
     Ok(as_string(value, key)?.to_string())
+}
+
+fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {
+    match value {
+        PropValue::Bool(v) => Ok(*v),
+        _ => Err(format!("prop `{key}` expects bool value")),
+    }
+}
+
+fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
+    match value {
+        PropValue::I64(v) => {
+            if *v < 0 {
+                Err(format!("prop `{key}` expects non-negative integer value"))
+            } else {
+                Ok(Some(*v as usize))
+            }
+        }
+        PropValue::F64(v) => {
+            if *v < 0.0 {
+                Err(format!("prop `{key}` expects non-negative numeric value"))
+            } else {
+                Ok(Some(*v as usize))
+            }
+        }
+        _ => Err(format!("prop `{key}` expects numeric value")),
+    }
 }
 
 fn as_style(value: &PropValue, key: &str) -> Result<Style, String> {
