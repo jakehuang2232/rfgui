@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn auto_width_for_cjk_text_is_not_underestimated() {
-        let mut text = Text::from_content("這是一段中文");
+        let mut text = Text::from_content("This is a Chinese text segment");
         text.measure(LayoutConstraints {
             max_width: 300.0,
             max_height: 200.0,
