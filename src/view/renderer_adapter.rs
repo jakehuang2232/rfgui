@@ -572,7 +572,7 @@ mod tests {
                     .with_prop("font_size", 26)
                     .with_prop("color", "#0F172A")
                     .with_prop("font", "Noto Sans CJK TC")
-                    .with_child(RsxNode::text("Hello Rust GUI Text 測試")),
+                    .with_child(RsxNode::text("Hello Rust GUI Text Test")),
             );
 
         let second_panel = RsxNode::element("Element")
@@ -591,7 +591,7 @@ mod tests {
                     .with_prop("font_size", 22)
                     .with_prop("color", "#E2E8F0")
                     .with_prop("font", "Noto Sans CJK TC")
-                    .with_child(RsxNode::text("測試元件")),
+                    .with_child(RsxNode::text("Test Component")),
             )
             .with_child(
                 RsxNode::element("Text")
@@ -600,7 +600,7 @@ mod tests {
                     .with_prop("font_size", 14)
                     .with_prop("color", "#CBD5E1")
                     .with_prop("font", "Noto Sans CJK TC")
-                    .with_child(RsxNode::text("用來驗證事件命中與 bubble。")),
+                    .with_child(RsxNode::text("Used to verify event hit-testing and bubbling.")),
             )
             .with_child(
                 RsxNode::element("Text")
@@ -609,7 +609,7 @@ mod tests {
                     .with_prop("font_size", 14)
                     .with_prop("color", "#F8FAFC")
                     .with_prop("font", "Noto Sans CJK TC")
-                    .with_child(RsxNode::text("Click 計數: 0")),
+                    .with_child(RsxNode::text("Click Count: 0")),
             );
 
         let tree = RsxNode::fragment(vec![first_panel, second_panel]);

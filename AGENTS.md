@@ -1,106 +1,105 @@
 # AGENT.md
 
-本文件定義本專案（rust-gui）的 UI / Style / Layout 核心規範，作為後續實作與重構的單一依據。
+This document defines the core UI / Style / Layout conventions for this project (`rust-gui`) and serves as the single source of truth for implementation and refactoring.
 
-## 1. Style 三層模型
+## 1. Three-layer Style Model
 
-1. Parsed Style（外部輸入層）
-- 目的：承接 RSX / DSL / 類 CSS 表達。
-- 型別策略：禁止字串 value；全部用明確型別（例如 `Length::px(10.0)`、`Length::percent(50.0)`）。
-- 屬性 key 使用 enum（`PropertyId`），避免動態字串鍵。
+1. Parsed Style (external input layer)
+- Purpose: accept RSX / DSL / CSS-like expressions.
+- Typing strategy: string values are disallowed; all values must use explicit types (for example, `Length::px(10.0)`, `Length::percent(50.0)`).
+- Property keys must use enum (`PropertyId`) to avoid dynamic string keys.
 
-2. ComputedStyle（引擎核心層）
-- 必須是 struct（不可用 map 代表）。
-- 儘量與 Parsed Style 共用型別（`Length`、`BorderRadius`、`Border` 等）。
-- 不在此層做字串 parse。
+2. ComputedStyle (engine core layer)
+- Must be a struct (not a map representation).
+- Reuse Parsed Style types where possible (`Length`, `BorderRadius`, `Border`, etc.).
+- No string parsing at this layer.
 
-3. LayoutState（solver 輸出層）
-- 僅放排版結果（位置、尺寸、基線等）。
-- 不屬於 style，不混入宣告屬性。
+3. LayoutState (solver output layer)
+- Contains layout results only (position, size, baseline, etc.).
+- Not part of style; do not mix declaration properties into it.
 
-## 2. 型別化 Style 規範
+## 2. Typed Style Rules
 
-- 禁止 style 值使用字串（顏色例外可透過 `Color::hex(...)` 建構，但不是裸字串解析流程）。
-- `Length` 為基礎尺寸單位：
+- String style values are disallowed (except colors can be constructed via `Color::hex(...)`, but not through a raw-string parsing pipeline).
+- `Length` is the base sizing unit:
   - `Length::px(f32)`
   - `Length::percent(f32)`
   - `Length::Zero`
-- `%` 規則（重要）：
-  1. 只對「已知 content size 的 parent」生效。
-  2. parent size 未定時，`%` 視為 `auto`（對 `width/height`）。
-  3. 不允許 `%` 反向影響 parent measure。
+- `%` rules (important):
+  1. Effective only when parent content size is known.
+  2. If parent size is unresolved, `%` is treated as `auto` (for `width/height`).
+  3. `%` must not back-propagate to influence parent measurement.
 
-## 3. Color 系統
+## 3. Color System
 
-- 顏色實作集中於 `style::color` 模組。
-- 一律以 `ColorLike`/`Color` 系列型別流動，不走字串 parse 流程。
-- `ElementStylePropSchema` 與 `parsed_style` 中所有 color 欄位都使用 ColorLike 導向設計。
-- Style 中的 color value 一律採 `ColorLike`。
+- Color implementation is centralized in the `style::color` module.
+- Always flow through `ColorLike`/`Color` typed APIs; avoid string parsing pipelines.
+- All color fields in `ElementStylePropSchema` and `parsed_style` must use the ColorLike-oriented design.
+- Style color values must use `ColorLike`.
 
-## 4. Element 與 Props 方針
+## 4. Element and Props Policy
 
-- `Element` 的視覺樣式統一由 `style` 提供。
-- 移除舊式視覺 props（例如 `background`、`border_color`、`border_width` 等直接 props）。
-- 使用方式：
+- Visual styling for `Element` is provided only via `style`.
+- Remove legacy visual props (for example direct props like `background`, `border_color`, `border_width`).
+- Usage:
   - `style={{ background: Color::hex("#000") }}`
   - `style={{ border: Border::uniform(...) }}`
   - `style={{ border_radius: BorderRadius::uniform(...) }}`
-- `border-radius` 與 `border` 分離，不耦合。
+- `border-radius` and `border` are separate and not coupled.
 
 ## 5. Box Model API
 
 ### Padding
-- 支援 fluent API：`uniform/all/x/y/top/right/bottom/left/xy`
-- 例：`Padding::all(Length::px(10.0)).xy(Length::percent(20.0), Length::px(8.0))`
+- Support fluent API: `uniform/all/x/y/top/right/bottom/left/xy`
+- Example: `Padding::all(Length::px(10.0)).xy(Length::percent(20.0), Length::px(8.0))`
 
 ### Border
-- 採 CSS 風格：uniform + 各邊覆寫
-- 支援 `top/right/bottom/left/x/y` 覆寫寬度與顏色
-- 例：`Border::uniform(Length::px(2.0), &Color::hex("#000")).top(Some(Length::px(4.0)), None)`
+- CSS style: uniform + per-side overrides
+- Support `top/right/bottom/left/x/y` overrides for width and color
+- Example: `Border::uniform(Length::px(2.0), &Color::hex("#000")).top(Some(Length::px(4.0)), None)`
 
 ### BorderRadius
-- 四角獨立：`uniform/top/right/bottom/left/top_left/top_right/bottom_left/bottom_right`
-- 內外圓角裁切需保持一致（包含 border + inner clip）。
+- Independent corners: `uniform/top/right/bottom/left/top_left/top_right/bottom_left/bottom_right`
+- Outer and inner corner clipping must stay consistent (including border + inner clip).
 
-## 6. Layout 方向（SwiftUI 心智 + CSS 表達）
+## 6. Layout Direction (SwiftUI mindset + CSS expression)
 
-- 取消依賴 `x/y` 做一般定位，改以容器排版。
-- 支援 flow / inline + flex wrap 行為，依可用寬度換行。
-- `width/height` 放入 `style`，型別使用 `Length`。
-- `Length::percent` 的基準為 parent inner size（在可解析時）。
+- Avoid using `x/y` for general positioning; use container layout.
+- Support flow / inline + flex-wrap behavior with line wrapping based on available width.
+- Put `width/height` in `style`, typed as `Length`.
+- `Length::percent` is based on parent inner size (when resolvable).
 
-## 7. Scroll 模型
+## 7. Scroll Model
 
-- 不使用 `overflow`；採 `ScrollDirection`（SwiftUI 風格）：
+- Do not use `overflow`; use `ScrollDirection` (SwiftUI style):
   - `None / Vertical / Horizontal / Both`
-- 事件：wheel 走 hit-test + bubble，遇可捲容器處理。
-- 可視狀態：`scroll_offset`、`content_size` 由 Element 維護。
-- 捲軸 UI：
-  - 自動顯示/淡出（hover/scroll/drag 觸發）
-  - 支援 thumb 拖曳
-  - 支援點擊 track 跳轉
-  - track 與 thumb 都要 render
+- Events: wheel uses hit-test + bubble; handled by the first scrollable container in path.
+- Visual state: `scroll_offset`, `content_size` are maintained by Element.
+- Scrollbar UI:
+  - Auto show/fade (triggered by hover/scroll/drag)
+  - Support thumb dragging
+  - Support clicking track to jump
+  - Both track and thumb must be rendered
 
-## 8. Hover / Re-render / 穩定識別
+## 8. Hover / Re-render / Stable Identity
 
-- hover 狀態變化必須觸發 redraw。
-- 同一 node id 必須穩定，不可每幀重建導致 id 飄移。
-- RSX render pipeline 需避免每次 redraw 重建整棵 UI tree（否則會重置互動狀態，如 scroll_offset）。
+- Hover state changes must trigger redraw.
+- The same node id must stay stable; do not rebuild per frame and cause id drift.
+- RSX render pipeline should avoid rebuilding the entire UI tree on every redraw (otherwise interactive state such as `scroll_offset` gets reset).
 
-## 9. RSX 體驗
+## 9. RSX Experience
 
-- `rsx!` 內 `style` props 需可被跳轉（IDE 導航友善）。
-- `ElementStylePropSchema` 維持與 style 系統一致，不保留過時欄位（例如 `padding_x` 類舊欄位）。
+- `style` props inside `rsx!` should be navigable (IDE jump-friendly).
+- Keep `ElementStylePropSchema` aligned with the style system; do not keep deprecated fields (for example old `padding_x`-style fields).
 
-## 10. 實作守則
+## 10. Implementation Guidelines
 
-- 先維持型別正確，再擴充語意。
-- 新增樣式能力時，依序更新：
+- Preserve type correctness first, then expand semantics.
+- When adding style capabilities, update in this order:
   1. parsed_style
   2. computed_style
   3. schema / macro
   4. element sync
   5. renderer
   6. tests + example
-- 優先補回歸測試（特別是 `%`、border radius、scroll、text measurement）。
-
+- Prioritize regression tests (especially `%`, border radius, scroll, text measurement).

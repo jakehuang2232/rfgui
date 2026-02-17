@@ -40,10 +40,10 @@ fn MainScene() -> RsxNode {
                 background: "#61afef",
                 padding: Padding::uniform(Length::px(10.0)),
             }}>
-                純物件
+                Pure Object
             </Element>
             <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#61afef", border: Border::uniform(Length::px(10.0), &Color::hex("#21252b")) }}>
-                外框
+                Border
             </Element>
             <Element style={{
                 width: Length::px(150.0),
@@ -53,7 +53,7 @@ fn MainScene() -> RsxNode {
                     .top_right(Length::px(32.0))
                     .bottom_left(Length::percent(90.0)),
             }}>
-                圓角
+                Border Radius
             </Element>
             <Element style={{
                 width: Length::percent(50.0),
@@ -66,7 +66,7 @@ fn MainScene() -> RsxNode {
                     Transition::new(TransitionProperty::All, 1000),
                 ]
             }}>
-                百分比寬度
+                Percentage Width
             </Element>
             <Element style={{
                 width: Length::px(150.0),
@@ -75,7 +75,7 @@ fn MainScene() -> RsxNode {
                 border: Border::uniform(Length::px(10.0), &Color::hex("#21252b"))
                     .top(Some(Length::px(20.0)), None),
                 border_radius: 16 }}>
-                圓角 + 外框
+                Border Radius + Border
             </Element>
             <Element style={{
                 width: Length::px(170.0),
@@ -105,7 +105,7 @@ fn MainScene() -> RsxNode {
                         Transition::new(TransitionProperty::All, 200),
                     ],
                 }}>
-                    嵌套 + hover 測試
+                    Nested + Hover Test
                 </Element>
             </Element>
             <Element style={{
@@ -121,23 +121,23 @@ fn MainScene() -> RsxNode {
                 padding: Padding::uniform(Length::px(8.0)),
             }}>
                 <Element style={{ width: Length::px(72.0), height: Length::px(48.0), background: "#d19a66", border: Border::uniform(Length::px(3.0), &Color::hex("#e06c75")) }}>
-                    Clip 測試
+                    Clip Test
                 </Element>
                 <Element style={{ width: Length::px(56.0), height: Length::px(56.0), background: "#61afef" }} />
                 <Element style={{ width: Length::px(120.0), height: Length::px(64.0), background: "#c678dd", border: Border::uniform(Length::px(4.0), &Color::hex("#56b6c2")) }} />
             </Element>
             <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#282c34", border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")), border_radius: 16 }} >
                 <Text x=12 y=10 font_size=22 color="#abb2bf" font="Noto Sans CJK TC">
-                    按鈕測試
+                    Button Test
                 </Text>
-                <Text x=12 y=48 font_size=14 color="#abb2bf" font="Noto Sans CJK TC">{format!("Click 計數: {}", click_count)}</Text>
+                <Text x=12 y=48 font_size=14 color="#abb2bf" font="Noto Sans CJK TC">{format!("Click Count: {}", click_count)}</Text>
                 <Element style={{ width: Length::px(48.0), height: Length::px(48.0), background: "#98c379", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 20 }} on_click={increment}>
                     Click Me
                 </Element>
             </Element>
             <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#61afef", border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")), border_radius: 16, opacity: 0.5 }}>
                 <Text x=10 y=10 font_size=16 color="#21252b" font="Noto Sans CJK TC">
-                    透明度嵌套
+                    Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 0.6 }}>
                     <Element style={{
@@ -157,7 +157,7 @@ fn MainScene() -> RsxNode {
                 scroll_direction: ScrollDirection::Vertical,
             }}>
                 <Text x=10 y=10 font_size=16 color="#21252b" font="Noto Sans CJK TC">
-                    背景透明度嵌套
+                    Background Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 1 }}>
                     <Element style={{
@@ -178,31 +178,31 @@ fn MainScene() -> RsxNode {
                 display: Display::Flow,
                 flow_direction: FlowDirection::Column,
             }}>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 1</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 2</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 3</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 4</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 5</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 6</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 7</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 8</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 9</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 10</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 11</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 12</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">向下滾動可看到更多內容 13</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 1</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 2</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 3</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 4</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 5</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 6</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 7</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 8</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 9</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 10</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 11</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 12</Text>
+                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 13</Text>
 
             </Element>
             <Element style={{ width: Length::px(320.0), height: Length::px(170.0), background: "#2c313c", border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")), border_radius: 16 }}>
-                <Text x=12 y=10 font_size=14 color="#e5e9f0" font="Noto Sans CJK TC">TextArea 測試</Text>
-                <TextArea x=12 y=34 width=296 height=54 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=true placeholder="請輸入多行內容...">
-                    第一行: multiline=true
-                    第二行: 保留換行
-                    這是一行很長的內容test test test test test test test test test test test test test
+                <Text x=12 y=10 font_size=14 color="#e5e9f0" font="Noto Sans CJK TC">TextArea Test</Text>
+                <TextArea x=12 y=34 width=296 height=54 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=true placeholder="Please enter multiline content...">
+                    Line 1: multiline=true
+                    Line 2: preserve line breaks
+                    This is a very long line of content test test test test test test test test test test test test test
                 </TextArea>
                 <TextArea x=12 y=98 width=296 height=26 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=false read_only=true>
                     multiline=false
-                    換行應該會被轉成空白
+                    Line breaks should become spaces
                 </TextArea>
             </Element>
         </Element>

@@ -118,7 +118,7 @@ impl Parse for ElementNode {
                     braced!(style_content in content);
                     let entries = parse_style_entries(&style_content)?;
                     if !content.is_empty() {
-                        return Err(syn::Error::new(content.span(), "style 物件語法錯誤"));
+                        return Err(syn::Error::new(content.span(), "style object syntax error"));
                     }
                     PropValueExpr::StyleObject(entries)
                 } else {
@@ -166,7 +166,7 @@ impl Parse for ElementNode {
         input.parse::<Token![/]>()?;
         let close_tag: Path = input.parse()?;
         if path_key(&close_tag) != path_key(&tag) {
-            return Err(syn::Error::new(close_tag.span(), "closing tag 不一致"));
+            return Err(syn::Error::new(close_tag.span(), "closing tag does not match"));
         }
         input.parse::<Token![>]>()?;
 
@@ -296,7 +296,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "border" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! { __rsx_style.set_border(#value); },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.border 需要表達式值");
+                compile_error!("style.border requires an expression value");
             },
         },
         "background" | "background_color" => match &entry.value {
@@ -309,7 +309,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.background 需要表達式值");
+                compile_error!("style.background requires an expression value");
             },
         },
         "border_radius" => match &entry.value {
@@ -317,7 +317,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 __rsx_style.set_border_radius(::rust_gui::IntoBorderRadius::into_border_radius(#value));
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.border_radius 需要表達式值");
+                compile_error!("style.border_radius requires an expression value");
             },
         },
         "opacity" => match &entry.value {
@@ -328,7 +328,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.opacity 需要表達式值");
+                compile_error!("style.opacity requires an expression value");
             },
         },
         "transition" => match &entry.value {
@@ -339,13 +339,13 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.transition 需要表達式值");
+                compile_error!("style.transition requires an expression value");
             },
         },
         "padding" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! { __rsx_style.set_padding(#value); },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.padding 需要表達式值");
+                compile_error!("style.padding requires an expression value");
             },
         },
         "width" => match &entry.value {
@@ -356,7 +356,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.width 需要表達式值");
+                compile_error!("style.width requires an expression value");
             },
         },
         "height" => match &entry.value {
@@ -367,7 +367,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.height 需要表達式值");
+                compile_error!("style.height requires an expression value");
             },
         },
         "display" => match &entry.value {
@@ -378,7 +378,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.display 需要表達式值");
+                compile_error!("style.display requires an expression value");
             },
         },
         "flow_direction" => match &entry.value {
@@ -389,7 +389,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.flow_direction 需要表達式值");
+                compile_error!("style.flow_direction requires an expression value");
             },
         },
         "flow_wrap" => match &entry.value {
@@ -400,7 +400,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.flow_wrap 需要表達式值");
+                compile_error!("style.flow_wrap requires an expression value");
             },
         },
         "justify_content" => match &entry.value {
@@ -411,7 +411,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.justify_content 需要表達式值");
+                compile_error!("style.justify_content requires an expression value");
             },
         },
         "align_items" => match &entry.value {
@@ -422,7 +422,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.align_items 需要表達式值");
+                compile_error!("style.align_items requires an expression value");
             },
         },
         "gap" => match &entry.value {
@@ -433,7 +433,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.gap 需要表達式值");
+                compile_error!("style.gap requires an expression value");
             },
         },
         "scroll_direction" => match &entry.value {
@@ -444,7 +444,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.scroll_direction 需要表達式值");
+                compile_error!("style.scroll_direction requires an expression value");
             },
         },
         "hover" => match &entry.value {
@@ -460,11 +460,11 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 }
             }
             StyleValueExpr::Expr(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.hover 需要物件語法，例如 hover: {{ background: \"#fff\" }}");
+                compile_error!("style.hover requires object syntax, e.g. hover: {{ background: \"#fff\" }}");
             },
         },
         _ => quote_spanned! {entry.key.span()=>
-            compile_error!("不支援的 style key");
+            compile_error!("unsupported style key");
         },
     };
 
@@ -507,7 +507,7 @@ fn path_key(path: &Path) -> String {
 
 fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     if !input_fn.sig.generics.params.is_empty() {
-        return syn::Error::new(input_fn.sig.generics.span(), "#[component] 目前不支援泛型")
+        return syn::Error::new(input_fn.sig.generics.span(), "#[component] does not support generics yet")
             .to_compile_error();
     }
 
@@ -530,12 +530,12 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
 
     for arg in &input_fn.sig.inputs {
         let FnArg::Typed(pat_ty) = arg else {
-            return syn::Error::new(arg.span(), "#[component] 不支援方法接收者")
+            return syn::Error::new(arg.span(), "#[component] does not support method receivers")
                 .to_compile_error();
         };
 
         let Pat::Ident(PatIdent { ident, .. }) = pat_ty.pat.as_ref() else {
-            return syn::Error::new(pat_ty.pat.span(), "#[component] 參數必須是簡單識別字")
+            return syn::Error::new(pat_ty.pat.span(), "#[component] parameters must be simple identifiers")
                 .to_compile_error();
         };
 
@@ -545,7 +545,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         if field_ident == "children" {
             let is_children_ty = is_vec_rsx_node(&ty);
             if !is_children_ty {
-                return syn::Error::new(ty.span(), "children 型別必須是 Vec<RsxNode>")
+                return syn::Error::new(ty.span(), "children type must be Vec<RsxNode>")
                     .to_compile_error();
             }
             has_children_param = true;

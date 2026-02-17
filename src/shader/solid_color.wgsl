@@ -1,5 +1,5 @@
 struct RectUniform {
-    // rect_pos_size: rect_pos.xy, rect_size.zw (像素座標，左上角為原點)
+    // rect_pos_size: rect_pos.xy, rect_size.zw (pixel coordinates, top-left is the origin)
     rect_pos_size: vec4<f32>,
     // screen_radius_border: screen_size.xy, border_radius.z, border_width.w
     screen_radius_border: vec4<f32>,
@@ -18,7 +18,7 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    // 兩個三角形組成的矩形 (6 個頂點)，以左上角為 (0,0)
+    // Rectangle composed of two triangles (6 vertices), with top-left at (0,0)
     var quad = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
         vec2<f32>(1.0, 0.0),
@@ -35,7 +35,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let local = quad[vertex_index];
     let pixel = rect_pos + local * rect_size;
 
-    // 像素座標 (左上角原點) -> NDC
+    // pixel coordinates (top-left origin) -> NDC
     let ndc_x = (pixel.x / screen_size.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y / screen_size.y) * 2.0;
     let ndc = vec2<f32>(ndc_x, ndc_y);
