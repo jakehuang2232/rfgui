@@ -683,10 +683,14 @@ impl Viewport {
         self.depth_view = Some(view);
     }
 
-    fn render_render_tree(&mut self, roots: &mut [Box<dyn super::base_component::ElementTrait>]) {
+    fn render_render_tree(
+        &mut self,
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+        dt: f32,
+    ) -> bool {
         let frame_start = Instant::now();
         if !self.begin_frame() {
-            return;
+            return false;
         }
         self.frame_box_models.clear();
         for root in roots.iter_mut() {
@@ -709,6 +713,28 @@ impl Viewport {
             self.frame_box_models
                 .extend(super::base_component::collect_box_models(root.as_ref()));
         }
+
+        // After layout is resolved for this frame, immediately run visual/style/scroll transitions
+        // so their updated endpoints are visible in the same frame.
+        let transition_changed_after_layout = self.run_post_layout_transitions(roots, dt);
+        if transition_changed_after_layout {
+            self.frame_box_models.clear();
+            for root in roots.iter_mut() {
+                root.place(super::base_component::LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: self.surface_config.width as f32,
+                    available_height: self.surface_config.height as f32,
+                    percent_base_width: Some(self.surface_config.width as f32),
+                    percent_base_height: Some(self.surface_config.height as f32),
+                });
+                self.frame_box_models
+                    .extend(super::base_component::collect_box_models(root.as_ref()));
+            }
+        }
+
         let mut graph = super::frame_graph::FrameGraph::new();
         let mut ctx = super::base_component::UiBuildContext::new(
             self.surface_config.width,
@@ -728,6 +754,7 @@ impl Viewport {
         }
         self.end_frame();
         self.frame_stats.record_frame(frame_start.elapsed());
+        transition_changed_after_layout
     }
 
     pub fn render_rsx(&mut self, root: &RsxNode) -> Result<(), String> {
@@ -754,11 +781,11 @@ impl Viewport {
         Self::apply_hover_target(&mut roots, self.input_state.hovered_node_id);
         let dt = self.transition_dt();
         let transition_changed_before_render = self.run_pre_layout_transitions(&mut roots, dt);
+        let mut transition_changed_after_layout = false;
         if !roots.is_empty() {
-            self.render_render_tree(&mut roots);
+            transition_changed_after_layout = self.render_render_tree(&mut roots, dt);
         }
-        let transition_changed_after_render = self.run_post_layout_transitions(&mut roots, dt);
-        if transition_changed_before_render || transition_changed_after_render {
+        if transition_changed_before_render || transition_changed_after_layout {
             self.request_redraw();
         }
         self.ui_roots = roots;

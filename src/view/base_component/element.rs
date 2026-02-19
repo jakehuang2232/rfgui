@@ -2413,17 +2413,33 @@ impl Element {
         let prev_height = self.core.layout_size.height.max(0.0);
         if self
             .layout_transition_target_x
-            .is_some_and(|target| approx_eq(target_rel_x, target) && approx_eq(current_offset_x, 0.0))
+            .is_some_and(|_| approx_eq(current_offset_x, 0.0))
         {
             self.layout_transition_target_x = None;
             self.layout_transition_visual_offset_x = 0.0;
         }
         if self
             .layout_transition_target_y
-            .is_some_and(|target| approx_eq(target_rel_y, target) && approx_eq(current_offset_y, 0.0))
+            .is_some_and(|_| approx_eq(current_offset_y, 0.0))
         {
             self.layout_transition_target_y = None;
             self.layout_transition_visual_offset_y = 0.0;
+        }
+        // If visual target changes while track is active, always rebase from current rendered
+        // position and restart. This keeps the visual track start anchored to "where it is now".
+        if self
+            .layout_transition_target_x
+            .is_some_and(|active| !approx_eq(active, target_rel_x))
+        {
+            self.layout_transition_visual_offset_x = current_offset_x;
+            self.layout_transition_target_x = None;
+        }
+        if self
+            .layout_transition_target_y
+            .is_some_and(|active| !approx_eq(active, target_rel_y))
+        {
+            self.layout_transition_visual_offset_y = current_offset_y;
+            self.layout_transition_target_y = None;
         }
         if self
             .layout_transition_target_width
@@ -2518,9 +2534,7 @@ impl Element {
             };
             match transition.property {
                 TransitionProperty::All => {
-                    let should_start_x = self
-                        .layout_transition_target_x
-                        .is_none_or(|active| !approx_eq(active, target_rel_x));
+                    let should_start_x = self.layout_transition_target_x.is_none();
                     if should_start_x && !approx_eq(prev_offset_x, 0.0) {
                         self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
@@ -2531,9 +2545,7 @@ impl Element {
                         });
                         self.layout_transition_target_x = Some(target_rel_x);
                     }
-                    let should_start_y = self
-                        .layout_transition_target_y
-                        .is_none_or(|active| !approx_eq(active, target_rel_y));
+                    let should_start_y = self.layout_transition_target_y.is_none();
                     if should_start_y && !approx_eq(prev_offset_y, 0.0) {
                         self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
@@ -2572,9 +2584,7 @@ impl Element {
                     }
                 }
                 TransitionProperty::Position => {
-                    let should_start_x = self
-                        .layout_transition_target_x
-                        .is_none_or(|active| !approx_eq(active, target_rel_x));
+                    let should_start_x = self.layout_transition_target_x.is_none();
                     if should_start_x && !approx_eq(prev_offset_x, 0.0) {
                         self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
@@ -2585,9 +2595,7 @@ impl Element {
                         });
                         self.layout_transition_target_x = Some(target_rel_x);
                     }
-                    let should_start_y = self
-                        .layout_transition_target_y
-                        .is_none_or(|active| !approx_eq(active, target_rel_y));
+                    let should_start_y = self.layout_transition_target_y.is_none();
                     if should_start_y && !approx_eq(prev_offset_y, 0.0) {
                         self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
@@ -2630,9 +2638,7 @@ impl Element {
                     }
                 }
                 TransitionProperty::X | TransitionProperty::PositionX => {
-                    let should_start_x = self
-                        .layout_transition_target_x
-                        .is_none_or(|active| !approx_eq(active, target_rel_x));
+                    let should_start_x = self.layout_transition_target_x.is_none();
                     if should_start_x && !approx_eq(prev_offset_x, 0.0) {
                         self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
@@ -2645,9 +2651,7 @@ impl Element {
                     }
                 }
                 TransitionProperty::Y | TransitionProperty::PositionY => {
-                    let should_start_y = self
-                        .layout_transition_target_y
-                        .is_none_or(|active| !approx_eq(active, target_rel_y));
+                    let should_start_y = self.layout_transition_target_y.is_none();
                     if should_start_y && !approx_eq(prev_offset_y, 0.0) {
                         self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
