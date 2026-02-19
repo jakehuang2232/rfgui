@@ -4,10 +4,12 @@ mod layout_transition;
 mod scroll_transition;
 mod style_transition;
 mod time_function;
+mod visual_transition;
 pub use layout_transition::*;
 pub use scroll_transition::*;
 pub use style_transition::*;
 pub use time_function::*;
+pub use visual_transition::*;
 
 pub type TrackTarget = u64;
 

@@ -16,9 +16,11 @@ use crate::transition::{
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
     CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, ChannelId, ClaimMode, LayoutTransitionPlugin,
+    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
+    ClaimMode, LayoutTransitionPlugin,
     ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleTransitionPlugin, TrackKey,
     TrackTarget, Transition, TransitionFrame, TransitionHost, TransitionPluginId,
+    VisualTransitionPlugin,
 };
 use crate::{ColorLike, HexColor};
 
@@ -165,6 +167,7 @@ pub struct Viewport {
     transition_claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
     scroll_transition_plugin: ScrollTransitionPlugin,
     layout_transition_plugin: LayoutTransitionPlugin,
+    visual_transition_plugin: VisualTransitionPlugin,
     style_transition_plugin: StyleTransitionPlugin,
     scroll_transition: ScrollTransition,
     last_transition_tick: Option<Instant>,
@@ -270,17 +273,75 @@ impl Viewport {
         false
     }
 
-    fn run_transition_plugins(
-        &mut self,
-        roots: &mut [Box<dyn super::base_component::ElementTrait>],
-    ) -> bool {
+    fn transition_dt(&mut self) -> f32 {
         let now = Instant::now();
         let dt = self
             .last_transition_tick
             .map(|last| (now - last).as_secs_f32())
             .unwrap_or(0.0);
         self.last_transition_tick = Some(now);
+        dt
+    }
 
+    fn run_pre_layout_transitions(
+        &mut self,
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+        dt: f32,
+    ) -> bool {
+        let mut layout_requests = Vec::new();
+        for root in roots.iter_mut() {
+            super::base_component::take_layout_transition_requests(root.as_mut(), &mut layout_requests);
+        }
+        if !layout_requests.is_empty() {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            for request in layout_requests {
+                let _ = self.layout_transition_plugin.start_layout_track(
+                    &mut host,
+                    request.target,
+                    request.field,
+                    request.from,
+                    request.to,
+                    request.transition,
+                );
+            }
+        }
+        let layout_result = {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            self.layout_transition_plugin
+                .run_tracks(TransitionFrame { dt_seconds: dt }, &mut host)
+        };
+        let mut changed = false;
+        let layout_samples = self.layout_transition_plugin.take_samples();
+        for sample in layout_samples {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_layout_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value,
+                ) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if layout_result.keep_running {
+            self.request_redraw();
+        }
+        changed || layout_result.keep_running
+    }
+
+    fn run_post_layout_transitions(
+        &mut self,
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+        dt: f32,
+    ) -> bool {
         let mut style_requests = Vec::new();
         for root in roots.iter_mut() {
             super::base_component::take_style_transition_requests(root.as_mut(), &mut style_requests);
@@ -288,6 +349,10 @@ impl Viewport {
         let mut layout_requests = Vec::new();
         for root in roots.iter_mut() {
             super::base_component::take_layout_transition_requests(root.as_mut(), &mut layout_requests);
+        }
+        let mut visual_requests = Vec::new();
+        for root in roots.iter_mut() {
+            super::base_component::take_visual_transition_requests(root.as_mut(), &mut visual_requests);
         }
         if !style_requests.is_empty() {
             let mut host = TransitionHostAdapter {
@@ -321,8 +386,24 @@ impl Viewport {
                 );
             }
         }
+        if !visual_requests.is_empty() {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            for request in visual_requests {
+                let _ = self.visual_transition_plugin.start_visual_track(
+                    &mut host,
+                    request.target,
+                    request.field,
+                    request.from,
+                    request.to,
+                    request.transition,
+                );
+            }
+        }
 
-        let result = {
+        let scroll_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transition_channels,
                 claims: &mut self.transition_claims,
@@ -338,12 +419,12 @@ impl Viewport {
             self.style_transition_plugin
                 .run_tracks(TransitionFrame { dt_seconds: dt }, &mut host)
         };
-        let layout_result = {
+        let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transition_channels,
                 claims: &mut self.transition_claims,
             };
-            self.layout_transition_plugin
+            self.visual_transition_plugin
                 .run_tracks(TransitionFrame { dt_seconds: dt }, &mut host)
         };
         let samples = self.scroll_transition_plugin.take_samples();
@@ -365,10 +446,10 @@ impl Viewport {
                 }
             }
         }
-        let layout_samples = self.layout_transition_plugin.take_samples();
-        for sample in layout_samples {
+        let visual_samples = self.visual_transition_plugin.take_samples();
+        for sample in visual_samples {
             for root in roots.iter_mut().rev() {
-                if super::base_component::set_layout_field_by_id(
+                if super::base_component::set_visual_field_by_id(
                     root.as_mut(),
                     sample.target,
                     sample.field,
@@ -379,11 +460,10 @@ impl Viewport {
                 }
             }
         }
-
-        if result.keep_running || style_result.keep_running || layout_result.keep_running {
+        if scroll_result.keep_running || style_result.keep_running || visual_result.keep_running {
             self.request_redraw();
         }
-        changed || result.keep_running || style_result.keep_running || layout_result.keep_running
+        changed || scroll_result.keep_running || style_result.keep_running || visual_result.keep_running
     }
 
     pub fn new() -> Self {
@@ -427,6 +507,8 @@ impl Viewport {
                 CHANNEL_LAYOUT_Y,
                 CHANNEL_LAYOUT_WIDTH,
                 CHANNEL_LAYOUT_HEIGHT,
+                CHANNEL_VISUAL_X,
+                CHANNEL_VISUAL_Y,
                 CHANNEL_STYLE_OPACITY,
                 CHANNEL_STYLE_BORDER_RADIUS,
                 CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -439,6 +521,7 @@ impl Viewport {
             transition_claims: HashMap::new(),
             scroll_transition_plugin: ScrollTransitionPlugin::new(),
             layout_transition_plugin: LayoutTransitionPlugin::new(),
+            visual_transition_plugin: VisualTransitionPlugin::new(),
             style_transition_plugin: StyleTransitionPlugin::new(),
             scroll_transition: ScrollTransition::new(250).ease_out(),
             last_transition_tick: None,
@@ -616,6 +699,8 @@ impl Viewport {
             root.place(super::base_component::LayoutPlacement {
                 parent_x: 0.0,
                 parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
                 available_width: self.surface_config.width as f32,
                 available_height: self.surface_config.height as f32,
                 percent_base_width: Some(self.surface_config.width as f32),
@@ -667,11 +752,12 @@ impl Viewport {
         self.sync_focus_dispatch();
         let mut roots = std::mem::take(&mut self.ui_roots);
         Self::apply_hover_target(&mut roots, self.input_state.hovered_node_id);
-        let transition_changed_before_render = self.run_transition_plugins(&mut roots);
+        let dt = self.transition_dt();
+        let transition_changed_before_render = self.run_pre_layout_transitions(&mut roots, dt);
         if !roots.is_empty() {
             self.render_render_tree(&mut roots);
         }
-        let transition_changed_after_render = self.run_transition_plugins(&mut roots);
+        let transition_changed_after_render = self.run_post_layout_transitions(&mut roots, dt);
         if transition_changed_before_render || transition_changed_after_render {
             self.request_redraw();
         }

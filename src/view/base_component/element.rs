@@ -8,7 +8,7 @@ use crate::style::{
 use crate::transition::{
     LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
     StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue,
-    TimeFunction,
+    TimeFunction, VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
@@ -228,6 +228,8 @@ pub struct LayoutConstraints {
 pub struct LayoutPlacement {
     pub parent_x: f32,
     pub parent_y: f32,
+    pub visual_offset_x: f32,
+    pub visual_offset_y: f32,
     pub available_width: f32,
     pub available_height: f32,
     pub percent_base_width: Option<f32>,
@@ -289,6 +291,9 @@ pub trait EventTarget {
     fn take_layout_transition_requests(&mut self) -> Vec<LayoutTrackRequest> {
         Vec::new()
     }
+    fn take_visual_transition_requests(&mut self) -> Vec<VisualTrackRequest> {
+        Vec::new()
+    }
 }
 
 pub trait Renderable {
@@ -340,7 +345,9 @@ struct FlexLayoutInfo {
 
 pub struct Element {
     core: ElementCore,
+    layout_flow_position: Position,
     layout_inner_position: Position,
+    layout_flow_inner_position: Position,
     layout_inner_size: Size,
     parsed_style: Style,
     computed_style: ComputedStyle,
@@ -359,10 +366,11 @@ pub struct Element {
     last_scrollbar_interaction: Option<Instant>,
     pending_style_transition_requests: Vec<StyleTrackRequest>,
     pending_layout_transition_requests: Vec<LayoutTrackRequest>,
+    pending_visual_transition_requests: Vec<VisualTrackRequest>,
     has_style_snapshot: bool,
     has_layout_snapshot: bool,
-    layout_transition_override_x: Option<f32>,
-    layout_transition_override_y: Option<f32>,
+    layout_transition_visual_offset_x: f32,
+    layout_transition_visual_offset_y: f32,
     layout_transition_override_width: Option<f32>,
     layout_transition_override_height: Option<f32>,
     layout_transition_target_x: Option<f32>,
@@ -572,6 +580,10 @@ impl EventTarget for Element {
     fn take_layout_transition_requests(&mut self) -> Vec<LayoutTrackRequest> {
         std::mem::take(&mut self.pending_layout_transition_requests)
     }
+
+    fn take_visual_transition_requests(&mut self) -> Vec<VisualTrackRequest> {
+        std::mem::take(&mut self.pending_visual_transition_requests)
+    }
 }
 
 impl Layoutable for Element {
@@ -653,7 +665,13 @@ impl Layoutable for Element {
             percent_base_height: placement.percent_base_height,
         };
         self.resolve_lengths_from_parent_inner(proposal);
-        self.place_self(proposal, placement.parent_x, placement.parent_y);
+        self.place_self(
+            proposal,
+            placement.parent_x,
+            placement.parent_y,
+            placement.visual_offset_x,
+            placement.visual_offset_y,
+        );
         self.resolve_corner_radii_from_self_box();
         let max_bw = (self
             .core
@@ -669,6 +687,10 @@ impl Layoutable for Element {
         let inset_right = border_right + self.padding.right.max(0.0);
         let inset_top = border_top + self.padding.top.max(0.0);
         let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
+        self.layout_flow_inner_position = Position {
+            x: self.layout_flow_position.x + inset_left,
+            y: self.layout_flow_position.y + inset_top,
+        };
         self.layout_inner_position = Position {
             x: self.core.layout_position.x + inset_left,
             y: self.core.layout_position.y + inset_top,
@@ -836,7 +858,9 @@ impl Element {
             } else {
                 ElementCore::new_with_id(id, x, y, width, height)
             },
+            layout_flow_position: Position { x, y },
             layout_inner_position: Position { x, y },
+            layout_flow_inner_position: Position { x, y },
             layout_inner_size: Size {
                 width: width.max(0.0),
                 height: height.max(0.0),
@@ -876,10 +900,11 @@ impl Element {
             last_scrollbar_interaction: None,
             pending_style_transition_requests: Vec::new(),
             pending_layout_transition_requests: Vec::new(),
+            pending_visual_transition_requests: Vec::new(),
             has_style_snapshot: false,
             has_layout_snapshot: false,
-            layout_transition_override_x: None,
-            layout_transition_override_y: None,
+            layout_transition_visual_offset_x: 0.0,
+            layout_transition_visual_offset_y: 0.0,
             layout_transition_override_width: None,
             layout_transition_override_height: None,
             layout_transition_target_x: None,
@@ -948,11 +973,11 @@ impl Element {
     }
 
     pub fn set_layout_transition_x(&mut self, value: f32) {
-        self.layout_transition_override_x = Some(value);
+        self.layout_transition_visual_offset_x = value;
     }
 
     pub fn set_layout_transition_y(&mut self, value: f32) {
-        self.layout_transition_override_y = Some(value);
+        self.layout_transition_visual_offset_y = value;
     }
 
     pub fn set_layout_transition_width(&mut self, value: f32) {
@@ -976,6 +1001,10 @@ impl Element {
             x: layout_x,
             y: layout_y,
         };
+        self.layout_flow_position = Position {
+            x: layout_x,
+            y: layout_y,
+        };
         self.core.layout_size = Size {
             width: layout_width.max(0.0),
             height: layout_height.max(0.0),
@@ -983,8 +1012,8 @@ impl Element {
         self.last_parent_layout_x = parent_layout_x;
         self.last_parent_layout_y = parent_layout_y;
         self.has_layout_snapshot = true;
-        self.layout_transition_override_x = None;
-        self.layout_transition_override_y = None;
+        self.layout_transition_visual_offset_x = 0.0;
+        self.layout_transition_visual_offset_y = 0.0;
         self.layout_transition_override_width = None;
         self.layout_transition_override_height = None;
         self.layout_transition_target_x = None;
@@ -1784,8 +1813,8 @@ impl Element {
 
     pub(crate) fn child_layout_origin(&self) -> (f32, f32) {
         (
-            self.layout_inner_position.x - self.scroll_offset.x,
-            self.layout_inner_position.y - self.scroll_offset.y,
+            self.layout_flow_inner_position.x - self.scroll_offset.x,
+            self.layout_flow_inner_position.y - self.scroll_offset.y,
         )
     }
 
@@ -2218,8 +2247,13 @@ impl Element {
         let mut max_y = 0.0_f32;
         for child in &self.children {
             let snapshot = child.box_model_snapshot();
-            let rel_x = snapshot.x - self.layout_inner_position.x + self.scroll_offset.x;
-            let rel_y = snapshot.y - self.layout_inner_position.y + self.scroll_offset.y;
+            let (child_flow_x, child_flow_y) = child
+                .as_any()
+                .downcast_ref::<Element>()
+                .map(|el| (el.layout_flow_position.x, el.layout_flow_position.y))
+                .unwrap_or((snapshot.x, snapshot.y));
+            let rel_x = child_flow_x - self.layout_flow_inner_position.x + self.scroll_offset.x;
+            let rel_y = child_flow_y - self.layout_flow_inner_position.y + self.scroll_offset.y;
             max_x = max_x.max(rel_x + snapshot.width.max(0.0));
             max_y = max_y.max(rel_y + snapshot.height.max(0.0));
         }
@@ -2295,7 +2329,14 @@ impl Element {
         }
     }
 
-    fn place_self(&mut self, proposal: LayoutProposal, parent_x: f32, parent_y: f32) {
+    fn place_self(
+        &mut self,
+        proposal: LayoutProposal,
+        parent_x: f32,
+        parent_y: f32,
+        parent_visual_offset_x: f32,
+        parent_visual_offset_y: f32,
+    ) {
         let target_rel_x = self.core.position.x;
         let target_rel_y = self.core.position.y;
         let has_x_transition = self
@@ -2347,11 +2388,11 @@ impl Element {
                 )
             });
         if !has_x_transition {
-            self.layout_transition_override_x = None;
+            self.layout_transition_visual_offset_x = 0.0;
             self.layout_transition_target_x = None;
         }
         if !has_y_transition {
-            self.layout_transition_override_y = None;
+            self.layout_transition_visual_offset_y = 0.0;
             self.layout_transition_target_y = None;
         }
         if !has_width_transition {
@@ -2362,25 +2403,27 @@ impl Element {
             self.layout_transition_override_height = None;
             self.layout_transition_target_height = None;
         }
-        let prev_rel_x = self.core.layout_position.x - self.last_parent_layout_x;
-        let prev_rel_y = self.core.layout_position.y - self.last_parent_layout_y;
+        let current_visual_rel_x = self.core.layout_position.x - parent_x - parent_visual_offset_x;
+        let current_visual_rel_y = self.core.layout_position.y - parent_y - parent_visual_offset_y;
+        let current_offset_x = current_visual_rel_x - target_rel_x;
+        let current_offset_y = current_visual_rel_y - target_rel_y;
         let target_width = self.core.size.width.max(0.0);
         let target_height = self.core.size.height.max(0.0);
         let prev_width = self.core.layout_size.width.max(0.0);
         let prev_height = self.core.layout_size.height.max(0.0);
         if self
             .layout_transition_target_x
-            .is_some_and(|target| approx_eq(prev_rel_x, target))
+            .is_some_and(|target| approx_eq(target_rel_x, target) && approx_eq(current_offset_x, 0.0))
         {
             self.layout_transition_target_x = None;
-            self.layout_transition_override_x = None;
+            self.layout_transition_visual_offset_x = 0.0;
         }
         if self
             .layout_transition_target_y
-            .is_some_and(|target| approx_eq(prev_rel_y, target))
+            .is_some_and(|target| approx_eq(target_rel_y, target) && approx_eq(current_offset_y, 0.0))
         {
             self.layout_transition_target_y = None;
-            self.layout_transition_override_y = None;
+            self.layout_transition_visual_offset_y = 0.0;
         }
         if self
             .layout_transition_target_width
@@ -2399,8 +2442,8 @@ impl Element {
         
         if self.has_layout_snapshot {
             self.collect_layout_transition_requests(
-                prev_rel_x,
-                prev_rel_y,
+                current_offset_x,
+                current_offset_y,
                 prev_width,
                 prev_height,
                 target_rel_x,
@@ -2411,13 +2454,17 @@ impl Element {
         }
         self.has_layout_snapshot = true;
 
-        let frame_rel_x = self.layout_transition_override_x.unwrap_or(target_rel_x);
-        let frame_rel_y = self.layout_transition_override_y.unwrap_or(target_rel_y);
+        let frame_rel_x = target_rel_x;
+        let frame_rel_y = target_rel_y;
         let frame_width = self.layout_transition_override_width.unwrap_or(target_width);
         let frame_height = self.layout_transition_override_height.unwrap_or(target_height);
-        let frame = LayoutFrame {
+        self.layout_flow_position = Position {
             x: parent_x + frame_rel_x,
             y: parent_y + frame_rel_y,
+        };
+        let frame = LayoutFrame {
+            x: self.layout_flow_position.x + parent_visual_offset_x + self.layout_transition_visual_offset_x,
+            y: self.layout_flow_position.y + parent_visual_offset_y + self.layout_transition_visual_offset_y,
             width: frame_width,
             height: frame_height,
         };
@@ -2430,10 +2477,10 @@ impl Element {
             height: frame.height,
         };
 
-        let parent_left = parent_x;
-        let parent_top = parent_y;
-        let parent_right = parent_x + proposal.width;
-        let parent_bottom = parent_y + proposal.height;
+        let parent_left = parent_x + parent_visual_offset_x;
+        let parent_top = parent_y + parent_visual_offset_y;
+        let parent_right = parent_left + proposal.width;
+        let parent_bottom = parent_top + proposal.height;
         let self_right = frame.x + frame.width;
         let self_bottom = frame.y + frame.height;
 
@@ -2449,8 +2496,8 @@ impl Element {
 
     fn collect_layout_transition_requests(
         &mut self,
-        prev_rel_x: f32,
-        prev_rel_y: f32,
+        prev_offset_x: f32,
+        prev_offset_y: f32,
         prev_width: f32,
         prev_height: f32,
         target_rel_x: f32,
@@ -2459,7 +2506,12 @@ impl Element {
         target_height: f32,
     ) {
         for transition in self.computed_style.transition.as_slice() {
-            let runtime = RuntimeLayoutTransition {
+            let runtime_layout = RuntimeLayoutTransition {
+                duration_ms: transition.duration_ms,
+                delay_ms: transition.delay_ms,
+                timing: map_transition_timing(transition.timing),
+            };
+            let runtime_visual = RuntimeVisualTransition {
                 duration_ms: transition.duration_ms,
                 delay_ms: transition.delay_ms,
                 timing: map_transition_timing(transition.timing),
@@ -2469,26 +2521,26 @@ impl Element {
                     let should_start_x = self
                         .layout_transition_target_x
                         .is_none_or(|active| !approx_eq(active, target_rel_x));
-                    if should_start_x && !approx_eq(prev_rel_x, target_rel_x) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                    if should_start_x && !approx_eq(prev_offset_x, 0.0) {
+                        self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
-                            field: LayoutField::X,
-                            from: prev_rel_x,
-                            to: target_rel_x,
-                            transition: runtime,
+                            field: VisualField::X,
+                            from: prev_offset_x,
+                            to: 0.0,
+                            transition: runtime_visual,
                         });
                         self.layout_transition_target_x = Some(target_rel_x);
                     }
                     let should_start_y = self
                         .layout_transition_target_y
                         .is_none_or(|active| !approx_eq(active, target_rel_y));
-                    if should_start_y && !approx_eq(prev_rel_y, target_rel_y) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                    if should_start_y && !approx_eq(prev_offset_y, 0.0) {
+                        self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
-                            field: LayoutField::Y,
-                            from: prev_rel_y,
-                            to: target_rel_y,
-                            transition: runtime,
+                            field: VisualField::Y,
+                            from: prev_offset_y,
+                            to: 0.0,
+                            transition: runtime_visual,
                         });
                         self.layout_transition_target_y = Some(target_rel_y);
                     }
@@ -2501,7 +2553,7 @@ impl Element {
                             field: LayoutField::Width,
                             from: prev_width,
                             to: target_width,
-                            transition: runtime,
+                            transition: runtime_layout,
                         });
                         self.layout_transition_target_width = Some(target_width);
                     }
@@ -2514,7 +2566,7 @@ impl Element {
                             field: LayoutField::Height,
                             from: prev_height,
                             to: target_height,
-                            transition: runtime,
+                            transition: runtime_layout,
                         });
                         self.layout_transition_target_height = Some(target_height);
                     }
@@ -2523,26 +2575,26 @@ impl Element {
                     let should_start_x = self
                         .layout_transition_target_x
                         .is_none_or(|active| !approx_eq(active, target_rel_x));
-                    if should_start_x && !approx_eq(prev_rel_x, target_rel_x) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                    if should_start_x && !approx_eq(prev_offset_x, 0.0) {
+                        self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
-                            field: LayoutField::X,
-                            from: prev_rel_x,
-                            to: target_rel_x,
-                            transition: runtime,
+                            field: VisualField::X,
+                            from: prev_offset_x,
+                            to: 0.0,
+                            transition: runtime_visual,
                         });
                         self.layout_transition_target_x = Some(target_rel_x);
                     }
                     let should_start_y = self
                         .layout_transition_target_y
                         .is_none_or(|active| !approx_eq(active, target_rel_y));
-                    if should_start_y && !approx_eq(prev_rel_y, target_rel_y) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                    if should_start_y && !approx_eq(prev_offset_y, 0.0) {
+                        self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
-                            field: LayoutField::Y,
-                            from: prev_rel_y,
-                            to: target_rel_y,
-                            transition: runtime,
+                            field: VisualField::Y,
+                            from: prev_offset_y,
+                            to: 0.0,
+                            transition: runtime_visual,
                         });
                         self.layout_transition_target_y = Some(target_rel_y);
                     }
@@ -2557,7 +2609,7 @@ impl Element {
                             field: LayoutField::Width,
                             from: prev_width,
                             to: target_width,
-                            transition: runtime,
+                            transition: runtime_layout,
                         });
                         self.layout_transition_target_width = Some(target_width);
                     }
@@ -2572,7 +2624,7 @@ impl Element {
                             field: LayoutField::Height,
                             from: prev_height,
                             to: target_height,
-                            transition: runtime,
+                            transition: runtime_layout,
                         });
                         self.layout_transition_target_height = Some(target_height);
                     }
@@ -2581,13 +2633,13 @@ impl Element {
                     let should_start_x = self
                         .layout_transition_target_x
                         .is_none_or(|active| !approx_eq(active, target_rel_x));
-                    if should_start_x && !approx_eq(prev_rel_x, target_rel_x) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                    if should_start_x && !approx_eq(prev_offset_x, 0.0) {
+                        self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
-                            field: LayoutField::X,
-                            from: prev_rel_x,
-                            to: target_rel_x,
-                            transition: runtime,
+                            field: VisualField::X,
+                            from: prev_offset_x,
+                            to: 0.0,
+                            transition: runtime_visual,
                         });
                         self.layout_transition_target_x = Some(target_rel_x);
                     }
@@ -2596,13 +2648,13 @@ impl Element {
                     let should_start_y = self
                         .layout_transition_target_y
                         .is_none_or(|active| !approx_eq(active, target_rel_y));
-                    if should_start_y && !approx_eq(prev_rel_y, target_rel_y) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
+                    if should_start_y && !approx_eq(prev_offset_y, 0.0) {
+                        self.pending_visual_transition_requests.push(VisualTrackRequest {
                             target: self.core.id,
-                            field: LayoutField::Y,
-                            from: prev_rel_y,
-                            to: target_rel_y,
-                            transition: runtime,
+                            field: VisualField::Y,
+                            from: prev_offset_y,
+                            to: 0.0,
+                            transition: runtime_visual,
                         });
                         self.layout_transition_target_y = Some(target_rel_y);
                     }
@@ -2637,12 +2689,16 @@ impl Element {
                 child_percent_base_height,
             );
         } else {
-            let origin_x = self.layout_inner_position.x - self.scroll_offset.x;
-            let origin_y = self.layout_inner_position.y - self.scroll_offset.y;
+            let origin_x = self.layout_flow_inner_position.x - self.scroll_offset.x;
+            let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
+            let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
+            let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
             for child in &mut self.children {
                 child.place(LayoutPlacement {
                     parent_x: origin_x,
                     parent_y: origin_y,
+                    visual_offset_x,
+                    visual_offset_y,
                     available_width: child_available_width,
                     available_height: child_available_height,
                     percent_base_width: child_percent_base_width,
@@ -2676,8 +2732,10 @@ impl Element {
         let cross_limit = if is_row { self.layout_inner_size.height } else { self.layout_inner_size.width };
         let gap_base = if is_row { self.layout_inner_size.width } else { self.layout_inner_size.height };
         let gap = resolve_px(self.computed_style.gap, gap_base);
-        let origin_x = self.layout_inner_position.x - self.scroll_offset.x;
-        let origin_y = self.layout_inner_position.y - self.scroll_offset.y;
+        let origin_x = self.layout_flow_inner_position.x - self.scroll_offset.x;
+        let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
+        let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
+        let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
 
         let total_cross = info.total_cross;
         let mut cross_cursor = cross_start_offset(cross_limit, total_cross, self.computed_style.align_items);
@@ -2711,6 +2769,8 @@ impl Element {
                 self.children[child_idx].place(LayoutPlacement {
                     parent_x: origin_x,
                     parent_y: origin_y,
+                    visual_offset_x,
+                    visual_offset_y,
                     available_width: child_available_width,
                     available_height: child_available_height,
                     percent_base_width: child_percent_base_width,
@@ -2910,6 +2970,8 @@ mod tests {
         root.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
             percent_base_width: Some(800.0),
@@ -2947,6 +3009,8 @@ mod tests {
         root.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
             percent_base_width: Some(800.0),
@@ -2985,6 +3049,8 @@ mod tests {
         parent.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
             percent_base_width: Some(800.0),
@@ -3016,6 +3082,8 @@ mod tests {
         known_parent.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
             percent_base_width: Some(800.0),
@@ -3048,6 +3116,8 @@ mod tests {
         el.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
             percent_base_width: Some(800.0),
@@ -3068,6 +3138,8 @@ mod tests {
         el.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
             percent_base_width: Some(800.0),
@@ -3077,5 +3149,195 @@ mod tests {
         let reqs = el.take_layout_transition_requests();
         assert!(reqs.iter().any(|r| r.field == LayoutField::Width));
         assert!(reqs.iter().any(|r| r.field == LayoutField::Height));
+    }
+
+    #[test]
+    fn reflow_uses_current_rendered_position_as_layout_transition_start() {
+        let mut el = Element::new(50.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Position,
+                200,
+            ))),
+        );
+        el.apply_style(style);
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+        let placement_at_100 = LayoutPlacement {
+            parent_x: 100.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+
+        el.measure(constraints);
+        el.place(placement_at_100);
+        let _ = el.take_layout_transition_requests();
+
+        // Simulate an in-flight visual offset frame: target rel-x=50, offset=30 => abs x = 180.
+        el.set_layout_transition_x(30.0);
+        el.place(placement_at_100);
+        let _ = el.take_layout_transition_requests();
+
+        // A reflow shifts parent origin and updates target x.
+        el.set_position(120.0, 0.0);
+        el.place(LayoutPlacement {
+            parent_x: 130.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let reqs = el.take_layout_transition_requests();
+        let x_req = reqs
+            .iter()
+            .find(|r| r.field == LayoutField::X)
+            .expect("x transition request should exist");
+        // current abs(180) - new parent_x(130) = 50, target rel-x=120 => offset = -70
+        assert!((x_req.from + 70.0).abs() < 0.01);
+        assert!((x_req.to - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn reflow_uses_current_rendered_width_as_layout_transition_start() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Width,
+                200,
+            ))),
+        );
+        el.apply_style(style);
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+        let placement = LayoutPlacement {
+            parent_x: 100.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+
+        el.measure(constraints);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+
+        // Simulate in-flight width frame.
+        el.set_layout_transition_width(140.0);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+
+        // Reflow updates target width while parent origin also changes.
+        let mut next_style = Style::new();
+        next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        el.apply_style(next_style);
+        el.measure(constraints);
+        el.place(LayoutPlacement {
+            parent_x: 130.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let reqs = el.take_layout_transition_requests();
+        let w_req = reqs
+            .iter()
+            .find(|r| r.field == LayoutField::Width)
+            .expect("width transition request should exist");
+        assert!((w_req.from - 140.0).abs() < 0.01);
+        assert!((w_req.to - 220.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn reflow_uses_current_rendered_height_as_layout_transition_start() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Height,
+                200,
+            ))),
+        );
+        el.apply_style(style);
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+        let placement = LayoutPlacement {
+            parent_x: 100.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+
+        el.measure(constraints);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+
+        // Simulate in-flight height frame.
+        el.set_layout_transition_height(70.0);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+
+        // Reflow updates target height while parent origin also changes.
+        let mut next_style = Style::new();
+        next_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(160.0)));
+        el.apply_style(next_style);
+        el.measure(constraints);
+        el.place(LayoutPlacement {
+            parent_x: 130.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let reqs = el.take_layout_transition_requests();
+        let h_req = reqs
+            .iter()
+            .find(|r| r.field == LayoutField::Height)
+            .expect("height transition request should exist");
+        assert!((h_req.from - 70.0).abs() < 0.01);
+        assert!((h_req.to - 160.0).abs() < 0.01);
     }
 }

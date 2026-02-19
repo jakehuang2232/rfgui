@@ -625,6 +625,8 @@ mod tests {
             root.place(crate::view::base_component::LayoutPlacement {
                 parent_x: 0.0,
                 parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
                 available_width: 800.0,
                 available_height: 600.0,
                 percent_base_width: Some(800.0),
@@ -690,6 +692,8 @@ mod tests {
             root.place(crate::view::base_component::LayoutPlacement {
                 parent_x: 0.0,
                 parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
                 available_width: 800.0,
                 available_height: 600.0,
                 percent_base_width: Some(800.0),
