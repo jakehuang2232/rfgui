@@ -350,14 +350,14 @@ impl Layoutable for Text {
             height: self.size.height.max(0.0).min(max_height),
         };
         self.layout_position = Position {
-            x: placement.parent_x + self.position.x,
-            y: placement.parent_y + self.position.y,
+            x: placement.parent_x + self.position.x + placement.visual_offset_x,
+            y: placement.parent_y + self.position.y + placement.visual_offset_y,
         };
 
-        let parent_left = placement.parent_x;
-        let parent_top = placement.parent_y;
-        let parent_right = placement.parent_x + available_width;
-        let parent_bottom = placement.parent_y + available_height;
+        let parent_left = placement.parent_x + placement.visual_offset_x;
+        let parent_top = placement.parent_y + placement.visual_offset_y;
+        let parent_right = parent_left + available_width;
+        let parent_bottom = parent_top + available_height;
         let self_left = self.layout_position.x;
         let self_top = self.layout_position.y;
         let self_right = self.layout_position.x + self.layout_size.width;
@@ -417,6 +417,8 @@ mod tests {
         text.place(LayoutPlacement {
             parent_x: 40.0,
             parent_y: 40.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 240.0,
             available_height: 140.0,
             percent_base_width: Some(240.0),
@@ -444,6 +446,8 @@ mod tests {
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 60.0,
             available_height: 200.0,
             percent_base_width: Some(60.0),
@@ -467,6 +471,8 @@ mod tests {
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
             available_width: 300.0,
             available_height: 200.0,
             percent_base_width: Some(300.0),

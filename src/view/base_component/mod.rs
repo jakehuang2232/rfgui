@@ -3,7 +3,8 @@ use crate::ui::{
     MouseUpEvent, TextInputEvent, ImePreeditEvent,
 };
 use crate::transition::{
-    LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue,
+    LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue, VisualField,
+    VisualTrackRequest,
 };
 use crate::view::viewport::ViewportControl;
 use std::collections::HashMap;
@@ -301,6 +302,18 @@ pub fn take_layout_transition_requests(
     out.extend(root.take_layout_transition_requests());
 }
 
+pub fn take_visual_transition_requests(
+    root: &mut dyn ElementTrait,
+    out: &mut Vec<VisualTrackRequest>,
+) {
+    if let Some(children) = root.children_mut() {
+        for child in children.iter_mut().rev() {
+            take_visual_transition_requests(child.as_mut(), out);
+        }
+    }
+    out.extend(root.take_visual_transition_requests());
+}
+
 pub fn set_style_field_by_id(
     root: &mut dyn ElementTrait,
     node_id: u64,
@@ -390,10 +403,9 @@ pub fn set_layout_field_by_id(
     if root.id() == node_id {
         if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
             match field {
-                LayoutField::X => element.set_layout_transition_x(value),
-                LayoutField::Y => element.set_layout_transition_y(value),
                 LayoutField::Width => element.set_layout_transition_width(value),
                 LayoutField::Height => element.set_layout_transition_height(value),
+                LayoutField::X | LayoutField::Y => return false,
             }
             return true;
         }
@@ -402,6 +414,32 @@ pub fn set_layout_field_by_id(
     if let Some(children) = root.children_mut() {
         for child in children.iter_mut() {
             if set_layout_field_by_id(child.as_mut(), node_id, field, value) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn set_visual_field_by_id(
+    root: &mut dyn ElementTrait,
+    node_id: u64,
+    field: VisualField,
+    value: f32,
+) -> bool {
+    if root.id() == node_id {
+        if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
+            match field {
+                VisualField::X => element.set_layout_transition_x(value),
+                VisualField::Y => element.set_layout_transition_y(value),
+            }
+            return true;
+        }
+        return false;
+    }
+    if let Some(children) = root.children_mut() {
+        for child in children.iter_mut() {
+            if set_visual_field_by_id(child.as_mut(), node_id, field, value) {
                 return true;
             }
         }
