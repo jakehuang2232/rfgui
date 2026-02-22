@@ -3,6 +3,10 @@ use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp,
 };
+use std::any::Any;
+use std::fmt;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RsxNode {
@@ -16,6 +20,40 @@ pub struct RsxElementNode {
     pub tag: String,
     pub props: Vec<(String, PropValue)>,
     pub children: Vec<RsxNode>,
+}
+
+#[derive(Clone)]
+pub struct SharedPropValue {
+    id: u64,
+    value: Rc<dyn Any>,
+}
+
+impl SharedPropValue {
+    pub fn new(value: Rc<dyn Any>) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            value,
+        }
+    }
+
+    pub fn value(&self) -> Rc<dyn Any> {
+        self.value.clone()
+    }
+}
+
+impl fmt::Debug for SharedPropValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedPropValue")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
+impl PartialEq for SharedPropValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -166,6 +204,7 @@ pub enum PropValue {
     OnKeyUp(KeyUpHandlerProp),
     OnFocus(FocusHandlerProp),
     OnBlur(BlurHandlerProp),
+    Shared(SharedPropValue),
 }
 
 pub trait IntoPropValue {

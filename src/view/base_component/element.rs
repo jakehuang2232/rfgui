@@ -310,6 +310,14 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
 
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+
+    fn restore_state(&mut self, _snapshot: &dyn std::any::Any) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

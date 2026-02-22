@@ -15,8 +15,8 @@ pub fn rsx(input: TokenStream) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
 
-    if nodes.len() == 1 {
-        expand_node(&nodes[0]).into()
+    let body = if nodes.len() == 1 {
+        expand_node(&nodes[0])
     } else {
         let children = nodes.iter().map(expand_node);
         quote! {
@@ -24,8 +24,14 @@ pub fn rsx(input: TokenStream) -> TokenStream {
                 #(#children),*
             ])
         }
-        .into()
+    };
+
+    quote! {
+        ::rust_gui::ui::build_scope(|| {
+            #body
+        })
     }
+    .into()
 }
 
 struct MultipleNodes {
@@ -601,7 +607,9 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             type Props = #props_name;
 
             fn render(props: Self::Props) -> ::rust_gui::ui::RsxNode {
-                #helper_name(#(#helper_call_args),*)
+                ::rust_gui::ui::render_component::<Self, _>(|| {
+                    #helper_name(#(#helper_call_args),*)
+                })
             }
         }
 
