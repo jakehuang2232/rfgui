@@ -476,3 +476,24 @@ impl FromPropValue for i32 {
         Ok(f64::from_prop_value(value)? as i32)
     }
 }
+
+impl IntoPropValue for Vec<String> {
+    fn into_prop_value(self) -> PropValue {
+        let erased: Rc<dyn Any> = Rc::new(self);
+        PropValue::Shared(SharedPropValue::new(erased))
+    }
+}
+
+impl FromPropValue for Vec<String> {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::Shared(shared) => {
+                let erased = shared.value();
+                let vec = Rc::downcast::<Vec<String>>(erased)
+                    .map_err(|_| "expected Vec<String> value".to_string())?;
+                Ok((*vec).clone())
+            }
+            _ => Err("expected Vec<String> value".to_string()),
+        }
+    }
+}

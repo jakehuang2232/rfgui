@@ -3,6 +3,27 @@ use crate::Style;
 use crate::ui::{Binding, FromPropValue, PropValue, RenderBackend, RsxElementNode, RsxNode};
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
+use crate::view::components::{
+    build_button, build_checkbox, build_number_field, build_select, build_slider,
+    build_switch_with_ids, ButtonProps, ButtonVariant, CheckboxProps, NumberFieldProps,
+    SelectProps, SliderProps, SwitchProps,
+};
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+
+pub type ElementFactory =
+    Arc<dyn Fn(&RsxElementNode, &[usize]) -> Result<Box<dyn ElementTrait>, String> + Send + Sync>;
+
+fn element_factories() -> &'static RwLock<HashMap<String, ElementFactory>> {
+    static FACTORIES: OnceLock<RwLock<HashMap<String, ElementFactory>>> = OnceLock::new();
+    FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub fn register_element_factory(tag: impl Into<String>, factory: ElementFactory) {
+    if let Ok(mut map) = element_factories().write() {
+        map.insert(tag.into(), factory);
+    }
+}
 
 pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
     let mut nodes = rsx_to_elements(root)?;
@@ -144,7 +165,20 @@ fn convert_element(node: &RsxElementNode, path: &[usize]) -> Result<Box<dyn Elem
     match node.tag.as_str() {
         "Text" => convert_text_element(node, path),
         "TextArea" => convert_text_area_element(node, path),
-        _ => convert_container_element(node, path),
+        "Button" => convert_button_element(node),
+        "Checkbox" => convert_checkbox_element(node),
+        "NumberField" => convert_number_field_element(node),
+        "Select" => convert_select_element(node),
+        "Slider" => convert_slider_element(node),
+        "Switch" => convert_switch_element(node, path),
+        _ => {
+            if let Ok(map) = element_factories().read() {
+                if let Some(factory) = map.get(&node.tag) {
+                    return factory(node, path);
+                }
+            }
+            convert_container_element(node, path)
+        }
     }
 }
 
@@ -353,6 +387,127 @@ fn convert_text_area_element(
     Ok(Box::new(text_area))
 }
 
+fn convert_button_element(node: &RsxElementNode) -> Result<Box<dyn ElementTrait>, String> {
+    let mut props = ButtonProps::new("");
+
+    for (key, value) in &node.props {
+        match key.as_str() {
+            "label" => props.label = as_owned_string(value, key)?,
+            "width" => props.width = as_f32(value, key)?,
+            "height" => props.height = as_f32(value, key)?,
+            "variant" => {
+                props.variant = match as_string(value, key)?.to_ascii_lowercase().as_str() {
+                    "contained" => ButtonVariant::Contained,
+                    "outlined" => ButtonVariant::Outlined,
+                    "text" => ButtonVariant::Text,
+                    other => return Err(format!("unknown Button variant `{other}`")),
+                }
+            }
+            "disabled" => props.disabled = as_bool(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <Button>", key)),
+        }
+    }
+
+    Ok(Box::new(build_button(props)))
+}
+
+fn convert_checkbox_element(node: &RsxElementNode) -> Result<Box<dyn ElementTrait>, String> {
+    let mut props = CheckboxProps::new("");
+
+    for (key, value) in &node.props {
+        match key.as_str() {
+            "label" => props.label = as_owned_string(value, key)?,
+            "checked" => props.checked = as_bool(value, key)?,
+            "binding" => props.checked_binding = Some(as_binding_bool(value, key)?),
+            "width" => props.width = as_f32(value, key)?,
+            "height" => props.height = as_f32(value, key)?,
+            "disabled" => props.disabled = as_bool(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <Checkbox>", key)),
+        }
+    }
+
+    Ok(Box::new(build_checkbox(props)))
+}
+
+fn convert_number_field_element(node: &RsxElementNode) -> Result<Box<dyn ElementTrait>, String> {
+    let mut props = NumberFieldProps::new();
+
+    for (key, value) in &node.props {
+        match key.as_str() {
+            "value" => props.value = as_f64(value, key)?,
+            "binding" => props.value_binding = Some(as_binding_f64(value, key)?),
+            "min" => props.min = Some(as_f64(value, key)?),
+            "max" => props.max = Some(as_f64(value, key)?),
+            "step" => props.step = as_f64(value, key)?,
+            "width" => props.width = as_f32(value, key)?,
+            "height" => props.height = as_f32(value, key)?,
+            "disabled" => props.disabled = as_bool(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <NumberField>", key)),
+        }
+    }
+
+    Ok(Box::new(build_number_field(props)))
+}
+
+fn convert_select_element(node: &RsxElementNode) -> Result<Box<dyn ElementTrait>, String> {
+    let mut props = SelectProps::new(Vec::new());
+
+    for (key, value) in &node.props {
+        match key.as_str() {
+            "options" => props.options = as_vec_string(value, key)?,
+            "selected_index" => props.selected_index = as_usize_raw(value, key)?,
+            "binding" => props.selected_binding = Some(as_binding_usize(value, key)?),
+            "width" => props.width = as_f32(value, key)?,
+            "height" => props.height = as_f32(value, key)?,
+            "disabled" => props.disabled = as_bool(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <Select>", key)),
+        }
+    }
+
+    Ok(Box::new(build_select(props)))
+}
+
+fn convert_slider_element(node: &RsxElementNode) -> Result<Box<dyn ElementTrait>, String> {
+    let mut props = SliderProps::new();
+
+    for (key, value) in &node.props {
+        match key.as_str() {
+            "value" => props.value = as_f64(value, key)?,
+            "binding" => props.value_binding = Some(as_binding_f64(value, key)?),
+            "min" => props.min = as_f64(value, key)?,
+            "max" => props.max = as_f64(value, key)?,
+            "width" => props.width = as_f32(value, key)?,
+            "height" => props.height = as_f32(value, key)?,
+            "disabled" => props.disabled = as_bool(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <Slider>", key)),
+        }
+    }
+
+    Ok(Box::new(build_slider(props)))
+}
+
+fn convert_switch_element(node: &RsxElementNode, path: &[usize]) -> Result<Box<dyn ElementTrait>, String> {
+    let mut props = SwitchProps::new("");
+
+    for (key, value) in &node.props {
+        match key.as_str() {
+            "label" => props.label = as_owned_string(value, key)?,
+            "checked" => props.checked = as_bool(value, key)?,
+            "binding" => props.checked_binding = Some(as_binding_bool(value, key)?),
+            "disabled" => props.disabled = as_bool(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <Switch>", key)),
+        }
+    }
+
+    Ok(Box::new(build_switch_with_ids(
+        props,
+        stable_node_id(path, "Switch"),
+        stable_node_id(path, "SwitchTrack"),
+        stable_node_id(path, "SwitchThumb"),
+        stable_node_id(path, "SwitchLabel"),
+    )))
+}
+
 fn stable_node_id(path: &[usize], kind: &str) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
@@ -390,6 +545,14 @@ fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
     }
 }
 
+fn as_f64(value: &PropValue, key: &str) -> Result<f64, String> {
+    match value {
+        PropValue::I64(v) => Ok(*v as f64),
+        PropValue::F64(v) => Ok(*v),
+        _ => Err(format!("prop `{key}` expects numeric value")),
+    }
+}
+
 fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
     match value {
         PropValue::String(v) => Ok(v.as_str()),
@@ -404,6 +567,21 @@ fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
 fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
     Binding::<String>::from_prop_value(value.clone())
         .map_err(|_| format!("prop `{key}` expects Binding<String> value"))
+}
+
+fn as_binding_bool(value: &PropValue, key: &str) -> Result<Binding<bool>, String> {
+    Binding::<bool>::from_prop_value(value.clone())
+        .map_err(|_| format!("prop `{key}` expects Binding<bool> value"))
+}
+
+fn as_binding_f64(value: &PropValue, key: &str) -> Result<Binding<f64>, String> {
+    Binding::<f64>::from_prop_value(value.clone())
+        .map_err(|_| format!("prop `{key}` expects Binding<f64> value"))
+}
+
+fn as_binding_usize(value: &PropValue, key: &str) -> Result<Binding<usize>, String> {
+    Binding::<usize>::from_prop_value(value.clone())
+        .map_err(|_| format!("prop `{key}` expects Binding<usize> value"))
 }
 
 fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {
@@ -431,6 +609,31 @@ fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
         }
         _ => Err(format!("prop `{key}` expects numeric value")),
     }
+}
+
+fn as_usize_raw(value: &PropValue, key: &str) -> Result<usize, String> {
+    match value {
+        PropValue::I64(v) => {
+            if *v < 0 {
+                Err(format!("prop `{key}` expects non-negative integer value"))
+            } else {
+                Ok(*v as usize)
+            }
+        }
+        PropValue::F64(v) => {
+            if *v < 0.0 {
+                Err(format!("prop `{key}` expects non-negative numeric value"))
+            } else {
+                Ok(*v as usize)
+            }
+        }
+        _ => Err(format!("prop `{key}` expects numeric value")),
+    }
+}
+
+fn as_vec_string(value: &PropValue, key: &str) -> Result<Vec<String>, String> {
+    Vec::<String>::from_prop_value(value.clone())
+        .map_err(|_| format!("prop `{key}` expects Vec<String> value"))
 }
 
 fn as_style(value: &PropValue, key: &str) -> Result<Style, String> {

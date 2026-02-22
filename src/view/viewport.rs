@@ -504,7 +504,10 @@ impl Viewport {
         if scroll_result.keep_running || style_result.keep_running || visual_result.keep_running {
             self.request_redraw();
         }
-        changed || scroll_result.keep_running || style_result.keep_running || visual_result.keep_running
+        changed
+            || scroll_result.keep_running
+            || style_result.keep_running
+            || visual_result.keep_running
     }
 
     pub fn new() -> Self {

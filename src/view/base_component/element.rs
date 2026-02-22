@@ -351,6 +351,18 @@ struct FlexLayoutInfo {
     child_sizes: Vec<(f32, f32)>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ElementStyleSnapshot {
+    opacity: f32,
+    border_radius: f32,
+    background_color: Color,
+    foreground_color: Color,
+    border_top_color: Color,
+    border_right_color: Color,
+    border_bottom_color: Color,
+    border_left_color: Color,
+}
+
 pub struct Element {
     core: ElementCore,
     layout_flow_position: Position,
@@ -442,6 +454,44 @@ impl ElementTrait for Element {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
+        let [bg_r, bg_g, bg_b, bg_a] = self.background_color.as_ref().to_rgba_u8();
+        let [bt_r, bt_g, bt_b, bt_a] = self.border_colors.top.as_ref().to_rgba_u8();
+        let [br_r, br_g, br_b, br_a] = self.border_colors.right.as_ref().to_rgba_u8();
+        let [bb_r, bb_g, bb_b, bb_a] = self.border_colors.bottom.as_ref().to_rgba_u8();
+        let [bl_r, bl_g, bl_b, bl_a] = self.border_colors.left.as_ref().to_rgba_u8();
+        Some(Box::new(ElementStyleSnapshot {
+            opacity: self.opacity,
+            border_radius: self.border_radius,
+            background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
+            foreground_color: self.foreground_color,
+            border_top_color: Color::rgba(bt_r, bt_g, bt_b, bt_a),
+            border_right_color: Color::rgba(br_r, br_g, br_b, br_a),
+            border_bottom_color: Color::rgba(bb_r, bb_g, bb_b, bb_a),
+            border_left_color: Color::rgba(bl_r, bl_g, bl_b, bl_a),
+        }))
+    }
+
+    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
+        let Some(snapshot) = snapshot.downcast_ref::<ElementStyleSnapshot>() else {
+            return false;
+        };
+
+        self.opacity = snapshot.opacity;
+        self.border_radius = snapshot.border_radius;
+        self.background_color = Box::new(snapshot.background_color);
+        self.foreground_color = snapshot.foreground_color;
+        self.border_colors.top = Box::new(snapshot.border_top_color);
+        self.border_colors.right = Box::new(snapshot.border_right_color);
+        self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
+        self.border_colors.left = Box::new(snapshot.border_left_color);
+        self.has_style_snapshot = true;
+
+        // Recompute against current parsed_style so transitions can bridge from old -> new style.
+        self.recompute_style();
+        true
     }
 }
 
@@ -2542,28 +2592,6 @@ impl Element {
             };
             match transition.property {
                 TransitionProperty::All => {
-                    let should_start_x = self.layout_transition_target_x.is_none();
-                    if should_start_x && !approx_eq(prev_offset_x, 0.0) {
-                        self.pending_visual_transition_requests.push(VisualTrackRequest {
-                            target: self.core.id,
-                            field: VisualField::X,
-                            from: prev_offset_x,
-                            to: 0.0,
-                            transition: runtime_visual,
-                        });
-                        self.layout_transition_target_x = Some(target_rel_x);
-                    }
-                    let should_start_y = self.layout_transition_target_y.is_none();
-                    if should_start_y && !approx_eq(prev_offset_y, 0.0) {
-                        self.pending_visual_transition_requests.push(VisualTrackRequest {
-                            target: self.core.id,
-                            field: VisualField::Y,
-                            from: prev_offset_y,
-                            to: 0.0,
-                            transition: runtime_visual,
-                        });
-                        self.layout_transition_target_y = Some(target_rel_y);
-                    }
                     let should_start_width = self
                         .layout_transition_target_width
                         .is_none_or(|active| !approx_eq(active, target_width));
