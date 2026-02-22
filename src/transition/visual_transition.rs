@@ -95,6 +95,11 @@ impl VisualTransitionPlugin {
             target,
             channel: field.channel_id(),
         };
+        if let Some(existing) = self.tracks.get(&key) {
+            if (existing.to - to).abs() <= 0.0001 {
+                return Ok(());
+            }
+        }
         if !host.is_channel_registered(key.channel) {
             return Err(StartTrackError::ChannelNotRegistered(key.channel));
         }

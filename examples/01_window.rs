@@ -1,7 +1,9 @@
 use rust_gui::{Transition, TransitionProperty};
 use std::sync::Arc;
 
-use rust_gui::ui::host::{Element, Text, TextArea};
+use rust_gui::ui::host::{
+    Button, Checkbox, Element, NumberField, Select, Slider, Switch, Text, TextArea,
+};
 use rust_gui::ui::{RsxNode, component, globalState, on_click, rsx, take_state_dirty, use_state};
 use rust_gui::{
     Border, BorderRadius, Color, Display, FlowDirection, FlowWrap, HexColor, Length, Padding,
@@ -18,9 +20,19 @@ use winit::window::{Window, WindowId};
 fn MainScene() -> RsxNode {
     let click_count = globalState(|| 0_i32);
     let message = use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing"));
+    let checked = use_state(|| true);
+    let number_value = use_state(|| 3.0_f64);
+    let selected_index = use_state(|| 0_usize);
+    let slider_value = use_state(|| 42.0_f64);
+    let switch_on = use_state(|| false);
 
     let click_count_value = click_count.get();
     let message_value = message.get();
+    let checked_value = checked.get();
+    let number_value_value = number_value.get();
+    let selected_index_value = selected_index.get();
+    let slider_value_value = slider_value.get();
+    let switch_on_value = switch_on.get();
     let increment_state = click_count.clone();
     let increment = on_click(move |event| {
         increment_state.update(|v| *v += 1);
@@ -207,6 +219,65 @@ fn MainScene() -> RsxNode {
                     multiline=false
                     Line breaks should become spaces
                 </TextArea>
+            </Element>
+            <Element style={{
+                width: Length::px(390.0),
+                height: Length::px(290.0),
+                background: "#0f172a",
+                border: Border::uniform(Length::px(2.0), &Color::hex("#1d4ed8")),
+                border_radius: 14,
+                display: Display::Flow,
+                flow_direction: FlowDirection::Column,
+                flow_wrap: FlowWrap::NoWrap,
+                gap: Length::px(8.0),
+                padding: Padding::uniform(Length::px(12.0)),
+            }}>
+                <Text font_size=14 color="#e2e8f0" font="Noto Sans CJK TC">MUI Components Demo</Text>
+                <Element style={{
+                    width: Length::px(330.0),
+                    height: Length::px(34.0),
+                    display: Display::Flow,
+                    flow_direction: FlowDirection::Row,
+                    flow_wrap: FlowWrap::NoWrap,
+                    gap: Length::px(8.0)
+                }}>
+                    <Button label="Contained" width=98 height=34 variant="contained" />
+                    <Button label="Outlined" width=98 height=34 variant="outlined" />
+                    <Button label="Text" width=70 height=34 variant="text" />
+                </Element>
+                <Checkbox label="Enable feature" binding={checked.binding()} width=180 height=30 />
+                <Element style={{
+                    width: Length::px(300.0),
+                    height: Length::px(36.0),
+                    display: Display::Flow,
+                    flow_direction: FlowDirection::Row,
+                    flow_wrap: FlowWrap::NoWrap,
+                    gap: Length::px(8.0)
+                }}>
+                    <NumberField binding={number_value.binding()} min=0.0 max=10.0 step=0.5 width=136 height=36 />
+                    <Select
+                        options={vec![
+                            String::from("Option A"),
+                            String::from("Option B"),
+                            String::from("Option C"),
+                        ]}
+                        binding={selected_index.binding()}
+                        width=140
+                        height=36
+                    />
+                </Element>
+                <Slider binding={slider_value.binding()} min=0.0 max=100.0 width=180 height=30 />
+                <Switch label="Dark mode" binding={switch_on.binding()} />
+                <Text font_size=12 color="#93c5fd" font="Noto Sans CJK TC">
+                    {format!(
+                        "checked={} number={:.1} selected={} slider={:.0} switch={}",
+                        checked_value,
+                        number_value_value,
+                        selected_index_value,
+                        slider_value_value,
+                        switch_on_value
+                    )}
+                </Text>
             </Element>
         </Element>
     }

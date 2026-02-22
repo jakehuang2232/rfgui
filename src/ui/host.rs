@@ -1,16 +1,23 @@
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
-    MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxChildrenPolicy, RsxNode,
+    MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxChildrenPolicy,
     RsxPropSchema, RsxProps, RsxTag,
 };
 use crate::{
     AlignItems, BorderRadius, ColorLike, Display, FlowDirection, FlowWrap, JustifyContent, Length,
     Opacity, Padding, ScrollDirection, Style, Transitions,
 };
+use crate::ui::RsxNode;
 
 pub struct Element;
 pub struct Text;
 pub struct TextArea;
+pub struct Button;
+pub struct Checkbox;
+pub struct NumberField;
+pub struct Select;
+pub struct Slider;
+pub struct Switch;
 
 pub struct ElementPropSchema {
     pub padding: f64,
@@ -87,6 +94,60 @@ pub struct TextAreaPropSchema {
     pub read_only: bool,
     pub max_length: i64,
     pub children: String,
+}
+
+pub struct ButtonPropSchema {
+    pub label: String,
+    pub width: f64,
+    pub height: f64,
+    pub variant: String,
+    pub disabled: bool,
+}
+
+pub struct CheckboxPropSchema {
+    pub label: String,
+    pub checked: bool,
+    pub binding: crate::ui::Binding<bool>,
+    pub width: f64,
+    pub height: f64,
+    pub disabled: bool,
+}
+
+pub struct NumberFieldPropSchema {
+    pub value: f64,
+    pub binding: crate::ui::Binding<f64>,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub width: f64,
+    pub height: f64,
+    pub disabled: bool,
+}
+
+pub struct SelectPropSchema {
+    pub options: Vec<String>,
+    pub selected_index: i64,
+    pub binding: crate::ui::Binding<usize>,
+    pub width: f64,
+    pub height: f64,
+    pub disabled: bool,
+}
+
+pub struct SliderPropSchema {
+    pub value: f64,
+    pub binding: crate::ui::Binding<f64>,
+    pub min: f64,
+    pub max: f64,
+    pub width: f64,
+    pub height: f64,
+    pub disabled: bool,
+}
+
+pub struct SwitchPropSchema {
+    pub label: String,
+    pub checked: bool,
+    pub binding: crate::ui::Binding<bool>,
+    pub disabled: bool,
 }
 
 impl RsxTag for Element {
@@ -226,4 +287,165 @@ impl RsxPropSchema for TextArea {
 
 impl RsxChildrenPolicy for TextArea {
     const ACCEPTS_CHILDREN: bool = true;
+}
+
+impl RsxTag for Button {
+    fn rsx_render(mut props: RsxProps, _children: Vec<RsxNode>) -> Result<RsxNode, String> {
+        let mut node = RsxNode::element("Button");
+
+        for key in ["label", "width", "height", "variant", "disabled"] {
+            if let Some(value) = props.remove_raw(key) {
+                node = node.with_prop(key, value);
+            }
+        }
+
+        props.reject_remaining("Button")?;
+        Ok(node)
+    }
+}
+
+impl RsxPropSchema for Button {
+    type PropsSchema = ButtonPropSchema;
+}
+
+impl RsxChildrenPolicy for Button {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
+impl RsxTag for Checkbox {
+    fn rsx_render(mut props: RsxProps, _children: Vec<RsxNode>) -> Result<RsxNode, String> {
+        let mut node = RsxNode::element("Checkbox");
+
+        if let Some(binding) = props.remove_t::<crate::ui::Binding<bool>>("binding")? {
+            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+        }
+
+        for key in ["label", "checked", "binding", "width", "height", "disabled"] {
+            if let Some(value) = props.remove_raw(key) {
+                node = node.with_prop(key, value);
+            }
+        }
+
+        props.reject_remaining("Checkbox")?;
+        Ok(node)
+    }
+}
+
+impl RsxPropSchema for Checkbox {
+    type PropsSchema = CheckboxPropSchema;
+}
+
+impl RsxChildrenPolicy for Checkbox {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
+impl RsxTag for NumberField {
+    fn rsx_render(mut props: RsxProps, _children: Vec<RsxNode>) -> Result<RsxNode, String> {
+        let mut node = RsxNode::element("NumberField");
+
+        if let Some(binding) = props.remove_t::<crate::ui::Binding<f64>>("binding")? {
+            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+        }
+
+        for key in ["value", "binding", "min", "max", "step", "width", "height", "disabled"] {
+            if let Some(value) = props.remove_raw(key) {
+                node = node.with_prop(key, value);
+            }
+        }
+
+        props.reject_remaining("NumberField")?;
+        Ok(node)
+    }
+}
+
+impl RsxPropSchema for NumberField {
+    type PropsSchema = NumberFieldPropSchema;
+}
+
+impl RsxChildrenPolicy for NumberField {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
+impl RsxTag for Select {
+    fn rsx_render(mut props: RsxProps, _children: Vec<RsxNode>) -> Result<RsxNode, String> {
+        let mut node = RsxNode::element("Select");
+
+        if let Some(options) = props.remove_t::<Vec<String>>("options")? {
+            node = node.with_prop("options", crate::ui::IntoPropValue::into_prop_value(options));
+        }
+        if let Some(binding) = props.remove_t::<crate::ui::Binding<usize>>("binding")? {
+            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+        }
+
+        for key in ["options", "selected_index", "binding", "width", "height", "disabled"] {
+            if let Some(value) = props.remove_raw(key) {
+                node = node.with_prop(key, value);
+            }
+        }
+
+        props.reject_remaining("Select")?;
+        Ok(node)
+    }
+}
+
+impl RsxPropSchema for Select {
+    type PropsSchema = SelectPropSchema;
+}
+
+impl RsxChildrenPolicy for Select {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
+impl RsxTag for Slider {
+    fn rsx_render(mut props: RsxProps, _children: Vec<RsxNode>) -> Result<RsxNode, String> {
+        let mut node = RsxNode::element("Slider");
+
+        if let Some(binding) = props.remove_t::<crate::ui::Binding<f64>>("binding")? {
+            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+        }
+
+        for key in ["value", "binding", "min", "max", "width", "height", "disabled"] {
+            if let Some(value) = props.remove_raw(key) {
+                node = node.with_prop(key, value);
+            }
+        }
+
+        props.reject_remaining("Slider")?;
+        Ok(node)
+    }
+}
+
+impl RsxPropSchema for Slider {
+    type PropsSchema = SliderPropSchema;
+}
+
+impl RsxChildrenPolicy for Slider {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
+impl RsxTag for Switch {
+    fn rsx_render(mut props: RsxProps, _children: Vec<RsxNode>) -> Result<RsxNode, String> {
+        let mut node = RsxNode::element("Switch");
+
+        if let Some(binding) = props.remove_t::<crate::ui::Binding<bool>>("binding")? {
+            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+        }
+
+        for key in ["label", "checked", "binding", "disabled"] {
+            if let Some(value) = props.remove_raw(key) {
+                node = node.with_prop(key, value);
+            }
+        }
+
+        props.reject_remaining("Switch")?;
+        Ok(node)
+    }
+}
+
+impl RsxPropSchema for Switch {
+    type PropsSchema = SwitchPropSchema;
+}
+
+impl RsxChildrenPolicy for Switch {
+    const ACCEPTS_CHILDREN: bool = false;
 }
