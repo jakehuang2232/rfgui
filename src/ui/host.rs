@@ -73,6 +73,7 @@ pub struct TextPropSchema {
 
 pub struct TextAreaPropSchema {
     pub content: String,
+    pub binding: crate::ui::Binding<String>,
     pub placeholder: String,
     pub color: String,
     pub x: f64,
@@ -184,9 +185,13 @@ impl RsxTag for TextArea {
         if let Some(read_only) = props.remove_t::<bool>("read_only")? {
             node = node.with_prop("read_only", read_only);
         }
+        if let Some(binding) = props.remove_t::<crate::ui::Binding<String>>("binding")? {
+            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+        }
 
         for key in [
             "content",
+            "binding",
             "placeholder",
             "color",
             "x",

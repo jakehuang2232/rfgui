@@ -1,6 +1,6 @@
 use crate::HexColor;
 use crate::Style;
-use crate::ui::{PropValue, RenderBackend, RsxElementNode, RsxNode};
+use crate::ui::{Binding, FromPropValue, PropValue, RenderBackend, RsxElementNode, RsxNode};
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
 
@@ -277,6 +277,7 @@ fn convert_text_area_element(
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut text_content = String::new();
     let mut placeholder = String::new();
+    let mut binding: Option<Binding<String>> = None;
     let mut text_area = TextArea::from_content_with_id(stable_node_id(path, "TextArea"), "");
     let mut x: Option<f32> = None;
     let mut y: Option<f32> = None;
@@ -290,6 +291,9 @@ fn convert_text_area_element(
             }
             "placeholder" => {
                 placeholder = as_owned_string(value, key)?;
+            }
+            "binding" => {
+                binding = Some(as_binding_string(value, key)?);
             }
             "x" => {
                 x = Some(as_f32(value, key)?);
@@ -326,16 +330,23 @@ fn convert_text_area_element(
         text_area.set_auto_height(true);
     }
 
-    if text_content.is_empty() {
-        for child in &node.children {
-            match child {
-                RsxNode::Text(content) => text_content.push_str(content),
-                _ => return Err("<TextArea> children must be text".to_string()),
+    if binding.is_none() {
+        if text_content.is_empty() {
+            for child in &node.children {
+                match child {
+                    RsxNode::Text(content) => text_content.push_str(content),
+                    _ => return Err("<TextArea> children must be text".to_string()),
+                }
             }
         }
+        text_area.set_text(text_content);
+    } else if let Some(bound) = binding.as_ref() {
+        text_area.set_text(bound.get());
     }
 
-    text_area.set_text(text_content);
+    if let Some(bound) = binding {
+        text_area.bind_text(bound);
+    }
     if !placeholder.is_empty() {
         text_area.set_placeholder(placeholder);
     }
@@ -388,6 +399,11 @@ fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
 
 fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
     Ok(as_string(value, key)?.to_string())
+}
+
+fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
+    Binding::<String>::from_prop_value(value.clone())
+        .map_err(|_| format!("prop `{key}` expects Binding<String> value"))
 }
 
 fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {

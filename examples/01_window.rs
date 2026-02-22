@@ -1,9 +1,8 @@
 use rust_gui::{Transition, TransitionProperty};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use rust_gui::ui::host::{Element, Text, TextArea};
-use rust_gui::ui::{RsxNode, component, on_click, rsx};
+use rust_gui::ui::{RsxNode, component, globalState, on_click, rsx, take_state_dirty, use_state};
 use rust_gui::{
     Border, BorderRadius, Color, Display, FlowDirection, FlowWrap, HexColor, Length, Padding,
     ScrollDirection, Viewport,
@@ -17,12 +16,17 @@ use winit::window::{Window, WindowId};
 
 #[component]
 fn MainScene() -> RsxNode {
-    let click_count = MAIN_SCENE_CLICK_COUNT.load(Ordering::Relaxed);
-    let increment = on_click(|event| {
-        MAIN_SCENE_CLICK_COUNT.fetch_add(1, Ordering::Relaxed);
-        MAIN_SCENE_DIRTY.store(true, Ordering::Release);
+    let click_count = globalState(|| 0_i32);
+    let message = use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing"));
+
+    let click_count_value = click_count.get();
+    let message_value = message.get();
+    let increment_state = click_count.clone();
+    let increment = on_click(move |event| {
+        increment_state.update(|v| *v += 1);
         event.meta.stop_propagation();
     });
+
     rsx! {
         <Element style={{
             width: Length::percent(100.0),
@@ -130,7 +134,7 @@ fn MainScene() -> RsxNode {
                 <Text x=12 y=10 font_size=22 color="#abb2bf" font="Noto Sans CJK TC">
                     Button Test
                 </Text>
-                <Text x=12 y=48 font_size=14 color="#abb2bf" font="Noto Sans CJK TC">{format!("Click Count: {}", click_count)}</Text>
+                <Text x=12 y=48 font_size=14 color="#abb2bf" font="Noto Sans CJK TC">{format!("Click Count: {}", click_count_value)}</Text>
                 <Element style={{ width: Length::px(48.0), height: Length::px(48.0), background: "#98c379", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 20 }} on_click={increment}>
                     Click Me
                 </Element>
@@ -195,11 +199,10 @@ fn MainScene() -> RsxNode {
             </Element>
             <Element style={{ width: Length::px(320.0), height: Length::px(170.0), background: "#2c313c", border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")), border_radius: 16 }}>
                 <Text x=12 y=10 font_size=14 color="#e5e9f0" font="Noto Sans CJK TC">TextArea Test</Text>
-                <TextArea x=12 y=34 width=296 height=54 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=true placeholder="Please enter multiline content...">
-                    Line 1: multiline=true
-                    Line 2: preserve line breaks
-                    This is a very long line of content test test test test test test test test test test test test test
-                </TextArea>
+                <Text x=12 y=118 font_size=12 color="#aab4c6" font="Noto Sans CJK TC">
+                    {format!("Bound chars: {}", message_value.chars().count())}
+                </Text>
+                <TextArea x=12 y=34 width=296 height=78 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
                 <TextArea x=12 y=98 width=296 height=26 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=false read_only=true>
                     multiline=false
                     Line breaks should become spaces
@@ -347,7 +350,6 @@ impl ApplicationHandler for App {
                 self.mark_ime_dirty();
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let mut should_rebuild = false;
                 if let Some(viewport) = &mut self.viewport {
                     let button = map_mouse_button(button);
                     viewport.set_mouse_button_pressed(button, state == ElementState::Pressed);
@@ -356,18 +358,9 @@ impl ApplicationHandler for App {
                     } else {
                         viewport.dispatch_mouse_up_event(button);
                         viewport.dispatch_click_event(button);
-                        if MAIN_SCENE_DIRTY.swap(false, Ordering::AcqRel) {
-                            should_rebuild = true;
-                        }
                     }
                 }
                 self.mark_ime_dirty();
-                if should_rebuild {
-                    self.rebuild_app();
-                    if let Some(viewport) = &mut self.viewport {
-                        viewport.request_redraw();
-                    }
-                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(viewport) = &mut self.viewport {
@@ -410,6 +403,13 @@ impl ApplicationHandler for App {
             _ => (),
         }
 
+        if take_state_dirty() {
+            self.rebuild_app();
+            if let Some(viewport) = &mut self.viewport {
+                viewport.request_redraw();
+            }
+        }
+
         if let (Some(window), Some(viewport)) = (&self.window, &mut self.viewport) {
             if viewport.take_redraw_request() {
                 window.request_redraw();
@@ -443,6 +443,3 @@ fn main() {
     let mut app = App::default();
     event_loop.run_app(&mut app).unwrap();
 }
-
-static MAIN_SCENE_CLICK_COUNT: AtomicI32 = AtomicI32::new(0);
-static MAIN_SCENE_DIRTY: AtomicBool = AtomicBool::new(false);

@@ -1,6 +1,8 @@
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use arboard::Clipboard;
 use wgpu::{
     Instance, Queue, TextureUsages,
     rwh::{HasDisplayHandle, HasWindowHandle},
@@ -98,6 +100,14 @@ impl<'a> ViewportControl<'a> {
             self.viewport.set_pointer_capture_node_id(None);
         }
     }
+
+    pub fn set_clipboard_text(&mut self, text: impl Into<String>) {
+        self.viewport.set_clipboard_text(text);
+    }
+
+    pub fn clipboard_text(&mut self) -> Option<String> {
+        self.viewport.clipboard_text()
+    }
 }
 
 struct TransitionHostAdapter<'a> {
@@ -159,9 +169,12 @@ pub struct Viewport {
     frame_stats: FrameStats,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
     input_state: InputState,
+    clipboard: Option<Clipboard>,
+    clipboard_fallback: Option<String>,
     dispatched_focus_node_id: Option<u64>,
     ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
     scroll_offsets: HashMap<u64, (f32, f32)>,
+    element_snapshots: HashMap<u64, Box<dyn Any>>,
     last_rsx_root: Option<RsxNode>,
     transition_channels: HashSet<ChannelId>,
     transition_claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
@@ -251,6 +264,34 @@ impl Viewport {
             }
             if let Some(children) = root.children_mut() {
                 Self::restore_scroll_states(children, map);
+            }
+        }
+    }
+
+    fn save_element_snapshots(
+        roots: &[Box<dyn super::base_component::ElementTrait>],
+        map: &mut HashMap<u64, Box<dyn Any>>,
+    ) {
+        for root in roots {
+            if let Some(snapshot) = root.snapshot_state() {
+                map.insert(root.id(), snapshot);
+            }
+            if let Some(children) = root.children() {
+                Self::save_element_snapshots(children, map);
+            }
+        }
+    }
+
+    fn restore_element_snapshots(
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+        map: &HashMap<u64, Box<dyn Any>>,
+    ) {
+        for root in roots {
+            if let Some(snapshot) = map.get(&root.id()) {
+                let _ = root.restore_state(snapshot.as_ref());
+            }
+            if let Some(children) = root.children_mut() {
+                Self::restore_element_snapshots(children, map);
             }
         }
     }
@@ -496,9 +537,12 @@ impl Viewport {
             frame_stats: FrameStats::new_from_env(),
             frame_box_models: Vec::new(),
             input_state: InputState::default(),
+            clipboard: Clipboard::new().ok(),
+            clipboard_fallback: None,
             dispatched_focus_node_id: None,
             ui_roots: Vec::new(),
             scroll_offsets: HashMap::new(),
+            element_snapshots: HashMap::new(),
             last_rsx_root: None,
             transition_channels: HashSet::from([
                 CHANNEL_SCROLL_X,
@@ -763,6 +807,8 @@ impl Viewport {
             // Clear and save current scroll states
             self.scroll_offsets.clear();
             Self::save_scroll_states(&self.ui_roots, &mut self.scroll_offsets);
+            self.element_snapshots.clear();
+            Self::save_element_snapshots(&self.ui_roots, &mut self.element_snapshots);
             let layout_snapshots =
                 super::base_component::collect_layout_transition_snapshots(&self.ui_roots);
 
@@ -771,6 +817,7 @@ impl Viewport {
 
             // Restore scroll states into new elements
             Self::restore_scroll_states(&mut self.ui_roots, &self.scroll_offsets);
+            Self::restore_element_snapshots(&mut self.ui_roots, &self.element_snapshots);
             super::base_component::seed_layout_transition_snapshots(
                 &mut self.ui_roots,
                 &layout_snapshots,
@@ -902,6 +949,24 @@ impl Viewport {
         self.input_state.pressed_keys.iter().map(String::as_str)
     }
 
+    pub fn set_clipboard_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.clipboard_fallback = Some(text.clone());
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            let _ = clipboard.set_text(text);
+        }
+    }
+
+    pub fn clipboard_text(&mut self) -> Option<String> {
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            if let Ok(text) = clipboard.get_text() {
+                self.clipboard_fallback = Some(text.clone());
+                return Some(text);
+            }
+        }
+        self.clipboard_fallback.clone()
+    }
+
     pub fn clear_input_state(&mut self) {
         self.set_focused_node_id(None);
         self.sync_focus_dispatch();
@@ -918,6 +983,7 @@ impl Viewport {
         let Some((x, y)) = self.mouse_position_viewport() else {
             return false;
         };
+        let focus_before = self.focused_node_id();
         let buttons = self.current_ui_mouse_buttons();
         let mut event = MouseDownEvent {
             meta: EventMeta::new(0),
@@ -928,7 +994,7 @@ impl Viewport {
                 local_y: 0.0,
                 button: Some(to_ui_mouse_button(button)),
                 buttons,
-                modifiers: current_key_modifiers(),
+                modifiers: self.current_key_modifiers(),
             },
         };
         let mut roots = std::mem::take(&mut self.ui_roots);
@@ -949,6 +1015,16 @@ impl Viewport {
         self.ui_roots = roots;
         self.sync_focus_dispatch();
         if handled {
+            let clicked_target = event.meta.target_id();
+            let focus_after = self.focused_node_id();
+            let focus_changed_by_handler = focus_after != focus_before;
+            if !focus_changed_by_handler
+                && focus_before.is_some()
+                && Some(clicked_target) != focus_before
+            {
+                self.set_focused_node_id(None);
+                self.sync_focus_dispatch();
+            }
             self.request_redraw();
         } else if self.focused_node_id().is_some() {
             self.set_focused_node_id(None);
@@ -977,7 +1053,7 @@ impl Viewport {
                 local_y: 0.0,
                 button: Some(to_ui_mouse_button(button)),
                 buttons,
-                modifiers: current_key_modifiers(),
+                modifiers: self.current_key_modifiers(),
             },
         };
         let mut roots = std::mem::take(&mut self.ui_roots);
@@ -1040,7 +1116,7 @@ impl Viewport {
                 local_y: 0.0,
                 button: None,
                 buttons,
-                modifiers: current_key_modifiers(),
+                modifiers: self.current_key_modifiers(),
             },
         };
         let mut handled = false;
@@ -1095,7 +1171,7 @@ impl Viewport {
                 local_y: 0.0,
                 button: Some(to_ui_mouse_button(button)),
                 buttons,
-                modifiers: current_key_modifiers(),
+                modifiers: self.current_key_modifiers(),
             },
         };
         let mut roots = std::mem::take(&mut self.ui_roots);
@@ -1199,7 +1275,7 @@ impl Viewport {
                 key,
                 code,
                 repeat,
-                modifiers: current_key_modifiers(),
+                modifiers: self.current_key_modifiers(),
             },
         };
         let mut roots = std::mem::take(&mut self.ui_roots);
@@ -1235,7 +1311,7 @@ impl Viewport {
                 key,
                 code,
                 repeat,
-                modifiers: current_key_modifiers(),
+                modifiers: self.current_key_modifiers(),
             },
         };
         let mut roots = std::mem::take(&mut self.ui_roots);
@@ -1408,6 +1484,27 @@ impl Viewport {
         None
     }
 
+    fn current_key_modifiers(&self) -> KeyModifiers {
+        KeyModifiers {
+            alt: self.is_key_pressed("Named(Alt)")
+                || self.is_key_pressed("Named(AltGraph)")
+                || self.is_key_pressed("Code(AltLeft)")
+                || self.is_key_pressed("Code(AltRight)"),
+            ctrl: self.is_key_pressed("Named(Control)")
+                || self.is_key_pressed("Code(ControlLeft)")
+                || self.is_key_pressed("Code(ControlRight)"),
+            shift: self.is_key_pressed("Named(Shift)")
+                || self.is_key_pressed("Code(ShiftLeft)")
+                || self.is_key_pressed("Code(ShiftRight)"),
+            meta: self.is_key_pressed("Named(Super)")
+                || self.is_key_pressed("Named(Meta)")
+                || self.is_key_pressed("Code(SuperLeft)")
+                || self.is_key_pressed("Code(SuperRight)")
+                || self.is_key_pressed("Code(MetaLeft)")
+                || self.is_key_pressed("Code(MetaRight)"),
+        }
+    }
+
     fn sync_focus_dispatch(&mut self) {
         if self.ui_roots.is_empty() {
             return;
@@ -1500,10 +1597,6 @@ fn to_ui_mouse_button(button: MouseButton) -> crate::ui::MouseButton {
         MouseButton::Forward => crate::ui::MouseButton::Forward,
         MouseButton::Other(v) => crate::ui::MouseButton::Other(v),
     }
-}
-
-fn current_key_modifiers() -> KeyModifiers {
-    KeyModifiers::default()
 }
 
 struct FrameStats {

@@ -1,9 +1,12 @@
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::{ColorLike, HexColor};
+use crate::ui::MouseButton as UiMouseButton;
 use glyphon::cosmic_text::{Affinity, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::time::{Duration, Instant};
+
+use crate::ui::Binding;
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -29,8 +32,12 @@ pub struct TextArea {
     multiline: bool,
     placeholder: String,
     read_only: bool,
+    text_binding: Option<Binding<String>>,
     max_length: Option<usize>,
     cursor_char: usize,
+    selection_anchor_char: Option<usize>,
+    selection_focus_char: Option<usize>,
+    mouse_selecting: bool,
     is_focused: bool,
     scroll_y: f32,
     ime_preedit: String,
@@ -52,6 +59,15 @@ pub struct TextArea {
 struct VisualLine {
     start_char: usize,
     end_char: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TextAreaCursorSnapshot {
+    cursor_char: usize,
+    selection_anchor_char: Option<usize>,
+    selection_focus_char: Option<usize>,
+    scroll_y: f32,
+    is_focused: bool,
 }
 
 impl TextArea {
@@ -115,8 +131,12 @@ impl TextArea {
             multiline: true,
             placeholder: String::new(),
             read_only: false,
+            text_binding: None,
             max_length: None,
             cursor_char: 0,
+            selection_anchor_char: None,
+            selection_focus_char: None,
+            mouse_selecting: false,
             is_focused: false,
             scroll_y: 0.0,
             ime_preedit: String::new(),
@@ -196,6 +216,7 @@ impl TextArea {
         self.invalidate_glyph_layout();
         self.clamp_cursor();
         self.clamp_scroll();
+        self.sync_bound_text();
     }
 
     pub fn set_placeholder(&mut self, placeholder: impl Into<String>) {
@@ -206,13 +227,46 @@ impl TextArea {
         self.read_only = read_only;
     }
 
+    fn cursor_snapshot(&self) -> TextAreaCursorSnapshot {
+        TextAreaCursorSnapshot {
+            cursor_char: self.cursor_char,
+            selection_anchor_char: self.selection_anchor_char,
+            selection_focus_char: self.selection_focus_char,
+            scroll_y: self.scroll_y,
+            is_focused: self.is_focused,
+        }
+    }
+
+    fn apply_cursor_snapshot(&mut self, snapshot: TextAreaCursorSnapshot) {
+        self.cursor_char = snapshot.cursor_char.min(self.content.chars().count());
+        self.selection_anchor_char = snapshot
+            .selection_anchor_char
+            .map(|idx| idx.min(self.content.chars().count()));
+        self.selection_focus_char = snapshot
+            .selection_focus_char
+            .map(|idx| idx.min(self.content.chars().count()));
+        self.scroll_y = snapshot.scroll_y.clamp(0.0, self.max_scroll_y());
+        self.is_focused = snapshot.is_focused;
+        self.cached_ime_cursor_rect = None;
+        self.reset_caret_blink();
+    }
+
+    pub fn bind_text(&mut self, binding: Binding<String>) {
+        self.text_binding = Some(binding);
+        self.sync_bound_text();
+    }
+
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;
         if let Some(limit) = max_length {
+            let prev = self.content.clone();
             self.content = truncate_to_chars(&self.content, limit);
             self.invalidate_glyph_layout();
             self.clamp_cursor();
             self.clamp_scroll();
+            if self.content != prev {
+                self.sync_bound_text();
+            }
         }
     }
 
@@ -251,12 +305,16 @@ impl TextArea {
     }
 
     pub fn set_multiline(&mut self, multiline: bool) {
+        let prev = self.content.clone();
         self.multiline = multiline;
         self.content = normalize_multiline(self.content.clone(), self.multiline);
         self.clear_vertical_goal();
         self.invalidate_glyph_layout();
         self.clamp_cursor();
         self.clamp_scroll();
+        if self.content != prev {
+            self.sync_bound_text();
+        }
     }
 
     fn line_height_px(&self) -> f32 {
@@ -298,8 +356,48 @@ impl TextArea {
     }
 
     fn clamp_cursor(&mut self) {
-        self.cursor_char = self.cursor_char.min(self.content.chars().count());
+        let len = self.content.chars().count();
+        self.cursor_char = self.cursor_char.min(len);
+        self.selection_anchor_char = self.selection_anchor_char.map(|idx| idx.min(len));
+        self.selection_focus_char = self.selection_focus_char.map(|idx| idx.min(len));
         self.cached_ime_cursor_rect = None;
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection_anchor_char = None;
+        self.selection_focus_char = None;
+    }
+
+    fn selection_range_chars(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor_char?;
+        let focus = self.selection_focus_char.unwrap_or(anchor);
+        if anchor == focus {
+            return None;
+        }
+        Some((anchor.min(focus), anchor.max(focus)))
+    }
+
+    fn delete_selected_text(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range_chars() else {
+            return false;
+        };
+        let start_byte = byte_index_at_char(&self.content, start);
+        let end_byte = byte_index_at_char(&self.content, end);
+        self.content.replace_range(start_byte..end_byte, "");
+        self.cursor_char = start;
+        self.clear_selection();
+        self.reset_caret_blink();
+        self.invalidate_glyph_layout();
+        self.clear_vertical_goal();
+        self.sync_bound_text();
+        true
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range_chars()?;
+        let start_byte = byte_index_at_char(&self.content, start);
+        let end_byte = byte_index_at_char(&self.content, end);
+        Some(self.content[start_byte..end_byte].to_string())
     }
 
     fn can_insert_chars(&self) -> usize {
@@ -313,6 +411,9 @@ impl TextArea {
     }
 
     fn insert_text(&mut self, text: &str) -> bool {
+        if self.delete_selected_text() && text.is_empty() {
+            return true;
+        }
         if text.is_empty() {
             return false;
         }
@@ -336,10 +437,14 @@ impl TextArea {
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
         self.clear_vertical_goal();
+        self.sync_bound_text();
         true
     }
 
     fn delete_backspace(&mut self) -> bool {
+        if self.delete_selected_text() {
+            return true;
+        }
         if self.cursor_char == 0 {
             return false;
         }
@@ -350,10 +455,14 @@ impl TextArea {
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
         self.clear_vertical_goal();
+        self.sync_bound_text();
         true
     }
 
     fn delete_forward(&mut self) -> bool {
+        if self.delete_selected_text() {
+            return true;
+        }
         let len = self.content.chars().count();
         if self.cursor_char >= len {
             return false;
@@ -364,7 +473,17 @@ impl TextArea {
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
         self.clear_vertical_goal();
+        self.sync_bound_text();
         true
+    }
+
+    fn sync_bound_text(&self) {
+        let Some(binding) = self.text_binding.as_ref() else {
+            return;
+        };
+        if binding.get() != self.content {
+            binding.set(self.content.clone());
+        }
     }
 
     fn move_cursor_left(&mut self) -> bool {
@@ -497,6 +616,19 @@ impl TextArea {
         self.ensure_cursor_visible();
     }
 
+    fn update_shift_selection_after_move(&mut self, previous_cursor: usize, shift: bool) {
+        if !shift {
+            self.clear_selection();
+            return;
+        }
+        let anchor = self.selection_anchor_char.unwrap_or(previous_cursor);
+        self.selection_anchor_char = Some(anchor);
+        self.selection_focus_char = Some(self.cursor_char);
+        if self.selection_anchor_char == self.selection_focus_char {
+            self.clear_selection();
+        }
+    }
+
     fn ensure_cursor_visible(&mut self) {
         let lines = self.visual_lines();
         let line_index = self.resolve_cursor_line(&lines);
@@ -580,6 +712,58 @@ impl TextArea {
             self.layout_position.x,
             self.layout_position.y + fallback_y - self.scroll_y,
         ))
+    }
+
+    fn selection_screen_rects(&mut self, composed: &str) -> Vec<([f32; 2], [f32; 2])> {
+        let Some((start_char, end_char)) = self.selection_range_chars() else {
+            return Vec::new();
+        };
+        if composed.is_empty() {
+            return Vec::new();
+        }
+
+        let start_byte = byte_index_at_char(composed, start_char);
+        let end_byte = byte_index_at_char(composed, end_char);
+        if start_byte >= end_byte {
+            return Vec::new();
+        }
+
+        let (start_line, start_index) = line_and_index_from_byte(composed, start_byte);
+        let (end_line, end_index) = line_and_index_from_byte(composed, end_byte);
+        let line_lengths = line_lengths_bytes(composed);
+        self.ensure_glyph_layout(composed);
+
+        let mut rects = Vec::new();
+        for run in self.glyph_buffer.layout_runs() {
+            if run.line_i < start_line || run.line_i > end_line {
+                continue;
+            }
+            let line_len = *line_lengths.get(run.line_i).unwrap_or(&0);
+            let local_start = if run.line_i == start_line { start_index } else { 0 };
+            let local_end = if run.line_i == end_line { end_index } else { line_len };
+            if local_end <= local_start {
+                continue;
+            }
+            let Some(x0) = caret_x_in_layout_run(local_start.min(line_len), &run) else {
+                continue;
+            };
+            let Some(x1) = caret_x_in_layout_run(local_end.min(line_len), &run) else {
+                continue;
+            };
+            let left = x0.min(x1);
+            let width = (x1 - x0).abs();
+            if width <= 0.01 {
+                continue;
+            }
+            rects.push((
+                [
+                    self.layout_position.x + left,
+                    self.layout_position.y + run.line_top - self.scroll_y,
+                ],
+                [width, run.line_height.max(1.0)],
+            ));
+        }
+        rects
     }
 
     fn ensure_glyph_layout(&mut self, text: &str) {
@@ -687,29 +871,71 @@ impl TextArea {
         Some((base + caret_in_preedit).min(composed.len()))
     }
 
-    fn handle_key_down(&mut self, event: &crate::ui::KeyDownEvent) -> bool {
+    fn handle_key_down(
+        &mut self,
+        event: &crate::ui::KeyDownEvent,
+        control: &mut crate::view::viewport::ViewportControl<'_>,
+    ) -> bool {
         let key = event.key.key.as_str();
         let code = event.key.code.as_str();
         let modifiers = event.key.modifiers;
+        let shift = modifiers.shift;
+        let shortcut = modifiers.ctrl || modifiers.meta;
 
         if key_matches(key, code, "ArrowLeft") {
-            return self.move_cursor_left();
+            if !shift {
+                if let Some((start, _)) = self.selection_range_chars() {
+                    self.cursor_char = start;
+                    self.clear_selection();
+                    return true;
+                }
+            }
+            let previous = self.cursor_char;
+            let moved = self.move_cursor_left();
+            if moved {
+                self.update_shift_selection_after_move(previous, shift);
+            }
+            return moved;
         }
         if key_matches(key, code, "ArrowRight") {
-            return self.move_cursor_right();
+            if !shift {
+                if let Some((_, end)) = self.selection_range_chars() {
+                    self.cursor_char = end;
+                    self.clear_selection();
+                    return true;
+                }
+            }
+            let previous = self.cursor_char;
+            let moved = self.move_cursor_right();
+            if moved {
+                self.update_shift_selection_after_move(previous, shift);
+            }
+            return moved;
         }
         if key_matches(key, code, "ArrowUp") {
-            return self.move_cursor_vertical(Motion::Up);
+            let previous = self.cursor_char;
+            let moved = self.move_cursor_vertical(Motion::Up);
+            if moved {
+                self.update_shift_selection_after_move(previous, shift);
+            }
+            return moved;
         }
         if key_matches(key, code, "ArrowDown") {
-            return self.move_cursor_vertical(Motion::Down);
+            let previous = self.cursor_char;
+            let moved = self.move_cursor_vertical(Motion::Down);
+            if moved {
+                self.update_shift_selection_after_move(previous, shift);
+            }
+            return moved;
         }
         self.clear_vertical_goal();
         if key_matches(key, code, "Home") {
             if self.cursor_char == 0 {
                 return false;
             }
+            let previous = self.cursor_char;
             self.cursor_char = 0;
+            self.update_shift_selection_after_move(previous, shift);
             return true;
         }
         if key_matches(key, code, "End") {
@@ -717,8 +943,45 @@ impl TextArea {
             if self.cursor_char == end {
                 return false;
             }
+            let previous = self.cursor_char;
             self.cursor_char = end;
+            self.update_shift_selection_after_move(previous, shift);
             return true;
+        }
+        if shortcut && key.eq_ignore_ascii_case("a") {
+            let end = self.content.chars().count();
+            self.selection_anchor_char = Some(0);
+            self.selection_focus_char = Some(end);
+            self.cursor_char = end;
+            self.reset_caret_blink();
+            self.clear_vertical_goal();
+            return true;
+        }
+        if shortcut && key.eq_ignore_ascii_case("c") {
+            if let Some(selected) = self.selected_text() {
+                control.set_clipboard_text(selected);
+                return true;
+            }
+            return false;
+        }
+        if shortcut && key.eq_ignore_ascii_case("x") {
+            if self.read_only {
+                return false;
+            }
+            if let Some(selected) = self.selected_text() {
+                control.set_clipboard_text(selected);
+                return self.delete_selected_text();
+            }
+            return false;
+        }
+        if shortcut && key.eq_ignore_ascii_case("v") {
+            if self.read_only {
+                return false;
+            }
+            let Some(text) = control.clipboard_text() else {
+                return false;
+            };
+            return self.insert_text(text.as_str());
         }
 
         if self.read_only {
@@ -741,7 +1004,7 @@ impl TextArea {
             return self.insert_text("    ");
         }
 
-        if modifiers.ctrl || modifiers.meta || modifiers.alt {
+        if shortcut || modifiers.alt {
             return false;
         }
 
@@ -921,6 +1184,17 @@ fn estimate_line_width_px(line: &str, font_size: f32) -> f32 {
     line.chars().map(|ch| estimate_char_width_px(ch, font_size)).sum()
 }
 
+fn line_lengths_bytes(value: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for segment in value.split('\n') {
+        out.push(segment.len());
+    }
+    if out.is_empty() {
+        out.push(0);
+    }
+    out
+}
+
 fn caret_x_in_layout_run(cursor_index: usize, run: &glyphon::cosmic_text::LayoutRun<'_>) -> Option<f32> {
     let mut found_glyph = None;
     let mut offset = 0.0_f32;
@@ -1091,6 +1365,18 @@ impl ElementTrait for TextArea {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
+
+    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(self.cursor_snapshot()))
+    }
+
+    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
+        let Some(snapshot) = snapshot.downcast_ref::<TextAreaCursorSnapshot>() else {
+            return false;
+        };
+        self.apply_cursor_snapshot(*snapshot);
+        true
+    }
 }
 
 impl EventTarget for TextArea {
@@ -1101,8 +1387,19 @@ impl EventTarget for TextArea {
     ) {
         control.set_focus(Some(self.id()));
         self.is_focused = true;
+        self.clear_preedit();
         self.reset_caret_blink();
+        let previous = self.cursor_char;
         self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+        if event.mouse.modifiers.shift {
+            let anchor = self.selection_anchor_char.unwrap_or(previous);
+            self.selection_anchor_char = Some(anchor);
+            self.selection_focus_char = Some(self.cursor_char);
+        } else {
+            self.selection_anchor_char = Some(self.cursor_char);
+            self.selection_focus_char = Some(self.cursor_char);
+        }
+        self.mouse_selecting = event.mouse.button == Some(UiMouseButton::Left);
         self.element.dispatch_mouse_down(event, control);
         event.meta.stop_propagation();
         control.request_redraw();
@@ -1113,6 +1410,13 @@ impl EventTarget for TextArea {
         event: &mut crate::ui::MouseUpEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
+        if event.mouse.button == Some(UiMouseButton::Left) {
+            self.mouse_selecting = false;
+            if self.selection_anchor_char == self.selection_focus_char {
+                self.clear_selection();
+            }
+            control.request_redraw();
+        }
         self.element.dispatch_mouse_up(event, control);
     }
 
@@ -1121,6 +1425,15 @@ impl EventTarget for TextArea {
         event: &mut crate::ui::MouseMoveEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
+        if self.mouse_selecting && event.mouse.buttons.left {
+            self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+            if self.selection_anchor_char.is_none() {
+                self.selection_anchor_char = Some(self.cursor_char);
+            }
+            self.selection_focus_char = Some(self.cursor_char);
+            event.meta.stop_propagation();
+            control.request_redraw();
+        }
         self.element.dispatch_mouse_move(event, control);
     }
 
@@ -1138,7 +1451,7 @@ impl EventTarget for TextArea {
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         self.clear_preedit();
-        let handled = self.handle_key_down(event);
+        let handled = self.handle_key_down(event, control);
         if handled {
             self.ensure_cursor_visible();
             event.meta.stop_propagation();
@@ -1201,6 +1514,7 @@ impl EventTarget for TextArea {
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         self.is_focused = false;
+        self.mouse_selecting = false;
         self.cached_ime_cursor_rect = None;
         self.glyph_layout_valid = false;
         self.clear_preedit();
@@ -1380,6 +1694,17 @@ impl Renderable for TextArea {
         ]);
 
         if !content.is_empty() {
+            for (position, size) in self.selection_screen_rects(content.as_str()) {
+                let mut selection_pass = DrawRectPass::new(
+                    position,
+                    size,
+                    [0.28, 0.52, 0.94, 0.35],
+                    opacity,
+                );
+                selection_pass.set_scissor_rect(clip);
+                ctx.push_pass(graph, selection_pass);
+            }
+
             let mut pass = TextPass::new(
                 content,
                 self.layout_position.x,
@@ -1455,5 +1780,26 @@ mod tests {
         let lines = area.visual_lines();
         assert!(lines.len() >= 2);
         assert_eq!(area.resolve_cursor_line(&lines), 1);
+    }
+
+    #[test]
+    fn delete_selected_text_removes_range() {
+        let mut area = TextArea::from_content("hello world");
+        area.selection_anchor_char = Some(0);
+        area.selection_focus_char = Some(5);
+        assert!(area.delete_selected_text());
+        assert_eq!(area.content, " world");
+        assert_eq!(area.cursor_char, 0);
+        assert!(area.selection_range_chars().is_none());
+    }
+
+    #[test]
+    fn insert_replaces_selected_text() {
+        let mut area = TextArea::from_content("hello world");
+        area.selection_anchor_char = Some(6);
+        area.selection_focus_char = Some(11);
+        assert!(area.insert_text("rust"));
+        assert_eq!(area.content, "hello rust");
+        assert_eq!(area.cursor_char, 10);
     }
 }
