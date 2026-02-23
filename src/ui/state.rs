@@ -13,6 +13,12 @@ pub struct Binding<T: 'static> {
 }
 
 impl<T: 'static> Binding<T> {
+    pub fn new(initial: T) -> Self {
+        Self {
+            cell: Rc::new(RefCell::new(initial)),
+        }
+    }
+
     pub(crate) fn from_cell(cell: Rc<RefCell<T>>) -> Self {
         Self { cell }
     }

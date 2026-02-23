@@ -365,6 +365,17 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.padding requires an expression value");
             },
         },
+        "position" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::Position,
+                    ::rfgui::ParsedValue::Position(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.position requires an expression value");
+            },
+        },
         "width" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(

@@ -1,9 +1,9 @@
-use crate::style::{
-    AlignItems, BorderRadius, Color, Display, FlowDirection, Length, Padding, ParsedValue,
-    PropertyId, Style, Transition, TransitionProperty, Transitions,
+use rfgui::{
+    AlignItems, BorderRadius, Color, Display, Length, Padding, ParsedValue, PropertyId, Style,
+    Transition, TransitionProperty, Transitions,
 };
-use crate::ui::host::{Element, Text};
-use crate::ui::{Binding, RsxNode, on_click, rsx};
+use rfgui::ui::host::{Element, Text};
+use rfgui::ui::{Binding, RsxNode, component, on_click, rsx, use_state};
 
 pub struct SwitchProps {
     pub label: String,
@@ -24,33 +24,54 @@ impl SwitchProps {
 }
 
 pub fn build_switch_rsx(props: SwitchProps) -> RsxNode {
-    let checked = props
+    let has_binding = props.checked_binding.is_some();
+    let binding = props
         .checked_binding
-        .as_ref()
-        .map(|v| v.get())
-        .unwrap_or(props.checked);
+        .unwrap_or_else(|| Binding::new(props.checked));
+    rsx! {
+        <SwitchComponent
+            label={props.label}
+            checked={props.checked}
+            has_binding={has_binding}
+            binding={binding}
+            disabled={props.disabled}
+        />
+    }
+}
 
-    let binding = props.checked_binding.clone();
-    let disabled = props.disabled;
+#[component]
+fn SwitchComponent(
+    label: String,
+    checked: bool,
+    has_binding: bool,
+    binding: Binding<bool>,
+    disabled: bool,
+) -> RsxNode {
+    let fallback_checked = use_state(|| checked);
+    let checked_binding = if has_binding {
+        binding
+    } else {
+        fallback_checked.binding()
+    };
+    let checked = checked_binding.get();
+
     let click = on_click(move |_event| {
         if disabled {
             return;
         }
-        if let Some(binding) = &binding {
-            binding.set(!binding.get());
-        }
+        checked_binding.set(!checked_binding.get());
     });
 
-    let label_color = if props.disabled { "#9E9E9E" } else { "#1F2937" };
+    let label_color = if disabled { "#9E9E9E" } else { "#1F2937" };
 
     rsx! {
         <Element style={switch_root_style()} on_click={click}>
-            <Element style={switch_track_style(checked, props.disabled)}>
+            <Element style={switch_track_style(checked, disabled)}>
                 <Element style={switch_spacer_style(checked)} />
-                <Element style={switch_thumb_style(props.disabled)} />
+                <Element style={switch_thumb_style(disabled)} />
             </Element>
-            <Text x=56 y=8 font_size=14 font="Heiti TC, Noto Sans CJK TC, Roboto" color={label_color}>
-                {props.label}
+            <Text font_size=14 font="Heiti TC, Noto Sans CJK TC, Roboto" color={label_color}>
+                {label}
             </Text>
         </Element>
     }
@@ -60,15 +81,23 @@ fn switch_root_style() -> Style {
     let mut style = Style::new();
     style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
     style.insert(PropertyId::Height, ParsedValue::Length(Length::px(34.0)));
+    style.insert(
+        PropertyId::Display,
+        ParsedValue::Display(Display::flow().row().no_wrap()),
+    );
+    style.insert(
+        PropertyId::AlignItems,
+        ParsedValue::AlignItems(AlignItems::Center),
+    );
+    style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(12.0)));
     style
 }
 
 fn switch_track_style(checked: bool, disabled: bool) -> Style {
     let mut style = Style::new();
-    style.insert(PropertyId::Display, ParsedValue::Display(Display::Flow));
     style.insert(
-        PropertyId::FlowDirection,
-        ParsedValue::FlowDirection(FlowDirection::Row),
+        PropertyId::Display,
+        ParsedValue::Display(Display::flow().row().no_wrap()),
     );
     style.insert(
         PropertyId::AlignItems,

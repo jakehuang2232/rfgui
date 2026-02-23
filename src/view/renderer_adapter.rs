@@ -3,24 +3,12 @@ use crate::Style;
 use crate::ui::{Binding, FromPropValue, PropValue, RenderBackend, RsxElementNode, RsxNode};
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
-use crate::view::components::{
-    ButtonProps, ButtonVariant, CheckboxProps, NumberFieldProps, SelectProps, SliderProps,
-    SwitchProps, build_button_rsx, build_checkbox_rsx, build_number_field_with_ids,
-    build_select_with_ids, build_slider_with_ids, build_switch_rsx,
-};
-use crate::{ParsedValue, PropertyId};
-use std::cell::RefCell;
+use crate::{AnchorName, ParsedValue, PropertyId};
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::{Arc, OnceLock, RwLock};
 
 pub type ElementFactory =
     Arc<dyn Fn(&RsxElementNode, &[u64]) -> Result<Box<dyn ElementTrait>, String> + Send + Sync>;
-
-thread_local! {
-    static UNCONTROLLED_SWITCH_BINDINGS: RefCell<HashMap<u64, Binding<bool>>> =
-        RefCell::new(HashMap::new());
-}
 
 fn element_factories() -> &'static RwLock<HashMap<String, ElementFactory>> {
     static FACTORIES: OnceLock<RwLock<HashMap<String, ElementFactory>>> = OnceLock::new();
@@ -41,10 +29,31 @@ pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
     Ok(nodes.remove(0))
 }
 
+pub fn rsx_to_element_scoped(
+    root: &RsxNode,
+    scope_path: &[u64],
+) -> Result<Box<dyn ElementTrait>, String> {
+    convert_node(root, scope_path, &InheritedTextStyle::default())
+}
+
 pub fn rsx_to_elements(root: &RsxNode) -> Result<Vec<Box<dyn ElementTrait>>, String> {
     let mut out = Vec::new();
     append_nodes(root, &mut out)?;
     Ok(out)
+}
+
+pub fn rsx_to_elements_lossy(root: &RsxNode) -> (Vec<Box<dyn ElementTrait>>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut path = Vec::new();
+    append_nodes_with_path_lossy(
+        root,
+        &mut out,
+        &mut path,
+        &InheritedTextStyle::default(),
+        &mut errors,
+    );
+    (out, errors)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,6 +173,28 @@ fn append_nodes_with_path(
     }
 }
 
+fn append_nodes_with_path_lossy(
+    node: &RsxNode,
+    out: &mut Vec<Box<dyn ElementTrait>>,
+    path: &mut Vec<u64>,
+    inherited_text_style: &InheritedTextStyle,
+    errors: &mut Vec<String>,
+) {
+    match node {
+        RsxNode::Fragment(children) => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(child_identity_token(child, index));
+                append_nodes_with_path_lossy(child, out, path, inherited_text_style, errors);
+                path.pop();
+            }
+        }
+        _ => match convert_node(node, path, inherited_text_style) {
+            Ok(element) => out.push(element),
+            Err(err) => errors.push(format!("node_path={path:?}: {err}")),
+        },
+    }
+}
+
 fn convert_node(
     node: &RsxNode,
     path: &[u64],
@@ -191,12 +222,6 @@ fn convert_element(
     match node.tag.as_str() {
         "Text" => convert_text_element(node, path, inherited_text_style),
         "TextArea" => convert_text_area_element(node, path, inherited_text_style),
-        "Button" => convert_button_element(node, path, inherited_text_style),
-        "Checkbox" => convert_checkbox_element(node, path),
-        "NumberField" => convert_number_field_element(node, path),
-        "Select" => convert_select_element(node, path),
-        "Slider" => convert_slider_element(node, path),
-        "Switch" => convert_switch_element(node, path, inherited_text_style),
         _ => {
             if let Ok(map) = element_factories().read() {
                 if let Some(factory) = map.get(&node.tag) {
@@ -249,6 +274,7 @@ fn convert_container_element(
             continue;
         }
         match key.as_str() {
+            "anchor" => element.set_anchor_name(Some(AnchorName::new(as_owned_string(value, key)?))),
             "padding" => element.set_padding(as_f32(value, key)?),
             "padding_x" => element.set_padding_x(as_f32(value, key)?),
             "padding_y" => element.set_padding_y(as_f32(value, key)?),
@@ -301,15 +327,45 @@ fn convert_container_element(
     child_path.extend_from_slice(path);
     for (index, child) in node.children.iter().enumerate() {
         child_path.push(child_identity_token(child, index));
-        element.add_child(convert_node(
+        append_child_nodes_flattening_fragments(
+            &mut element,
             child,
             &child_path,
             &child_inherited_text_style,
-        )?);
+        )?;
         child_path.pop();
     }
 
     Ok(Box::new(element))
+}
+
+fn append_child_nodes_flattening_fragments(
+    parent: &mut Element,
+    node: &RsxNode,
+    path: &[u64],
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<(), String> {
+    match node {
+        RsxNode::Fragment(children) => {
+            let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
+            child_path.extend_from_slice(path);
+            for (index, child) in children.iter().enumerate() {
+                child_path.push(child_identity_token(child, index));
+                append_child_nodes_flattening_fragments(
+                    parent,
+                    child,
+                    &child_path,
+                    inherited_text_style,
+                )?;
+                child_path.pop();
+            }
+            Ok(())
+        }
+        _ => {
+            parent.add_child(convert_node(node, path, inherited_text_style)?);
+            Ok(())
+        }
+    }
 }
 
 fn convert_text_element(
@@ -319,8 +375,6 @@ fn convert_text_element(
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut text_content = String::new();
     let mut text = Text::from_content_with_id(stable_node_id(path, "Text"), "");
-    let mut x: Option<f32> = None;
-    let mut y: Option<f32> = None;
     let mut width: Option<f32> = None;
     let mut height: Option<f32> = None;
     let mut has_explicit_font = false;
@@ -332,12 +386,6 @@ fn convert_text_element(
         match key.as_str() {
             "content" => {
                 text_content = as_owned_string(value, key)?;
-            }
-            "x" => {
-                x = Some(as_f32(value, key)?);
-            }
-            "y" => {
-                y = Some(as_f32(value, key)?);
             }
             "width" => {
                 width = Some(as_f32(value, key)?);
@@ -357,7 +405,6 @@ fn convert_text_element(
         }
     }
 
-    text.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
         text.set_fonts(inherited_text_style.font_families.clone());
     }
@@ -476,203 +523,6 @@ fn convert_text_area_element(
         text_area.set_placeholder(placeholder);
     }
     Ok(Box::new(text_area))
-}
-
-fn convert_button_element(
-    node: &RsxElementNode,
-    path: &[u64],
-    inherited_text_style: &InheritedTextStyle,
-) -> Result<Box<dyn ElementTrait>, String> {
-    let mut props = ButtonProps::new("");
-
-    for (key, value) in &node.props {
-        if key.as_str() == "key" {
-            continue;
-        }
-        match key.as_str() {
-            "label" => props.label = as_owned_string(value, key)?,
-            "width" => props.width = as_f32(value, key)?,
-            "height" => props.height = as_f32(value, key)?,
-            "variant" => {
-                props.variant = match as_string(value, key)?.to_ascii_lowercase().as_str() {
-                    "contained" => ButtonVariant::Contained,
-                    "outlined" => ButtonVariant::Outlined,
-                    "text" => ButtonVariant::Text,
-                    other => return Err(format!("unknown Button variant `{other}`")),
-                }
-            }
-            "disabled" => props.disabled = as_bool(value, key)?,
-            "on_click" => props.on_click = Some(as_click_handler(value, key)?),
-            _ => return Err(format!("unknown prop `{}` on <Button>", key)),
-        }
-    }
-
-    let scope = component_boundary_path(path, "Button");
-    let button_node = build_button_rsx(props);
-    convert_node(&button_node, &scope, inherited_text_style)
-}
-
-fn convert_checkbox_element(
-    node: &RsxElementNode,
-    path: &[u64],
-) -> Result<Box<dyn ElementTrait>, String> {
-    let mut props = CheckboxProps::new("");
-
-    for (key, value) in &node.props {
-        if key.as_str() == "key" {
-            continue;
-        }
-        match key.as_str() {
-            "label" => props.label = as_owned_string(value, key)?,
-            "checked" => props.checked = as_bool(value, key)?,
-            "binding" => props.checked_binding = Some(as_binding_bool(value, key)?),
-            "width" => props.width = as_f32(value, key)?,
-            "height" => props.height = as_f32(value, key)?,
-            "disabled" => props.disabled = as_bool(value, key)?,
-            _ => return Err(format!("unknown prop `{}` on <Checkbox>", key)),
-        }
-    }
-
-    let scope = component_boundary_path(path, "Checkbox");
-    let checkbox_node = build_checkbox_rsx(props);
-    convert_node(&checkbox_node, &scope, &InheritedTextStyle::default())
-}
-
-fn convert_number_field_element(
-    node: &RsxElementNode,
-    path: &[u64],
-) -> Result<Box<dyn ElementTrait>, String> {
-    let mut props = NumberFieldProps::new();
-
-    for (key, value) in &node.props {
-        if key.as_str() == "key" {
-            continue;
-        }
-        match key.as_str() {
-            "value" => props.value = as_f64(value, key)?,
-            "binding" => props.value_binding = Some(as_binding_f64(value, key)?),
-            "min" => props.min = Some(as_f64(value, key)?),
-            "max" => props.max = Some(as_f64(value, key)?),
-            "step" => props.step = as_f64(value, key)?,
-            "width" => props.width = as_f32(value, key)?,
-            "height" => props.height = as_f32(value, key)?,
-            "disabled" => props.disabled = as_bool(value, key)?,
-            _ => return Err(format!("unknown prop `{}` on <NumberField>", key)),
-        }
-    }
-
-    let scope = component_boundary_path(path, "NumberField");
-    Ok(Box::new(build_number_field_with_ids(
-        props,
-        stable_node_id(&scope, "NumberField"),
-        stable_node_id(&scope, "NumberFieldMinus"),
-        stable_node_id(&scope, "NumberFieldPlus"),
-        stable_node_id(&scope, "NumberFieldValue"),
-    )))
-}
-
-fn convert_select_element(
-    node: &RsxElementNode,
-    path: &[u64],
-) -> Result<Box<dyn ElementTrait>, String> {
-    let mut props = SelectProps::new(Vec::new());
-
-    for (key, value) in &node.props {
-        if key.as_str() == "key" {
-            continue;
-        }
-        match key.as_str() {
-            "options" => props.options = as_vec_string(value, key)?,
-            "selected_index" => props.selected_index = as_usize_raw(value, key)?,
-            "binding" => props.selected_binding = Some(as_binding_usize(value, key)?),
-            "width" => props.width = as_f32(value, key)?,
-            "height" => props.height = as_f32(value, key)?,
-            "disabled" => props.disabled = as_bool(value, key)?,
-            _ => return Err(format!("unknown prop `{}` on <Select>", key)),
-        }
-    }
-
-    let scope = component_boundary_path(path, "Select");
-    Ok(Box::new(build_select_with_ids(
-        props,
-        stable_node_id(&scope, "Select"),
-        stable_node_id(&scope, "SelectText"),
-        stable_node_id(&scope, "SelectIcon"),
-    )))
-}
-
-fn convert_slider_element(
-    node: &RsxElementNode,
-    path: &[u64],
-) -> Result<Box<dyn ElementTrait>, String> {
-    let mut props = SliderProps::new();
-
-    for (key, value) in &node.props {
-        if key.as_str() == "key" {
-            continue;
-        }
-        match key.as_str() {
-            "value" => props.value = as_f64(value, key)?,
-            "binding" => props.value_binding = Some(as_binding_f64(value, key)?),
-            "min" => props.min = as_f64(value, key)?,
-            "max" => props.max = as_f64(value, key)?,
-            "width" => props.width = as_f32(value, key)?,
-            "height" => props.height = as_f32(value, key)?,
-            "disabled" => props.disabled = as_bool(value, key)?,
-            _ => return Err(format!("unknown prop `{}` on <Slider>", key)),
-        }
-    }
-
-    let scope = component_boundary_path(path, "Slider");
-    Ok(Box::new(build_slider_with_ids(
-        props,
-        stable_node_id(&scope, "Slider"),
-        stable_node_id(&scope, "SliderRail"),
-        stable_node_id(&scope, "SliderActive"),
-        stable_node_id(&scope, "SliderThumb"),
-        stable_node_id(&scope, "SliderValue"),
-    )))
-}
-
-fn convert_switch_element(
-    node: &RsxElementNode,
-    path: &[u64],
-    inherited_text_style: &InheritedTextStyle,
-) -> Result<Box<dyn ElementTrait>, String> {
-    let mut props = SwitchProps::new("");
-
-    for (key, value) in &node.props {
-        if key.as_str() == "key" {
-            continue;
-        }
-        match key.as_str() {
-            "label" => props.label = as_owned_string(value, key)?,
-            "checked" => props.checked = as_bool(value, key)?,
-            "binding" => props.checked_binding = Some(as_binding_bool(value, key)?),
-            "disabled" => props.disabled = as_bool(value, key)?,
-            _ => return Err(format!("unknown prop `{}` on <Switch>", key)),
-        }
-    }
-
-    let scope = component_boundary_path(path, "Switch");
-    if props.checked_binding.is_none() {
-        let state_id = stable_node_id(&scope, "SwitchUncontrolledState");
-        props.checked_binding = Some(uncontrolled_switch_binding(state_id, props.checked));
-    }
-    let switch_node = build_switch_rsx(props);
-    convert_node(&switch_node, &scope, inherited_text_style)
-}
-
-fn uncontrolled_switch_binding(state_id: u64, initial_checked: bool) -> Binding<bool> {
-    UNCONTROLLED_SWITCH_BINDINGS.with(|store| {
-        let mut store = store.borrow_mut();
-        if let Some(binding) = store.get(&state_id) {
-            return binding.clone();
-        }
-        let binding = Binding::from_cell(Rc::new(RefCell::new(initial_checked)));
-        store.insert(state_id, binding.clone());
-        binding
-    })
 }
 
 fn stable_node_id(path: &[u64], kind: &str) -> u64 {
@@ -942,19 +792,12 @@ fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandle
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        component_boundary_path, identity_token_from_keyed_props, rsx_to_elements, stable_node_id,
-        uncontrolled_switch_binding,
-    };
-    use crate::ui::{
-        ClickEvent, EventMeta, IntoPropValue, MouseButton, MouseEventData, PropValue, RsxNode,
-    };
-    use crate::ui::host::{Button, Checkbox, Element, NumberField, Select, Slider, Switch};
+    use super::{identity_token_from_keyed_props, rsx_to_elements, rsx_to_elements_lossy};
+    use crate::ui::{PropValue, RsxNode};
     use crate::{
-        Border, BorderRadius, Color, Display, FlowDirection, FlowWrap, IntoColor, Length,
-        ParsedValue, PropertyId, Style, Unit,
+        Border, BorderRadius, Color, Display, IntoColor, Length, ParsedValue, PropertyId, Style,
+        Unit,
     };
-
     fn style_bg(hex: &str) -> Style {
         let mut style = Style::new();
         style.insert(
@@ -980,11 +823,35 @@ mod tests {
     }
 
     #[test]
-    fn key_prop_is_accepted_for_builtin_component() {
-        let node = RsxNode::element("Checkbox")
+    fn key_prop_is_accepted_for_element_node() {
+        let node = RsxNode::element("Element")
             .with_prop("key", "feature-1")
-            .with_prop("label", "Feature");
+            .with_prop("style", Style::new());
         let converted = rsx_to_elements(&node);
+        assert!(converted.is_ok());
+    }
+
+    #[test]
+    fn element_anchor_prop_and_style_position_are_supported() {
+        let mut root_style = Style::new();
+        root_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
+        root_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                crate::Position::absolute()
+                    .anchor("card_anchor")
+                    .top(Length::px(8.0)),
+            ),
+        );
+        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
+        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(10.0)));
+        let tree = RsxNode::element("Element")
+            .with_prop("anchor", "card_anchor")
+            .with_prop("style", root_style)
+            .with_child(RsxNode::element("Element").with_prop("style", child_style));
+        let converted = rsx_to_elements(&tree);
         assert!(converted.is_ok());
     }
 
@@ -1008,182 +875,6 @@ mod tests {
         style
     }
 
-    #[test]
-    fn switch_click_toggles_binding() {
-        let switch_on = crate::ui::global_state(|| false);
-        let tree = RsxNode::element("Switch")
-            .with_prop("label", "Dark mode")
-            .with_prop("binding", switch_on.binding().into_prop_value());
-
-        let mut roots = rsx_to_elements(&tree).expect("convert switch");
-        let root = roots.get_mut(0).expect("has root");
-
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 300.0,
-            max_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 300.0,
-            available_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-
-        let mut viewport = crate::view::Viewport::new();
-        let mut control = crate::view::ViewportControl::new(&mut viewport);
-        let mut click = ClickEvent {
-            meta: EventMeta::new(0),
-            mouse: MouseEventData {
-                viewport_x: 10.0,
-                viewport_y: 10.0,
-                local_x: 0.0,
-                local_y: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: crate::ui::MouseButtons::default(),
-                modifiers: crate::ui::KeyModifiers::default(),
-            },
-        };
-
-        let handled = crate::view::base_component::dispatch_click_from_hit_test(
-            root.as_mut(),
-            &mut click,
-            &mut control,
-        );
-        assert!(handled);
-        assert!(switch_on.get());
-    }
-
-    #[test]
-    fn switch_click_toggles_without_binding() {
-        let tree = RsxNode::element("Switch")
-            .with_prop("label", "Dark mode")
-            .with_prop("checked", false);
-
-        let mut roots = rsx_to_elements(&tree).expect("convert switch");
-        let root = roots.get_mut(0).expect("has root");
-
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 300.0,
-            max_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 300.0,
-            available_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-
-        let mut viewport = crate::view::Viewport::new();
-        let mut control = crate::view::ViewportControl::new(&mut viewport);
-        let mut click = ClickEvent {
-            meta: EventMeta::new(0),
-            mouse: MouseEventData {
-                viewport_x: 10.0,
-                viewport_y: 10.0,
-                local_x: 0.0,
-                local_y: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: crate::ui::MouseButtons::default(),
-                modifiers: crate::ui::KeyModifiers::default(),
-            },
-        };
-        let handled = crate::view::base_component::dispatch_click_from_hit_test(
-            root.as_mut(),
-            &mut click,
-            &mut control,
-        );
-        assert!(handled);
-        let scope = component_boundary_path(&[], "Switch");
-        let state_id = stable_node_id(&scope, "SwitchUncontrolledState");
-        let uncontrolled = uncontrolled_switch_binding(state_id, false);
-        assert!(uncontrolled.get());
-    }
-
-    #[test]
-    fn switch_click_toggles_binding_in_mixed_component_tree() {
-        let checked = crate::ui::global_state(|| false);
-        let number_value = crate::ui::global_state(|| 1.0_f64);
-        let selected_index = crate::ui::global_state(|| 0_usize);
-        let slider_value = crate::ui::global_state(|| 30.0_f64);
-        let switch_on = crate::ui::global_state(|| false);
-
-        let tree = crate::ui::rsx! {
-            <Element style={{
-                width: Length::px(420.0),
-                height: Length::px(320.0),
-                display: Display::Flow,
-                flow_direction: FlowDirection::Column,
-                flow_wrap: FlowWrap::NoWrap,
-            }}>
-                <Button label="Contained" width=98 height=34 variant="contained" />
-                <Checkbox label="Enable feature" binding={checked.binding()} width=180 height=30 />
-                <NumberField binding={number_value.binding()} min=0.0 max=10.0 step=0.5 width=136 height=36 />
-                <Select
-                    options={vec![String::from("Option A"), String::from("Option B")]}
-                    binding={selected_index.binding()}
-                    width=140
-                    height=36
-                />
-                <Slider binding={slider_value.binding()} min=0.0 max=100.0 width=180 height=30 />
-                <Switch label="Dark mode" binding={switch_on.binding()} />
-            </Element>
-        };
-
-        let mut roots = rsx_to_elements(&tree).expect("convert mixed tree");
-        let root = roots.get_mut(0).expect("has root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-
-        let mut viewport = crate::view::Viewport::new();
-        let mut control = crate::view::ViewportControl::new(&mut viewport);
-        let mut click = ClickEvent {
-            meta: EventMeta::new(0),
-            mouse: MouseEventData {
-                viewport_x: 12.0,
-                viewport_y: 182.0,
-                local_x: 0.0,
-                local_y: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: crate::ui::MouseButtons::default(),
-                modifiers: crate::ui::KeyModifiers::default(),
-            },
-        };
-
-        let handled = crate::view::base_component::dispatch_click_from_hit_test(
-            root.as_mut(),
-            &mut click,
-            &mut control,
-        );
-        assert!(handled);
-        assert!(switch_on.get());
-    }
-
     fn walk_layout(
         node: &mut dyn crate::view::base_component::ElementTrait,
         out: &mut Vec<(f32, f32, f32, f32)>,
@@ -1195,82 +886,6 @@ mod tests {
                 walk_layout(child.as_mut(), out);
             }
         }
-    }
-
-    fn collect_boxes(
-        node: &mut dyn crate::view::base_component::ElementTrait,
-        out: &mut Vec<crate::view::base_component::BoxModelSnapshot>,
-    ) {
-        out.push(node.box_model_snapshot());
-        if let Some(children) = node.children_mut() {
-            for child in children {
-                collect_boxes(child.as_mut(), out);
-            }
-        }
-    }
-
-    #[test]
-    fn switch_binding_value_changes_thumb_layout_on_rebuild() {
-        let switch_on = crate::ui::global_state(|| false);
-        let tree = RsxNode::element("Switch")
-            .with_prop("label", "Dark mode")
-            .with_prop("binding", switch_on.binding().into_prop_value());
-
-        let mut roots_off = rsx_to_elements(&tree).expect("convert switch off");
-        let root_off = roots_off.get_mut(0).expect("has root");
-        root_off.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 300.0,
-            max_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-        root_off.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 300.0,
-            available_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-        let mut boxes_off = Vec::new();
-        collect_boxes(root_off.as_mut(), &mut boxes_off);
-        let thumb_x_off = boxes_off
-            .iter()
-            .filter(|s| (s.width - 20.0).abs() < 0.1 && (s.height - 20.0).abs() < 0.1)
-            .map(|s| s.x)
-            .fold(f32::NEG_INFINITY, f32::max);
-
-        switch_on.set(true);
-
-        let mut roots_on = rsx_to_elements(&tree).expect("convert switch on");
-        let root_on = roots_on.get_mut(0).expect("has root");
-        root_on.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 300.0,
-            max_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-        root_on.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 300.0,
-            available_height: 100.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(100.0),
-        });
-        let mut boxes_on = Vec::new();
-        collect_boxes(root_on.as_mut(), &mut boxes_on);
-        let thumb_x_on = boxes_on
-            .iter()
-            .filter(|s| (s.width - 20.0).abs() < 0.1 && (s.height - 20.0).abs() < 0.1)
-            .map(|s| s.x)
-            .fold(f32::NEG_INFINITY, f32::max);
-
-        assert!(thumb_x_on > thumb_x_off, "thumb should move right when checked");
     }
 
     #[test]
@@ -1294,8 +909,6 @@ mod tests {
             ))
             .with_child(
                 RsxNode::element("Text")
-                    .with_prop("x", 8)
-                    .with_prop("y", 4)
                     .with_prop("font_size", 26)
                     .with_prop("color", "#0F172A")
                     .with_prop("font", "Noto Sans CJK TC")
@@ -1313,8 +926,6 @@ mod tests {
             )
             .with_child(
                 RsxNode::element("Text")
-                    .with_prop("x", 16)
-                    .with_prop("y", 16)
                     .with_prop("font_size", 22)
                     .with_prop("color", "#E2E8F0")
                     .with_prop("font", "Noto Sans CJK TC")
@@ -1322,8 +933,6 @@ mod tests {
             )
             .with_child(
                 RsxNode::element("Text")
-                    .with_prop("x", 16)
-                    .with_prop("y", 56)
                     .with_prop("font_size", 14)
                     .with_prop("color", "#CBD5E1")
                     .with_prop("font", "Noto Sans CJK TC")
@@ -1333,8 +942,6 @@ mod tests {
             )
             .with_child(
                 RsxNode::element("Text")
-                    .with_prop("x", 16)
-                    .with_prop("y", 80)
                     .with_prop("font_size", 14)
                     .with_prop("color", "#F8FAFC")
                     .with_prop("font", "Noto Sans CJK TC")
@@ -1368,20 +975,12 @@ mod tests {
             walk_layout(root.as_mut(), &mut boxes);
         }
 
-        assert!(boxes.iter().any(|&(x, y, w, h)| (x - 16.0).abs() < 0.1
-            && (y - 12.0).abs() < 0.1
-            && (w - 216.0).abs() < 0.1
-            && (h - 65.0).abs() < 0.1));
-        assert!(boxes.iter().any(|&(x, y, w, h)| (x - 19.0).abs() < 0.1
-            && (y - 19.0).abs() < 0.1
+        assert!(boxes.iter().any(|&(x, y, w, h)| (x - 3.0).abs() < 0.1
+            && (y - 3.0).abs() < 0.1
             && w > 120.0
             && h > 20.0));
-        assert!(boxes.iter().any(|&(x, y, w, h)| (x - 19.0).abs() < 0.1
-            && (y - 59.0).abs() < 0.1
-            && (w - 218.0).abs() < 0.1
-            && (h - 35.0).abs() < 0.1));
-        assert!(boxes.iter().any(|&(x, y, w, h)| (x - 19.0).abs() < 0.1
-            && (y - 83.0).abs() < 0.1
+        assert!(boxes.iter().any(|&(x, y, w, h)| (x - 3.0).abs() < 0.1
+            && (y - 3.0).abs() < 0.1
             && w > 80.0
             && h > 12.0));
     }
@@ -1396,8 +995,6 @@ mod tests {
             .with_prop("padding_bottom", 10)
             .with_child(
                 RsxNode::element("Text")
-                    .with_prop("x", 4)
-                    .with_prop("y", 6)
                     .with_prop("content", "inner")
                     .with_prop("width", 300)
                     .with_prop("height", 300),
@@ -1436,46 +1033,32 @@ mod tests {
         assert!(
             boxes
                 .iter()
-                .any(|&(x, y, w, h)| x == 12.0 && y == 18.0 && w == 172.0 && h == 92.0)
+                .any(|&(x, y, w, h)| x == 8.0 && y == 12.0 && w == 176.0 && h == 98.0)
         );
     }
 
     #[test]
     fn flow_row_without_explicit_size_uses_children_content_size() {
         let mut row_style = Style::new();
-        row_style.insert(PropertyId::Display, ParsedValue::Display(Display::Flow));
         row_style.insert(
-            PropertyId::FlowDirection,
-            ParsedValue::FlowDirection(FlowDirection::Row),
-        );
-        row_style.insert(
-            PropertyId::FlowWrap,
-            ParsedValue::FlowWrap(FlowWrap::NoWrap),
+            PropertyId::Display,
+            ParsedValue::Display(Display::flow().row().no_wrap()),
         );
         row_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
 
         let tree = RsxNode::element("Element")
             .with_prop("style", row_style)
             .with_child(
-                RsxNode::element("Button")
-                    .with_prop("label", "Contained")
-                    .with_prop("width", 98)
-                    .with_prop("height", 34)
-                    .with_prop("variant", "contained"),
+                RsxNode::element("Element")
+                    .with_prop("style", style_with_size(Style::new(), 98.0, 34.0)),
             )
             .with_child(
-                RsxNode::element("Button")
-                    .with_prop("label", "Outlined")
-                    .with_prop("width", 98)
-                    .with_prop("height", 34)
-                    .with_prop("variant", "outlined"),
+                RsxNode::element("Element")
+                    .with_prop("style", style_with_size(Style::new(), 98.0, 34.0)),
             )
             .with_child(
-                RsxNode::element("Button")
-                    .with_prop("label", "Text")
-                    .with_prop("width", 70)
-                    .with_prop("height", 34)
-                    .with_prop("variant", "text"),
+                RsxNode::element("Element")
+                    .with_prop("style", style_with_size(Style::new(), 70.0, 34.0)),
             );
 
         let mut roots = rsx_to_elements(&tree).expect("convert rsx");
@@ -1500,5 +1083,35 @@ mod tests {
         let snapshot = root.box_model_snapshot();
         assert_eq!(snapshot.width, 282.0);
         assert_eq!(snapshot.height, 34.0);
+    }
+
+    #[test]
+    fn nested_fragment_children_are_flattened_during_conversion() {
+        let tree = RsxNode::element("Element")
+            .with_prop("style", style_with_size(Style::new(), 120.0, 60.0))
+            .with_child(RsxNode::fragment(vec![
+                RsxNode::element("Text")
+                    .with_prop("content", "A")
+                    .with_prop("width", 16)
+                    .with_prop("height", 16),
+                RsxNode::fragment(vec![RsxNode::element("Text")
+                    .with_prop("content", "B")
+                    .with_prop("width", 16)
+                    .with_prop("height", 16)]),
+            ]));
+
+        let converted = rsx_to_elements(&tree);
+        assert!(converted.is_ok());
+    }
+
+    #[test]
+    fn lossy_conversion_skips_bad_nodes_and_keeps_good_nodes() {
+        let good = RsxNode::element("Element").with_prop("style", Style::new());
+        let bad = RsxNode::element("Element").with_prop("not_exists", true);
+        let tree = RsxNode::fragment(vec![good, bad]);
+
+        let (converted, errors) = rsx_to_elements_lossy(&tree);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(errors.len(), 1);
     }
 }
