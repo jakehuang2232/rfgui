@@ -1,13 +1,13 @@
+use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxChildrenPolicy,
     RsxPropSchema, RsxProps, RsxTag,
 };
 use crate::{
-    AlignItems, BorderRadius, ColorLike, Display, FlowDirection, FlowWrap, JustifyContent, Length,
-    Opacity, Padding, ScrollDirection, Style, Transitions,
+    AlignItems, BorderRadius, ColorLike, Display, FlowDirection, FlowWrap, FontFamily,
+    JustifyContent, Length, Opacity, Padding, ScrollDirection, Style, Transitions,
 };
-use crate::ui::RsxNode;
 
 pub struct Element;
 pub struct Text;
@@ -53,6 +53,7 @@ pub struct ElementStylePropSchema {
     pub border: BorderStylePropSchema,
     pub background: Box<dyn ColorLike>,
     pub background_color: Box<dyn ColorLike>,
+    pub font: FontFamily,
     pub border_radius: BorderRadius,
     pub hover: Style,
     pub opacity: Opacity,
@@ -73,6 +74,7 @@ pub struct TextPropSchema {
     pub width: f64,
     pub height: f64,
     pub font_size: f64,
+    pub line_height: f64,
     pub font: String,
     pub opacity: f64,
     pub children: String,
@@ -102,6 +104,7 @@ pub struct ButtonPropSchema {
     pub height: f64,
     pub variant: String,
     pub disabled: bool,
+    pub on_click: ClickHandlerProp,
 }
 
 pub struct CheckboxPropSchema {
@@ -204,6 +207,7 @@ impl RsxTag for Text {
             "width",
             "height",
             "font_size",
+            "line_height",
             "font",
             "opacity",
         ] {
@@ -247,7 +251,10 @@ impl RsxTag for TextArea {
             node = node.with_prop("read_only", read_only);
         }
         if let Some(binding) = props.remove_t::<crate::ui::Binding<String>>("binding")? {
-            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+            node = node.with_prop(
+                "binding",
+                crate::ui::IntoPropValue::into_prop_value(binding),
+            );
         }
 
         for key in [
@@ -293,7 +300,7 @@ impl RsxTag for Button {
     fn rsx_render(mut props: RsxProps, _children: Vec<RsxNode>) -> Result<RsxNode, String> {
         let mut node = RsxNode::element("Button");
 
-        for key in ["label", "width", "height", "variant", "disabled"] {
+        for key in ["label", "width", "height", "variant", "disabled", "on_click"] {
             if let Some(value) = props.remove_raw(key) {
                 node = node.with_prop(key, value);
             }
@@ -317,7 +324,10 @@ impl RsxTag for Checkbox {
         let mut node = RsxNode::element("Checkbox");
 
         if let Some(binding) = props.remove_t::<crate::ui::Binding<bool>>("binding")? {
-            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+            node = node.with_prop(
+                "binding",
+                crate::ui::IntoPropValue::into_prop_value(binding),
+            );
         }
 
         for key in ["label", "checked", "binding", "width", "height", "disabled"] {
@@ -344,10 +354,15 @@ impl RsxTag for NumberField {
         let mut node = RsxNode::element("NumberField");
 
         if let Some(binding) = props.remove_t::<crate::ui::Binding<f64>>("binding")? {
-            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+            node = node.with_prop(
+                "binding",
+                crate::ui::IntoPropValue::into_prop_value(binding),
+            );
         }
 
-        for key in ["value", "binding", "min", "max", "step", "width", "height", "disabled"] {
+        for key in [
+            "value", "binding", "min", "max", "step", "width", "height", "disabled",
+        ] {
             if let Some(value) = props.remove_raw(key) {
                 node = node.with_prop(key, value);
             }
@@ -371,13 +386,26 @@ impl RsxTag for Select {
         let mut node = RsxNode::element("Select");
 
         if let Some(options) = props.remove_t::<Vec<String>>("options")? {
-            node = node.with_prop("options", crate::ui::IntoPropValue::into_prop_value(options));
+            node = node.with_prop(
+                "options",
+                crate::ui::IntoPropValue::into_prop_value(options),
+            );
         }
         if let Some(binding) = props.remove_t::<crate::ui::Binding<usize>>("binding")? {
-            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+            node = node.with_prop(
+                "binding",
+                crate::ui::IntoPropValue::into_prop_value(binding),
+            );
         }
 
-        for key in ["options", "selected_index", "binding", "width", "height", "disabled"] {
+        for key in [
+            "options",
+            "selected_index",
+            "binding",
+            "width",
+            "height",
+            "disabled",
+        ] {
             if let Some(value) = props.remove_raw(key) {
                 node = node.with_prop(key, value);
             }
@@ -401,10 +429,15 @@ impl RsxTag for Slider {
         let mut node = RsxNode::element("Slider");
 
         if let Some(binding) = props.remove_t::<crate::ui::Binding<f64>>("binding")? {
-            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+            node = node.with_prop(
+                "binding",
+                crate::ui::IntoPropValue::into_prop_value(binding),
+            );
         }
 
-        for key in ["value", "binding", "min", "max", "width", "height", "disabled"] {
+        for key in [
+            "value", "binding", "min", "max", "width", "height", "disabled",
+        ] {
             if let Some(value) = props.remove_raw(key) {
                 node = node.with_prop(key, value);
             }
@@ -428,7 +461,10 @@ impl RsxTag for Switch {
         let mut node = RsxNode::element("Switch");
 
         if let Some(binding) = props.remove_t::<crate::ui::Binding<bool>>("binding")? {
-            node = node.with_prop("binding", crate::ui::IntoPropValue::into_prop_value(binding));
+            node = node.with_prop(
+                "binding",
+                crate::ui::IntoPropValue::into_prop_value(binding),
+            );
         }
 
         for key in ["label", "checked", "binding", "disabled"] {

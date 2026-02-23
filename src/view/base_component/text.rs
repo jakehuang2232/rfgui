@@ -1,6 +1,10 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
 use crate::{ColorLike, HexColor};
+use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, Layoutable, Position, Renderable, Size,
@@ -22,6 +26,44 @@ pub struct Text {
     opacity: f32,
     auto_width: bool,
     auto_height: bool,
+    measure_revision: u64,
+    cached_intrinsic_width: Option<(u64, f32)>,
+    cached_height_for_width: Option<(u64, f32, f32)>,
+}
+
+thread_local! {
+    static MEASURE_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(FontSystem::new());
+    static MEASURE_TEXT_CACHE: RefCell<HashMap<TextMeasureCacheKey, (f32, f32)>> =
+        RefCell::new(HashMap::new());
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TextMeasureCacheKey {
+    content: String,
+    max_width_milli: i32,
+    font_size_milli: i32,
+    line_height_milli: i32,
+    font_families: Vec<String>,
+}
+
+fn quantize_milli(value: f32) -> i32 {
+    (value * 1000.0).round() as i32
+}
+
+fn make_measure_cache_key(
+    content: &str,
+    max_width: Option<f32>,
+    font_size: f32,
+    line_height: f32,
+    font_families: &[String],
+) -> TextMeasureCacheKey {
+    TextMeasureCacheKey {
+        content: content.to_string(),
+        max_width_milli: max_width.map(quantize_milli).unwrap_or(-1),
+        font_size_milli: quantize_milli(font_size),
+        line_height_milli: quantize_milli(line_height),
+        font_families: font_families.to_vec(),
+    }
 }
 
 impl Text {
@@ -69,7 +111,16 @@ impl Text {
             opacity: 1.0,
             auto_width: false,
             auto_height: false,
+            measure_revision: 0,
+            cached_intrinsic_width: None,
+            cached_height_for_width: None,
         }
+    }
+
+    fn mark_measure_dirty(&mut self) {
+        self.measure_revision = self.measure_revision.wrapping_add(1);
+        self.cached_intrinsic_width = None;
+        self.cached_height_for_width = None;
     }
 
     pub fn set_position(&mut self, x: f32, y: f32) {
@@ -97,7 +148,11 @@ impl Text {
     }
 
     pub fn set_text(&mut self, content: impl Into<String>) {
-        self.content = content.into();
+        let next = content.into();
+        if self.content != next {
+            self.content = next;
+            self.mark_measure_dirty();
+        }
     }
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
@@ -113,7 +168,10 @@ impl Text {
             .map(|s| s.to_string())
             .collect();
 
-        self.font_families = families;
+        if self.font_families != families {
+            self.font_families = families;
+            self.mark_measure_dirty();
+        }
     }
 
     pub fn set_fonts<I, S>(&mut self, font_families: I)
@@ -121,20 +179,30 @@ impl Text {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.font_families = font_families
+        let next: Vec<String> = font_families
             .into_iter()
             .map(Into::into)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        if self.font_families != next {
+            self.font_families = next;
+            self.mark_measure_dirty();
+        }
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
-        self.font_size = font_size;
+        if (self.font_size - font_size).abs() > f32::EPSILON {
+            self.font_size = font_size;
+            self.mark_measure_dirty();
+        }
     }
 
     pub fn set_line_height(&mut self, line_height: f32) {
-        self.line_height = line_height;
+        if (self.line_height - line_height).abs() > f32::EPSILON {
+            self.line_height = line_height;
+            self.mark_measure_dirty();
+        }
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
@@ -150,25 +218,59 @@ impl Text {
     }
 }
 
-fn estimate_char_width_px(ch: char, font_size: f32) -> f32 {
-    // Rough intrinsic-width estimate:
-    // - CJK / fullwidth glyphs are near 1em
-    // - ASCII letters/digits are narrower
-    // - Whitespace is the narrowest
-    if ch == '\t' {
-        return font_size * 2.0;
+fn measure_text_size(
+    content: &str,
+    max_width: Option<f32>,
+    font_size: f32,
+    line_height: f32,
+    font_families: &[String],
+) -> (f32, f32) {
+    let cache_key = make_measure_cache_key(content, max_width, font_size, line_height, font_families);
+    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied()) {
+        return cached;
     }
-    if ch.is_whitespace() {
-        return font_size * 0.33;
-    }
-    if ch.is_ascii() {
-        return font_size * 0.56;
-    }
-    font_size * 1.0
-}
 
-fn estimate_line_width_px(line: &str, font_size: f32) -> f32 {
-    line.chars().map(|ch| estimate_char_width_px(ch, font_size)).sum()
+    MEASURE_FONT_SYSTEM.with(|slot| {
+        let mut font_system = slot.borrow_mut();
+        let mut buffer = Buffer::new(
+            &mut font_system,
+            Metrics::new(
+                font_size.max(1.0),
+                (font_size * line_height.max(0.8)).max(1.0),
+            ),
+        );
+        buffer.set_wrap(&mut font_system, Wrap::WordOrGlyph);
+        buffer.set_size(&mut font_system, max_width.map(|w| w.max(1.0)), None);
+
+        let attrs = if let Some(first) = font_families.first() {
+            Attrs::new().family(Family::Name(first.as_str()))
+        } else {
+            Attrs::new()
+        };
+
+        // Keep one visible line box for empty text to match previous layout semantics.
+        let content = if content.is_empty() { " " } else { content };
+        buffer.set_text(&mut font_system, content, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut font_system, false);
+
+        let mut max_line_width = 0.0_f32;
+        let mut line_count = 0_usize;
+        for run in buffer.layout_runs() {
+            line_count += 1;
+            max_line_width = max_line_width.max(run.line_w);
+        }
+        let resolved_lines = line_count.max(1);
+        let resolved_height = resolved_lines as f32 * buffer.metrics().line_height;
+        let measured = (max_line_width.max(1.0), resolved_height.max(1.0));
+        MEASURE_TEXT_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.insert(cache_key, measured);
+            if cache.len() > 4096 {
+                cache.clear();
+            }
+        });
+        measured
+    })
 }
 
 impl ElementTrait for Text {
@@ -304,15 +406,32 @@ impl Layoutable for Text {
         if !self.auto_width && !self.auto_height {
             return;
         }
-        let lines: Vec<&str> = self.content.lines().collect();
-        let line_count = lines.len().max(1);
-        let line_px = (self.font_size * self.line_height.max(0.1)).max(1.0);
         if self.auto_width {
-            let intrinsic_width = lines
-                .iter()
-                .map(|line| estimate_line_width_px(line, self.font_size))
-                .fold(0.0_f32, f32::max)
-                .max(1.0);
+            let intrinsic_width = if let Some((revision, width)) = self.cached_intrinsic_width {
+                if revision == self.measure_revision {
+                    width
+                } else {
+                    let (width, _) = measure_text_size(
+                        self.content.as_str(),
+                        None,
+                        self.font_size,
+                        self.line_height,
+                        self.font_families.as_slice(),
+                    );
+                    self.cached_intrinsic_width = Some((self.measure_revision, width));
+                    width
+                }
+            } else {
+                let (width, _) = measure_text_size(
+                    self.content.as_str(),
+                    None,
+                    self.font_size,
+                    self.line_height,
+                    self.font_families.as_slice(),
+                );
+                self.cached_intrinsic_width = Some((self.measure_revision, width));
+                width
+            };
             let available = constraints.max_width.max(1.0);
             self.size.width = intrinsic_width.min(available);
             self.element.set_width(self.size.width);
@@ -323,19 +442,36 @@ impl Layoutable for Text {
             } else {
                 self.size.width.min(constraints.max_width.max(1.0)).max(1.0)
             };
-            let wrapped_lines = if lines.is_empty() {
-                1
+            let measured_height = if let Some((revision, cached_width, cached_height)) =
+                self.cached_height_for_width
+            {
+                if revision == self.measure_revision && (cached_width - effective_width).abs() < 0.01
+                {
+                    cached_height
+                } else {
+                    let (_, height) = measure_text_size(
+                        self.content.as_str(),
+                        Some(effective_width),
+                        self.font_size,
+                        self.line_height,
+                        self.font_families.as_slice(),
+                    );
+                    self.cached_height_for_width =
+                        Some((self.measure_revision, effective_width, height));
+                    height
+                }
             } else {
-                lines
-                    .iter()
-                    .map(|line| {
-                        let line_width = estimate_line_width_px(line, self.font_size);
-                        (line_width / effective_width).ceil().max(1.0) as usize
-                    })
-                    .sum::<usize>()
+                let (_, height) = measure_text_size(
+                    self.content.as_str(),
+                    Some(effective_width),
+                    self.font_size,
+                    self.line_height,
+                    self.font_families.as_slice(),
+                );
+                self.cached_height_for_width = Some((self.measure_revision, effective_width, height));
+                height
             };
-            let resolved_lines = wrapped_lines.max(line_count);
-            self.size.height = (line_px * resolved_lines as f32).max(1.0);
+            self.size.height = measured_height.max(1.0);
             self.element.set_height(self.size.height);
         }
     }

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::{
-    ChannelId, ClaimMode, RunResult, StartTrackError, TrackKey, TrackTarget, Transition,
-    TransitionFrame, TransitionHost, TransitionPluginId, TimeFunction,
+    ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
+    Transition, TransitionFrame, TransitionHost, TransitionPluginId, elapsed_seconds_from_frame,
     normalized_timeline_progress,
 };
 
@@ -78,7 +78,7 @@ pub struct ScrollSample {
 struct ScrollTrackState {
     from: f32,
     to: f32,
-    elapsed_seconds: f32,
+    started_at_seconds: Option<f64>,
     transition: ScrollTransition,
 }
 
@@ -134,7 +134,7 @@ impl ScrollTransitionPlugin {
             ScrollTrackState {
                 from,
                 to,
-                elapsed_seconds: 0.0,
+                started_at_seconds: None,
                 transition,
             },
         );
@@ -144,7 +144,6 @@ impl ScrollTransitionPlugin {
     pub fn take_samples(&mut self) -> Vec<ScrollSample> {
         std::mem::take(&mut self.frame_samples)
     }
-
 }
 
 impl Transition<TrackTarget> for ScrollTransitionPlugin {
@@ -166,14 +165,7 @@ impl Transition<TrackTarget> for ScrollTransitionPlugin {
             CHANNEL_SCROLL_Y => ScrollAxis::Y,
             _ => return Err(StartTrackError::ChannelNotRegistered(key.channel)),
         };
-        self.start_scroll_track(
-            host,
-            key.target,
-            axis,
-            0.0,
-            0.0,
-            ScrollTransition::new(0),
-        )
+        self.start_scroll_track(host, key.target, axis, 0.0, 0.0, ScrollTransition::new(0))
     }
 
     fn cancel_track(
@@ -194,19 +186,16 @@ impl Transition<TrackTarget> for ScrollTransitionPlugin {
         let mut finished = Vec::new();
 
         for (key, state) in &mut self.tracks {
-            state.elapsed_seconds = (state.elapsed_seconds + frame.dt_seconds.max(0.0)).max(0.0);
+            let elapsed_seconds = elapsed_seconds_from_frame(frame, &mut state.started_at_seconds);
             let delay = (state.transition.delay_ms as f32) * 0.001;
             let duration = (state.transition.duration_ms as f32) * 0.001;
 
-            if state.elapsed_seconds < delay {
+            if elapsed_seconds < delay {
                 continue;
             }
 
-            let Some(progress) = normalized_timeline_progress(
-                state.elapsed_seconds,
-                delay,
-                duration,
-            ) else {
+            let Some(progress) = normalized_timeline_progress(elapsed_seconds, delay, duration)
+            else {
                 continue;
             };
             let eased = state.transition.timing.sample(progress);

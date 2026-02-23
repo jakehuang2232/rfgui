@@ -34,6 +34,17 @@ pub enum ClaimMode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransitionFrame {
     pub dt_seconds: f32,
+    pub now_seconds: f64,
+}
+
+pub(crate) fn elapsed_seconds_from_frame(
+    frame: TransitionFrame,
+    started_at_seconds: &mut Option<f64>,
+) -> f32 {
+    let dt = frame.dt_seconds.max(0.0) as f64;
+    let now = frame.now_seconds.max(0.0);
+    let start = started_at_seconds.get_or_insert_with(|| (now - dt).max(0.0));
+    (now - *start).max(0.0) as f32
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

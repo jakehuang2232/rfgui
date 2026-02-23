@@ -29,19 +29,33 @@ impl NumberFieldProps {
 }
 
 pub fn build_number_field(props: NumberFieldProps) -> Element {
+    build_number_field_with_ids(props, 0, 0, 0, 0)
+}
+
+pub fn build_number_field_with_ids(
+    props: NumberFieldProps,
+    root_id: u64,
+    minus_id: u64,
+    plus_id: u64,
+    value_text_id: u64,
+) -> Element {
     let current = props
         .value_binding
         .as_ref()
         .map(|v| v.get())
         .unwrap_or(props.value);
 
-    let mut root = Element::new(0.0, 0.0, props.width, props.height);
-    root.apply_style(number_field_style(props.width, props.height, props.disabled));
+    let mut root = Element::new_with_id(root_id, 0.0, 0.0, props.width, props.height);
+    root.apply_style(number_field_style(
+        props.width,
+        props.height,
+        props.disabled,
+    ));
 
     let button_size = props.height - 2.0;
     let value_width = (props.width - button_size * 2.0).max(0.0);
 
-    let mut minus = Element::new(1.0, 1.0, button_size, button_size);
+    let mut minus = Element::new_with_id(minus_id, 1.0, 1.0, button_size, button_size);
     minus.apply_style(stepper_style(props.disabled, true));
     if !props.disabled {
         if let Some(binding) = props.value_binding.clone() {
@@ -63,7 +77,7 @@ pub fn build_number_field(props: NumberFieldProps) -> Element {
     let mut minus_text = Text::from_content("−");
     minus_text.set_position(button_size * 0.5 - 4.0, button_size * 0.5 - 10.0);
     minus_text.set_font_size(18.0);
-    minus_text.set_font("Roboto, Noto Sans CJK TC");
+    minus_text.set_font("Heiti TC, Noto Sans CJK TC, Roboto");
     minus_text.set_color(if props.disabled {
         Color::hex("#BDBDBD")
     } else {
@@ -71,7 +85,13 @@ pub fn build_number_field(props: NumberFieldProps) -> Element {
     });
     minus.add_child(Box::new(minus_text));
 
-    let mut plus = Element::new(1.0 + button_size + value_width, 1.0, button_size, button_size);
+    let mut plus = Element::new_with_id(
+        plus_id,
+        1.0 + button_size + value_width,
+        1.0,
+        button_size,
+        button_size,
+    );
     plus.apply_style(stepper_style(props.disabled, false));
     if !props.disabled {
         if let Some(binding) = props.value_binding.clone() {
@@ -93,7 +113,7 @@ pub fn build_number_field(props: NumberFieldProps) -> Element {
     let mut plus_text = Text::from_content("+");
     plus_text.set_position(button_size * 0.5 - 4.0, button_size * 0.5 - 9.0);
     plus_text.set_font_size(16.0);
-    plus_text.set_font("Roboto, Noto Sans CJK TC");
+    plus_text.set_font("Heiti TC, Noto Sans CJK TC, Roboto");
     plus_text.set_color(if props.disabled {
         Color::hex("#BDBDBD")
     } else {
@@ -101,10 +121,10 @@ pub fn build_number_field(props: NumberFieldProps) -> Element {
     });
     plus.add_child(Box::new(plus_text));
 
-    let mut value_text = Text::from_content(format_number(current));
+    let mut value_text = Text::from_content_with_id(value_text_id, format_number(current));
     value_text.set_position(1.0 + button_size + 10.0, props.height * 0.5 - 8.0);
     value_text.set_font_size(14.0);
-    value_text.set_font("Roboto, Noto Sans CJK TC");
+    value_text.set_font("Heiti TC, Noto Sans CJK TC, Roboto");
     value_text.set_color(if props.disabled {
         Color::hex("#9E9E9E")
     } else {
@@ -159,7 +179,9 @@ fn format_number(value: f64) -> String {
     if (rounded.fract()).abs() < 0.0001 {
         format!("{}", rounded as i64)
     } else {
-        format!("{rounded:.3}").trim_end_matches('0').trim_end_matches('.').to_string()
+        format!("{rounded:.3}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
-

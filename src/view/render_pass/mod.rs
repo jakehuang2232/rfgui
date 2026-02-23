@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
 
@@ -29,13 +31,14 @@ pub trait RenderPassDyn {
     fn build(&mut self, builder: &mut BuildContext);
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
     fn name(&self) -> &'static str;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub struct PassWrapper<P: RenderPass> {
     pub pass: P,
 }
 
-impl<P: RenderPass> RenderPassDyn for PassWrapper<P> {
+impl<P: RenderPass + 'static> RenderPassDyn for PassWrapper<P> {
     fn build(&mut self, builder: &mut BuildContext) {
         self.pass.build(builder);
     }
@@ -46,5 +49,9 @@ impl<P: RenderPass> RenderPassDyn for PassWrapper<P> {
 
     fn name(&self) -> &'static str {
         std::any::type_name::<P>()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        &mut self.pass
     }
 }

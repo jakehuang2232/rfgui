@@ -389,8 +389,11 @@ fn tessellate_rounded_rect(
         fill_rgba
     };
     let aa_width = 1.0_f32;
-    let outer_aa_radii =
-        normalize_corner_radii(radii.map(|r| r + aa_width), width + aa_width * 2.0, height + aa_width * 2.0);
+    let outer_aa_radii = normalize_corner_radii(
+        radii.map(|r| r + aa_width),
+        width + aa_width * 2.0,
+        height + aa_width * 2.0,
+    );
     let outer_aa = rounded_rect_points(
         position[0] - aa_width,
         position[1] - aa_width,
@@ -401,17 +404,14 @@ fn tessellate_rounded_rect(
     );
 
     if border_enabled {
-            let inner_x = position[0] + bw;
-            let inner_y = position[1] + bw;
-            let inner_w = (width - bw * 2.0).max(0.0);
-            let inner_h = (height - bw * 2.0).max(0.0);
+        let inner_x = position[0] + bw;
+        let inner_y = position[1] + bw;
+        let inner_w = (width - bw * 2.0).max(0.0);
+        let inner_h = (height - bw * 2.0).max(0.0);
 
-            if inner_w > 0.0 && inner_h > 0.0 {
-            let inner_radii = normalize_corner_radii(
-                radii.map(|r| (r - bw).max(0.0)),
-                inner_w,
-                inner_h,
-            );
+        if inner_w > 0.0 && inner_h > 0.0 {
+            let inner_radii =
+                normalize_corner_radii(radii.map(|r| (r - bw).max(0.0)), inner_w, inner_h);
             let inner =
                 rounded_rect_points(inner_x, inner_y, inner_w, inner_h, inner_radii, segments);
             append_convex_fan(
@@ -528,7 +528,9 @@ fn rounded_rect_points(
             } else {
                 [x + width, y]
             };
-            points.push(anchor);
+            for _ in 0..segments {
+                points.push(anchor);
+            }
             continue;
         }
         for step in 0..segments {
@@ -574,6 +576,7 @@ fn normalize_corner_radii(mut radii: [f32; 4], width: f32, height: f32) -> [f32;
             *r *= scale;
         }
     }
+
     radii
 }
 
@@ -606,37 +609,132 @@ fn append_convex_fan(
     screen_w: f32,
     screen_h: f32,
 ) {
-    if polygon.len() < 3 {
+    let cleaned = sanitize_polygon(polygon);
+    if cleaned.len() < 3 {
         return;
     }
-
-    let mut center = [0.0, 0.0];
-    for point in polygon {
-        center[0] += point[0];
-        center[1] += point[1];
-    }
-    center[0] /= polygon.len() as f32;
-    center[1] /= polygon.len() as f32;
-
-    let base = vertices.len() as u32;
-    vertices.push(RectVertex {
-        position: pixel_to_ndc(center[0], center[1], screen_w, screen_h),
-        color,
-    });
-    for point in polygon {
+    for point in &cleaned {
         vertices.push(RectVertex {
             position: pixel_to_ndc(point[0], point[1], screen_w, screen_h),
             color,
         });
     }
 
-    let n = polygon.len() as u32;
-    for i in 0..n {
-        let a = base;
-        let b = base + 1 + i;
-        let c = base + 1 + ((i + 1) % n);
-        indices.extend_from_slice(&[a, b, c]);
+    let base = (vertices.len() - cleaned.len()) as u32;
+    for tri in triangulate_polygon_indices(&cleaned) {
+        indices.extend_from_slice(&[
+            base + tri[0] as u32,
+            base + tri[1] as u32,
+            base + tri[2] as u32,
+        ]);
     }
+}
+
+fn triangulate_polygon_indices(polygon: &[[f32; 2]]) -> Vec<[usize; 3]> {
+    let n = polygon.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    if n == 3 {
+        return vec![[0, 1, 2]];
+    }
+
+    let ccw = polygon_signed_area(polygon) >= 0.0;
+    let mut verts: Vec<usize> = if ccw {
+        (0..n).collect()
+    } else {
+        (0..n).rev().collect()
+    };
+    let mut out = Vec::with_capacity(n.saturating_sub(2));
+    let mut guard = 0usize;
+    let max_guard = n * n;
+
+    while verts.len() > 3 && guard < max_guard {
+        guard += 1;
+        let m = verts.len();
+        let mut ear_found = false;
+        for i in 0..m {
+            let prev = verts[(i + m - 1) % m];
+            let curr = verts[i];
+            let next = verts[(i + 1) % m];
+            if !is_convex_ccw(polygon[prev], polygon[curr], polygon[next]) {
+                continue;
+            }
+            let mut has_inside = false;
+            for &other in &verts {
+                if other == prev || other == curr || other == next {
+                    continue;
+                }
+                if point_in_triangle(polygon[other], polygon[prev], polygon[curr], polygon[next]) {
+                    has_inside = true;
+                    break;
+                }
+            }
+            if has_inside {
+                continue;
+            }
+            out.push([prev, curr, next]);
+            verts.remove(i);
+            ear_found = true;
+            break;
+        }
+        if !ear_found {
+            break;
+        }
+    }
+
+    if verts.len() == 3 {
+        out.push([verts[0], verts[1], verts[2]]);
+    }
+    out
+}
+
+fn sanitize_polygon(polygon: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    const EPS: f32 = 1e-4;
+    if polygon.len() < 3 {
+        return polygon.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(polygon.len());
+    for &p in polygon {
+        if out.last().is_none_or(|last: &[f32; 2]| {
+            (last[0] - p[0]).abs() > EPS || (last[1] - p[1]).abs() > EPS
+        }) {
+            out.push(p);
+        }
+    }
+    if out.len() >= 2 {
+        let first = out[0];
+        let last = out[out.len() - 1];
+        if (first[0] - last[0]).abs() <= EPS && (first[1] - last[1]).abs() <= EPS {
+            out.pop();
+        }
+    }
+    out
+}
+
+fn polygon_signed_area(polygon: &[[f32; 2]]) -> f32 {
+    let mut area = 0.0f32;
+    for i in 0..polygon.len() {
+        let j = (i + 1) % polygon.len();
+        area += polygon[i][0] * polygon[j][1] - polygon[j][0] * polygon[i][1];
+    }
+    area * 0.5
+}
+
+fn is_convex_ccw(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+    cross(a, b, c) > 1e-5
+}
+
+fn point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+    let c1 = cross(a, b, p);
+    let c2 = cross(b, c, p);
+    let c3 = cross(c, a, p);
+    (c1 >= -1e-5 && c2 >= -1e-5 && c3 >= -1e-5) || (c1 <= 1e-5 && c2 <= 1e-5 && c3 <= 1e-5)
+}
+
+fn cross(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
 fn append_ring(
@@ -649,15 +747,10 @@ fn append_ring(
     screen_w: f32,
     screen_h: f32,
 ) {
-    if outer.len() != inner.len() || outer.len() < 3 {
-        debug_assert_eq!(
-            outer.len(),
-            inner.len(),
-            "ring tessellation requires matched topology"
-        );
+    let n = outer.len().min(inner.len());
+    if n < 3 {
         return;
     }
-    let n = outer.len();
     let base = vertices.len() as u32;
     for i in 0..n {
         let o = outer[i];
@@ -684,4 +777,54 @@ fn append_ring(
 
 fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
     [(x / screen_w) * 2.0 - 1.0, 1.0 - (y / screen_h) * 2.0]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rounded_points_zero_corner_keeps_fixed_topology() {
+        let segments = 16;
+        let pts = rounded_rect_points(0.0, 0.0, 100.0, 100.0, [0.0, 10.0, 10.0, 10.0], segments);
+        assert_eq!(pts.len(), (segments * 4) as usize);
+    }
+
+    #[test]
+    fn tessellate_asymmetric_radius_with_border_produces_geometry() {
+        let (vertices, indices) = tessellate_rounded_rect(
+            [0.0, 0.0],
+            [150.0, 150.0],
+            [0.38, 0.68, 0.94, 1.0],
+            [0.13, 0.15, 0.17, 1.0],
+            20.0,
+            [10.0, 32.0, 10.0, 135.0],
+            1.0,
+            800.0,
+            600.0,
+        );
+        assert!(!vertices.is_empty());
+        assert!(!indices.is_empty());
+        assert_eq!(indices.len() % 3, 0);
+    }
+
+    #[test]
+    fn append_ring_tolerates_mismatched_topology() {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let outer = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
+        let inner = vec![[10.0, 10.0], [90.0, 10.0], [90.0, 90.0]];
+        append_ring(
+            &mut vertices,
+            &mut indices,
+            &outer,
+            &inner,
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            800.0,
+            600.0,
+        );
+        assert!(!vertices.is_empty());
+        assert!(!indices.is_empty());
+    }
 }

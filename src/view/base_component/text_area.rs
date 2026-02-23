@@ -1,9 +1,10 @@
+use crate::ui::MouseButton as UiMouseButton;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::{ColorLike, HexColor};
-use crate::ui::MouseButton as UiMouseButton;
 use glyphon::cosmic_text::{Affinity, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use crate::ui::Binding;
@@ -44,7 +45,6 @@ pub struct TextArea {
     ime_preedit_cursor: Option<(usize, usize)>,
     cached_ime_cursor_rect: Option<(f32, f32, f32, f32)>,
     vertical_cursor_x_opt: Option<i32>,
-    glyph_font_system: FontSystem,
     glyph_buffer: GlyphBuffer,
     glyph_layout_valid: bool,
     glyph_cache_text: String,
@@ -52,7 +52,13 @@ pub struct TextArea {
     glyph_cache_font_size: f32,
     glyph_cache_line_height_px: f32,
     glyph_cache_font_families: Vec<String>,
+    measure_revision: u64,
+    cached_measure_line_widths: Option<(u64, Vec<f32>)>,
     caret_blink_started_at: Instant,
+}
+
+thread_local! {
+    static SHARED_TEXT_AREA_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(FontSystem::new());
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +77,10 @@ struct TextAreaCursorSnapshot {
 }
 
 impl TextArea {
+    fn with_shared_font_system<R>(f: impl FnOnce(&mut FontSystem) -> R) -> R {
+        SHARED_TEXT_AREA_FONT_SYSTEM.with(|slot| f(&mut slot.borrow_mut()))
+    }
+
     pub fn from_content(content: impl Into<String>) -> Self {
         let mut text_area = Self::new(0.0, 0.0, 10_000.0, 10_000.0, content);
         text_area.set_auto_width(true);
@@ -97,17 +107,19 @@ impl TextArea {
         height: f32,
         content: impl Into<String>,
     ) -> Self {
-        let mut glyph_font_system = FontSystem::new();
         let initial_font_size = 16.0_f32;
         let initial_line_height_ratio = 1.25_f32;
         let initial_line_height_px =
             (initial_font_size * initial_line_height_ratio.max(0.8)).max(1.0);
-        let mut glyph_buffer = GlyphBuffer::new(
-            &mut glyph_font_system,
-            Metrics::new(initial_font_size.max(1.0), initial_line_height_px),
-        );
-        glyph_buffer.set_wrap(&mut glyph_font_system, Wrap::WordOrGlyph);
-        glyph_buffer.set_size(&mut glyph_font_system, Some(width.max(1.0)), None);
+        let glyph_buffer = Self::with_shared_font_system(|font_system| {
+            let mut glyph_buffer = GlyphBuffer::new(
+                font_system,
+                Metrics::new(initial_font_size.max(1.0), initial_line_height_px),
+            );
+            glyph_buffer.set_wrap(font_system, Wrap::WordOrGlyph);
+            glyph_buffer.set_size(font_system, Some(width.max(1.0)), None);
+            glyph_buffer
+        });
 
         let mut text_area = Self {
             element: Element::new_with_id(id, x, y, width, height),
@@ -143,7 +155,6 @@ impl TextArea {
             ime_preedit_cursor: None,
             cached_ime_cursor_rect: None,
             vertical_cursor_x_opt: None,
-            glyph_font_system,
             glyph_buffer,
             glyph_layout_valid: false,
             glyph_cache_text: String::new(),
@@ -151,10 +162,48 @@ impl TextArea {
             glyph_cache_font_size: initial_font_size,
             glyph_cache_line_height_px: initial_line_height_px,
             glyph_cache_font_families: Vec::new(),
+            measure_revision: 0,
+            cached_measure_line_widths: None,
             caret_blink_started_at: Instant::now(),
         };
         text_area.set_text(content);
         text_area
+    }
+
+    fn mark_measure_dirty(&mut self) {
+        self.measure_revision = self.measure_revision.wrapping_add(1);
+        let widths = if self.content.is_empty() {
+            vec![0.0]
+        } else {
+            self.content
+                .lines()
+                .map(|line| estimate_line_width_px(line, self.font_size))
+                .collect()
+        };
+        self.cached_measure_line_widths = Some((self.measure_revision, widths));
+    }
+
+    fn ensure_measure_line_widths(&mut self) -> &[f32] {
+        let rebuild = self
+            .cached_measure_line_widths
+            .as_ref()
+            .map(|(revision, _)| *revision != self.measure_revision)
+            .unwrap_or(true);
+        if rebuild {
+            let widths = if self.content.is_empty() {
+                vec![0.0]
+            } else {
+                self.content
+                    .lines()
+                    .map(|line| estimate_line_width_px(line, self.font_size))
+                    .collect()
+            };
+            self.cached_measure_line_widths = Some((self.measure_revision, widths));
+        }
+        self.cached_measure_line_widths
+            .as_ref()
+            .map(|(_, widths)| widths.as_slice())
+            .unwrap_or(&[])
     }
 
     fn reset_caret_blink(&mut self) {
@@ -207,9 +256,14 @@ impl TextArea {
     }
 
     pub fn set_text(&mut self, content: impl Into<String>) {
-        self.content = normalize_multiline(content.into(), self.multiline);
+        let mut next = normalize_multiline(content.into(), self.multiline);
         if let Some(max_length) = self.max_length {
-            self.content = truncate_to_chars(&self.content, max_length);
+            next = truncate_to_chars(&next, max_length);
+        }
+        let changed = self.content != next;
+        self.content = next;
+        if changed {
+            self.mark_measure_dirty();
         }
         self.clear_vertical_goal();
         self.reset_caret_blink();
@@ -265,6 +319,7 @@ impl TextArea {
             self.clamp_cursor();
             self.clamp_scroll();
             if self.content != prev {
+                self.mark_measure_dirty();
                 self.sync_bound_text();
             }
         }
@@ -283,13 +338,37 @@ impl TextArea {
             .map(|s| s.to_string())
             .collect();
 
-        self.font_families = families;
-        self.invalidate_glyph_layout();
+        if self.font_families != families {
+            self.font_families = families;
+            self.mark_measure_dirty();
+            self.invalidate_glyph_layout();
+        }
+    }
+
+    pub fn set_fonts<I, S>(&mut self, font_families: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let next: Vec<String> = font_families
+            .into_iter()
+            .map(Into::into)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if self.font_families != next {
+            self.font_families = next;
+            self.mark_measure_dirty();
+            self.invalidate_glyph_layout();
+        }
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
-        self.font_size = font_size;
-        self.invalidate_glyph_layout();
+        if (self.font_size - font_size).abs() > f32::EPSILON {
+            self.font_size = font_size;
+            self.mark_measure_dirty();
+            self.invalidate_glyph_layout();
+        }
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
@@ -306,12 +385,16 @@ impl TextArea {
 
     pub fn set_multiline(&mut self, multiline: bool) {
         let prev = self.content.clone();
+        let prev_multiline = self.multiline;
         self.multiline = multiline;
         self.content = normalize_multiline(self.content.clone(), self.multiline);
         self.clear_vertical_goal();
         self.invalidate_glyph_layout();
         self.clamp_cursor();
         self.clamp_scroll();
+        if self.content != prev || self.multiline != prev_multiline {
+            self.mark_measure_dirty();
+        }
         if self.content != prev {
             self.sync_bound_text();
         }
@@ -384,6 +467,7 @@ impl TextArea {
         let start_byte = byte_index_at_char(&self.content, start);
         let end_byte = byte_index_at_char(&self.content, end);
         self.content.replace_range(start_byte..end_byte, "");
+        self.mark_measure_dirty();
         self.cursor_char = start;
         self.clear_selection();
         self.reset_caret_blink();
@@ -433,6 +517,7 @@ impl TextArea {
 
         let insert_at = byte_index_at_char(&self.content, self.cursor_char);
         self.content.insert_str(insert_at, &incoming);
+        self.mark_measure_dirty();
         self.cursor_char += incoming.chars().count();
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
@@ -451,6 +536,7 @@ impl TextArea {
         let end = byte_index_at_char(&self.content, self.cursor_char);
         let start = byte_index_at_char(&self.content, self.cursor_char - 1);
         self.content.replace_range(start..end, "");
+        self.mark_measure_dirty();
         self.cursor_char -= 1;
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
@@ -470,6 +556,7 @@ impl TextArea {
         let start = byte_index_at_char(&self.content, self.cursor_char);
         let end = byte_index_at_char(&self.content, self.cursor_char + 1);
         self.content.replace_range(start..end, "");
+        self.mark_measure_dirty();
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
         self.clear_vertical_goal();
@@ -533,7 +620,14 @@ impl TextArea {
             if !at_end && !is_newline {
                 continue;
             }
-            Self::push_wrapped_lines(&mut lines, &chars, paragraph_start, idx, max_width, self.font_size);
+            Self::push_wrapped_lines(
+                &mut lines,
+                &chars,
+                paragraph_start,
+                idx,
+                max_width,
+                self.font_size,
+            );
             paragraph_start = idx + 1;
         }
 
@@ -587,7 +681,8 @@ impl TextArea {
     fn resolve_cursor_line(&self, lines: &[VisualLine]) -> usize {
         for (idx, line) in lines.iter().enumerate() {
             let is_last = idx + 1 == lines.len();
-            let in_empty_line = line.start_char == line.end_char && self.cursor_char == line.start_char;
+            let in_empty_line =
+                line.start_char == line.end_char && self.cursor_char == line.start_char;
             let in_regular_line =
                 self.cursor_char >= line.start_char && self.cursor_char < line.end_char;
             let at_last_line_end = is_last && self.cursor_char == line.end_char;
@@ -604,8 +699,11 @@ impl TextArea {
         let hit_x = local_x.max(0.0);
         let hit_y = (local_y + self.scroll_y).max(0.0);
         if let Some(cursor) = self.glyph_buffer.hit(hit_x, hit_y) {
-            let composed_char =
-                self.cursor_char_from_line_index_for_text(composed.as_str(), cursor.line, cursor.index);
+            let composed_char = self.cursor_char_from_line_index_for_text(
+                composed.as_str(),
+                cursor.line,
+                cursor.index,
+            );
             self.cursor_char = self.cursor_char_from_composed(composed_char);
         } else {
             self.cursor_char = self.content.chars().count();
@@ -647,6 +745,20 @@ impl TextArea {
     }
 
     fn content_height(&self) -> f32 {
+        if let Some((_, widths)) = self.cached_measure_line_widths.as_ref() {
+            let effective_width = self.effective_width().max(1.0);
+            let line_count = widths.len().max(1);
+            let resolved_lines = if self.multiline {
+                let wrapped_lines = widths
+                    .iter()
+                    .map(|line_width| ((*line_width) / effective_width).ceil().max(1.0) as usize)
+                    .sum::<usize>();
+                wrapped_lines.max(line_count)
+            } else {
+                1
+            };
+            return self.line_height_px() * resolved_lines as f32;
+        }
         let lines = self.visual_lines();
         self.line_height_px() * lines.len() as f32
     }
@@ -664,7 +776,10 @@ impl TextArea {
         let composed = self.composed_text();
         if composed.is_empty() {
             if !self.placeholder.is_empty() {
-                return (self.placeholder.clone(), self.placeholder_color.to_rgba_f32());
+                return (
+                    self.placeholder.clone(),
+                    self.placeholder_color.to_rgba_f32(),
+                );
             }
             return (String::new(), self.color.to_rgba_f32());
         }
@@ -682,22 +797,21 @@ impl TextArea {
         let (cursor_line, cursor_index) = line_and_index_from_byte(composed.as_str(), caret_byte);
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
-            let Some(layout_cursor) = self
-                .glyph_buffer
-                .layout_cursor(&mut self.glyph_font_system, cursor)
+            let Some(layout_cursor) =
+                Self::with_shared_font_system(|font_system| {
+                    self.glyph_buffer.layout_cursor(font_system, cursor)
+                })
             else {
                 continue;
             };
             if layout_cursor.line != cursor_line {
                 continue;
             }
-            if let Some(run) =
-                find_layout_run_by_line_layout(
-                    &self.glyph_buffer,
-                    layout_cursor.line,
-                    layout_cursor.layout,
-                )
-            {
+            if let Some(run) = find_layout_run_by_line_layout(
+                &self.glyph_buffer,
+                layout_cursor.line,
+                layout_cursor.layout,
+            ) {
                 if let Some(x) = caret_x_in_layout_run(cursor_index, &run) {
                     return Some((
                         self.layout_position.x + x,
@@ -707,17 +821,20 @@ impl TextArea {
             }
         }
 
-        let fallback_y = fallback_line_top_for_cursor_line(&self.glyph_buffer, cursor_line).unwrap_or(0.0);
+        let fallback_y =
+            fallback_line_top_for_cursor_line(&self.glyph_buffer, cursor_line).unwrap_or(0.0);
         Some((
             self.layout_position.x,
             self.layout_position.y + fallback_y - self.scroll_y,
         ))
     }
 
-    fn selection_screen_rects(&mut self, composed: &str) -> Vec<([f32; 2], [f32; 2])> {
-        let Some((start_char, end_char)) = self.selection_range_chars() else {
-            return Vec::new();
-        };
+    fn screen_rects_for_char_range(
+        &mut self,
+        composed: &str,
+        start_char: usize,
+        end_char: usize,
+    ) -> Vec<([f32; 2], [f32; 2])> {
         if composed.is_empty() {
             return Vec::new();
         }
@@ -739,8 +856,16 @@ impl TextArea {
                 continue;
             }
             let line_len = *line_lengths.get(run.line_i).unwrap_or(&0);
-            let local_start = if run.line_i == start_line { start_index } else { 0 };
-            let local_end = if run.line_i == end_line { end_index } else { line_len };
+            let local_start = if run.line_i == start_line {
+                start_index
+            } else {
+                0
+            };
+            let local_end = if run.line_i == end_line {
+                end_index
+            } else {
+                line_len
+            };
             if local_end <= local_start {
                 continue;
             }
@@ -766,6 +891,41 @@ impl TextArea {
         rects
     }
 
+    fn selection_screen_rects(&mut self, composed: &str) -> Vec<([f32; 2], [f32; 2])> {
+        let Some((start_char, end_char)) = self.selection_range_chars() else {
+            return Vec::new();
+        };
+        self.screen_rects_for_char_range(composed, start_char, end_char)
+    }
+
+    fn ime_preedit_range_chars(&self) -> Option<(usize, usize)> {
+        if self.ime_preedit.is_empty() {
+            return None;
+        }
+        let start = self.cursor_char;
+        let end = start + self.ime_preedit.chars().count();
+        Some((start, end))
+    }
+
+    fn ime_preedit_underline_rects(&mut self, composed: &str) -> Vec<([f32; 2], [f32; 2])> {
+        let Some((start_char, end_char)) = self.ime_preedit_range_chars() else {
+            return Vec::new();
+        };
+        let line_rects = self.screen_rects_for_char_range(composed, start_char, end_char);
+        line_rects
+            .into_iter()
+            .filter_map(|(position, size)| {
+                if size[0] <= 0.01 || size[1] <= 0.01 {
+                    return None;
+                }
+                Some((
+                    [position[0], position[1] + size[1] - 1.0],
+                    [size[0], 1.0],
+                ))
+            })
+            .collect()
+    }
+
     fn ensure_glyph_layout(&mut self, text: &str) {
         let width = self.effective_width();
         let font_size = self.font_size.max(1.0);
@@ -780,28 +940,25 @@ impl TextArea {
             return;
         }
 
-        self.glyph_buffer = GlyphBuffer::new(
-            &mut self.glyph_font_system,
-            Metrics::new(font_size, line_height_px),
-        );
-        self.glyph_buffer
-            .set_wrap(&mut self.glyph_font_system, Wrap::WordOrGlyph);
-        self.glyph_buffer
-            .set_size(&mut self.glyph_font_system, Some(width), None);
-        let attrs = if let Some(first) = self.font_families.first() {
-            Attrs::new().family(Family::Name(first.as_str()))
-        } else {
-            Attrs::new()
-        };
-        self.glyph_buffer.set_text(
-            &mut self.glyph_font_system,
-            text,
-            &attrs,
-            Shaping::Advanced,
-            Some(glyphon::cosmic_text::Align::Left),
-        );
-        self.glyph_buffer
-            .shape_until_scroll(&mut self.glyph_font_system, false);
+        Self::with_shared_font_system(|font_system| {
+            self.glyph_buffer =
+                GlyphBuffer::new(font_system, Metrics::new(font_size, line_height_px));
+            self.glyph_buffer.set_wrap(font_system, Wrap::WordOrGlyph);
+            self.glyph_buffer.set_size(font_system, Some(width), None);
+            let attrs = if let Some(first) = self.font_families.first() {
+                Attrs::new().family(Family::Name(first.as_str()))
+            } else {
+                Attrs::new()
+            };
+            self.glyph_buffer.set_text(
+                font_system,
+                text,
+                &attrs,
+                Shaping::Advanced,
+                Some(glyphon::cosmic_text::Align::Left),
+            );
+            self.glyph_buffer.shape_until_scroll(font_system, false);
+        });
 
         self.glyph_layout_valid = true;
         self.glyph_cache_text = text.to_string();
@@ -1008,14 +1165,6 @@ impl TextArea {
             return false;
         }
 
-        if key_matches(key, code, "Space") {
-            return self.insert_text(" ");
-        }
-
-        if is_text_input_key(key) {
-            return self.insert_text(key);
-        }
-
         false
     }
 
@@ -1031,9 +1180,10 @@ impl TextArea {
         let mut layout_cursor_opt = None;
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(line, index, affinity);
-            let Some(layout_cursor) = self
-                .glyph_buffer
-                .layout_cursor(&mut self.glyph_font_system, cursor)
+            let Some(layout_cursor) =
+                Self::with_shared_font_system(|font_system| {
+                    self.glyph_buffer.layout_cursor(font_system, cursor)
+                })
             else {
                 continue;
             };
@@ -1047,16 +1197,17 @@ impl TextArea {
         };
 
         let runs = collect_run_positions(&self.glyph_buffer);
-        let Some(current_run_idx) = runs
-            .iter()
-            .position(|run| run.line_i == layout_cursor.line && run.layout_i == layout_cursor.layout)
-        else {
+        let Some(current_run_idx) = runs.iter().position(|run| {
+            run.line_i == layout_cursor.line && run.layout_i == layout_cursor.layout
+        }) else {
             return false;
         };
 
         let target_run_idx = match motion {
             Motion::Up => current_run_idx.checked_sub(1),
-            Motion::Down => current_run_idx.checked_add(1).filter(|&idx| idx < runs.len()),
+            Motion::Down => current_run_idx
+                .checked_add(1)
+                .filter(|&idx| idx < runs.len()),
             _ => None,
         };
         let Some(target_run_idx) = target_run_idx else {
@@ -1068,8 +1219,8 @@ impl TextArea {
             layout_cursor.line,
             layout_cursor.layout,
         )
-            .and_then(|run| caret_x_in_layout_run(index, &run))
-            .unwrap_or(0.0);
+        .and_then(|run| caret_x_in_layout_run(index, &run))
+        .unwrap_or(0.0);
         let desired_x = self
             .vertical_cursor_x_opt
             .map(|x| x as f32)
@@ -1102,16 +1253,6 @@ fn key_matches(key: &str, code: &str, token: &str) -> bool {
     key.eq_ignore_ascii_case(token)
         || key == format!("Named({token})")
         || code == format!("Code({token})")
-}
-
-fn is_text_input_key(key: &str) -> bool {
-    if key.is_empty() {
-        return false;
-    }
-    if key.starts_with("Named(") {
-        return false;
-    }
-    !key.chars().any(|ch| ch.is_control())
 }
 
 fn normalize_multiline(content: String, multiline: bool) -> String {
@@ -1181,7 +1322,9 @@ fn estimate_char_width_px(ch: char, font_size: f32) -> f32 {
 }
 
 fn estimate_line_width_px(line: &str, font_size: f32) -> f32 {
-    line.chars().map(|ch| estimate_char_width_px(ch, font_size)).sum()
+    line.chars()
+        .map(|ch| estimate_char_width_px(ch, font_size))
+        .sum()
 }
 
 fn line_lengths_bytes(value: &str) -> Vec<usize> {
@@ -1195,7 +1338,10 @@ fn line_lengths_bytes(value: &str) -> Vec<usize> {
     out
 }
 
-fn caret_x_in_layout_run(cursor_index: usize, run: &glyphon::cosmic_text::LayoutRun<'_>) -> Option<f32> {
+fn caret_x_in_layout_run(
+    cursor_index: usize,
+    run: &glyphon::cosmic_text::LayoutRun<'_>,
+) -> Option<f32> {
     let mut found_glyph = None;
     let mut offset = 0.0_f32;
 
@@ -1450,7 +1596,11 @@ impl EventTarget for TextArea {
         event: &mut crate::ui::KeyDownEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
-        self.clear_preedit();
+        // Keep keydown handling in IME while composing to avoid mutating committed text.
+        if !self.ime_preedit.is_empty() {
+            self.element.dispatch_key_down(event, control);
+            return;
+        }
         let handled = self.handle_key_down(event, control);
         if handled {
             self.ensure_cursor_visible();
@@ -1563,6 +1713,10 @@ impl EventTarget for TextArea {
     fn ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
         self.cached_ime_cursor_rect
     }
+
+    fn wants_animation_frame(&self) -> bool {
+        self.is_focused
+    }
 }
 
 impl Layoutable for TextArea {
@@ -1592,14 +1746,14 @@ impl Layoutable for TextArea {
             return;
         }
 
-        let lines: Vec<&str> = self.content.lines().collect();
-        let line_count = lines.len().max(1);
         let line_px = self.line_height_px();
+        let line_widths = self.ensure_measure_line_widths().to_vec();
+        let line_count = line_widths.len().max(1);
 
         if self.auto_width {
-            let intrinsic_width = lines
+            let intrinsic_width = line_widths
                 .iter()
-                .map(|line| estimate_line_width_px(line, self.font_size))
+                .copied()
                 .fold(0.0_f32, f32::max)
                 .max(1.0);
             let available = constraints.max_width.max(1.0);
@@ -1615,15 +1769,12 @@ impl Layoutable for TextArea {
             };
 
             let resolved_lines = if self.multiline {
-                let wrapped_lines = if lines.is_empty() {
+                let wrapped_lines = if line_widths.is_empty() {
                     1
                 } else {
-                    lines
+                    line_widths
                         .iter()
-                        .map(|line| {
-                            let line_width = estimate_line_width_px(line, self.font_size);
-                            (line_width / effective_width).ceil().max(1.0) as usize
-                        })
+                        .map(|line_width| ((*line_width) / effective_width).ceil().max(1.0) as usize)
                         .sum::<usize>()
                 };
                 wrapped_lines.max(line_count)
@@ -1695,15 +1846,12 @@ impl Renderable for TextArea {
 
         if !content.is_empty() {
             for (position, size) in self.selection_screen_rects(content.as_str()) {
-                let mut selection_pass = DrawRectPass::new(
-                    position,
-                    size,
-                    [0.28, 0.52, 0.94, 0.35],
-                    opacity,
-                );
+                let mut selection_pass =
+                    DrawRectPass::new(position, size, [0.28, 0.52, 0.94, 0.35], opacity);
                 selection_pass.set_scissor_rect(clip);
                 ctx.push_pass(graph, selection_pass);
             }
+            let ime_underline_rects = self.ime_preedit_underline_rects(content.as_str());
 
             let mut pass = TextPass::new(
                 content,
@@ -1719,6 +1867,13 @@ impl Renderable for TextArea {
             );
             pass.set_scissor_rect(clip);
             ctx.push_pass(graph, pass);
+
+            for (position, size) in ime_underline_rects {
+                let mut underline_pass =
+                    DrawRectPass::new(position, size, self.color.to_rgba_f32(), opacity);
+                underline_pass.set_scissor_rect(clip);
+                ctx.push_pass(graph, underline_pass);
+            }
         }
 
         if let Some((caret_x, caret_y)) = self.caret_screen_position() {
@@ -1801,5 +1956,13 @@ mod tests {
         assert!(area.insert_text("rust"));
         assert_eq!(area.content, "hello rust");
         assert_eq!(area.cursor_char, 10);
+    }
+
+    #[test]
+    fn ime_preedit_range_tracks_inserted_segment() {
+        let mut area = TextArea::from_content("hello");
+        area.cursor_char = 2;
+        area.set_preedit("中文".to_string(), None);
+        assert_eq!(area.ime_preedit_range_chars(), Some((2, 4)));
     }
 }

@@ -120,6 +120,7 @@ struct StateStore {
     build_depth: usize,
     root_cursor: usize,
     live_keys: HashSet<ComponentKey>,
+    components_rendered_in_build: bool,
 }
 
 thread_local! {
@@ -173,6 +174,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
         if store.build_depth == 0 {
             store.root_cursor = 0;
             store.live_keys.clear();
+            store.components_rendered_in_build = false;
         }
         store.build_depth += 1;
     });
@@ -182,7 +184,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         store.build_depth = store.build_depth.saturating_sub(1);
-        if store.build_depth == 0 {
+        if store.build_depth == 0 && store.components_rendered_in_build {
             let live = store.live_keys.clone();
             store.slots.retain(|k, _| live.contains(k));
         }
@@ -216,7 +218,9 @@ pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
     };
 
     STORE.with(|store| {
-        store.borrow_mut().live_keys.insert(key.clone());
+        let mut store = store.borrow_mut();
+        store.components_rendered_in_build = true;
+        store.live_keys.insert(key.clone());
     });
 
     CONTEXT.with(|context| {
@@ -318,6 +322,35 @@ pub fn use_global_state<T: Clone + 'static>() -> GlobalState<T> {
         )
     });
     GlobalState { cell }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_scope, take_state_dirty, use_state};
+    use crate::ui::RsxNode;
+
+    #[test]
+    fn non_component_scope_does_not_reset_use_state_slots() {
+        let state_before = build_scope(|| {
+            crate::ui::render_component::<u32, _>(|| {
+                let value = use_state(|| 0_i32);
+                value.set(7);
+                value
+            })
+        });
+        assert_eq!(state_before.get(), 7);
+        let _ = take_state_dirty();
+
+        let _ = build_scope(|| RsxNode::element("Element"));
+
+        let state_after = build_scope(|| {
+            crate::ui::render_component::<u32, _>(|| {
+                let value = use_state(|| 0_i32);
+                value
+            })
+        });
+        assert_eq!(state_after.get(), 7);
+    }
 }
 
 pub fn set_redraw_callback<F>(callback: F)

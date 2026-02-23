@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use crate::style::{BorderRadius, Color, Length, ParsedValue, PropertyId, Style};
 use crate::ui::Binding;
 use crate::view::base_component::{Element, Text};
@@ -27,6 +30,17 @@ impl SliderProps {
 }
 
 pub fn build_slider(props: SliderProps) -> Element {
+    build_slider_with_ids(props, 0, 0, 0, 0, 0)
+}
+
+pub fn build_slider_with_ids(
+    props: SliderProps,
+    root_id: u64,
+    rail_id: u64,
+    active_id: u64,
+    thumb_id: u64,
+    value_text_id: u64,
+) -> Element {
     let value = props
         .value_binding
         .as_ref()
@@ -35,17 +49,20 @@ pub fn build_slider(props: SliderProps) -> Element {
         .clamp(props.min, props.max);
     let ratio = normalize_ratio(value, props.min, props.max);
 
-    let mut root = Element::new(0.0, 0.0, props.width, props.height);
+    let mut root = Element::new_with_id(root_id, 0.0, 0.0, props.width, props.height);
     root.apply_style(slider_root_style(props.width, props.height));
 
     if !props.disabled {
+        let last_sent_value = Rc::new(Cell::new(None::<f64>));
         if let Some(binding) = props.value_binding.clone() {
             let min = props.min;
             let max = props.max;
             let width = props.width.max(1.0);
+            let last_sent_value = last_sent_value.clone();
             root.on_mouse_down(move |event, _control| {
+                _control.set_pointer_capture(event.meta.current_target_id());
                 let next = value_from_local_x(event.mouse.local_x, width, min, max);
-                binding.set(next);
+                set_if_changed(&binding, &last_sent_value, next);
                 event.meta.stop_propagation();
             });
         }
@@ -53,42 +70,45 @@ pub fn build_slider(props: SliderProps) -> Element {
             let min = props.min;
             let max = props.max;
             let width = props.width.max(1.0);
+            let last_sent_value = last_sent_value.clone();
             root.on_mouse_move(move |event, _control| {
                 if !event.mouse.buttons.left {
                     return;
                 }
                 let next = value_from_local_x(event.mouse.local_x, width, min, max);
-                binding.set(next);
+                set_if_changed(&binding, &last_sent_value, next);
                 event.meta.stop_propagation();
             });
         }
-        if let Some(binding) = props.value_binding.clone() {
-            let min = props.min;
-            let max = props.max;
-            let width = props.width.max(1.0);
-            root.on_click(move |event, _control| {
-                let next = value_from_local_x(event.mouse.local_x, width, min, max);
-                binding.set(next);
-            });
-        }
+        let last_sent_value = last_sent_value.clone();
+        root.on_mouse_up(move |event, control| {
+            control.release_pointer_capture(event.meta.current_target_id());
+            last_sent_value.set(None);
+        });
     }
 
     let track_y = props.height * 0.5 - 2.0;
     let thumb_x = (props.width * ratio as f32).clamp(0.0, props.width);
 
-    let mut rail = Element::new(0.0, track_y, props.width, 4.0);
+    let mut rail = Element::new_with_id(rail_id, 0.0, track_y, props.width, 4.0);
     rail.apply_style(slider_rail_style(props.disabled));
 
-    let mut active = Element::new(0.0, track_y, thumb_x, 4.0);
+    let mut active = Element::new_with_id(active_id, 0.0, track_y, thumb_x, 4.0);
     active.apply_style(slider_active_style(props.disabled));
 
-    let mut thumb = Element::new((thumb_x - 8.0).max(0.0), props.height * 0.5 - 8.0, 16.0, 16.0);
+    let mut thumb = Element::new_with_id(
+        thumb_id,
+        (thumb_x - 8.0).max(0.0),
+        props.height * 0.5 - 8.0,
+        16.0,
+        16.0,
+    );
     thumb.apply_style(slider_thumb_style(props.disabled));
 
-    let mut value_text = Text::from_content(format!("{value:.0}"));
+    let mut value_text = Text::from_content_with_id(value_text_id, format!("{value:.0}"));
     value_text.set_position((props.width + 10.0).max(0.0), props.height * 0.5 - 8.0);
     value_text.set_font_size(12.0);
-    value_text.set_font("Roboto, Noto Sans CJK TC");
+    value_text.set_font("Heiti TC, Noto Sans CJK TC, Roboto");
     value_text.set_color(if props.disabled {
         Color::hex("#9E9E9E")
     } else {
@@ -162,4 +182,14 @@ fn normalize_ratio(value: f64, min: f64, max: f64) -> f64 {
 fn value_from_local_x(local_x: f32, width: f32, min: f64, max: f64) -> f64 {
     let ratio = (local_x / width).clamp(0.0, 1.0) as f64;
     min + (max - min) * ratio
+}
+
+fn set_if_changed(binding: &Binding<f64>, last_sent_value: &Cell<Option<f64>>, next: f64) {
+    const EPS: f64 = 0.0001;
+    let current = last_sent_value.get().unwrap_or_else(|| binding.get());
+    if (current - next).abs() <= EPS {
+        return;
+    }
+    binding.set(next);
+    last_sent_value.set(Some(next));
 }
