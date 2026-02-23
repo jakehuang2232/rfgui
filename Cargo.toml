@@ -1,7 +1,13 @@
 [package]
-name = "rust-gui"
+name = "rfgui"
 version = "0.1.0"
 edition = "2024"
+
+[workspace]
+members = [
+    "rsx-macro",
+    "lib/rfgui-components",
+]
 
 [dependencies]
 wgpu = "28.0.0"
@@ -9,7 +15,7 @@ bytemuck = { version = "1.14", features = ["derive"] }
 once_cell = "1.21.3"
 glyphon = "0.10"
 arboard = "3.6.1"
-rust-gui-rsx = { path = "rsx-macro" }
+rfgui-rsx = { path = "rsx-macro" }
 
 [lib]
 

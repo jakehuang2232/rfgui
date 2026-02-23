@@ -1,3 +1,5 @@
+extern crate self as rfgui;
+
 mod style;
 pub mod transition;
 pub mod ui;

@@ -28,6 +28,7 @@ pub enum PropertyId {
     ScrollDirection,
     Color,
     BackgroundColor,
+    FontFamily,
     FontSize,
     FontWeight,
     LineHeight,
@@ -251,6 +252,42 @@ impl Unit {
 
     pub const fn precent(value: f32) -> Length {
         Length::Percent(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontFamily(Vec<String>);
+
+impl FontFamily {
+    pub fn new<I, S>(families: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let values = families
+            .into_iter()
+            .map(Into::into)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Self(values)
+    }
+
+    pub fn from_csv(raw: impl AsRef<str>) -> Self {
+        Self::new(
+            raw.as_ref()
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
+        )
+    }
+
+    pub fn as_slice(&self) -> &[String] {
+        self.0.as_slice()
+    }
+
+    pub fn into_vec(self) -> Vec<String> {
+        self.0
     }
 }
 
@@ -663,6 +700,7 @@ pub enum ParsedValue {
     Position(Position),
     Auto,
     Length(Length),
+    FontFamily(FontFamily),
     FontWeight(FontWeight),
     LineHeight(LineHeight),
     Opacity(Opacity),

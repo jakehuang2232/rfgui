@@ -46,6 +46,7 @@ pub struct ComputedStyle {
     pub scroll_direction: ScrollDirection,
     pub color: Color,
     pub background_color: Color,
+    pub font_families: Vec<String>,
     pub font_size: f32,
     pub font_weight: u16,
     pub line_height: f32,
@@ -90,6 +91,7 @@ impl Default for ComputedStyle {
             scroll_direction: ScrollDirection::None,
             color: Color::rgb(0, 0, 0),
             background_color: Color::rgba(0, 0, 0, 0),
+            font_families: Vec::new(),
             font_size: 16.0,
             font_weight: 400,
             line_height: 1.2,
@@ -125,6 +127,7 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
 
     if let Some(parent) = parent {
         computed.color = parent.color;
+        computed.font_families = parent.font_families.clone();
         computed.font_size = parent.font_size;
         computed.font_weight = parent.font_weight;
         computed.line_height = parent.line_height;
@@ -229,6 +232,11 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                 computed.background_color =
                     parse_color(&declaration.value).unwrap_or(computed.background_color)
             }
+            PropertyId::FontFamily => {
+                if let ParsedValue::FontFamily(value) = &declaration.value {
+                    computed.font_families = value.as_slice().to_vec();
+                }
+            }
             PropertyId::FontSize => {
                 if let ParsedValue::Length(Length::Px(px)) = &declaration.value {
                     computed.font_size = px.max(0.0);
@@ -245,8 +253,7 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                 }
             }
             PropertyId::BorderRadius => {
-                let length =
-                    parse_length(&declaration.value, Length::Px(computed.border_radius));
+                let length = parse_length(&declaration.value, Length::Px(computed.border_radius));
                 computed.border_radii.top_left = length;
                 computed.border_radii.top_right = length;
                 computed.border_radii.bottom_right = length;

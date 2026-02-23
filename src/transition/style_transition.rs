@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
-    Transition, TransitionFrame, TransitionHost, TransitionPluginId, normalized_timeline_progress,
+    Transition, TransitionFrame, TransitionHost, TransitionPluginId, elapsed_seconds_from_frame,
+    normalized_timeline_progress,
 };
 use crate::style::Color;
 
@@ -95,7 +96,7 @@ pub struct StyleTrackRequest {
 struct StyleTrackState {
     from: StyleValue,
     to: StyleValue,
-    elapsed_seconds: f32,
+    started_at_seconds: Option<f64>,
     transition: StyleTransition,
 }
 
@@ -141,7 +142,7 @@ impl StyleTransitionPlugin {
             channel: field.channel_id(),
         };
         if let Some(existing) = self.tracks.get(&key) {
-            if existing.to == to {
+            if existing.to == to && existing.from == from {
                 return Ok(());
             }
         }
@@ -156,7 +157,7 @@ impl StyleTransitionPlugin {
             StyleTrackState {
                 from,
                 to,
-                elapsed_seconds: 0.0,
+                started_at_seconds: None,
                 transition,
             },
         );
@@ -230,11 +231,10 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
         let mut finished = Vec::new();
 
         for (key, state) in &mut self.tracks {
-            state.elapsed_seconds = (state.elapsed_seconds + frame.dt_seconds.max(0.0)).max(0.0);
+            let elapsed_seconds = elapsed_seconds_from_frame(frame, &mut state.started_at_seconds);
             let delay = (state.transition.delay_ms as f32) * 0.001;
             let duration = (state.transition.duration_ms as f32) * 0.001;
-            let Some(progress) =
-                normalized_timeline_progress(state.elapsed_seconds, delay, duration)
+            let Some(progress) = normalized_timeline_progress(elapsed_seconds, delay, duration)
             else {
                 continue;
             };

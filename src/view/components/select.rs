@@ -25,6 +25,15 @@ impl SelectProps {
 }
 
 pub fn build_select(props: SelectProps) -> Element {
+    build_select_with_ids(props, 0, 0, 0)
+}
+
+pub fn build_select_with_ids(
+    props: SelectProps,
+    root_id: u64,
+    text_id: u64,
+    icon_id: u64,
+) -> Element {
     let selected_index = props
         .selected_binding
         .as_ref()
@@ -32,7 +41,7 @@ pub fn build_select(props: SelectProps) -> Element {
         .unwrap_or(props.selected_index);
     let option_text = resolve_option_text(&props.options, selected_index);
 
-    let mut root = Element::new(0.0, 0.0, props.width, props.height);
+    let mut root = Element::new_with_id(root_id, 0.0, 0.0, props.width, props.height);
     root.apply_style(select_style(props.width, props.height, props.disabled));
 
     if !props.disabled {
@@ -47,20 +56,20 @@ pub fn build_select(props: SelectProps) -> Element {
         }
     }
 
-    let mut text = Text::from_content(option_text);
+    let mut text = Text::from_content_with_id(text_id, option_text);
     text.set_position(12.0, props.height * 0.5 - 8.0);
     text.set_font_size(14.0);
-    text.set_font("Roboto, Noto Sans CJK TC");
+    text.set_font("Heiti TC, Noto Sans CJK TC, Roboto");
     text.set_color(if props.disabled {
         Color::hex("#9E9E9E")
     } else {
         Color::hex("#111827")
     });
 
-    let mut icon = Text::from_content("▾");
+    let mut icon = Text::from_content_with_id(icon_id, "▾");
     icon.set_position((props.width - 20.0).max(0.0), props.height * 0.5 - 8.0);
     icon.set_font_size(14.0);
-    icon.set_font("Roboto, Noto Sans CJK TC");
+    icon.set_font("Heiti TC, Noto Sans CJK TC, Roboto");
     icon.set_color(if props.disabled {
         Color::hex("#BDBDBD")
     } else {
@@ -101,4 +110,3 @@ fn resolve_option_text(options: &[String], selected_index: usize) -> String {
         .cloned()
         .unwrap_or_else(|| options[0].clone())
 }
-

@@ -16,9 +16,9 @@ use crate::ui::{
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{FrameGraph, InSlot, RenderPass, TextureDesc};
-use crate::view::viewport::ViewportControl;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::{ClearPass, CompositeLayerPass, DrawRectPass, LayerOut, LayerTag};
+use crate::view::viewport::ViewportControl;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -78,7 +78,10 @@ impl CornerRadii {
     }
 
     fn has_any_rounding(self) -> bool {
-        self.top_left > 0.0 || self.top_right > 0.0 || self.bottom_right > 0.0 || self.bottom_left > 0.0
+        self.top_left > 0.0
+            || self.top_right > 0.0
+            || self.bottom_right > 0.0
+            || self.bottom_left > 0.0
     }
 
     fn max(self) -> f32 {
@@ -246,11 +249,23 @@ pub trait Layoutable {
 }
 
 pub trait EventTarget {
-    fn dispatch_mouse_down(&mut self, _event: &mut MouseDownEvent, _control: &mut ViewportControl<'_>) {}
-    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {}
-    fn dispatch_mouse_move(&mut self, _event: &mut MouseMoveEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_mouse_down(
+        &mut self,
+        _event: &mut MouseDownEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
+    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
+    }
+    fn dispatch_mouse_move(
+        &mut self,
+        _event: &mut MouseMoveEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
     fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
-    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
+    }
     fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_text_input(
         &mut self,
@@ -284,6 +299,9 @@ pub trait EventTarget {
     fn set_scroll_offset(&mut self, _offset: (f32, f32)) {}
     fn ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
         None
+    }
+    fn wants_animation_frame(&self) -> bool {
+        false
     }
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
         Vec::new()
@@ -361,6 +379,22 @@ struct ElementStyleSnapshot {
     border_right_color: Color,
     border_bottom_color: Color,
     border_left_color: Color,
+    transition_snapshot: Option<TransitionSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TransitionSnapshot {
+    has_layout_snapshot: bool,
+    layout_transition_visual_offset_x: f32,
+    layout_transition_visual_offset_y: f32,
+    layout_transition_override_width: Option<f32>,
+    layout_transition_override_height: Option<f32>,
+    layout_transition_target_x: Option<f32>,
+    layout_transition_target_y: Option<f32>,
+    layout_transition_target_width: Option<f32>,
+    layout_transition_target_height: Option<f32>,
+    last_parent_layout_x: f32,
+    last_parent_layout_y: f32,
 }
 
 pub struct Element {
@@ -471,6 +505,19 @@ impl ElementTrait for Element {
             border_right_color: Color::rgba(br_r, br_g, br_b, br_a),
             border_bottom_color: Color::rgba(bb_r, bb_g, bb_b, bb_a),
             border_left_color: Color::rgba(bl_r, bl_g, bl_b, bl_a),
+            transition_snapshot: Some(TransitionSnapshot {
+                has_layout_snapshot: self.has_layout_snapshot,
+                layout_transition_visual_offset_x: self.layout_transition_visual_offset_x,
+                layout_transition_visual_offset_y: self.layout_transition_visual_offset_y,
+                layout_transition_override_width: self.layout_transition_override_width,
+                layout_transition_override_height: self.layout_transition_override_height,
+                layout_transition_target_x: self.layout_transition_target_x,
+                layout_transition_target_y: self.layout_transition_target_y,
+                layout_transition_target_width: self.layout_transition_target_width,
+                layout_transition_target_height: self.layout_transition_target_height,
+                last_parent_layout_x: self.last_parent_layout_x,
+                last_parent_layout_y: self.last_parent_layout_y,
+            }),
         }))
     }
 
@@ -488,6 +535,25 @@ impl ElementTrait for Element {
         self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
         self.border_colors.left = Box::new(snapshot.border_left_color);
         self.has_style_snapshot = true;
+        if let Some(transition_snapshot) = snapshot.transition_snapshot {
+            self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
+            self.layout_transition_visual_offset_x =
+                transition_snapshot.layout_transition_visual_offset_x;
+            self.layout_transition_visual_offset_y =
+                transition_snapshot.layout_transition_visual_offset_y;
+            self.layout_transition_override_width =
+                transition_snapshot.layout_transition_override_width;
+            self.layout_transition_override_height =
+                transition_snapshot.layout_transition_override_height;
+            self.layout_transition_target_x = transition_snapshot.layout_transition_target_x;
+            self.layout_transition_target_y = transition_snapshot.layout_transition_target_y;
+            self.layout_transition_target_width =
+                transition_snapshot.layout_transition_target_width;
+            self.layout_transition_target_height =
+                transition_snapshot.layout_transition_target_height;
+            self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
+            self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
+        }
 
         // Recompute against current parsed_style so transitions can bridge from old -> new style.
         self.recompute_style();
@@ -496,7 +562,11 @@ impl ElementTrait for Element {
 }
 
 impl EventTarget for Element {
-    fn dispatch_mouse_down(&mut self, event: &mut MouseDownEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_mouse_down(
+        &mut self,
+        event: &mut MouseDownEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
         self.handle_scrollbar_mouse_down(event, _control);
         for handler in &mut self.mouse_down_handlers {
             handler(event, _control);
@@ -510,7 +580,11 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_mouse_move(&mut self, event: &mut MouseMoveEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_mouse_move(
+        &mut self,
+        event: &mut MouseMoveEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
         self.handle_scrollbar_mouse_move(event, _control);
         for handler in &mut self.mouse_move_handlers {
             handler(event, _control);
@@ -661,19 +735,46 @@ impl Layoutable for Element {
 
         // We should always measure children because they might be Auto or use Percent units
         // that depend on our inner size.
-        let is_flex = matches!(self.computed_style.display, Display::Flow | Display::InlineFlex);
+        let is_flex = matches!(
+            self.computed_style.display,
+            Display::Flow | Display::InlineFlex
+        );
         if is_flex {
             self.measure_flex_children(proposal);
         } else {
-            let bw_l = resolve_px_or_zero(self.computed_style.border_widths.left, proposal.percent_base_width);
-            let bw_r = resolve_px_or_zero(self.computed_style.border_widths.right, proposal.percent_base_width);
-            let bw_t = resolve_px_or_zero(self.computed_style.border_widths.top, proposal.percent_base_height);
-            let bw_b = resolve_px_or_zero(self.computed_style.border_widths.bottom, proposal.percent_base_height);
+            let bw_l = resolve_px_or_zero(
+                self.computed_style.border_widths.left,
+                proposal.percent_base_width,
+            );
+            let bw_r = resolve_px_or_zero(
+                self.computed_style.border_widths.right,
+                proposal.percent_base_width,
+            );
+            let bw_t = resolve_px_or_zero(
+                self.computed_style.border_widths.top,
+                proposal.percent_base_height,
+            );
+            let bw_b = resolve_px_or_zero(
+                self.computed_style.border_widths.bottom,
+                proposal.percent_base_height,
+            );
 
-            let p_l = resolve_px_or_zero(self.computed_style.padding.left, proposal.percent_base_width);
-            let p_r = resolve_px_or_zero(self.computed_style.padding.right, proposal.percent_base_width);
-            let p_t = resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
-            let p_b = resolve_px_or_zero(self.computed_style.padding.bottom, proposal.percent_base_height);
+            let p_l = resolve_px_or_zero(
+                self.computed_style.padding.left,
+                proposal.percent_base_width,
+            );
+            let p_r = resolve_px_or_zero(
+                self.computed_style.padding.right,
+                proposal.percent_base_width,
+            );
+            let p_t = resolve_px_or_zero(
+                self.computed_style.padding.top,
+                proposal.percent_base_height,
+            );
+            let p_b = resolve_px_or_zero(
+                self.computed_style.padding.bottom,
+                proposal.percent_base_height,
+            );
 
             let (layout_w, layout_h) = self.current_layout_transition_size();
             let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
@@ -705,8 +806,10 @@ impl Layoutable for Element {
                     percent_base_height: child_percent_base_height,
                 });
             }
-            
-            if self.computed_style.width == SizeValue::Auto || self.computed_style.height == SizeValue::Auto {
+
+            if self.computed_style.width == SizeValue::Auto
+                || self.computed_style.height == SizeValue::Auto
+            {
                 self.update_size_from_measured_children();
             }
         }
@@ -837,13 +940,18 @@ impl Renderable for Element {
         };
 
         let inset_left = self.border_widths.left.clamp(0.0, max_bw) + self.padding.left.max(0.0);
-        let inset_right =
-            self.border_widths.right.clamp(0.0, max_bw) + self.padding.right.max(0.0);
+        let inset_right = self.border_widths.right.clamp(0.0, max_bw) + self.padding.right.max(0.0);
         let inset_top = self.border_widths.top.clamp(0.0, max_bw) + self.padding.top.max(0.0);
         let inset_bottom =
             self.border_widths.bottom.clamp(0.0, max_bw) + self.padding.bottom.max(0.0);
         let inner_clip_radii = normalize_corner_radii(
-            inset_corner_radii(outer_radii, inset_left, inset_right, inset_top, inset_bottom),
+            inset_corner_radii(
+                outer_radii,
+                inset_left,
+                inset_right,
+                inset_top,
+                inset_bottom,
+            ),
             self.layout_inner_size.width.max(0.0),
             self.layout_inner_size.height.max(0.0),
         );
@@ -877,10 +985,13 @@ impl Renderable for Element {
 
         if let Some(layer) = layer {
             ctx.set_color_target(previous_color_target);
+            // build_self() already rasterizes the element silhouette (including rounded corners).
+            // Applying another rounded mask here can introduce visible edge artifacts under
+            // nested opacity compositing, so keep this composite pass unmasked.
             let composite = CompositeLayerPass::new(
                 [self.core.layout_position.x, self.core.layout_position.y],
                 [self.core.layout_size.width, self.core.layout_size.height],
-                outer_radii.to_array(),
+                [0.0; 4],
                 self.opacity.clamp(0.0, 1.0),
                 layer,
             );
@@ -907,9 +1018,15 @@ impl Element {
 
     pub fn new_with_id(id: u64, x: f32, y: f32, width: f32, height: f32) -> Self {
         let mut style = Style::new();
-        style.insert(crate::style::PropertyId::Width, crate::style::ParsedValue::Length(Length::px(width)));
-        style.insert(crate::style::PropertyId::Height, crate::style::ParsedValue::Length(Length::px(height)));
-        
+        style.insert(
+            crate::style::PropertyId::Width,
+            crate::style::ParsedValue::Length(Length::px(width)),
+        );
+        style.insert(
+            crate::style::PropertyId::Height,
+            crate::style::ParsedValue::Length(Length::px(height)),
+        );
+
         let mut el = Element {
             core: if id == 0 {
                 ElementCore::new(x, y, width, height)
@@ -1251,158 +1368,174 @@ impl Element {
             match transition.property {
                 TransitionProperty::All => {
                     if !approx_eq(prev_opacity, next_opacity) {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::Opacity,
-                            from: StyleValue::Scalar(prev_opacity),
-                            to: StyleValue::Scalar(next_opacity),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::Opacity,
+                                from: StyleValue::Scalar(prev_opacity),
+                                to: StyleValue::Scalar(next_opacity),
+                                transition: runtime,
+                            });
                     }
                     if !approx_eq(prev_border_radius, next_border_radius) {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderRadius,
-                            from: StyleValue::Scalar(prev_border_radius),
-                            to: StyleValue::Scalar(next_border_radius),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderRadius,
+                                from: StyleValue::Scalar(prev_border_radius),
+                                to: StyleValue::Scalar(next_border_radius),
+                                transition: runtime,
+                            });
                     }
                     if prev_background_color != next_background_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BackgroundColor,
-                            from: StyleValue::Color(prev_background_color),
-                            to: StyleValue::Color(next_background_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BackgroundColor,
+                                from: StyleValue::Color(prev_background_color),
+                                to: StyleValue::Color(next_background_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_foreground_color != next_foreground_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::Color,
-                            from: StyleValue::Color(prev_foreground_color),
-                            to: StyleValue::Color(next_foreground_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::Color,
+                                from: StyleValue::Color(prev_foreground_color),
+                                to: StyleValue::Color(next_foreground_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_border_top_color != next_border_top_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderTopColor,
-                            from: StyleValue::Color(prev_border_top_color),
-                            to: StyleValue::Color(next_border_top_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderTopColor,
+                                from: StyleValue::Color(prev_border_top_color),
+                                to: StyleValue::Color(next_border_top_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_border_right_color != next_border_right_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderRightColor,
-                            from: StyleValue::Color(prev_border_right_color),
-                            to: StyleValue::Color(next_border_right_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderRightColor,
+                                from: StyleValue::Color(prev_border_right_color),
+                                to: StyleValue::Color(next_border_right_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_border_bottom_color != next_border_bottom_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderBottomColor,
-                            from: StyleValue::Color(prev_border_bottom_color),
-                            to: StyleValue::Color(next_border_bottom_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderBottomColor,
+                                from: StyleValue::Color(prev_border_bottom_color),
+                                to: StyleValue::Color(next_border_bottom_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_border_left_color != next_border_left_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderLeftColor,
-                            from: StyleValue::Color(prev_border_left_color),
-                            to: StyleValue::Color(next_border_left_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderLeftColor,
+                                from: StyleValue::Color(prev_border_left_color),
+                                to: StyleValue::Color(next_border_left_color),
+                                transition: runtime,
+                            });
                     }
                 }
                 TransitionProperty::Opacity => {
                     if !approx_eq(prev_opacity, next_opacity) {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::Opacity,
-                            from: StyleValue::Scalar(prev_opacity),
-                            to: StyleValue::Scalar(next_opacity),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::Opacity,
+                                from: StyleValue::Scalar(prev_opacity),
+                                to: StyleValue::Scalar(next_opacity),
+                                transition: runtime,
+                            });
                     }
                 }
                 TransitionProperty::BorderRadius => {
                     if !approx_eq(prev_border_radius, next_border_radius) {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderRadius,
-                            from: StyleValue::Scalar(prev_border_radius),
-                            to: StyleValue::Scalar(next_border_radius),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderRadius,
+                                from: StyleValue::Scalar(prev_border_radius),
+                                to: StyleValue::Scalar(next_border_radius),
+                                transition: runtime,
+                            });
                     }
                 }
                 TransitionProperty::BackgroundColor => {
                     if prev_background_color != next_background_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BackgroundColor,
-                            from: StyleValue::Color(prev_background_color),
-                            to: StyleValue::Color(next_background_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BackgroundColor,
+                                from: StyleValue::Color(prev_background_color),
+                                to: StyleValue::Color(next_background_color),
+                                transition: runtime,
+                            });
                     }
                 }
                 TransitionProperty::Color => {
                     if prev_foreground_color != next_foreground_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::Color,
-                            from: StyleValue::Color(prev_foreground_color),
-                            to: StyleValue::Color(next_foreground_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::Color,
+                                from: StyleValue::Color(prev_foreground_color),
+                                to: StyleValue::Color(next_foreground_color),
+                                transition: runtime,
+                            });
                     }
                 }
                 TransitionProperty::BorderColor => {
                     if prev_border_top_color != next_border_top_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderTopColor,
-                            from: StyleValue::Color(prev_border_top_color),
-                            to: StyleValue::Color(next_border_top_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderTopColor,
+                                from: StyleValue::Color(prev_border_top_color),
+                                to: StyleValue::Color(next_border_top_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_border_right_color != next_border_right_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderRightColor,
-                            from: StyleValue::Color(prev_border_right_color),
-                            to: StyleValue::Color(next_border_right_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderRightColor,
+                                from: StyleValue::Color(prev_border_right_color),
+                                to: StyleValue::Color(next_border_right_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_border_bottom_color != next_border_bottom_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderBottomColor,
-                            from: StyleValue::Color(prev_border_bottom_color),
-                            to: StyleValue::Color(next_border_bottom_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderBottomColor,
+                                from: StyleValue::Color(prev_border_bottom_color),
+                                to: StyleValue::Color(next_border_bottom_color),
+                                transition: runtime,
+                            });
                     }
                     if prev_border_left_color != next_border_left_color {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
-                            target: self.core.id,
-                            field: StyleField::BorderLeftColor,
-                            from: StyleValue::Color(prev_border_left_color),
-                            to: StyleValue::Color(next_border_left_color),
-                            transition: runtime,
-                        });
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BorderLeftColor,
+                                from: StyleValue::Color(prev_border_left_color),
+                                to: StyleValue::Color(next_border_left_color),
+                                transition: runtime,
+                            });
                     }
                 }
                 _ => {}
@@ -1471,8 +1604,16 @@ impl Element {
             ScrollDirection::Vertical | ScrollDirection::Both
         ) && max_scroll_y > 0.0;
 
-        let reserve_v = if can_scroll_y { THICKNESS + MARGIN } else { 0.0 };
-        let reserve_h = if can_scroll_x { THICKNESS + MARGIN } else { 0.0 };
+        let reserve_v = if can_scroll_y {
+            THICKNESS + MARGIN
+        } else {
+            0.0
+        };
+        let reserve_h = if can_scroll_x {
+            THICKNESS + MARGIN
+        } else {
+            0.0
+        };
 
         if can_scroll_y {
             let track_x = inner_x + self.layout_inner_size.width - THICKNESS - MARGIN;
@@ -1485,8 +1626,8 @@ impl Element {
                     width: THICKNESS,
                     height: track_h,
                 };
-                let ratio =
-                    (self.layout_inner_size.height / self.content_size.height.max(1.0)).clamp(0.0, 1.0);
+                let ratio = (self.layout_inner_size.height / self.content_size.height.max(1.0))
+                    .clamp(0.0, 1.0);
                 let thumb_h = (track_h * ratio).clamp(MIN_THUMB.min(track_h), track_h);
                 let travel = (track_h - thumb_h).max(0.0);
                 let thumb_offset = if max_scroll_y > 0.0 {
@@ -1515,8 +1656,8 @@ impl Element {
                     width: track_w,
                     height: THICKNESS,
                 };
-                let ratio =
-                    (self.layout_inner_size.width / self.content_size.width.max(1.0)).clamp(0.0, 1.0);
+                let ratio = (self.layout_inner_size.width / self.content_size.width.max(1.0))
+                    .clamp(0.0, 1.0);
                 let thumb_w = (track_w * ratio).clamp(MIN_THUMB.min(track_w), track_w);
                 let travel = (track_w - thumb_w).max(0.0);
                 let thumb_offset = if max_scroll_x > 0.0 {
@@ -1770,35 +1911,52 @@ impl Element {
         if alpha <= 0.0 {
             return;
         }
-        let geometry = self.scrollbar_geometry(self.layout_inner_position.x, self.layout_inner_position.y);
+        let geometry =
+            self.scrollbar_geometry(self.layout_inner_position.x, self.layout_inner_position.y);
         let track_alpha = (0.22 * alpha).clamp(0.0, 1.0);
         let thumb_alpha = (0.58 * alpha).clamp(0.0, 1.0);
         let track_color = [0.95, 0.95, 0.95, track_alpha];
         let thumb_color = [0.95, 0.95, 0.95, thumb_alpha];
         if let Some(track) = geometry.vertical_track {
-            let mut pass =
-                DrawRectPass::new([track.x, track.y], [track.width, track.height], track_color, 1.0);
+            let mut pass = DrawRectPass::new(
+                [track.x, track.y],
+                [track.width, track.height],
+                track_color,
+                1.0,
+            );
             pass.set_border_width(0.0);
             pass.set_border_radius((track.width * 0.5).max(0.0));
             self.push_pass(graph, ctx, pass);
         }
         if let Some(track) = geometry.horizontal_track {
-            let mut pass =
-                DrawRectPass::new([track.x, track.y], [track.width, track.height], track_color, 1.0);
+            let mut pass = DrawRectPass::new(
+                [track.x, track.y],
+                [track.width, track.height],
+                track_color,
+                1.0,
+            );
             pass.set_border_width(0.0);
             pass.set_border_radius((track.height * 0.5).max(0.0));
             self.push_pass(graph, ctx, pass);
         }
         if let Some(thumb) = geometry.vertical_thumb {
-            let mut pass =
-                DrawRectPass::new([thumb.x, thumb.y], [thumb.width, thumb.height], thumb_color, 1.0);
+            let mut pass = DrawRectPass::new(
+                [thumb.x, thumb.y],
+                [thumb.width, thumb.height],
+                thumb_color,
+                1.0,
+            );
             pass.set_border_width(0.0);
             pass.set_border_radius((thumb.width * 0.5).max(0.0));
             self.push_pass(graph, ctx, pass);
         }
         if let Some(thumb) = geometry.horizontal_thumb {
-            let mut pass =
-                DrawRectPass::new([thumb.x, thumb.y], [thumb.width, thumb.height], thumb_color, 1.0);
+            let mut pass = DrawRectPass::new(
+                [thumb.x, thumb.y],
+                [thumb.width, thumb.height],
+                thumb_color,
+                1.0,
+            );
             pass.set_border_width(0.0);
             pass.set_border_radius((thumb.height * 0.5).max(0.0));
             self.push_pass(graph, ctx, pass);
@@ -1886,15 +2044,39 @@ impl Element {
     }
 
     fn measure_flex_children(&mut self, proposal: LayoutProposal) {
-        let bw_l = resolve_px_or_zero(self.computed_style.border_widths.left, proposal.percent_base_width);
-        let bw_r = resolve_px_or_zero(self.computed_style.border_widths.right, proposal.percent_base_width);
-        let bw_t = resolve_px_or_zero(self.computed_style.border_widths.top, proposal.percent_base_height);
-        let bw_b = resolve_px_or_zero(self.computed_style.border_widths.bottom, proposal.percent_base_height);
+        let bw_l = resolve_px_or_zero(
+            self.computed_style.border_widths.left,
+            proposal.percent_base_width,
+        );
+        let bw_r = resolve_px_or_zero(
+            self.computed_style.border_widths.right,
+            proposal.percent_base_width,
+        );
+        let bw_t = resolve_px_or_zero(
+            self.computed_style.border_widths.top,
+            proposal.percent_base_height,
+        );
+        let bw_b = resolve_px_or_zero(
+            self.computed_style.border_widths.bottom,
+            proposal.percent_base_height,
+        );
 
-        let p_l = resolve_px_or_zero(self.computed_style.padding.left, proposal.percent_base_width);
-        let p_r = resolve_px_or_zero(self.computed_style.padding.right, proposal.percent_base_width);
-        let p_t = resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
-        let p_b = resolve_px_or_zero(self.computed_style.padding.bottom, proposal.percent_base_height);
+        let p_l = resolve_px_or_zero(
+            self.computed_style.padding.left,
+            proposal.percent_base_width,
+        );
+        let p_r = resolve_px_or_zero(
+            self.computed_style.padding.right,
+            proposal.percent_base_width,
+        );
+        let p_t = resolve_px_or_zero(
+            self.computed_style.padding.top,
+            proposal.percent_base_height,
+        );
+        let p_b = resolve_px_or_zero(
+            self.computed_style.padding.bottom,
+            proposal.percent_base_height,
+        );
 
         let (layout_w, layout_h) = self.current_layout_transition_size();
         let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
@@ -1907,26 +2089,36 @@ impl Element {
             ScrollDirection::Both => (1_000_000.0, 1_000_000.0),
         };
 
-        let child_percent_base_width = if self.computed_style.width == SizeValue::Auto { None } else { Some(inner_w) };
-        let child_percent_base_height = if self.computed_style.height == SizeValue::Auto { None } else { Some(inner_h) };
+        let child_percent_base_width = if self.computed_style.width == SizeValue::Auto {
+            None
+        } else {
+            Some(inner_w)
+        };
+        let child_percent_base_height = if self.computed_style.height == SizeValue::Auto {
+            None
+        } else {
+            Some(inner_h)
+        };
 
-                    for child in &mut self.children {
-                        child.measure(LayoutConstraints {
-                            max_width: child_available_width,
-                            max_height: child_available_height,
-                            percent_base_width: child_percent_base_width,
-                            percent_base_height: child_percent_base_height,
-                        });
-                    }
-                let info = self.compute_flex_info(inner_w, inner_h);
-        
+        for child in &mut self.children {
+            child.measure(LayoutConstraints {
+                max_width: child_available_width,
+                max_height: child_available_height,
+                percent_base_width: child_percent_base_width,
+                percent_base_height: child_percent_base_height,
+            });
+        }
+        let info = self.compute_flex_info(inner_w, inner_h);
+
         if self.computed_style.width == SizeValue::Auto {
-            self.core.set_width(info.total_main + bw_l + bw_r + p_l + p_r);
+            self.core
+                .set_width(info.total_main + bw_l + bw_r + p_l + p_r);
         }
         if self.computed_style.height == SizeValue::Auto {
-            self.core.set_height(info.total_cross + bw_t + bw_b + p_t + p_b);
+            self.core
+                .set_height(info.total_cross + bw_t + bw_b + p_t + p_b);
         }
-        
+
         self.content_size = Size {
             width: info.total_main,
             height: info.total_cross,
@@ -1957,7 +2149,11 @@ impl Element {
         let mut current_cross = 0.0;
 
         for (idx, (item_main, item_cross)) in child_sizes.iter().copied().enumerate() {
-            let next_main = if current.is_empty() { item_main } else { current_main + gap + item_main };
+            let next_main = if current.is_empty() {
+                item_main
+            } else {
+                current_main + gap + item_main
+            };
             if wrap && !current.is_empty() && next_main > main_limit {
                 lines.push(current);
                 line_main_sum.push(current_main);
@@ -1982,7 +2178,8 @@ impl Element {
         }
 
         let total_main = line_main_sum.iter().fold(0.0f32, |a, &b| a.max(b));
-        let total_cross = line_cross_max.iter().sum::<f32>() + gap * (line_cross_max.len().saturating_sub(1) as f32);
+        let total_cross = line_cross_max.iter().sum::<f32>()
+            + gap * (line_cross_max.len().saturating_sub(1) as f32);
 
         FlexLayoutInfo {
             lines,
@@ -2092,12 +2289,16 @@ impl Element {
         self.border_colors.bottom = Box::new(self.computed_style.border_colors.bottom);
         self.border_widths.left =
             resolve_px(self.computed_style.border_widths.left, self.core.size.width);
-        self.border_widths.right =
-            resolve_px(self.computed_style.border_widths.right, self.core.size.width);
+        self.border_widths.right = resolve_px(
+            self.computed_style.border_widths.right,
+            self.core.size.width,
+        );
         self.border_widths.top =
             resolve_px(self.computed_style.border_widths.top, self.core.size.height);
-        self.border_widths.bottom =
-            resolve_px(self.computed_style.border_widths.bottom, self.core.size.height);
+        self.border_widths.bottom = resolve_px(
+            self.computed_style.border_widths.bottom,
+            self.core.size.height,
+        );
         let radius_base = self.core.size.width.min(self.core.size.height).max(0.0);
         self.border_radii = CornerRadii {
             top_left: resolve_px(self.computed_style.border_radii.top_left, radius_base),
@@ -2246,30 +2447,58 @@ impl Element {
     }
 
     fn resolve_lengths_from_parent_inner(&mut self, proposal: LayoutProposal) {
-        self.border_widths.left =
-            resolve_px_or_zero(self.computed_style.border_widths.left, proposal.percent_base_width);
-        self.border_widths.right =
-            resolve_px_or_zero(self.computed_style.border_widths.right, proposal.percent_base_width);
-        self.border_widths.top =
-            resolve_px_or_zero(self.computed_style.border_widths.top, proposal.percent_base_height);
+        self.border_widths.left = resolve_px_or_zero(
+            self.computed_style.border_widths.left,
+            proposal.percent_base_width,
+        );
+        self.border_widths.right = resolve_px_or_zero(
+            self.computed_style.border_widths.right,
+            proposal.percent_base_width,
+        );
+        self.border_widths.top = resolve_px_or_zero(
+            self.computed_style.border_widths.top,
+            proposal.percent_base_height,
+        );
         self.border_widths.bottom = resolve_px_or_zero(
             self.computed_style.border_widths.bottom,
             proposal.percent_base_height,
         );
 
-        if self.parsed_style.get(crate::style::PropertyId::PaddingLeft).is_some() {
-            self.padding.left =
-                resolve_px_or_zero(self.computed_style.padding.left, proposal.percent_base_width);
+        if self
+            .parsed_style
+            .get(crate::style::PropertyId::PaddingLeft)
+            .is_some()
+        {
+            self.padding.left = resolve_px_or_zero(
+                self.computed_style.padding.left,
+                proposal.percent_base_width,
+            );
         }
-        if self.parsed_style.get(crate::style::PropertyId::PaddingRight).is_some() {
-            self.padding.right =
-                resolve_px_or_zero(self.computed_style.padding.right, proposal.percent_base_width);
+        if self
+            .parsed_style
+            .get(crate::style::PropertyId::PaddingRight)
+            .is_some()
+        {
+            self.padding.right = resolve_px_or_zero(
+                self.computed_style.padding.right,
+                proposal.percent_base_width,
+            );
         }
-        if self.parsed_style.get(crate::style::PropertyId::PaddingTop).is_some() {
-            self.padding.top =
-                resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
+        if self
+            .parsed_style
+            .get(crate::style::PropertyId::PaddingTop)
+            .is_some()
+        {
+            self.padding.top = resolve_px_or_zero(
+                self.computed_style.padding.top,
+                proposal.percent_base_height,
+            );
         }
-        if self.parsed_style.get(crate::style::PropertyId::PaddingBottom).is_some() {
+        if self
+            .parsed_style
+            .get(crate::style::PropertyId::PaddingBottom)
+            .is_some()
+        {
             self.padding.bottom = resolve_px_or_zero(
                 self.computed_style.padding.bottom,
                 proposal.percent_base_height,
@@ -2331,15 +2560,39 @@ impl Element {
     fn child_layout_limits_for_proposal(&self, proposal: LayoutProposal) -> (f32, f32) {
         const SCROLL_EXPANDED_LIMIT: f32 = 1_000_000.0;
 
-        let bw_l = resolve_px_or_zero(self.computed_style.border_widths.left, proposal.percent_base_width);
-        let bw_r = resolve_px_or_zero(self.computed_style.border_widths.right, proposal.percent_base_width);
-        let bw_t = resolve_px_or_zero(self.computed_style.border_widths.top, proposal.percent_base_height);
-        let bw_b = resolve_px_or_zero(self.computed_style.border_widths.bottom, proposal.percent_base_height);
+        let bw_l = resolve_px_or_zero(
+            self.computed_style.border_widths.left,
+            proposal.percent_base_width,
+        );
+        let bw_r = resolve_px_or_zero(
+            self.computed_style.border_widths.right,
+            proposal.percent_base_width,
+        );
+        let bw_t = resolve_px_or_zero(
+            self.computed_style.border_widths.top,
+            proposal.percent_base_height,
+        );
+        let bw_b = resolve_px_or_zero(
+            self.computed_style.border_widths.bottom,
+            proposal.percent_base_height,
+        );
 
-        let p_l = resolve_px_or_zero(self.computed_style.padding.left, proposal.percent_base_width);
-        let p_r = resolve_px_or_zero(self.computed_style.padding.right, proposal.percent_base_width);
-        let p_t = resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
-        let p_b = resolve_px_or_zero(self.computed_style.padding.bottom, proposal.percent_base_height);
+        let p_l = resolve_px_or_zero(
+            self.computed_style.padding.left,
+            proposal.percent_base_width,
+        );
+        let p_r = resolve_px_or_zero(
+            self.computed_style.padding.right,
+            proposal.percent_base_width,
+        );
+        let p_t = resolve_px_or_zero(
+            self.computed_style.padding.top,
+            proposal.percent_base_height,
+        );
+        let p_b = resolve_px_or_zero(
+            self.computed_style.padding.bottom,
+            proposal.percent_base_height,
+        );
 
         let (layout_w, layout_h) = self.current_layout_transition_size();
         let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
@@ -2369,15 +2622,39 @@ impl Element {
             percent_base_height: None,
         });
 
-        let bw_l = resolve_px_or_zero(self.computed_style.border_widths.left, proposal.percent_base_width);
-        let bw_r = resolve_px_or_zero(self.computed_style.border_widths.right, proposal.percent_base_width);
-        let bw_t = resolve_px_or_zero(self.computed_style.border_widths.top, proposal.percent_base_height);
-        let bw_b = resolve_px_or_zero(self.computed_style.border_widths.bottom, proposal.percent_base_height);
+        let bw_l = resolve_px_or_zero(
+            self.computed_style.border_widths.left,
+            proposal.percent_base_width,
+        );
+        let bw_r = resolve_px_or_zero(
+            self.computed_style.border_widths.right,
+            proposal.percent_base_width,
+        );
+        let bw_t = resolve_px_or_zero(
+            self.computed_style.border_widths.top,
+            proposal.percent_base_height,
+        );
+        let bw_b = resolve_px_or_zero(
+            self.computed_style.border_widths.bottom,
+            proposal.percent_base_height,
+        );
 
-        let p_l = resolve_px_or_zero(self.computed_style.padding.left, proposal.percent_base_width);
-        let p_r = resolve_px_or_zero(self.computed_style.padding.right, proposal.percent_base_width);
-        let p_t = resolve_px_or_zero(self.computed_style.padding.top, proposal.percent_base_height);
-        let p_b = resolve_px_or_zero(self.computed_style.padding.bottom, proposal.percent_base_height);
+        let p_l = resolve_px_or_zero(
+            self.computed_style.padding.left,
+            proposal.percent_base_width,
+        );
+        let p_r = resolve_px_or_zero(
+            self.computed_style.padding.right,
+            proposal.percent_base_width,
+        );
+        let p_t = resolve_px_or_zero(
+            self.computed_style.padding.top,
+            proposal.percent_base_height,
+        );
+        let p_b = resolve_px_or_zero(
+            self.computed_style.padding.bottom,
+            proposal.percent_base_height,
+        );
 
         if self.computed_style.width == SizeValue::Auto {
             self.core.set_width(max_w + bw_l + bw_r + p_l + p_r);
@@ -2397,54 +2674,34 @@ impl Element {
     ) {
         let target_rel_x = self.core.position.x;
         let target_rel_y = self.core.position.y;
-        let has_x_transition = self
-            .computed_style
-            .transition
-            .as_slice()
-            .iter()
-            .any(|t| {
-                matches!(
-                    t.property,
-                    TransitionProperty::Position
-                        | TransitionProperty::PositionX
-                        | TransitionProperty::X
-                )
-            });
-        let has_y_transition = self
-            .computed_style
-            .transition
-            .as_slice()
-            .iter()
-            .any(|t| {
-                matches!(
-                    t.property,
-                    TransitionProperty::Position
-                        | TransitionProperty::PositionY
-                        | TransitionProperty::Y
-                )
-            });
-        let has_width_transition = self
-            .computed_style
-            .transition
-            .as_slice()
-            .iter()
-            .any(|t| {
-                matches!(
-                    t.property,
-                    TransitionProperty::All | TransitionProperty::Width
-                )
-            });
-        let has_height_transition = self
-            .computed_style
-            .transition
-            .as_slice()
-            .iter()
-            .any(|t| {
-                matches!(
-                    t.property,
-                    TransitionProperty::All | TransitionProperty::Height
-                )
-            });
+        let has_x_transition = self.computed_style.transition.as_slice().iter().any(|t| {
+            matches!(
+                t.property,
+                TransitionProperty::Position
+                    | TransitionProperty::PositionX
+                    | TransitionProperty::X
+            )
+        });
+        let has_y_transition = self.computed_style.transition.as_slice().iter().any(|t| {
+            matches!(
+                t.property,
+                TransitionProperty::Position
+                    | TransitionProperty::PositionY
+                    | TransitionProperty::Y
+            )
+        });
+        let has_width_transition = self.computed_style.transition.as_slice().iter().any(|t| {
+            matches!(
+                t.property,
+                TransitionProperty::All | TransitionProperty::Width
+            )
+        });
+        let has_height_transition = self.computed_style.transition.as_slice().iter().any(|t| {
+            matches!(
+                t.property,
+                TransitionProperty::All | TransitionProperty::Height
+            )
+        });
         if !has_x_transition {
             self.layout_transition_visual_offset_x = 0.0;
             self.layout_transition_target_x = None;
@@ -2463,6 +2720,8 @@ impl Element {
         }
         let current_visual_rel_x = self.core.layout_position.x - parent_x - parent_visual_offset_x;
         let current_visual_rel_y = self.core.layout_position.y - parent_y - parent_visual_offset_y;
+        let prev_target_rel_x = self.layout_flow_position.x - self.last_parent_layout_x;
+        let prev_target_rel_y = self.layout_flow_position.y - self.last_parent_layout_y;
         let current_offset_x = current_visual_rel_x - target_rel_x;
         let current_offset_y = current_visual_rel_y - target_rel_y;
         let target_width = self.core.size.width.max(0.0);
@@ -2513,11 +2772,13 @@ impl Element {
             self.layout_transition_target_height = None;
             self.layout_transition_override_height = None;
         }
-        
+
         if self.has_layout_snapshot {
             self.collect_layout_transition_requests(
                 current_offset_x,
                 current_offset_y,
+                prev_target_rel_x,
+                prev_target_rel_y,
                 prev_width,
                 prev_height,
                 target_rel_x,
@@ -2530,15 +2791,23 @@ impl Element {
 
         let frame_rel_x = target_rel_x;
         let frame_rel_y = target_rel_y;
-        let frame_width = self.layout_transition_override_width.unwrap_or(target_width);
-        let frame_height = self.layout_transition_override_height.unwrap_or(target_height);
+        let frame_width = self
+            .layout_transition_override_width
+            .unwrap_or(target_width);
+        let frame_height = self
+            .layout_transition_override_height
+            .unwrap_or(target_height);
         self.layout_flow_position = Position {
             x: parent_x + frame_rel_x,
             y: parent_y + frame_rel_y,
         };
         let frame = LayoutFrame {
-            x: self.layout_flow_position.x + parent_visual_offset_x + self.layout_transition_visual_offset_x,
-            y: self.layout_flow_position.y + parent_visual_offset_y + self.layout_transition_visual_offset_y,
+            x: self.layout_flow_position.x
+                + parent_visual_offset_x
+                + self.layout_transition_visual_offset_x,
+            y: self.layout_flow_position.y
+                + parent_visual_offset_y
+                + self.layout_transition_visual_offset_y,
             width: frame_width,
             height: frame_height,
         };
@@ -2572,6 +2841,8 @@ impl Element {
         &mut self,
         prev_offset_x: f32,
         prev_offset_y: f32,
+        prev_target_rel_x: f32,
+        prev_target_rel_y: f32,
         prev_width: f32,
         prev_height: f32,
         target_rel_x: f32,
@@ -2596,50 +2867,64 @@ impl Element {
                         .layout_transition_target_width
                         .is_none_or(|active| !approx_eq(active, target_width));
                     if should_start_width && !approx_eq(prev_width, target_width) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
-                            target: self.core.id,
-                            field: LayoutField::Width,
-                            from: prev_width,
-                            to: target_width,
-                            transition: runtime_layout,
-                        });
+                        self.pending_layout_transition_requests
+                            .push(LayoutTrackRequest {
+                                target: self.core.id,
+                                field: LayoutField::Width,
+                                from: prev_width,
+                                to: target_width,
+                                transition: runtime_layout,
+                            });
+                        self.layout_transition_override_width = Some(prev_width.max(0.0));
                         self.layout_transition_target_width = Some(target_width);
                     }
                     let should_start_height = self
                         .layout_transition_target_height
                         .is_none_or(|active| !approx_eq(active, target_height));
                     if should_start_height && !approx_eq(prev_height, target_height) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
-                            target: self.core.id,
-                            field: LayoutField::Height,
-                            from: prev_height,
-                            to: target_height,
-                            transition: runtime_layout,
-                        });
+                        self.pending_layout_transition_requests
+                            .push(LayoutTrackRequest {
+                                target: self.core.id,
+                                field: LayoutField::Height,
+                                from: prev_height,
+                                to: target_height,
+                                transition: runtime_layout,
+                            });
+                        self.layout_transition_override_height = Some(prev_height.max(0.0));
                         self.layout_transition_target_height = Some(target_height);
                     }
                 }
                 TransitionProperty::Position => {
                     let should_start_x = self.layout_transition_target_x.is_none();
-                    if should_start_x && !approx_eq(prev_offset_x, 0.0) {
-                        self.pending_visual_transition_requests.push(VisualTrackRequest {
-                            target: self.core.id,
-                            field: VisualField::X,
-                            from: prev_offset_x,
-                            to: 0.0,
-                            transition: runtime_visual,
-                        });
+                    if should_start_x
+                        && !approx_eq(prev_offset_x, 0.0)
+                        && !approx_eq(prev_target_rel_x, target_rel_x)
+                    {
+                        self.pending_visual_transition_requests
+                            .push(VisualTrackRequest {
+                                target: self.core.id,
+                                field: VisualField::X,
+                                from: prev_offset_x,
+                                to: 0.0,
+                                transition: runtime_visual,
+                            });
+                        self.layout_transition_visual_offset_x = prev_offset_x;
                         self.layout_transition_target_x = Some(target_rel_x);
                     }
                     let should_start_y = self.layout_transition_target_y.is_none();
-                    if should_start_y && !approx_eq(prev_offset_y, 0.0) {
-                        self.pending_visual_transition_requests.push(VisualTrackRequest {
-                            target: self.core.id,
-                            field: VisualField::Y,
-                            from: prev_offset_y,
-                            to: 0.0,
-                            transition: runtime_visual,
-                        });
+                    if should_start_y
+                        && !approx_eq(prev_offset_y, 0.0)
+                        && !approx_eq(prev_target_rel_y, target_rel_y)
+                    {
+                        self.pending_visual_transition_requests
+                            .push(VisualTrackRequest {
+                                target: self.core.id,
+                                field: VisualField::Y,
+                                from: prev_offset_y,
+                                to: 0.0,
+                                transition: runtime_visual,
+                            });
+                        self.layout_transition_visual_offset_y = prev_offset_y;
                         self.layout_transition_target_y = Some(target_rel_y);
                     }
                 }
@@ -2648,13 +2933,15 @@ impl Element {
                         .layout_transition_target_width
                         .is_none_or(|active| !approx_eq(active, target_width));
                     if should_start_width && !approx_eq(prev_width, target_width) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
-                            target: self.core.id,
-                            field: LayoutField::Width,
-                            from: prev_width,
-                            to: target_width,
-                            transition: runtime_layout,
-                        });
+                        self.pending_layout_transition_requests
+                            .push(LayoutTrackRequest {
+                                target: self.core.id,
+                                field: LayoutField::Width,
+                                from: prev_width,
+                                to: target_width,
+                                transition: runtime_layout,
+                            });
+                        self.layout_transition_override_width = Some(prev_width.max(0.0));
                         self.layout_transition_target_width = Some(target_width);
                     }
                 }
@@ -2663,39 +2950,51 @@ impl Element {
                         .layout_transition_target_height
                         .is_none_or(|active| !approx_eq(active, target_height));
                     if should_start_height && !approx_eq(prev_height, target_height) {
-                        self.pending_layout_transition_requests.push(LayoutTrackRequest {
-                            target: self.core.id,
-                            field: LayoutField::Height,
-                            from: prev_height,
-                            to: target_height,
-                            transition: runtime_layout,
-                        });
+                        self.pending_layout_transition_requests
+                            .push(LayoutTrackRequest {
+                                target: self.core.id,
+                                field: LayoutField::Height,
+                                from: prev_height,
+                                to: target_height,
+                                transition: runtime_layout,
+                            });
+                        self.layout_transition_override_height = Some(prev_height.max(0.0));
                         self.layout_transition_target_height = Some(target_height);
                     }
                 }
                 TransitionProperty::X | TransitionProperty::PositionX => {
                     let should_start_x = self.layout_transition_target_x.is_none();
-                    if should_start_x && !approx_eq(prev_offset_x, 0.0) {
-                        self.pending_visual_transition_requests.push(VisualTrackRequest {
-                            target: self.core.id,
-                            field: VisualField::X,
-                            from: prev_offset_x,
-                            to: 0.0,
-                            transition: runtime_visual,
-                        });
+                    if should_start_x
+                        && !approx_eq(prev_offset_x, 0.0)
+                        && !approx_eq(prev_target_rel_x, target_rel_x)
+                    {
+                        self.pending_visual_transition_requests
+                            .push(VisualTrackRequest {
+                                target: self.core.id,
+                                field: VisualField::X,
+                                from: prev_offset_x,
+                                to: 0.0,
+                                transition: runtime_visual,
+                            });
+                        self.layout_transition_visual_offset_x = prev_offset_x;
                         self.layout_transition_target_x = Some(target_rel_x);
                     }
                 }
                 TransitionProperty::Y | TransitionProperty::PositionY => {
                     let should_start_y = self.layout_transition_target_y.is_none();
-                    if should_start_y && !approx_eq(prev_offset_y, 0.0) {
-                        self.pending_visual_transition_requests.push(VisualTrackRequest {
-                            target: self.core.id,
-                            field: VisualField::Y,
-                            from: prev_offset_y,
-                            to: 0.0,
-                            transition: runtime_visual,
-                        });
+                    if should_start_y
+                        && !approx_eq(prev_offset_y, 0.0)
+                        && !approx_eq(prev_target_rel_y, target_rel_y)
+                    {
+                        self.pending_visual_transition_requests
+                            .push(VisualTrackRequest {
+                                target: self.core.id,
+                                field: VisualField::Y,
+                                from: prev_offset_y,
+                                to: 0.0,
+                                transition: runtime_visual,
+                            });
+                        self.layout_transition_visual_offset_y = prev_offset_y;
                         self.layout_transition_target_y = Some(target_rel_y);
                     }
                 }
@@ -2720,7 +3019,10 @@ impl Element {
         child_percent_base_height: Option<f32>,
     ) {
         let (child_available_width, child_available_height) = self.child_layout_limits();
-        let is_flex = matches!(self.computed_style.display, Display::Flow | Display::InlineFlex);
+        let is_flex = matches!(
+            self.computed_style.display,
+            Display::Flow | Display::InlineFlex
+        );
         if is_flex {
             self.place_flex_children(
                 child_available_width,
@@ -2760,7 +3062,7 @@ impl Element {
         if self.children.is_empty() {
             return;
         }
-        
+
         let info = if let Some(info) = self.flex_info.take() {
             info
         } else {
@@ -2768,9 +3070,21 @@ impl Element {
         };
 
         let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
-        let main_limit = if is_row { self.layout_inner_size.width } else { self.layout_inner_size.height };
-        let cross_limit = if is_row { self.layout_inner_size.height } else { self.layout_inner_size.width };
-        let gap_base = if is_row { self.layout_inner_size.width } else { self.layout_inner_size.height };
+        let main_limit = if is_row {
+            self.layout_inner_size.width
+        } else {
+            self.layout_inner_size.height
+        };
+        let cross_limit = if is_row {
+            self.layout_inner_size.height
+        } else {
+            self.layout_inner_size.width
+        };
+        let gap_base = if is_row {
+            self.layout_inner_size.width
+        } else {
+            self.layout_inner_size.height
+        };
         let gap = resolve_px(self.computed_style.gap, gap_base);
         let origin_x = self.layout_flow_inner_position.x - self.scroll_offset.x;
         let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
@@ -2778,13 +3092,19 @@ impl Element {
         let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
 
         let total_cross = info.total_cross;
-        let mut cross_cursor = cross_start_offset(cross_limit, total_cross, self.computed_style.align_items);
+        let mut cross_cursor =
+            cross_start_offset(cross_limit, total_cross, self.computed_style.align_items);
 
         for (line_idx, line) in info.lines.iter().enumerate() {
             let line_main = info.line_main_sum[line_idx];
             let line_cross = info.line_cross_max[line_idx];
-            let (mut main_cursor, distributed_gap) =
-                main_axis_start_and_gap(main_limit, line_main, gap, line.len(), self.computed_style.justify_content);
+            let (mut main_cursor, distributed_gap) = main_axis_start_and_gap(
+                main_limit,
+                line_main,
+                gap,
+                line.len(),
+                self.computed_style.justify_content,
+            );
 
             for &child_idx in line {
                 let (item_main, item_cross) = info.child_sizes[child_idx];
@@ -2867,6 +3187,7 @@ fn normalize_corner_radii(mut radii: CornerRadii, width: f32, height: f32) -> Co
         radii.bottom_right *= scale;
         radii.bottom_left *= scale;
     }
+
     radii
 }
 
@@ -2951,7 +3272,7 @@ fn cross_item_offset(line_cross: f32, item_cross: f32, align: AlignItems) -> f32
 
 fn trace_layout_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("RUST_GUI_TRACE_LAYOUT").is_ok())
+    *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_LAYOUT").is_ok())
 }
 
 fn resolve_px(length: Length, base: f32) -> f32 {
@@ -2985,7 +3306,9 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
 
 #[cfg(test)]
 mod tests {
-    use super::{Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable};
+    use super::{
+        Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+    };
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::LayoutField;
     use crate::{Border, Color, Length, Style};
@@ -3075,8 +3398,14 @@ mod tests {
 
         let mut child = Element::new(0.0, 0.0, 123.0, 77.0);
         let mut child_style = Style::new();
-        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(50.0)));
-        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::percent(50.0)));
+        child_style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::percent(50.0)),
+        );
+        child_style.insert(
+            PropertyId::Height,
+            ParsedValue::Length(Length::percent(50.0)),
+        );
         child.apply_style(child_style);
         parent.add_child(Box::new(child));
 
@@ -3108,8 +3437,14 @@ mod tests {
 
         let mut child2 = Element::new(0.0, 0.0, 123.0, 77.0);
         let mut child2_style = Style::new();
-        child2_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(50.0)));
-        child2_style.insert(PropertyId::Height, ParsedValue::Length(Length::percent(50.0)));
+        child2_style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::percent(50.0)),
+        );
+        child2_style.insert(
+            PropertyId::Height,
+            ParsedValue::Length(Length::percent(50.0)),
+        );
         child2.apply_style(child2_style);
         known_parent.add_child(Box::new(child2));
 
@@ -3379,5 +3714,39 @@ mod tests {
             .expect("height transition request should exist");
         assert!((h_req.from - 70.0).abs() < 0.01);
         assert!((h_req.to - 160.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn snapshot_restore_keeps_layout_transition_inflight_state() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        el.has_layout_snapshot = true;
+        el.layout_transition_visual_offset_x = 12.5;
+        el.layout_transition_visual_offset_y = -3.0;
+        el.layout_transition_override_width = Some(140.0);
+        el.layout_transition_override_height = Some(55.0);
+        el.layout_transition_target_x = Some(30.0);
+        el.layout_transition_target_y = Some(8.0);
+        el.layout_transition_target_width = Some(180.0);
+        el.layout_transition_target_height = Some(80.0);
+        el.last_parent_layout_x = 21.0;
+        el.last_parent_layout_y = 34.0;
+
+        let snapshot = el.snapshot_state().expect("snapshot should exist");
+
+        let mut restored = Element::new(0.0, 0.0, 100.0, 40.0);
+        let ok = restored.restore_state(snapshot.as_ref());
+        assert!(ok);
+
+        assert!(restored.has_layout_snapshot);
+        assert!((restored.layout_transition_visual_offset_x - 12.5).abs() < 0.001);
+        assert!((restored.layout_transition_visual_offset_y + 3.0).abs() < 0.001);
+        assert_eq!(restored.layout_transition_override_width, Some(140.0));
+        assert_eq!(restored.layout_transition_override_height, Some(55.0));
+        assert_eq!(restored.layout_transition_target_x, Some(30.0));
+        assert_eq!(restored.layout_transition_target_y, Some(8.0));
+        assert_eq!(restored.layout_transition_target_width, Some(180.0));
+        assert_eq!(restored.layout_transition_target_height, Some(80.0));
+        assert!((restored.last_parent_layout_x - 21.0).abs() < 0.001);
+        assert!((restored.last_parent_layout_y - 34.0).abs() < 0.001);
     }
 }

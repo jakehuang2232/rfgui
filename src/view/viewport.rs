@@ -1,28 +1,27 @@
+use arboard::Clipboard;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use arboard::Clipboard;
 use wgpu::{
     Instance, Queue, TextureUsages,
     rwh::{HasDisplayHandle, HasWindowHandle},
 };
 
-use crate::ui::{
-    BlurEvent, ClickEvent, EventMeta, FocusEvent, KeyDownEvent, KeyEventData, KeyModifiers,
-    ImePreeditEvent, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent, MouseEventData,
-    MouseMoveEvent, MouseUpEvent, RsxNode, TextInputEvent,
-};
 use crate::transition::{
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y,
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
     CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
     CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
-    ClaimMode, LayoutTransitionPlugin,
-    ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleTransitionPlugin, TrackKey,
-    TrackTarget, Transition, TransitionFrame, TransitionHost, TransitionPluginId,
-    VisualTransitionPlugin,
+    ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin,
+    StyleTransitionPlugin, TrackKey, TrackTarget, Transition, TransitionFrame, TransitionHost,
+    TransitionPluginId, VisualTransitionPlugin,
+};
+use crate::ui::{
+    BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyEventData,
+    KeyModifiers, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent, MouseEventData,
+    MouseMoveEvent, MouseUpEvent, RsxNode, TextInputEvent, take_state_dirty,
 };
 use crate::{ColorLike, HexColor};
 
@@ -30,6 +29,17 @@ pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
 impl<T: HasWindowHandle + HasDisplayHandle> WindowHandle for T {}
 
 pub type Window = Arc<dyn WindowHandle + Send + Sync>;
+
+fn highlight_ms(ms: f64) -> String {
+    let color = if ms >= 16.7 {
+        "\x1b[31m" // red: slower than ~60fps frame budget
+    } else if ms >= 8.3 {
+        "\x1b[33m" // yellow: slower than ~120fps frame budget
+    } else {
+        "\x1b[32m" // green
+    };
+    format!("{color}{ms:.3}ms\x1b[0m")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
@@ -184,10 +194,32 @@ pub struct Viewport {
     style_transition_plugin: StyleTransitionPlugin,
     scroll_transition: ScrollTransition,
     last_transition_tick: Option<Instant>,
+    transition_epoch: Option<Instant>,
 }
 
 impl Viewport {
-    fn cancel_pointer_interactions(roots: &mut [Box<dyn super::base_component::ElementTrait>]) -> bool {
+    fn present_mode_from_env() -> wgpu::PresentMode {
+        let Ok(raw) = std::env::var("RFGUI_PRESENT_MODE") else {
+            return if cfg!(debug_assertions) {
+                wgpu::PresentMode::AutoNoVsync
+            } else {
+                wgpu::PresentMode::AutoVsync
+            };
+        };
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto_novsync" | "auto-no-vsync" | "no_vsync" | "no-vsync" | "novsync" => {
+                wgpu::PresentMode::AutoNoVsync
+            }
+            "fifo" => wgpu::PresentMode::Fifo,
+            "mailbox" => wgpu::PresentMode::Mailbox,
+            "immediate" => wgpu::PresentMode::Immediate,
+            _ => wgpu::PresentMode::AutoVsync,
+        }
+    }
+
+    fn cancel_pointer_interactions(
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+    ) -> bool {
         let mut changed = false;
         for root in roots.iter_mut() {
             changed |= super::base_component::cancel_pointer_interactions(root.as_mut());
@@ -195,7 +227,13 @@ impl Viewport {
         changed
     }
 
-    fn start_scroll_track(&mut self, target: TrackTarget, axis: ScrollAxis, from: f32, to: f32) -> bool {
+    fn start_scroll_track(
+        &mut self,
+        target: TrackTarget,
+        axis: ScrollAxis,
+        from: f32,
+        to: f32,
+    ) -> bool {
         if (to - from).abs() <= 0.001 {
             return false;
         }
@@ -303,7 +341,9 @@ impl Viewport {
         value: f32,
     ) -> bool {
         for root in roots.iter_mut().rev() {
-            if let Some((x, y)) = super::base_component::get_scroll_offset_by_id(root.as_ref(), target) {
+            if let Some((x, y)) =
+                super::base_component::get_scroll_offset_by_id(root.as_ref(), target)
+            {
                 let next = match axis {
                     ScrollAxis::X => (value, y),
                     ScrollAxis::Y => (x, value),
@@ -314,24 +354,30 @@ impl Viewport {
         false
     }
 
-    fn transition_dt(&mut self) -> f32 {
+    fn transition_timing(&mut self) -> (f32, f64) {
         let now = Instant::now();
         let dt = self
             .last_transition_tick
             .map(|last| (now - last).as_secs_f32())
             .unwrap_or(0.0);
         self.last_transition_tick = Some(now);
-        dt
+        let epoch = self.transition_epoch.get_or_insert(now);
+        let now_seconds = (now - *epoch).as_secs_f64();
+        (dt, now_seconds)
     }
 
     fn run_pre_layout_transitions(
         &mut self,
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
         dt: f32,
+        now_seconds: f64,
     ) -> bool {
         let mut layout_requests = Vec::new();
         for root in roots.iter_mut() {
-            super::base_component::take_layout_transition_requests(root.as_mut(), &mut layout_requests);
+            super::base_component::take_layout_transition_requests(
+                root.as_mut(),
+                &mut layout_requests,
+            );
         }
         if !layout_requests.is_empty() {
             let mut host = TransitionHostAdapter {
@@ -355,7 +401,13 @@ impl Viewport {
                 claims: &mut self.transition_claims,
             };
             self.layout_transition_plugin
-                .run_tracks(TransitionFrame { dt_seconds: dt }, &mut host)
+                .run_tracks(
+                    TransitionFrame {
+                        dt_seconds: dt,
+                        now_seconds,
+                    },
+                    &mut host,
+                )
         };
         let mut changed = false;
         let layout_samples = self.layout_transition_plugin.take_samples();
@@ -382,18 +434,28 @@ impl Viewport {
         &mut self,
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
         dt: f32,
+        now_seconds: f64,
     ) -> bool {
         let mut style_requests = Vec::new();
         for root in roots.iter_mut() {
-            super::base_component::take_style_transition_requests(root.as_mut(), &mut style_requests);
+            super::base_component::take_style_transition_requests(
+                root.as_mut(),
+                &mut style_requests,
+            );
         }
         let mut layout_requests = Vec::new();
         for root in roots.iter_mut() {
-            super::base_component::take_layout_transition_requests(root.as_mut(), &mut layout_requests);
+            super::base_component::take_layout_transition_requests(
+                root.as_mut(),
+                &mut layout_requests,
+            );
         }
         let mut visual_requests = Vec::new();
         for root in roots.iter_mut() {
-            super::base_component::take_visual_transition_requests(root.as_mut(), &mut visual_requests);
+            super::base_component::take_visual_transition_requests(
+                root.as_mut(),
+                &mut visual_requests,
+            );
         }
         if !style_requests.is_empty() {
             let mut host = TransitionHostAdapter {
@@ -450,7 +512,13 @@ impl Viewport {
                 claims: &mut self.transition_claims,
             };
             self.scroll_transition_plugin
-                .run_tracks(TransitionFrame { dt_seconds: dt }, &mut host)
+                .run_tracks(
+                    TransitionFrame {
+                        dt_seconds: dt,
+                        now_seconds,
+                    },
+                    &mut host,
+                )
         };
         let style_result = {
             let mut host = TransitionHostAdapter {
@@ -458,7 +526,13 @@ impl Viewport {
                 claims: &mut self.transition_claims,
             };
             self.style_transition_plugin
-                .run_tracks(TransitionFrame { dt_seconds: dt }, &mut host)
+                .run_tracks(
+                    TransitionFrame {
+                        dt_seconds: dt,
+                        now_seconds,
+                    },
+                    &mut host,
+                )
         };
         let visual_result = {
             let mut host = TransitionHostAdapter {
@@ -466,7 +540,13 @@ impl Viewport {
                 claims: &mut self.transition_claims,
             };
             self.visual_transition_plugin
-                .run_tracks(TransitionFrame { dt_seconds: dt }, &mut host)
+                .run_tracks(
+                    TransitionFrame {
+                        dt_seconds: dt,
+                        now_seconds,
+                    },
+                    &mut host,
+                )
         };
         let samples = self.scroll_transition_plugin.take_samples();
         let mut changed = false;
@@ -510,6 +590,96 @@ impl Viewport {
             || visual_result.keep_running
     }
 
+    fn sync_inflight_transition_state(
+        &mut self,
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+    ) -> bool {
+        let now = Instant::now();
+        let epoch = self.transition_epoch.get_or_insert(now);
+        let frame = TransitionFrame {
+            dt_seconds: 0.0,
+            now_seconds: (now - *epoch).as_secs_f64(),
+        };
+        let scroll_result = {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            self.scroll_transition_plugin.run_tracks(frame, &mut host)
+        };
+        let style_result = {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            self.style_transition_plugin.run_tracks(frame, &mut host)
+        };
+        let visual_result = {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            self.visual_transition_plugin.run_tracks(frame, &mut host)
+        };
+        let layout_result = {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            self.layout_transition_plugin.run_tracks(frame, &mut host)
+        };
+
+        let mut changed = false;
+        for sample in self.scroll_transition_plugin.take_samples() {
+            changed |= Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
+        }
+        for sample in self.style_transition_plugin.take_samples() {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_style_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value,
+                ) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        for sample in self.visual_transition_plugin.take_samples() {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_visual_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value,
+                ) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        for sample in self.layout_transition_plugin.take_samples() {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_layout_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value,
+                ) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        changed
+            || scroll_result.keep_running
+            || style_result.keep_running
+            || visual_result.keep_running
+            || layout_result.keep_running
+    }
+
     pub fn new() -> Self {
         Viewport {
             clear_color: Box::new(HexColor::new("#000000")),
@@ -522,7 +692,7 @@ impl Viewport {
                 format: wgpu::TextureFormat::Bgra8Unorm,
                 width: 1,
                 height: 1,
-                present_mode: wgpu::PresentMode::AutoVsync,
+                present_mode: Self::present_mode_from_env(),
                 desired_maximum_frame_latency: 1,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
                 view_formats: vec![],
@@ -572,6 +742,7 @@ impl Viewport {
             style_transition_plugin: StyleTransitionPlugin::new(),
             scroll_transition: ScrollTransition::new(250).ease_out(),
             last_transition_tick: None,
+            transition_epoch: None,
         }
     }
 
@@ -734,12 +905,18 @@ impl Viewport {
         &mut self,
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
         dt: f32,
+        now_seconds: f64,
     ) -> bool {
         let frame_start = Instant::now();
+        let begin_frame_started_at = Instant::now();
         if !self.begin_frame() {
             return false;
         }
+        let begin_frame_elapsed_ms = begin_frame_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let layout_started_at = Instant::now();
         self.frame_box_models.clear();
+        let measure_started_at = Instant::now();
         for root in roots.iter_mut() {
             root.measure(super::base_component::LayoutConstraints {
                 max_width: self.surface_config.width as f32,
@@ -747,6 +924,10 @@ impl Viewport {
                 percent_base_width: Some(self.surface_config.width as f32),
                 percent_base_height: Some(self.surface_config.height as f32),
             });
+        }
+        let layout_measure_elapsed_ms = measure_started_at.elapsed().as_secs_f64() * 1000.0;
+        let place_started_at = Instant::now();
+        for root in roots.iter_mut() {
             root.place(super::base_component::LayoutPlacement {
                 parent_x: 0.0,
                 parent_y: 0.0,
@@ -757,15 +938,30 @@ impl Viewport {
                 percent_base_width: Some(self.surface_config.width as f32),
                 percent_base_height: Some(self.surface_config.height as f32),
             });
+        }
+        let layout_place_elapsed_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;
+        let collect_box_models_started_at = Instant::now();
+        for root in roots.iter_mut() {
             self.frame_box_models
                 .extend(super::base_component::collect_box_models(root.as_ref()));
         }
+        let layout_collect_box_models_elapsed_ms =
+            collect_box_models_started_at.elapsed().as_secs_f64() * 1000.0;
+        let layout_elapsed_ms = layout_started_at.elapsed().as_secs_f64() * 1000.0;
 
         // After layout is resolved for this frame, immediately run visual/style/scroll transitions
         // so their updated endpoints are visible in the same frame.
-        let transition_changed_after_layout = self.run_post_layout_transitions(roots, dt);
+        let post_layout_transition_started_at = Instant::now();
+        let transition_changed_after_layout =
+            self.run_post_layout_transitions(roots, dt, now_seconds);
+        let post_layout_transition_elapsed_ms =
+            post_layout_transition_started_at.elapsed().as_secs_f64() * 1000.0;
+        let relayout_after_transition_started_at = Instant::now();
+        let mut relayout_place_elapsed_ms = 0.0_f64;
+        let mut relayout_collect_box_models_elapsed_ms = 0.0_f64;
         if transition_changed_after_layout {
             self.frame_box_models.clear();
+            let relayout_place_started_at = Instant::now();
             for root in roots.iter_mut() {
                 root.place(super::base_component::LayoutPlacement {
                     parent_x: 0.0,
@@ -777,11 +973,20 @@ impl Viewport {
                     percent_base_width: Some(self.surface_config.width as f32),
                     percent_base_height: Some(self.surface_config.height as f32),
                 });
+            }
+            relayout_place_elapsed_ms = relayout_place_started_at.elapsed().as_secs_f64() * 1000.0;
+            let relayout_collect_started_at = Instant::now();
+            for root in roots.iter_mut() {
                 self.frame_box_models
                     .extend(super::base_component::collect_box_models(root.as_ref()));
             }
+            relayout_collect_box_models_elapsed_ms =
+                relayout_collect_started_at.elapsed().as_secs_f64() * 1000.0;
         }
+        let relayout_after_transition_elapsed_ms =
+            relayout_after_transition_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        let build_graph_started_at = Instant::now();
         let mut graph = super::frame_graph::FrameGraph::new();
         let mut ctx = super::base_component::UiBuildContext::new(
             self.surface_config.width,
@@ -796,16 +1001,61 @@ impl Viewport {
         for root in roots.iter_mut() {
             root.build(&mut graph, &mut ctx);
         }
-        if graph.compile().is_ok() {
-            let _ = graph.execute(self);
+        let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let compile_started_at = Instant::now();
+        let compiled = graph.compile().is_ok();
+        let compile_elapsed_ms = compile_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let mut execute_elapsed_ms = 0.0_f64;
+        let mut execute_pass_count = 0_usize;
+        let mut execute_top_passes = String::from("none");
+        if compiled {
+            if let Ok(profile) = graph.execute_profiled(self) {
+                execute_elapsed_ms = profile.total_ms;
+                execute_pass_count = profile.pass_count;
+                if !profile.top_passes.is_empty() {
+                    execute_top_passes = profile
+                        .top_passes
+                        .iter()
+                        .map(|(name, ms)| format!("{name}={}", highlight_ms(*ms)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                }
+            }
         }
+
+        let end_frame_started_at = Instant::now();
         self.end_frame();
+        let end_frame_elapsed_ms = end_frame_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let total_elapsed_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "\x1b[1;36mrender_tree\x1b[0m: total={} begin_frame={} layout={}(measure={} place={} collect={}) post_layout_transition={} relayout_after_transition={}(place={} collect={}) build_graph={} compile={} execute={}(passes={}, top=[{}]) end_frame={}",
+            highlight_ms(total_elapsed_ms),
+            highlight_ms(begin_frame_elapsed_ms),
+            highlight_ms(layout_elapsed_ms),
+            highlight_ms(layout_measure_elapsed_ms),
+            highlight_ms(layout_place_elapsed_ms),
+            highlight_ms(layout_collect_box_models_elapsed_ms),
+            highlight_ms(post_layout_transition_elapsed_ms),
+            highlight_ms(relayout_after_transition_elapsed_ms),
+            highlight_ms(relayout_place_elapsed_ms),
+            highlight_ms(relayout_collect_box_models_elapsed_ms),
+            highlight_ms(build_graph_elapsed_ms),
+            highlight_ms(compile_elapsed_ms),
+            highlight_ms(execute_elapsed_ms),
+            execute_pass_count,
+            execute_top_passes,
+            highlight_ms(end_frame_elapsed_ms)
+        );
         self.frame_stats.record_frame(frame_start.elapsed());
         transition_changed_after_layout
     }
 
     pub fn render_rsx(&mut self, root: &RsxNode) -> Result<(), String> {
-        let needs_rebuild = self.last_rsx_root.as_ref() != Some(root);
+        let state_changed = take_state_dirty();
+        let needs_rebuild = state_changed || self.last_rsx_root.as_ref() != Some(root);
         if needs_rebuild {
             // Clear and save current scroll states
             self.scroll_offsets.clear();
@@ -814,7 +1064,6 @@ impl Viewport {
             Self::save_element_snapshots(&self.ui_roots, &mut self.element_snapshots);
             let layout_snapshots =
                 super::base_component::collect_layout_transition_snapshots(&self.ui_roots);
-
             self.ui_roots = super::renderer_adapter::rsx_to_elements(root)?;
             self.last_rsx_root = Some(root.clone());
 
@@ -825,17 +1074,36 @@ impl Viewport {
                 &mut self.ui_roots,
                 &layout_snapshots,
             );
+            let mut rebuilt_roots = std::mem::take(&mut self.ui_roots);
+            let has_inflight_transition = self.sync_inflight_transition_state(&mut rebuilt_roots);
+            self.ui_roots = rebuilt_roots;
+            if has_inflight_transition {
+                self.request_redraw();
+            }
+            self.input_state.hovered_node_id = self.mouse_position_viewport().and_then(|(x, y)| {
+                self.ui_roots
+                    .iter()
+                    .rev()
+                    .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y))
+            });
         }
         self.sync_focus_dispatch();
         let mut roots = std::mem::take(&mut self.ui_roots);
         Self::apply_hover_target(&mut roots, self.input_state.hovered_node_id);
-        let dt = self.transition_dt();
-        let transition_changed_before_render = self.run_pre_layout_transitions(&mut roots, dt);
+        let (dt, now_seconds) = self.transition_timing();
+        let transition_changed_before_render =
+            self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
         let mut transition_changed_after_layout = false;
         if !roots.is_empty() {
-            transition_changed_after_layout = self.render_render_tree(&mut roots, dt);
+            transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);
         }
         if transition_changed_before_render || transition_changed_after_layout {
+            self.request_redraw();
+        }
+        if roots
+            .iter()
+            .any(|root| super::base_component::has_animation_frame_request(root.as_ref()))
+        {
             self.request_redraw();
         }
         self.ui_roots = roots;
@@ -1214,7 +1482,9 @@ impl Viewport {
             ) else {
                 continue;
             };
-            let Some(from) = super::base_component::get_scroll_offset_by_id(root.as_ref(), target_id) else {
+            let Some(from) =
+                super::base_component::get_scroll_offset_by_id(root.as_ref(), target_id)
+            else {
                 continue;
             };
             let _ = super::base_component::dispatch_scroll_to_target(
@@ -1223,7 +1493,8 @@ impl Viewport {
                 delta_x,
                 delta_y,
             );
-            let Some(to) = super::base_component::get_scroll_offset_by_id(root.as_ref(), target_id) else {
+            let Some(to) = super::base_component::get_scroll_offset_by_id(root.as_ref(), target_id)
+            else {
                 continue;
             };
             let _ = super::base_component::set_scroll_offset_by_id(root.as_mut(), target_id, from);
@@ -1477,10 +1748,9 @@ impl Viewport {
     pub fn focused_ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
         let target_id = self.focused_node_id()?;
         for root in self.ui_roots.iter().rev() {
-            if let Some(rect) = super::base_component::get_ime_cursor_rect_by_id(
-                root.as_ref(),
-                target_id,
-            ) {
+            if let Some(rect) =
+                super::base_component::get_ime_cursor_rect_by_id(root.as_ref(), target_id)
+            {
                 return Some(rect);
             }
         }
@@ -1612,7 +1882,7 @@ struct FrameStats {
 impl FrameStats {
     fn new_from_env() -> Self {
         Self {
-            enabled: std::env::var("RUST_GUI_TRACE_FPS").is_ok(),
+            enabled: std::env::var("RFGUI_TRACE_FPS").is_ok(),
             last_report_at: Instant::now(),
             frames: 0,
             total_frame_time: Duration::ZERO,

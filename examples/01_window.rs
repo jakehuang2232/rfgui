@@ -1,13 +1,13 @@
-use rust_gui::{Transition, TransitionProperty};
+use rfgui::{Transition, TransitionProperty};
 use std::sync::Arc;
 
-use rust_gui::ui::host::{
+use rfgui::ui::host::{
     Button, Checkbox, Element, NumberField, Select, Slider, Switch, Text, TextArea,
 };
-use rust_gui::ui::{RsxNode, component, globalState, on_click, rsx, take_state_dirty, use_state};
-use rust_gui::{
-    Border, BorderRadius, Color, Display, FlowDirection, FlowWrap, HexColor, Length, Padding,
-    ScrollDirection, Viewport,
+use rfgui::ui::{RsxNode, component, globalState, on_click, rsx, take_state_dirty, use_state};
+use rfgui::{
+    Border, BorderRadius, Color, Display, FlowDirection, FlowWrap, FontFamily, HexColor, Length,
+    Padding, ScrollDirection, Viewport,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -19,7 +19,7 @@ use winit::window::{Window, WindowId};
 #[component]
 fn MainScene() -> RsxNode {
     let click_count = globalState(|| 0_i32);
-    let message = use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing"));
+    let message = use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
     let checked = use_state(|| true);
     let number_value = use_state(|| 3.0_f64);
     let selected_index = use_state(|| 0_usize);
@@ -49,6 +49,7 @@ fn MainScene() -> RsxNode {
             gap: Length::px(24.0),
             padding: Padding::uniform(Length::px(20.0)),
             scroll_direction: ScrollDirection::Vertical,
+            font: FontFamily::new(["Heiti TC", "Noto Sans CJK TC", "PingFang TC"]),
         }}>
             <Element style={{
                 width: Length::px(150.0),
@@ -58,7 +59,12 @@ fn MainScene() -> RsxNode {
             }}>
                 Pure Object
             </Element>
-            <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#61afef", border: Border::uniform(Length::px(10.0), &Color::hex("#21252b")) }}>
+            <Element style={{
+                width: Length::px(150.0),
+                height: Length::px(150.0),
+                background: "#61afef",
+                border: Border::uniform(Length::px(10.0), &Color::hex("#21252b")),
+            }}>
                 Border
             </Element>
             <Element style={{
@@ -90,7 +96,10 @@ fn MainScene() -> RsxNode {
                 background: "#61afef",
                 border: Border::uniform(Length::px(10.0), &Color::hex("#21252b"))
                     .top(Some(Length::px(20.0)), None),
-                border_radius: 16 }}>
+                border_radius: BorderRadius::uniform(Length::px(10.0))
+                    .top_right(Length::px(10.0))
+                    .bottom_left(Length::percent(90.0)),
+            }}>
                 Border Radius + Border
             </Element>
             <Element style={{
@@ -142,23 +151,35 @@ fn MainScene() -> RsxNode {
                 <Element style={{ width: Length::px(56.0), height: Length::px(56.0), background: "#61afef" }} />
                 <Element style={{ width: Length::px(120.0), height: Length::px(64.0), background: "#c678dd", border: Border::uniform(Length::px(4.0), &Color::hex("#56b6c2")) }} />
             </Element>
-            <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#282c34", border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")), border_radius: 16 }} >
-                <Text x=12 y=10 font_size=22 color="#abb2bf" font="Noto Sans CJK TC">
+            <Element style={{
+                width: Length::px(150.0),
+                height: Length::px(150.0),
+                background: "#282c34",
+                border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")),
+                border_radius: 16,
+                display: Display::Flow,
+                flow_wrap: FlowWrap::Wrap,
+                gap: Length::px(8.0),
+                padding: Padding::uniform(Length::px(8.0)),
+            }} >
+                <Text font_size=22 color="#abb2bf" >
                     Button Test
                 </Text>
-                <Text x=12 y=48 font_size=14 color="#abb2bf" font="Noto Sans CJK TC">{format!("Click Count: {}", click_count_value)}</Text>
-                <Element style={{ width: Length::px(48.0), height: Length::px(48.0), background: "#98c379", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 20 }} on_click={increment}>
-                    Click Me
-                </Element>
+                <Text font_size=14 color="#abb2bf" >{format!("Click Count: {}", click_count_value)}</Text>
+                <Button
+                    label="Click Me"
+                    variant="contained"
+                    on_click={increment}
+                />
             </Element>
             <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#61afef", border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")), border_radius: 16, opacity: 0.5 }}>
-                <Text x=10 y=10 font_size=16 color="#21252b" font="Noto Sans CJK TC">
+                <Text x=10 y=10 font_size=16 color="#21252b" >
                     Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 0.6 }}>
                     <Element style={{
                         width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                        <Text x=8 y=16 font_size=12 color="#ffffff" font="Noto Sans CJK TC" opacity=0.9>
+                        <Text x=8 y=16 font_size=12 color="#ffffff"  opacity=0.9>
                             Alpha
                         </Text>
                     </Element>
@@ -172,13 +193,13 @@ fn MainScene() -> RsxNode {
                 border_radius: 16,
                 scroll_direction: ScrollDirection::Vertical,
             }}>
-                <Text x=10 y=10 font_size=16 color="#21252b" font="Noto Sans CJK TC">
+                <Text x=10 y=10 font_size=16 color="#21252b" >
                     Background Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 1 }}>
                     <Element style={{
                         width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                        <Text x=8 y=16 font_size=12 color="#ffffff" font="Noto Sans CJK TC" opacity=0.9>
+                        <Text x=8 y=16 font_size=12 color="#ffffff"  opacity=0.9>
                             Alpha
                         </Text>
                     </Element>
@@ -194,28 +215,28 @@ fn MainScene() -> RsxNode {
                 display: Display::Flow,
                 flow_direction: FlowDirection::Column,
             }}>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 1</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 2</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 3</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 4</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 5</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 6</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 7</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 8</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 9</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 10</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 11</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 12</Text>
-                <Text font_size=12 color="#111111" font="Noto Sans CJK TC">Scroll down to see more content 13</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 1</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 2</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 3</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 4</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 5</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 6</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 7</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 8</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 9</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 10</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 11</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 12</Text>
+                <Text font_size=12 color="#111111" >Scroll down to see more content 13</Text>
 
             </Element>
             <Element style={{ width: Length::px(320.0), height: Length::px(170.0), background: "#2c313c", border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")), border_radius: 16 }}>
-                <Text x=12 y=10 font_size=14 color="#e5e9f0" font="Noto Sans CJK TC">TextArea Test</Text>
-                <Text x=12 y=118 font_size=12 color="#aab4c6" font="Noto Sans CJK TC">
+                <Text x=12 y=10 font_size=14 color="#e5e9f0" >TextArea Test</Text>
+                <Text x=12 y=118 font_size=12 color="#aab4c6" >
                     {format!("Bound chars: {}", message_value.chars().count())}
                 </Text>
-                <TextArea x=12 y=34 width=296 height=78 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
-                <TextArea x=12 y=98 width=296 height=26 font_size=13 color="#c8d0e0" font="Noto Sans CJK TC" multiline=false read_only=true>
+                <TextArea x=12 y=34 width=296 height=78 font_size=13 color="#c8d0e0"  multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
+                <TextArea x=12 y=98 width=296 height=26 font_size=13 color="#c8d0e0"  multiline=false read_only=true>
                     multiline=false
                     Line breaks should become spaces
                 </TextArea>
@@ -232,10 +253,8 @@ fn MainScene() -> RsxNode {
                 gap: Length::px(8.0),
                 padding: Padding::uniform(Length::px(12.0)),
             }}>
-                <Text font_size=14 color="#e2e8f0" font="Noto Sans CJK TC">MUI Components Demo</Text>
+                <Text font_size=14 color="#e2e8f0" >MUI Components Demo</Text>
                 <Element style={{
-                    width: Length::px(330.0),
-                    height: Length::px(34.0),
                     display: Display::Flow,
                     flow_direction: FlowDirection::Row,
                     flow_wrap: FlowWrap::NoWrap,
@@ -268,7 +287,7 @@ fn MainScene() -> RsxNode {
                 </Element>
                 <Slider binding={slider_value.binding()} min=0.0 max=100.0 width=180 height=30 />
                 <Switch label="Dark mode" binding={switch_on.binding()} />
-                <Text font_size=12 color="#93c5fd" font="Noto Sans CJK TC">
+                <Text font_size=12 color="#93c5fd" >
                     {format!(
                         "checked={} number={:.1} selected={} slider={:.0} switch={}",
                         checked_value,
@@ -288,6 +307,7 @@ struct App {
     window: Option<Arc<Window>>,
     viewport: Option<Viewport>,
     app: Option<RsxNode>,
+    ime_composing: bool,
     ime_dirty: bool,
     last_ime_focus_id: Option<u64>,
     last_ime_allowed: bool,
@@ -323,7 +343,8 @@ impl App {
                 h.max(1.0).ceil() as u32,
             ));
         }
-        let next_allowed = next_area.is_some();
+        // Enable IME as long as there is a focused node; cursor area can arrive later.
+        let next_allowed = focused_id.is_some();
 
         if self.last_ime_allowed != next_allowed {
             window.set_ime_allowed(next_allowed);
@@ -359,6 +380,7 @@ impl ApplicationHandler for App {
 
         self.window = Some(window);
         self.viewport = Some(viewport);
+        self.ime_composing = false;
         self.ime_dirty = true;
         self.last_ime_focus_id = None;
         self.last_ime_allowed = false;
@@ -441,6 +463,13 @@ impl ApplicationHandler for App {
                     let code = format!("{:?}", event.physical_key);
                     if pressed {
                         viewport.dispatch_key_down_event(key, code, event.repeat);
+                        if !self.ime_composing {
+                            if let Some(text) = event.text.as_deref() {
+                                if should_dispatch_keyboard_text(viewport, text) {
+                                    viewport.dispatch_text_input_event(text.to_string());
+                                }
+                            }
+                        }
                     } else {
                         viewport.dispatch_key_up_event(key, code, event.repeat);
                     }
@@ -448,24 +477,28 @@ impl ApplicationHandler for App {
                 self.mark_ime_dirty();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
+                self.ime_composing = false;
                 if let Some(viewport) = &mut self.viewport {
                     viewport.dispatch_text_input_event(text);
                 }
                 self.mark_ime_dirty();
             }
             WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+                self.ime_composing = !text.is_empty();
                 if let Some(viewport) = &mut self.viewport {
                     viewport.dispatch_ime_preedit_event(text, cursor);
                 }
                 self.mark_ime_dirty();
             }
             WindowEvent::Ime(Ime::Disabled) => {
+                self.ime_composing = false;
                 if let Some(viewport) = &mut self.viewport {
                     viewport.dispatch_ime_preedit_event(String::new(), None);
                 }
                 self.mark_ime_dirty();
             }
             WindowEvent::Focused(false) => {
+                self.ime_composing = false;
                 if let Some(viewport) = &mut self.viewport {
                     viewport.clear_input_state();
                 }
@@ -490,14 +523,14 @@ impl ApplicationHandler for App {
     }
 }
 
-fn map_mouse_button(button: winit::event::MouseButton) -> rust_gui::MouseButton {
+fn map_mouse_button(button: winit::event::MouseButton) -> rfgui::MouseButton {
     match button {
-        winit::event::MouseButton::Left => rust_gui::MouseButton::Left,
-        winit::event::MouseButton::Right => rust_gui::MouseButton::Right,
-        winit::event::MouseButton::Middle => rust_gui::MouseButton::Middle,
-        winit::event::MouseButton::Back => rust_gui::MouseButton::Back,
-        winit::event::MouseButton::Forward => rust_gui::MouseButton::Forward,
-        winit::event::MouseButton::Other(v) => rust_gui::MouseButton::Other(v),
+        winit::event::MouseButton::Left => rfgui::MouseButton::Left,
+        winit::event::MouseButton::Right => rfgui::MouseButton::Right,
+        winit::event::MouseButton::Middle => rfgui::MouseButton::Middle,
+        winit::event::MouseButton::Back => rfgui::MouseButton::Back,
+        winit::event::MouseButton::Forward => rfgui::MouseButton::Forward,
+        winit::event::MouseButton::Other(v) => rfgui::MouseButton::Other(v),
     }
 }
 
@@ -506,6 +539,30 @@ fn key_to_string(key: &Key) -> String {
         Key::Character(text) => text.to_string(),
         _ => format!("{key:?}"),
     }
+}
+
+fn should_dispatch_keyboard_text(viewport: &Viewport, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if text.chars().any(|ch| ch.is_control()) {
+        return false;
+    }
+    // Keep shortcuts (Ctrl/Alt/Cmd + key) out of text-input path.
+    let has_alt = viewport.is_key_pressed("Named(Alt)")
+        || viewport.is_key_pressed("Named(AltGraph)")
+        || viewport.is_key_pressed("Code(AltLeft)")
+        || viewport.is_key_pressed("Code(AltRight)");
+    let has_ctrl = viewport.is_key_pressed("Named(Control)")
+        || viewport.is_key_pressed("Code(ControlLeft)")
+        || viewport.is_key_pressed("Code(ControlRight)");
+    let has_meta = viewport.is_key_pressed("Named(Super)")
+        || viewport.is_key_pressed("Named(Meta)")
+        || viewport.is_key_pressed("Code(SuperLeft)")
+        || viewport.is_key_pressed("Code(SuperRight)")
+        || viewport.is_key_pressed("Code(MetaLeft)")
+        || viewport.is_key_pressed("Code(MetaRight)");
+    !(has_alt || has_ctrl || has_meta)
 }
 
 fn main() {

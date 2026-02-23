@@ -1,10 +1,10 @@
-use crate::ui::{
-    BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, TextInputEvent, ImePreeditEvent,
-};
 use crate::transition::{
     LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue, VisualField,
     VisualTrackRequest,
+};
+use crate::ui::{
+    BlurEvent, ClickEvent, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyUpEvent, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, TextInputEvent,
 };
 use crate::view::viewport::ViewportControl;
 use std::collections::HashMap;
@@ -967,4 +967,18 @@ pub fn get_ime_cursor_rect_by_id(
         }
     }
     None
+}
+
+pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
+    if root.wants_animation_frame() {
+        return true;
+    }
+    if let Some(children) = root.children() {
+        for child in children {
+            if has_animation_frame_request(child.as_ref()) {
+                return true;
+            }
+        }
+    }
+    false
 }

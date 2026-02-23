@@ -1,4 +1,4 @@
-# rust-gui 🚀
+# rfgui 🚀
 
 A Rust GUI/rendering experiment with typed styles, RSX-based UI authoring, and a frame-graph-driven renderer.
 
@@ -69,9 +69,9 @@ Key files:
 ### 1) `#[component]` reusable composition
 
 ```rust
-use rust_gui::ui::{component, rsx, RsxNode};
-use rust_gui::ui::host::Element;
-use rust_gui::{Display, FlowDirection, Length};
+use rfgui::ui::{component, rsx, RsxNode};
+use rfgui::ui::host::Element;
+use rfgui::{Display, FlowDirection, Length};
 
 #[component]
 fn Card() -> RsxNode {
@@ -91,9 +91,9 @@ fn Card() -> RsxNode {
 ### 2) Extend from `Element` via composition
 
 ```rust
-use rust_gui::ui::host::Element;
-use rust_gui::ui::{RsxChildrenPolicy, RsxNode, RsxPropSchema, RsxProps, RsxTag};
-use rust_gui::{Border, BorderRadius, Color, Length, Padding, Style};
+use rfgui::ui::host::Element;
+use rfgui::ui::{RsxChildrenPolicy, RsxNode, RsxPropSchema, RsxProps, RsxTag};
+use rfgui::{Border, BorderRadius, Color, Length, Padding, Style};
 
 pub struct Card;
 

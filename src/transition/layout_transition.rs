@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
-    Transition, TransitionFrame, TransitionHost, TransitionPluginId, normalized_timeline_progress,
+    Transition, TransitionFrame, TransitionHost, TransitionPluginId, elapsed_seconds_from_frame,
+    normalized_timeline_progress,
 };
 
 pub const CHANNEL_LAYOUT_X: ChannelId = ChannelId(20_001);
@@ -76,7 +77,7 @@ pub struct LayoutTrackRequest {
 struct LayoutTrackState {
     from: f32,
     to: f32,
-    elapsed_seconds: f32,
+    started_at_seconds: Option<f64>,
     transition: LayoutTransition,
 }
 
@@ -122,7 +123,9 @@ impl LayoutTransitionPlugin {
             channel: field.channel_id(),
         };
         if let Some(existing) = self.tracks.get(&key) {
-            if (existing.to - to).abs() <= 0.0001 {
+            let same_to = (existing.to - to).abs() <= 0.0001;
+            let same_from = (existing.from - from).abs() <= 0.0001;
+            if same_to && same_from {
                 return Ok(());
             }
         }
@@ -137,7 +140,7 @@ impl LayoutTransitionPlugin {
             LayoutTrackState {
                 from,
                 to,
-                elapsed_seconds: 0.0,
+                started_at_seconds: None,
                 transition,
             },
         );
@@ -196,11 +199,10 @@ impl Transition<TrackTarget> for LayoutTransitionPlugin {
         let mut finished = Vec::new();
 
         for (key, state) in &mut self.tracks {
-            state.elapsed_seconds = (state.elapsed_seconds + frame.dt_seconds.max(0.0)).max(0.0);
+            let elapsed_seconds = elapsed_seconds_from_frame(frame, &mut state.started_at_seconds);
             let delay = (state.transition.delay_ms as f32) * 0.001;
             let duration = (state.transition.duration_ms as f32) * 0.001;
-            let Some(progress) =
-                normalized_timeline_progress(state.elapsed_seconds, delay, duration)
+            let Some(progress) = normalized_timeline_progress(elapsed_seconds, delay, duration)
             else {
                 continue;
             };
@@ -280,7 +282,11 @@ mod tests {
             true
         }
 
-        fn release_track_claim(&mut self, plugin_id: TransitionPluginId, key: TrackKey<TrackTarget>) {
+        fn release_track_claim(
+            &mut self,
+            plugin_id: TransitionPluginId,
+            key: TrackKey<TrackTarget>,
+        ) {
             if self.claims.get(&key).copied() == Some(plugin_id) {
                 self.claims.remove(&key);
             }

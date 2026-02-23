@@ -1,7 +1,4 @@
-use crate::{
-    srgb_to_linear_f32,
-    style::color::ColorLike,
-};
+use crate::{srgb_to_linear_f32, style::color::ColorLike};
 use std::borrow::Cow;
 
 pub struct HexColor<'a> {

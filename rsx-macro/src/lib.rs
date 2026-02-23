@@ -20,14 +20,14 @@ pub fn rsx(input: TokenStream) -> TokenStream {
     } else {
         let children = nodes.iter().map(expand_node);
         quote! {
-            ::rust_gui::ui::RsxNode::fragment(vec![
+            ::rfgui::ui::RsxNode::fragment(vec![
                 #(#children),*
             ])
         }
     };
 
     quote! {
-        ::rust_gui::ui::build_scope(|| {
+        ::rfgui::ui::build_scope(|| {
             #body
         })
     }
@@ -239,7 +239,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     let tag_span = tag.span();
     let children_schema_check = if has_children {
         quote_spanned! {tag_span=>
-            let _ = |__schema: &<#tag as ::rust_gui::ui::RsxPropSchema>::PropsSchema| {
+            let _ = |__schema: &<#tag as ::rfgui::ui::RsxPropSchema>::PropsSchema| {
                 let _ = &__schema.children;
             };
         }
@@ -258,11 +258,11 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         {
             let _ = ::core::marker::PhantomData::<#close_tag>;
             #children_schema_check
-            let mut __rsx_props = ::rust_gui::ui::RsxProps::new();
-            let mut __rsx_children = Vec::<::rust_gui::ui::RsxNode>::new();
+            let mut __rsx_props = ::rfgui::ui::RsxProps::new();
+            let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
             #(#prop_statements)*
             #(#child_statements)*
-            <#tag as ::rust_gui::ui::RsxTag>::rsx_render(__rsx_props, __rsx_children).unwrap_or_else(|__err| {
+            <#tag as ::rfgui::ui::RsxTag>::rsx_render(__rsx_props, __rsx_children).unwrap_or_else(|__err| {
                 panic!("rsx build error on <{}>. {}", #tag_name, __err)
             })
         }
@@ -275,20 +275,20 @@ fn expand_prop_set(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
     let value_tokens = match &prop.value {
         PropValueExpr::Expr(value) => {
             quote! {
-                __rsx_props.push(#key, ::rust_gui::ui::IntoPropValue::into_prop_value(#value));
+                __rsx_props.push(#key, ::rfgui::ui::IntoPropValue::into_prop_value(#value));
             }
         }
         PropValueExpr::StyleObject(entries) => {
             let style_inserts = entries.iter().map(expand_style_entry);
             quote! {
-                let mut __rsx_style = ::rust_gui::Style::new();
+                let mut __rsx_style = ::rfgui::Style::new();
                 #(#style_inserts)*
-                __rsx_props.push(#key, ::rust_gui::ui::IntoPropValue::into_prop_value(__rsx_style));
+                __rsx_props.push(#key, ::rfgui::ui::IntoPropValue::into_prop_value(__rsx_style));
             }
         }
     };
     quote! {
-        let _ = |__schema: &<#tag as ::rust_gui::ui::RsxPropSchema>::PropsSchema| {
+        let _ = |__schema: &<#tag as ::rfgui::ui::RsxPropSchema>::PropsSchema| {
             let _ = &__schema.#key_ident;
         };
         #value_tokens
@@ -308,9 +308,9 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "background" | "background_color" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::BackgroundColor,
-                    ::rust_gui::ParsedValue::Color(
-                        ::rust_gui::IntoColor::<::rust_gui::Color>::into_color(#value)
+                    ::rfgui::PropertyId::BackgroundColor,
+                    ::rfgui::ParsedValue::Color(
+                        ::rfgui::IntoColor::<::rfgui::Color>::into_color(#value)
                     ),
                 );
             },
@@ -318,9 +318,20 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.background requires an expression value");
             },
         },
+        "font" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::FontFamily,
+                    ::rfgui::ParsedValue::FontFamily(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.font requires an expression value");
+            },
+        },
         "border_radius" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
-                __rsx_style.set_border_radius(::rust_gui::IntoBorderRadius::into_border_radius(#value));
+                __rsx_style.set_border_radius(::rfgui::IntoBorderRadius::into_border_radius(#value));
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.border_radius requires an expression value");
@@ -329,8 +340,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "opacity" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::Opacity,
-                    ::rust_gui::ParsedValue::Opacity(::rust_gui::Opacity::new((#value) as f32)),
+                    ::rfgui::PropertyId::Opacity,
+                    ::rfgui::ParsedValue::Opacity(::rfgui::Opacity::new((#value) as f32)),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -340,8 +351,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "transition" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::Transition,
-                    ::rust_gui::ParsedValue::Transition((#value).into()),
+                    ::rfgui::PropertyId::Transition,
+                    ::rfgui::ParsedValue::Transition((#value).into()),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -357,8 +368,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "width" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::Width,
-                    ::rust_gui::ParsedValue::Length(#value),
+                    ::rfgui::PropertyId::Width,
+                    ::rfgui::ParsedValue::Length(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -368,8 +379,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "height" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::Height,
-                    ::rust_gui::ParsedValue::Length(#value),
+                    ::rfgui::PropertyId::Height,
+                    ::rfgui::ParsedValue::Length(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -379,8 +390,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "display" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::Display,
-                    ::rust_gui::ParsedValue::Display(#value),
+                    ::rfgui::PropertyId::Display,
+                    ::rfgui::ParsedValue::Display(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -390,8 +401,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "flow_direction" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::FlowDirection,
-                    ::rust_gui::ParsedValue::FlowDirection(#value),
+                    ::rfgui::PropertyId::FlowDirection,
+                    ::rfgui::ParsedValue::FlowDirection(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -401,8 +412,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "flow_wrap" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::FlowWrap,
-                    ::rust_gui::ParsedValue::FlowWrap(#value),
+                    ::rfgui::PropertyId::FlowWrap,
+                    ::rfgui::ParsedValue::FlowWrap(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -412,8 +423,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "justify_content" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::JustifyContent,
-                    ::rust_gui::ParsedValue::JustifyContent(#value),
+                    ::rfgui::PropertyId::JustifyContent,
+                    ::rfgui::ParsedValue::JustifyContent(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -423,8 +434,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "align_items" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::AlignItems,
-                    ::rust_gui::ParsedValue::AlignItems(#value),
+                    ::rfgui::PropertyId::AlignItems,
+                    ::rfgui::ParsedValue::AlignItems(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -434,8 +445,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "gap" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::Gap,
-                    ::rust_gui::ParsedValue::Length(#value),
+                    ::rfgui::PropertyId::Gap,
+                    ::rfgui::ParsedValue::Length(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -445,8 +456,8 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         "scroll_direction" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
-                    ::rust_gui::PropertyId::ScrollDirection,
-                    ::rust_gui::ParsedValue::ScrollDirection(#value),
+                    ::rfgui::PropertyId::ScrollDirection,
+                    ::rfgui::ParsedValue::ScrollDirection(#value),
                 );
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
@@ -457,7 +468,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             StyleValueExpr::StyleObject(entries) => {
                 let hover_inserts = entries.iter().map(expand_style_entry);
                 quote! {
-                    let mut __rsx_hover_style = ::rust_gui::Style::new();
+                    let mut __rsx_hover_style = ::rfgui::Style::new();
                     {
                         let __rsx_style = &mut __rsx_hover_style;
                         #(#hover_inserts)*
@@ -475,7 +486,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
     };
 
     quote! {
-        let _ = |__style_schema: &::rust_gui::ui::host::ElementStylePropSchema| {
+        let _ = |__style_schema: &::rfgui::ui::host::ElementStylePropSchema| {
             let _ = &__style_schema.#key_ident;
         };
         #style_value_tokens
@@ -487,17 +498,17 @@ fn expand_node(child: &Child) -> proc_macro2::TokenStream {
         Child::Element(element) => expand_element(element),
         Child::TextLiteral(text) => {
             quote! {
-                ::rust_gui::ui::RsxNode::text(#text)
+                ::rfgui::ui::RsxNode::text(#text)
             }
         }
         Child::TextRaw(text) => {
             quote! {
-                ::rust_gui::ui::RsxNode::text(#text)
+                ::rfgui::ui::RsxNode::text(#text)
             }
         }
         Child::Expr(expr) => {
             quote! {
-                ::rust_gui::ui::IntoRsxNode::into_rsx_node(#expr)
+                ::rfgui::ui::IntoRsxNode::into_rsx_node(#expr)
             }
         }
     }
@@ -523,7 +534,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     let props_name = format_ident!("{}Props", comp_name);
 
     let output_ty = match &input_fn.sig.output {
-        ReturnType::Default => quote!(::rust_gui::ui::RsxNode),
+        ReturnType::Default => quote!(::rfgui::ui::RsxNode),
         ReturnType::Type(_, ty) => quote!(#ty),
     };
 
@@ -555,7 +566,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
                     .to_compile_error();
             }
             has_children_param = true;
-            prop_fields.push(quote!(pub #field_ident: Vec<::rust_gui::ui::RsxNode>));
+            prop_fields.push(quote!(pub #field_ident: Vec<::rfgui::ui::RsxNode>));
             prop_extracts.push(quote!(let #field_ident = children;));
         } else {
             prop_fields.push(quote!(pub #field_ident: #ty));
@@ -587,12 +598,12 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             #(#prop_fields,)*
         }
 
-        impl ::rust_gui::ui::FromRsxProps for #props_name {
+        impl ::rfgui::ui::FromRsxProps for #props_name {
             const ACCEPTS_CHILDREN: bool = #has_children_param;
 
             fn from_rsx_props(
-                mut props: ::rust_gui::ui::RsxProps,
-                children: Vec<::rust_gui::ui::RsxNode>,
+                mut props: ::rfgui::ui::RsxProps,
+                children: Vec<::rfgui::ui::RsxNode>,
             ) -> Result<Self, String> {
                 #children_guard
                 #(#prop_extracts)*
@@ -603,11 +614,11 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             }
         }
 
-        impl ::rust_gui::ui::RsxComponent for #comp_name {
+        impl ::rfgui::ui::RsxComponent for #comp_name {
             type Props = #props_name;
 
-            fn render(props: Self::Props) -> ::rust_gui::ui::RsxNode {
-                ::rust_gui::ui::render_component::<Self, _>(|| {
+            fn render(props: Self::Props) -> ::rfgui::ui::RsxNode {
+                ::rfgui::ui::render_component::<Self, _>(|| {
                     #helper_name(#(#helper_call_args),*)
                 })
             }
