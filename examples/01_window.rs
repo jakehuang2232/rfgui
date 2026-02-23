@@ -1,13 +1,12 @@
 use rfgui::{Transition, TransitionProperty};
+use rfgui_components::host::{Button, Checkbox, NumberField, Select, Slider, Switch};
 use std::sync::Arc;
 
-use rfgui::ui::host::{
-    Button, Checkbox, Element, NumberField, Select, Slider, Switch, Text, TextArea,
-};
+use rfgui::ui::host::{Element, Text, TextArea};
 use rfgui::ui::{RsxNode, component, globalState, on_click, rsx, take_state_dirty, use_state};
 use rfgui::{
-    Border, BorderRadius, Color, Display, FlowDirection, FlowWrap, FontFamily, HexColor, Length,
-    Padding, ScrollDirection, Viewport,
+    Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Display, FontFamily,
+    HexColor, Length, Padding, Position, ScrollDirection, Viewport,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -19,7 +18,8 @@ use winit::window::{Window, WindowId};
 #[component]
 fn MainScene() -> RsxNode {
     let click_count = globalState(|| 0_i32);
-    let message = use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
+    let message =
+        use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
     let checked = use_state(|| true);
     let number_value = use_state(|| 3.0_f64);
     let selected_index = use_state(|| 0_usize);
@@ -43,9 +43,7 @@ fn MainScene() -> RsxNode {
         <Element style={{
             width: Length::percent(100.0),
             height: Length::percent(100.0),
-            display: Display::Flow,
-            flow_direction: FlowDirection::Row,
-            flow_wrap: FlowWrap::Wrap,
+            display: Display::flow().row().wrap(),
             gap: Length::px(24.0),
             padding: Padding::uniform(Length::px(20.0)),
             scroll_direction: ScrollDirection::Vertical,
@@ -139,9 +137,7 @@ fn MainScene() -> RsxNode {
                 background: "#61afef",
                 border: Border::uniform(Length::px(8.0), &Color::hex("#21252b")),
                 border_radius: 50,
-                display: Display::Flow,
-                flow_direction: FlowDirection::Row,
-                flow_wrap: FlowWrap::Wrap,
+                display: Display::flow().row().wrap(),
                 gap: Length::px(8.0),
                 padding: Padding::uniform(Length::px(8.0)),
             }}>
@@ -157,8 +153,7 @@ fn MainScene() -> RsxNode {
                 background: "#282c34",
                 border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")),
                 border_radius: 16,
-                display: Display::Flow,
-                flow_wrap: FlowWrap::Wrap,
+                display: Display::flow().row().wrap(),
                 gap: Length::px(8.0),
                 padding: Padding::uniform(Length::px(8.0)),
             }} >
@@ -172,14 +167,22 @@ fn MainScene() -> RsxNode {
                     on_click={increment}
                 />
             </Element>
-            <Element style={{ width: Length::px(150.0), height: Length::px(150.0), background: "#61afef", border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")), border_radius: 16, opacity: 0.5 }}>
-                <Text x=10 y=10 font_size=16 color="#21252b" >
+            <Element style={{
+                width: Length::px(150.0),
+                height: Length::px(150.0),
+                background: "#61afef",
+                border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
+                border_radius: 16,
+                opacity: 0.5,
+                display: Display::flow().column(),
+            }}>
+                <Text font_size=16 color="#21252b" >
                     Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 0.6 }}>
                     <Element style={{
                         width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                        <Text x=8 y=16 font_size=12 color="#ffffff"  opacity=0.9>
+                        <Text font_size=12 color="#ffffff"  opacity=0.9>
                             Alpha
                         </Text>
                     </Element>
@@ -191,15 +194,15 @@ fn MainScene() -> RsxNode {
                 background: "#61afef7f",
                 border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
                 border_radius: 16,
-                scroll_direction: ScrollDirection::Vertical,
+                display: Display::flow().column(),
             }}>
-                <Text x=10 y=10 font_size=16 color="#21252b" >
+                <Text font_size=16 color="#21252b" >
                     Background Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 1 }}>
                     <Element style={{
                         width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                        <Text x=8 y=16 font_size=12 color="#ffffff"  opacity=0.9>
+                        <Text font_size=12 color="#ffffff"  opacity=0.9>
                             Alpha
                         </Text>
                     </Element>
@@ -212,8 +215,7 @@ fn MainScene() -> RsxNode {
                 border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
                 border_radius: 16,
                 scroll_direction: ScrollDirection::Vertical,
-                display: Display::Flow,
-                flow_direction: FlowDirection::Column,
+                display: Display::flow().column(),
             }}>
                 <Text font_size=12 color="#111111" >Scroll down to see more content 1</Text>
                 <Text font_size=12 color="#111111" >Scroll down to see more content 2</Text>
@@ -230,9 +232,16 @@ fn MainScene() -> RsxNode {
                 <Text font_size=12 color="#111111" >Scroll down to see more content 13</Text>
 
             </Element>
-            <Element style={{ width: Length::px(320.0), height: Length::px(170.0), background: "#2c313c", border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")), border_radius: 16 }}>
-                <Text x=12 y=10 font_size=14 color="#e5e9f0" >TextArea Test</Text>
-                <Text x=12 y=118 font_size=12 color="#aab4c6" >
+            <Element style={{
+                width: Length::px(320.0),
+                height: Length::px(170.0),
+                background: "#2c313c",
+                border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")),
+                border_radius: 16,
+                display: Display::flow().column().no_wrap(),
+            }}>
+                <Text font_size=14 color="#e5e9f0" >TextArea Test</Text>
+                <Text font_size=12 color="#aab4c6" >
                     {format!("Bound chars: {}", message_value.chars().count())}
                 </Text>
                 <TextArea x=12 y=34 width=296 height=78 font_size=13 color="#c8d0e0"  multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
@@ -247,17 +256,13 @@ fn MainScene() -> RsxNode {
                 background: "#0f172a",
                 border: Border::uniform(Length::px(2.0), &Color::hex("#1d4ed8")),
                 border_radius: 14,
-                display: Display::Flow,
-                flow_direction: FlowDirection::Column,
-                flow_wrap: FlowWrap::NoWrap,
+                display: Display::flow().column().no_wrap(),
                 gap: Length::px(8.0),
                 padding: Padding::uniform(Length::px(12.0)),
             }}>
                 <Text font_size=14 color="#e2e8f0" >MUI Components Demo</Text>
                 <Element style={{
-                    display: Display::Flow,
-                    flow_direction: FlowDirection::Row,
-                    flow_wrap: FlowWrap::NoWrap,
+                    display: Display::flow().row().no_wrap(),
                     gap: Length::px(8.0)
                 }}>
                     <Button label="Contained" width=98 height=34 variant="contained" />
@@ -268,9 +273,7 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::px(300.0),
                     height: Length::px(36.0),
-                    display: Display::Flow,
-                    flow_direction: FlowDirection::Row,
-                    flow_wrap: FlowWrap::NoWrap,
+                    display: Display::flow().row().no_wrap(),
                     gap: Length::px(8.0)
                 }}>
                     <NumberField binding={number_value.binding()} min=0.0 max=10.0 step=0.5 width=136 height=36 />
@@ -297,6 +300,143 @@ fn MainScene() -> RsxNode {
                         switch_on_value
                     )}
                 </Text>
+            </Element>
+            <Element style={{
+                width: Length::percent(100.0),
+                height: Length::px(300.0),
+                background: "#111827",
+                border: Border::uniform(Length::px(2.0), &Color::hex("#334155")),
+                border_radius: 14,
+                padding: Padding::uniform(Length::px(12.0)),
+                display: Display::flow().column().no_wrap(),
+                gap: Length::px(8.0),
+            }} anchor="menu_button">
+                <Text font_size=14 color="#e2e8f0">Absolute + Anchor + Collision</Text>
+                <Text font_size=12 color="#94a3b8">
+                    parent anchor = "menu_button"
+                </Text>
+                <Element style={{
+                    width: Length::px(120.0),
+                    height: Length::px(36.0),
+                    background: "#1d4ed8",
+                    border_radius: 8,
+                }}>
+                    <Text font_size=12 color="#eff6ff">Menu Button</Text>
+                </Element>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    height: Length::px(110.0),
+                    display: Display::flow().row().no_wrap(),
+                    gap: Length::px(8.0),
+                }}>
+                    <Element style={{
+                        width: Length::px(110.0),
+                        height: Length::px(110.0),
+                        background: "#1f2937",
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#475569")),
+                        border_radius: 8,
+                        padding: Padding::uniform(Length::px(8.0)),
+                    }}>
+                        <Text font_size=10 color="#cbd5e1">clip=Parent (default)</Text>
+                        <Element style={{
+                            position: Position::absolute()
+                                .top(Length::px(56.0))
+                                .left(Length::px(84.0)),
+                            width: Length::px(74.0),
+                            height: Length::px(24.0),
+                            background: "#ef4444",
+                            border_radius: 6,
+                        }}>
+                            <Text font_size=10 color="#fef2f2">overflow</Text>
+                        </Element>
+                    </Element>
+                    <Element style={{
+                        width: Length::px(110.0),
+                        height: Length::px(110.0),
+                        background: "#1f2937",
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#475569")),
+                        border_radius: 8,
+                        padding: Padding::uniform(Length::px(8.0)),
+                    }}>
+                        <Text font_size=10 color="#cbd5e1">clip=Viewport</Text>
+                        <Element style={{
+                            position: Position::absolute()
+                                .top(Length::px(56.0))
+                                .left(Length::px(84.0))
+                                .clip(ClipMode::Viewport),
+                            width: Length::px(74.0),
+                            height: Length::px(24.0),
+                            background: "#f59e0b",
+                            border_radius: 6,
+                        }}>
+                            <Text font_size=10 color="#fffbeb">overflow</Text>
+                        </Element>
+                    </Element>
+                    <Element style={{
+                        width: Length::px(140.0),
+                        height: Length::px(110.0),
+                        background: "#1f2937",
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#475569")),
+                        border_radius: 8,
+                        padding: Padding::uniform(Length::px(8.0)),
+                        display: Display::flow().column().no_wrap(),
+                        gap: Length::px(6.0),
+                    }}>
+                        <Text font_size=10 color="#cbd5e1">clip=AnchorParent</Text>
+                        <Element style={{
+                            width: Length::px(56.0),
+                            height: Length::px(26.0),
+                            background: "#1d4ed8",
+                            border_radius: 6,
+                        }} anchor="abs_anchor_test">
+                            <Text font_size=9 color="#dbeafe">anchor</Text>
+                        </Element>
+                        <Element style={{
+                            position: Position::absolute()
+                                .anchor("abs_anchor_test")
+                                .top(Length::px(0.0))
+                                .left(Length::px(38.0))
+                                .clip(ClipMode::AnchorParent),
+                            width: Length::px(82.0),
+                            height: Length::px(22.0),
+                            background: "#22c55e",
+                            border_radius: 6,
+                        }}>
+                            <Text font_size=9 color="#ecfdf5">anchor clip</Text>
+                        </Element>
+                    </Element>
+                </Element>
+                <Element style={{
+                    position: Position::absolute()
+                        .anchor("menu_button")
+                        .top(Length::px(48.0))
+                        .left(Length::px(132.0))
+                        .collision(Collision::FlipFit, CollisionBoundary::Viewport),
+                    width: Length::px(150.0),
+                    height: Length::px(96.0),
+                    background: "#0b1220",
+                    border: Border::uniform(Length::px(1.0), &Color::hex("#3b82f6")),
+                    border_radius: 10,
+                    padding: Padding::uniform(Length::px(8.0)),
+                    display: Display::flow().column(),
+                    gap: Length::px(6.0),
+                }}>
+                    <Text font_size=12 color="#bfdbfe">Popover (anchor)</Text>
+                    <Text font_size=11 color="#93c5fd">collision: FlipFit + Viewport</Text>
+                    <Text font_size=11 color="#93c5fd">try resizing window edge</Text>
+                </Element>
+                <Element style={{
+                    position: Position::absolute()
+                        .top(Length::px(10.0))
+                        .bottom(Length::px(10.0))
+                        .right(Length::px(12.0)),
+                    width: Length::px(120.0),
+                    height: Length::px(30.0),
+                    background: "#166534",
+                    border_radius: 8,
+                }}>
+                    <Text font_size=11 color="#dcfce7">fallback parent anchor</Text>
+                </Element>
             </Element>
         </Element>
     }

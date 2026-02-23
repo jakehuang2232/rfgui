@@ -167,10 +167,50 @@ impl<const N: usize> From<[Transition; N]> for Transitions {
 pub enum Display {
     Block,
     Inline,
-    Flow,
+    Flow {
+        direction: FlowDirection,
+        wrap: FlowWrap,
+    },
     InlineFlex,
     Grid,
     None,
+}
+
+impl Display {
+    pub const fn flow() -> Self {
+        Self::Flow {
+            direction: FlowDirection::Row,
+            wrap: FlowWrap::NoWrap,
+        }
+    }
+
+    pub const fn row(mut self) -> Self {
+        if let Self::Flow { direction, .. } = &mut self {
+            *direction = FlowDirection::Row;
+        }
+        self
+    }
+
+    pub const fn column(mut self) -> Self {
+        if let Self::Flow { direction, .. } = &mut self {
+            *direction = FlowDirection::Column;
+        }
+        self
+    }
+
+    pub const fn wrap(mut self) -> Self {
+        if let Self::Flow { wrap, .. } = &mut self {
+            *wrap = FlowWrap::Wrap;
+        }
+        self
+    }
+
+    pub const fn no_wrap(mut self) -> Self {
+        if let Self::Flow { wrap, .. } = &mut self {
+            *wrap = FlowWrap::NoWrap;
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,11 +251,184 @@ pub enum ScrollDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Position {
+pub enum PositionMode {
     Static,
     Relative,
     Absolute,
     Fixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Collision {
+    None,
+    Flip,
+    Fit,
+    FlipFit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionBoundary {
+    Viewport,
+    Parent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipMode {
+    Parent,
+    Viewport,
+    AnchorParent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AnchorName(String);
+
+impl AnchorName {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<&str> for AnchorName {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for AnchorName {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Position {
+    mode: PositionMode,
+    anchor: Option<AnchorName>,
+    top: Option<Length>,
+    right: Option<Length>,
+    bottom: Option<Length>,
+    left: Option<Length>,
+    collision: Collision,
+    collision_boundary: CollisionBoundary,
+    clip_mode: ClipMode,
+}
+
+impl Position {
+    pub const fn static_() -> Self {
+        Self::new(PositionMode::Static)
+    }
+
+    pub const fn relative() -> Self {
+        Self::new(PositionMode::Relative)
+    }
+
+    pub const fn absolute() -> Self {
+        Self::new(PositionMode::Absolute)
+    }
+
+    pub const fn fixed() -> Self {
+        Self::new(PositionMode::Fixed)
+    }
+
+    pub const fn mode(&self) -> PositionMode {
+        self.mode
+    }
+
+    pub fn anchor(mut self, anchor: impl Into<AnchorName>) -> Self {
+        self.anchor = Some(anchor.into());
+        self
+    }
+
+    pub const fn top(mut self, value: Length) -> Self {
+        self.top = Some(value);
+        self
+    }
+
+    pub const fn right(mut self, value: Length) -> Self {
+        self.right = Some(value);
+        self
+    }
+
+    pub const fn bottom(mut self, value: Length) -> Self {
+        self.bottom = Some(value);
+        self
+    }
+
+    pub const fn left(mut self, value: Length) -> Self {
+        self.left = Some(value);
+        self
+    }
+
+    pub const fn collision(
+        mut self,
+        collision: Collision,
+        boundary: CollisionBoundary,
+    ) -> Self {
+        self.collision = collision;
+        self.collision_boundary = boundary;
+        self
+    }
+
+    pub const fn clip(mut self, mode: ClipMode) -> Self {
+        self.clip_mode = mode;
+        self
+    }
+
+    pub fn anchor_name(&self) -> Option<&AnchorName> {
+        self.anchor.as_ref()
+    }
+
+    pub const fn top_inset(&self) -> Option<Length> {
+        self.top
+    }
+
+    pub const fn right_inset(&self) -> Option<Length> {
+        self.right
+    }
+
+    pub const fn bottom_inset(&self) -> Option<Length> {
+        self.bottom
+    }
+
+    pub const fn left_inset(&self) -> Option<Length> {
+        self.left
+    }
+
+    pub const fn collision_mode(&self) -> Collision {
+        self.collision
+    }
+
+    pub const fn collision_boundary(&self) -> CollisionBoundary {
+        self.collision_boundary
+    }
+
+    pub const fn clip_mode(&self) -> ClipMode {
+        self.clip_mode
+    }
+
+    const fn new(mode: PositionMode) -> Self {
+        Self {
+            mode,
+            anchor: None,
+            top: None,
+            right: None,
+            bottom: None,
+            left: None,
+            collision: Collision::None,
+            collision_boundary: CollisionBoundary::Viewport,
+            clip_mode: ClipMode::Parent,
+        }
+    }
+}
+
+impl Default for Position {
+    fn default() -> Self {
+        Self::static_()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

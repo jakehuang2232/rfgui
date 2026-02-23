@@ -22,3 +22,4 @@ rfgui-rsx = { path = "rsx-macro" }
 [dev-dependencies]
 winit = "0.30.12"
 pollster = "0.3"
+rfgui-components = { path = "lib/rfgui-components" }

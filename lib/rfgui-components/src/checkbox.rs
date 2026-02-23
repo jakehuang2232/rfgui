@@ -1,8 +1,8 @@
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, ClickHandlerProp, RsxNode, rsx};
+use rfgui::ui::{Binding, ClickHandlerProp, RsxNode, component, rsx, use_state};
 use rfgui::{
-    AlignItems, Border, BorderRadius, Color, Display, FlowDirection, Length, Padding, ParsedValue,
-    PropertyId, Style,
+    AlignItems, Border, BorderRadius, Color, Display, Length, Padding, ParsedValue, PropertyId,
+    Style,
 };
 
 pub struct CheckboxProps {
@@ -28,46 +28,72 @@ impl CheckboxProps {
 }
 
 pub fn build_checkbox_rsx(props: CheckboxProps) -> RsxNode {
-    let checked = props
+    let has_binding = props.checked_binding.is_some();
+    let binding = props
         .checked_binding
-        .as_ref()
-        .map(|v| v.get())
-        .unwrap_or(props.checked);
-    let click = if props.disabled {
+        .unwrap_or_else(|| Binding::new(props.checked));
+    rsx! {
+        <CheckboxComponent
+            label={props.label}
+            checked={props.checked}
+            has_binding={has_binding}
+            binding={binding}
+            width={props.width}
+            height={props.height}
+            disabled={props.disabled}
+        />
+    }
+}
+
+#[component]
+fn CheckboxComponent(
+    label: String,
+    checked: bool,
+    has_binding: bool,
+    binding: Binding<bool>,
+    width: f32,
+    height: f32,
+    disabled: bool,
+) -> RsxNode {
+    let fallback_checked = use_state(|| checked);
+    let checked_binding = if has_binding {
+        binding
+    } else {
+        fallback_checked.binding()
+    };
+    let checked = checked_binding.get();
+    let click = if disabled {
         None
     } else {
-        props.checked_binding
-            .clone()
-            .map(|binding| ClickHandlerProp::new(move |_event| binding.set(!binding.get())))
+        Some(ClickHandlerProp::new(move |_event| {
+            checked_binding.set(!checked_binding.get())
+        }))
     };
 
-    let mut root = rsx! {
-        <Element style={checkbox_row_style(props.width, props.height)}>
-            <Element style={checkbox_box_style(checked, props.disabled)}>
-                {if checked {
-                    rsx! {
-                        <Text
-                            x=2
-                            y=-1
-                            font_size=16
-                            font="Heiti TC, Noto Sans CJK TC, Roboto"
-                            color={if props.disabled { "#9E9E9E" } else { "#FFFFFF" }}
-                        >
-                            {"✓"}
-                        </Text>
-                    }
-                } else {
-                    RsxNode::fragment(Vec::new())
-                }}
-            </Element>
+    let mut box_node = rsx! {
+        <Element style={checkbox_box_style(checked, disabled)} />
+    };
+    if checked && let RsxNode::Element(node) = &mut box_node {
+        node.children.push(rsx! {
             <Text
-                x=28
-                y=7
+                font_size=16
+                font="Heiti TC, Noto Sans CJK TC, Roboto"
+                color={if disabled { "#9E9E9E" } else { "#FFFFFF" }}
+            >
+                {"✓"}
+            </Text>
+        });
+    }
+
+    let mut root = rsx! {
+        <Element style={checkbox_row_style(width, height)}>
+            {box_node}
+            <Text
                 font_size=14
                 font="Heiti TC, Noto Sans CJK TC, Roboto"
-                color={if props.disabled { "#9E9E9E" } else { "#1F2937" }}
+                color={if disabled { "#9E9E9E" } else { "#1F2937" }}
             >
-                {props.label}
+                {label}
             </Text>
         </Element>
     };
@@ -83,15 +109,15 @@ pub fn build_checkbox_rsx(props: CheckboxProps) -> RsxNode {
 
 fn checkbox_row_style(width: f32, height: f32) -> Style {
     let mut style = Style::new();
-    style.insert(PropertyId::Display, ParsedValue::Display(Display::Flow));
     style.insert(
-        PropertyId::FlowDirection,
-        ParsedValue::FlowDirection(FlowDirection::Row),
+        PropertyId::Display,
+        ParsedValue::Display(Display::flow().row().no_wrap()),
     );
     style.insert(
         PropertyId::AlignItems,
         ParsedValue::AlignItems(AlignItems::Center),
     );
+    style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(10.0)));
     style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
     style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
     style.set_padding(Padding::uniform(Length::px(0.0)));

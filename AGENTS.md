@@ -91,6 +91,7 @@ This document defines the core UI / Style / Layout conventions for this project 
 
 - `style` props inside `rsx!` should be navigable (IDE jump-friendly).
 - Keep `ElementStylePropSchema` aligned with the style system; do not keep deprecated fields (for example old `padding_x`-style fields).
+- rsx components 偏好用宣告式結構
 
 ## 10. Implementation Guidelines
 

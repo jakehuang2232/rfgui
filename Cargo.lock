@@ -1702,6 +1702,7 @@ dependencies = [
  "glyphon",
  "once_cell",
  "pollster",
+ "rfgui-components",
  "rfgui-rsx",
  "wgpu",
  "winit",

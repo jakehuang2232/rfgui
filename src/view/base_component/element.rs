@@ -2,8 +2,9 @@ use super::{ElementCore, Position, Size};
 use crate::ColorLike;
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::style::{
-    AlignItems, Color, ComputedStyle, Display, FlowDirection, FlowWrap, JustifyContent, Length,
-    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
+    AlignItems, AnchorName, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle, Display,
+    FlowDirection, FlowWrap, JustifyContent, Length, PositionMode, ScrollDirection, SizeValue,
+    Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
     LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
@@ -19,6 +20,7 @@ use crate::view::frame_graph::{FrameGraph, InSlot, RenderPass, TextureDesc};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::{ClearPass, CompositeLayerPass, DrawRectPass, LayerOut, LayerTag};
 use crate::view::viewport::ViewportControl;
+use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -112,6 +114,26 @@ impl Rect {
     fn contains(self, px: f32, py: f32) -> bool {
         px >= self.x && py >= self.y && px <= self.x + self.width && py <= self.y + self.height
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AnchorSnapshot {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+#[derive(Default)]
+struct PlacementRuntime {
+    depth: usize,
+    viewport_width: f32,
+    viewport_height: f32,
+    anchors: std::collections::HashMap<String, AnchorSnapshot>,
+}
+
+thread_local! {
+    static PLACEMENT_RUNTIME: RefCell<PlacementRuntime> = RefCell::new(PlacementRuntime::default());
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -399,6 +421,7 @@ struct TransitionSnapshot {
 
 pub struct Element {
     core: ElementCore,
+    anchor_name: Option<AnchorName>,
     layout_flow_position: Position,
     layout_inner_position: Position,
     layout_flow_inner_position: Position,
@@ -737,7 +760,7 @@ impl Layoutable for Element {
         // that depend on our inner size.
         let is_flex = matches!(
             self.computed_style.display,
-            Display::Flow | Display::InlineFlex
+            Display::Flow { .. } | Display::InlineFlex
         );
         if is_flex {
             self.measure_flex_children(proposal);
@@ -819,6 +842,7 @@ impl Layoutable for Element {
     }
 
     fn place(&mut self, placement: LayoutPlacement) {
+        self.begin_place_scope(placement);
         let proposal = LayoutProposal {
             width: placement.available_width,
             height: placement.available_height,
@@ -833,6 +857,7 @@ impl Layoutable for Element {
             placement.visual_offset_x,
             placement.visual_offset_y,
         );
+        self.register_anchor_snapshot();
         self.resolve_corner_radii_from_self_box();
         let max_bw = (self
             .core
@@ -872,6 +897,7 @@ impl Layoutable for Element {
             None
         };
         self.place_children(child_percent_base_width, child_percent_base_height);
+        self.end_place_scope();
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -956,6 +982,10 @@ impl Renderable for Element {
             self.layout_inner_size.height.max(0.0),
         );
 
+        let overflow_child_indices: Vec<usize> = (0..self.children.len())
+            .filter(|&idx| self.child_renders_outside_inner_clip(idx))
+            .collect();
+
         if self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0 {
             let previous_color_target = ctx.color_target();
             let layer = ctx.allocate_layer(graph);
@@ -967,7 +997,10 @@ impl Renderable for Element {
             let clear = ClearPass::new([0.0, 0.0, 0.0, 0.0]);
             self.push_pass(graph, ctx, clear);
 
-            for child in &mut self.children {
+            for (idx, child) in self.children.iter_mut().enumerate() {
+                if overflow_child_indices.contains(&idx) {
+                    continue;
+                }
                 child.build(graph, ctx);
             }
 
@@ -980,6 +1013,12 @@ impl Renderable for Element {
                 layer,
             );
             ctx.push_pass(graph, composite);
+        }
+
+        for idx in overflow_child_indices {
+            if let Some(child) = self.children.get_mut(idx) {
+                child.build(graph, ctx);
+            }
         }
         self.render_scrollbars(graph, ctx);
 
@@ -1033,6 +1072,7 @@ impl Element {
             } else {
                 ElementCore::new_with_id(id, x, y, width, height)
             },
+            anchor_name: None,
             layout_flow_position: Position { x, y },
             layout_inner_position: Position { x, y },
             layout_flow_inner_position: Position { x, y },
@@ -1110,6 +1150,10 @@ impl Element {
 
     pub fn set_position(&mut self, x: f32, y: f32) {
         self.core.set_position(x, y);
+    }
+
+    pub fn set_anchor_name(&mut self, name: Option<AnchorName>) {
+        self.anchor_name = name;
     }
 
     pub fn set_x(&mut self, x: f32) {
@@ -2133,12 +2177,15 @@ impl Element {
         let gap_base = if is_row { inner_w } else { inner_h };
         let gap = resolve_px(self.computed_style.gap, gap_base);
 
-        let mut child_sizes = Vec::with_capacity(self.children.len());
-        for child in &self.children {
+        let mut child_sizes = vec![(0.0_f32, 0.0_f32); self.children.len()];
+        for (idx, child) in self.children.iter().enumerate() {
+            if self.child_is_absolute(idx) {
+                continue;
+            }
             let (w, h) = child.measured_size();
             let main = if is_row { w } else { h };
             let cross = if is_row { h } else { w };
-            child_sizes.push((main, cross));
+            child_sizes[idx] = (main, cross);
         }
 
         let mut lines: Vec<Vec<usize>> = Vec::new();
@@ -2149,6 +2196,9 @@ impl Element {
         let mut current_cross = 0.0;
 
         for (idx, (item_main, item_cross)) in child_sizes.iter().copied().enumerate() {
+            if self.child_is_absolute(idx) {
+                continue;
+            }
             let next_main = if current.is_empty() {
                 item_main
             } else {
@@ -2532,7 +2582,10 @@ impl Element {
         }
         let mut max_x = 0.0_f32;
         let mut max_y = 0.0_f32;
-        for child in &self.children {
+        for (idx, child) in self.children.iter().enumerate() {
+            if self.child_is_absolute(idx) {
+                continue;
+            }
             let snapshot = child.box_model_snapshot();
             let (child_flow_x, child_flow_y) = child
                 .as_any()
@@ -2609,7 +2662,10 @@ impl Element {
     fn update_size_from_measured_children(&mut self) {
         let mut max_w = 0.0_f32;
         let mut max_h = 0.0_f32;
-        for child in &self.children {
+        for (idx, child) in self.children.iter().enumerate() {
+            if self.child_is_absolute(idx) {
+                continue;
+            }
             let (w, h) = child.measured_size();
             max_w = max_w.max(w);
             max_h = max_h.max(h);
@@ -2672,8 +2728,129 @@ impl Element {
         parent_visual_offset_x: f32,
         parent_visual_offset_y: f32,
     ) {
-        let target_rel_x = self.core.position.x;
-        let target_rel_y = self.core.position.y;
+        let mut target_width = self.core.size.width.max(0.0);
+        let mut target_height = self.core.size.height.max(0.0);
+        let mut target_rel_x = self.core.position.x;
+        let mut target_rel_y = self.core.position.y;
+        let is_absolute = self.computed_style.position.mode() == PositionMode::Absolute;
+        let mut absolute_clip_rect: Option<Rect> = None;
+        if is_absolute {
+            let fallback_anchor = AnchorSnapshot {
+                x: parent_x,
+                y: parent_y,
+                width: proposal.width.max(0.0),
+                height: proposal.height.max(0.0),
+            };
+            let anchor = self.resolve_anchor_snapshot(fallback_anchor);
+            let left = self
+                .computed_style
+                .position
+                .left_inset()
+                .and_then(|v| resolve_px_with_base(v, Some(anchor.width)));
+            let right = self
+                .computed_style
+                .position
+                .right_inset()
+                .and_then(|v| resolve_px_with_base(v, Some(anchor.width)));
+            let top = self
+                .computed_style
+                .position
+                .top_inset()
+                .and_then(|v| resolve_px_with_base(v, Some(anchor.height)));
+            let bottom = self
+                .computed_style
+                .position
+                .bottom_inset()
+                .and_then(|v| resolve_px_with_base(v, Some(anchor.height)));
+
+            if let (Some(l), Some(r)) = (left, right) {
+                target_width = (anchor.width - l - r).max(0.0);
+            }
+            if let (Some(t), Some(b)) = (top, bottom) {
+                target_height = (anchor.height - t - b).max(0.0);
+            }
+
+            target_rel_x = if let Some(l) = left {
+                (anchor.x - parent_x) + l
+            } else if let Some(r) = right {
+                (anchor.x - parent_x) + (anchor.width - r - target_width)
+            } else {
+                anchor.x - parent_x
+            };
+            target_rel_y = if let Some(t) = top {
+                (anchor.y - parent_y) + t
+            } else if let Some(b) = bottom {
+                (anchor.y - parent_y) + (anchor.height - b - target_height)
+            } else {
+                anchor.y - parent_y
+            };
+
+            let mut abs_x = parent_x + target_rel_x;
+            let mut abs_y = parent_y + target_rel_y;
+            let boundary = match self.computed_style.position.collision_boundary() {
+                CollisionBoundary::Parent => Rect {
+                    x: parent_x,
+                    y: parent_y,
+                    width: proposal.width.max(0.0),
+                    height: proposal.height.max(0.0),
+                },
+                CollisionBoundary::Viewport => {
+                    let (vw, vh) = self.viewport_size_from_runtime(proposal.width, proposal.height);
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: vw,
+                        height: vh,
+                    }
+                }
+            };
+            let clip_mode = self.computed_style.position.clip_mode();
+            let has_anchor = self.computed_style.position.anchor_name().is_some();
+            absolute_clip_rect = Some(match clip_mode {
+                ClipMode::Parent => Rect {
+                    x: parent_x + parent_visual_offset_x,
+                    y: parent_y + parent_visual_offset_y,
+                    width: proposal.width.max(0.0),
+                    height: proposal.height.max(0.0),
+                },
+                ClipMode::Viewport => {
+                    let (vw, vh) = self.viewport_size_from_runtime(proposal.width, proposal.height);
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: vw.max(0.0),
+                        height: vh.max(0.0),
+                    }
+                }
+                ClipMode::AnchorParent if has_anchor => Rect {
+                    x: anchor.x,
+                    y: anchor.y,
+                    width: anchor.width.max(0.0),
+                    height: anchor.height.max(0.0),
+                },
+                ClipMode::AnchorParent => Rect {
+                    x: parent_x + parent_visual_offset_x,
+                    y: parent_y + parent_visual_offset_y,
+                    width: proposal.width.max(0.0),
+                    height: proposal.height.max(0.0),
+                },
+            });
+            apply_collision(
+                self.computed_style.position.collision_mode(),
+                boundary,
+                &mut abs_x,
+                &mut abs_y,
+                target_width,
+                target_height,
+                anchor,
+                left,
+                right,
+                top,
+                bottom,
+            );
+            target_rel_x = abs_x - parent_x;
+            target_rel_y = abs_y - parent_y;
+        }
         let has_x_transition = self.computed_style.transition.as_slice().iter().any(|t| {
             matches!(
                 t.property,
@@ -2724,8 +2901,6 @@ impl Element {
         let prev_target_rel_y = self.layout_flow_position.y - self.last_parent_layout_y;
         let current_offset_x = current_visual_rel_x - target_rel_x;
         let current_offset_y = current_visual_rel_y - target_rel_y;
-        let target_width = self.core.size.width.max(0.0);
-        let target_height = self.core.size.height.max(0.0);
         let prev_width = self.core.layout_size.width.max(0.0);
         let prev_height = self.core.layout_size.height.max(0.0);
         if self
@@ -2820,10 +2995,21 @@ impl Element {
             height: frame.height,
         };
 
-        let parent_left = parent_x + parent_visual_offset_x;
-        let parent_top = parent_y + parent_visual_offset_y;
-        let parent_right = parent_left + proposal.width;
-        let parent_bottom = parent_top + proposal.height;
+        let parent_rect = Rect {
+            x: parent_x + parent_visual_offset_x,
+            y: parent_y + parent_visual_offset_y,
+            width: proposal.width.max(0.0),
+            height: proposal.height.max(0.0),
+        };
+        let cull_rect = if is_absolute {
+            absolute_clip_rect.unwrap_or(parent_rect)
+        } else {
+            parent_rect
+        };
+        let parent_left = cull_rect.x;
+        let parent_top = cull_rect.y;
+        let parent_right = cull_rect.x + cull_rect.width;
+        let parent_bottom = cull_rect.y + cull_rect.height;
         let self_right = frame.x + frame.width;
         let self_bottom = frame.y + frame.height;
 
@@ -3013,6 +3199,102 @@ impl Element {
         }
     }
 
+    fn begin_place_scope(&self, placement: LayoutPlacement) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            let mut runtime = runtime.borrow_mut();
+            if runtime.depth == 0 {
+                runtime.anchors.clear();
+                runtime.viewport_width = placement.available_width.max(0.0);
+                runtime.viewport_height = placement.available_height.max(0.0);
+            }
+            runtime.depth += 1;
+        });
+    }
+
+    fn end_place_scope(&self) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            let mut runtime = runtime.borrow_mut();
+            if runtime.depth > 0 {
+                runtime.depth -= 1;
+            }
+            if runtime.depth == 0 {
+                runtime.anchors.clear();
+            }
+        });
+    }
+
+    fn register_anchor_snapshot(&self) {
+        let Some(anchor_name) = self.anchor_name.as_ref() else {
+            return;
+        };
+        let snapshot = AnchorSnapshot {
+            x: self.core.layout_position.x,
+            y: self.core.layout_position.y,
+            width: self.core.layout_size.width.max(0.0),
+            height: self.core.layout_size.height.max(0.0),
+        };
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime
+                .borrow_mut()
+                .anchors
+                .insert(anchor_name.as_str().to_string(), snapshot);
+        });
+    }
+
+    fn resolve_anchor_snapshot(&self, fallback: AnchorSnapshot) -> AnchorSnapshot {
+        let Some(anchor_name) = self.computed_style.position.anchor_name() else {
+            return fallback;
+        };
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime
+                .borrow()
+                .anchors
+                .get(anchor_name.as_str())
+                .copied()
+                .unwrap_or(fallback)
+        })
+    }
+
+    fn viewport_size_from_runtime(&self, fallback_width: f32, fallback_height: f32) -> (f32, f32) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            let runtime = runtime.borrow();
+            let width = if runtime.viewport_width > 0.0 {
+                runtime.viewport_width
+            } else {
+                fallback_width.max(0.0)
+            };
+            let height = if runtime.viewport_height > 0.0 {
+                runtime.viewport_height
+            } else {
+                fallback_height.max(0.0)
+            };
+            (width, height)
+        })
+    }
+
+    fn child_is_absolute(&self, index: usize) -> bool {
+        self.children
+            .get(index)
+            .and_then(|child| child.as_any().downcast_ref::<Element>())
+            .is_some_and(|el| el.computed_style.position.mode() == PositionMode::Absolute)
+    }
+
+    fn child_renders_outside_inner_clip(&self, index: usize) -> bool {
+        self.children
+            .get(index)
+            .and_then(|child| child.as_any().downcast_ref::<Element>())
+            .is_some_and(|el| {
+                if el.computed_style.position.mode() != PositionMode::Absolute {
+                    return false;
+                }
+                match el.computed_style.position.clip_mode() {
+                    ClipMode::Parent => false,
+                    ClipMode::Viewport => true,
+                    ClipMode::AnchorParent => el.computed_style.position.anchor_name().is_some(),
+                }
+            })
+    }
+
     fn place_children(
         &mut self,
         child_percent_base_width: Option<f32>,
@@ -3021,7 +3303,7 @@ impl Element {
         let (child_available_width, child_available_height) = self.child_layout_limits();
         let is_flex = matches!(
             self.computed_style.display,
-            Display::Flow | Display::InlineFlex
+            Display::Flow { .. } | Display::InlineFlex
         );
         if is_flex {
             self.place_flex_children(
@@ -3035,7 +3317,27 @@ impl Element {
             let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
             let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
             let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
-            for child in &mut self.children {
+            for idx in 0..self.children.len() {
+                if self.child_is_absolute(idx) {
+                    continue;
+                }
+                let child = &mut self.children[idx];
+                child.place(LayoutPlacement {
+                    parent_x: origin_x,
+                    parent_y: origin_y,
+                    visual_offset_x,
+                    visual_offset_y,
+                    available_width: child_available_width,
+                    available_height: child_available_height,
+                    percent_base_width: child_percent_base_width,
+                    percent_base_height: child_percent_base_height,
+                });
+            }
+            for idx in 0..self.children.len() {
+                if !self.child_is_absolute(idx) {
+                    continue;
+                }
+                let child = &mut self.children[idx];
                 child.place(LayoutPlacement {
                     parent_x: origin_x,
                     parent_y: origin_y,
@@ -3141,6 +3443,22 @@ impl Element {
 
             cross_cursor += line_cross + gap;
         }
+
+        for idx in 0..self.children.len() {
+            if !self.child_is_absolute(idx) {
+                continue;
+            }
+            self.children[idx].place(LayoutPlacement {
+                parent_x: origin_x,
+                parent_y: origin_y,
+                visual_offset_x,
+                visual_offset_y,
+                available_width: child_available_width,
+                available_height: child_available_height,
+                percent_base_width: child_percent_base_width,
+                percent_base_height: child_percent_base_height,
+            });
+        }
     }
 }
 
@@ -3220,6 +3538,62 @@ fn colors_like_eq(a: &dyn ColorLike, b: &dyn ColorLike) -> bool {
 
 fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.0001
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_collision(
+    collision: Collision,
+    boundary: Rect,
+    x: &mut f32,
+    y: &mut f32,
+    width: f32,
+    height: f32,
+    anchor: AnchorSnapshot,
+    left: Option<f32>,
+    right: Option<f32>,
+    top: Option<f32>,
+    bottom: Option<f32>,
+) {
+    if collision == Collision::None {
+        return;
+    }
+
+    if matches!(collision, Collision::Flip | Collision::FlipFit) {
+        if (*x < boundary.x || *x + width > boundary.x + boundary.width)
+            && left.is_some()
+            && right.is_none()
+        {
+            let l = left.unwrap_or(0.0);
+            *x = anchor.x + anchor.width - l - width;
+        } else if (*x < boundary.x || *x + width > boundary.x + boundary.width)
+            && right.is_some()
+            && left.is_none()
+        {
+            let r = right.unwrap_or(0.0);
+            *x = anchor.x + r;
+        }
+
+        if (*y < boundary.y || *y + height > boundary.y + boundary.height)
+            && top.is_some()
+            && bottom.is_none()
+        {
+            let t = top.unwrap_or(0.0);
+            *y = anchor.y + anchor.height - t - height;
+        } else if (*y < boundary.y || *y + height > boundary.y + boundary.height)
+            && bottom.is_some()
+            && top.is_none()
+        {
+            let b = bottom.unwrap_or(0.0);
+            *y = anchor.y + b;
+        }
+    }
+
+    if matches!(collision, Collision::Fit | Collision::FlipFit) {
+        let max_x = (boundary.x + boundary.width - width).max(boundary.x);
+        let max_y = (boundary.y + boundary.height - height).max(boundary.y);
+        *x = (*x).clamp(boundary.x, max_x);
+        *y = (*y).clamp(boundary.y, max_y);
+    }
 }
 
 fn main_axis_start_and_gap(
@@ -3311,7 +3685,7 @@ mod tests {
     };
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::LayoutField;
-    use crate::{Border, Color, Length, Style};
+    use crate::{AnchorName, Border, ClipMode, Collision, CollisionBoundary, Color, Length, Position, Style};
 
     #[test]
     fn child_layout_uses_parent_inner_box_with_padding() {
@@ -3467,6 +3841,299 @@ mod tests {
         let snapshot_known = known_parent.children().expect("child")[0].box_model_snapshot();
         assert_eq!(snapshot_known.width, 120.0);
         assert_eq!(snapshot_known.height, 60.0);
+    }
+
+    #[test]
+    fn absolute_child_does_not_affect_auto_parent_size() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+
+        let normal_child = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut absolute_child = Element::new(0.0, 0.0, 300.0, 200.0);
+        let mut absolute_style = Style::new();
+        absolute_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(Position::absolute()),
+        );
+        absolute_child.apply_style(absolute_style);
+
+        parent.add_child(Box::new(normal_child));
+        parent.add_child(Box::new(absolute_child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let snapshot = parent.box_model_snapshot();
+        assert_eq!(snapshot.width, 80.0);
+        assert_eq!(snapshot.height, 40.0);
+    }
+
+    #[test]
+    fn absolute_defaults_to_parent_anchor_and_zero_insets() {
+        let mut parent = Element::new(40.0, 60.0, 200.0, 120.0);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(Position::absolute()),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let children = parent.children().expect("has child");
+        let snapshot = children[0].box_model_snapshot();
+        assert_eq!(snapshot.x, 40.0);
+        assert_eq!(snapshot.y, 60.0);
+    }
+
+    #[test]
+    fn absolute_stretch_with_left_right_top_bottom() {
+        let mut parent = Element::new(10.0, 20.0, 200.0, 120.0);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(10.0))
+                    .right(Length::px(20.0))
+                    .top(Length::px(5.0))
+                    .bottom(Length::px(15.0)),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let children = parent.children().expect("has child");
+        let snapshot = children[0].box_model_snapshot();
+        assert_eq!(snapshot.x, 20.0);
+        assert_eq!(snapshot.y, 25.0);
+        assert_eq!(snapshot.width, 170.0);
+        assert_eq!(snapshot.height, 100.0);
+    }
+
+    #[test]
+    fn absolute_collision_fit_viewport_clamps_into_view() {
+        let mut el = Element::new(0.0, 0.0, 50.0, 30.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(390.0))
+                    .top(Length::px(295.0))
+                    .collision(Collision::Fit, CollisionBoundary::Viewport),
+            ),
+        );
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        });
+        let snapshot = el.box_model_snapshot();
+        assert_eq!(snapshot.x, 350.0);
+        assert_eq!(snapshot.y, 270.0);
+    }
+
+    #[test]
+    fn absolute_clip_viewport_allows_render_outside_parent_bounds() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(130.0))
+                    .top(Length::px(10.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        });
+
+        let children = parent.children().expect("has child");
+        let rendered = children[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("downcast child")
+            .core
+            .should_render;
+        assert!(rendered);
+    }
+
+    #[test]
+    fn absolute_clip_anchor_parent_falls_back_to_parent_without_anchor() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(130.0))
+                    .top(Length::px(10.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        });
+
+        let children = parent.children().expect("has child");
+        let rendered = children[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("downcast child")
+            .core
+            .should_render;
+        assert!(!rendered);
+    }
+
+    #[test]
+    fn absolute_clip_anchor_parent_uses_anchor_bounds() {
+        let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
+        let mut anchor = Element::new(300.0, 20.0, 40.0, 40.0);
+        anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
+
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor("menu_button")
+                    .left(Length::px(50.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(anchor));
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 600.0,
+            max_height: 300.0,
+            percent_base_width: Some(600.0),
+            percent_base_height: Some(300.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 600.0,
+            available_height: 300.0,
+            percent_base_width: Some(600.0),
+            percent_base_height: Some(300.0),
+        });
+
+        let children = parent.children().expect("has children");
+        let rendered = children[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("downcast child")
+            .core
+            .should_render;
+        assert!(!rendered);
     }
 
     #[test]

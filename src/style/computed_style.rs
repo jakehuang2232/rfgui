@@ -68,7 +68,7 @@ impl Default for ComputedStyle {
             flow_wrap: FlowWrap::NoWrap,
             justify_content: JustifyContent::Start,
             align_items: AlignItems::Start,
-            position: Position::Static,
+            position: Position::static_(),
             width: SizeValue::Auto,
             height: SizeValue::Auto,
             min_width: SizeValue::Length(Length::Px(0.0)),
@@ -138,6 +138,10 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             PropertyId::Display => {
                 if let ParsedValue::Display(value) = &declaration.value {
                     computed.display = *value;
+                    if let Display::Flow { direction, wrap } = value {
+                        computed.flow_direction = *direction;
+                        computed.flow_wrap = *wrap;
+                    }
                 }
             }
             PropertyId::FlowDirection => {
@@ -162,7 +166,7 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             }
             PropertyId::Position => {
                 if let ParsedValue::Position(value) = &declaration.value {
-                    computed.position = *value;
+                    computed.position = value.clone();
                 }
             }
             PropertyId::Width => {

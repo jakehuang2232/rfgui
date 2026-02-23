@@ -1,5 +1,5 @@
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{ClickHandlerProp, RsxNode, rsx};
+use rfgui::ui::{ClickHandlerProp, RsxNode, component, rsx};
 use rfgui::{
     AlignItems, Border, BorderRadius, Color, Display, FlowDirection, JustifyContent, Length,
     ParsedValue, PropertyId, Style, Transition, TransitionProperty, Transitions,
@@ -35,28 +35,24 @@ impl ButtonProps {
 }
 
 pub fn build_button_rsx(props: ButtonProps) -> RsxNode {
-    let click = props.on_click.clone();
-    let disabled = props.disabled;
-    let mut root = rsx! {
-        <Element style={button_style(
-            props.variant,
-            props.disabled,
-            props.width,
-            props.height,
-        )}>
-            <Text
-                font_size=14
-                line_height=1.0
-                font="Heiti TC, Noto Sans CJK TC, Roboto"
-                color={button_text_color_hex(props.variant, props.disabled)}
-            >
-                {props.label}
-            </Text>
-        </Element>
+    let variant_code = match props.variant {
+        ButtonVariant::Contained => 0_i64,
+        ButtonVariant::Outlined => 1_i64,
+        ButtonVariant::Text => 2_i64,
     };
 
-    if !disabled
-        && let Some(handler) = click
+    let mut root = rsx! {
+        <ButtonComponent
+            label={props.label}
+            width={props.width}
+            height={props.height}
+            variant_code={variant_code}
+            disabled={props.disabled}
+        />
+    };
+
+    if !props.disabled
+        && let Some(handler) = props.on_click
         && let RsxNode::Element(node) = &mut root
     {
         node.props.push(("on_click".to_string(), handler.into()));
@@ -65,9 +61,42 @@ pub fn build_button_rsx(props: ButtonProps) -> RsxNode {
     root
 }
 
+#[component]
+fn ButtonComponent(
+    label: String,
+    width: f32,
+    height: f32,
+    variant_code: i64,
+    disabled: bool,
+) -> RsxNode {
+    let variant = match variant_code {
+        1 => ButtonVariant::Outlined,
+        2 => ButtonVariant::Text,
+        _ => ButtonVariant::Contained,
+    };
+
+    let root = rsx! {
+        <Element style={button_style(variant, disabled, width, height)}>
+            <Text
+                font_size=14
+                line_height=1.0
+                font="Heiti TC, Noto Sans CJK TC, Roboto"
+                color={button_text_color_hex(variant, disabled)}
+            >
+                {label}
+            </Text>
+        </Element>
+    };
+
+    root
+}
+
 fn button_style(variant: ButtonVariant, disabled: bool, width: f32, height: f32) -> Style {
     let mut style = Style::new();
-    style.insert(PropertyId::Display, ParsedValue::Display(Display::Flow));
+    style.insert(
+        PropertyId::Display,
+        ParsedValue::Display(Display::flow().row().no_wrap()),
+    );
     style.insert(
         PropertyId::FlowDirection,
         ParsedValue::FlowDirection(FlowDirection::Row),

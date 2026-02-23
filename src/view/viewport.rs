@@ -1064,7 +1064,21 @@ impl Viewport {
             Self::save_element_snapshots(&self.ui_roots, &mut self.element_snapshots);
             let layout_snapshots =
                 super::base_component::collect_layout_transition_snapshots(&self.ui_roots);
-            self.ui_roots = super::renderer_adapter::rsx_to_elements(root)?;
+            let (converted_roots, conversion_errors) =
+                super::renderer_adapter::rsx_to_elements_lossy(root);
+            if !conversion_errors.is_empty() {
+                eprintln!(
+                    "[render_rsx] skipped {} invalid node(s):\n{}",
+                    conversion_errors.len(),
+                    conversion_errors.join("\n")
+                );
+            }
+            if converted_roots.is_empty() {
+                eprintln!("[render_rsx] no valid root nodes converted; keep previous render tree");
+                self.last_rsx_root = Some(root.clone());
+                return Ok(());
+            }
+            self.ui_roots = converted_roots;
             self.last_rsx_root = Some(root.clone());
 
             // Restore scroll states into new elements
