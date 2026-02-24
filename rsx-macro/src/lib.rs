@@ -73,11 +73,6 @@ pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_prop(input_struct).into()
 }
 
-#[proc_macro_attribute]
-pub fn prop(attr: TokenStream, item: TokenStream) -> TokenStream {
-    props(attr, item)
-}
-
 #[derive(Clone)]
 struct ElementNode {
     tag: Path,
