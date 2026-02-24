@@ -16,16 +16,25 @@ pub use window::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::{Button, Checkbox, Select, Window};
+    use crate::{Button, ButtonVariant, Checkbox, Select, Window};
     use rfgui::ui::{
         EventMeta, MouseButton, MouseEventData, RsxNode, global_state, rsx, take_state_dirty,
     };
+
+    fn select_label(item: &String, _: usize) -> String {
+        item.clone()
+    }
 
     #[test]
     fn checkbox_click_updates_binding() {
         let checked = global_state(|| false);
 
-        let tree = rsx! { <Checkbox label="Enable" binding={checked.binding()} /> };
+        let tree = rsx! {
+            <Checkbox
+                label="Enable"
+                binding={checked.binding()}
+            />
+        };
 
         let mut roots = rfgui::rsx_to_elements(&tree).expect("convert checkbox");
         let root = roots.get_mut(0).expect("has root");
@@ -72,22 +81,23 @@ mod tests {
 
     #[test]
     fn select_trigger_click_does_not_change_binding_value() {
-        let selected = global_state(|| 0_usize);
+        let selected = global_state(|| String::from("Option A"));
         let tree = rsx! {
             <Select
-                options={vec![
+                data={vec![
                     String::from("Option A"),
                     String::from("Option B"),
                     String::from("Option C"),
                 ]}
-                binding={selected.binding()}
+                to_label={select_label}
+                value={selected.binding()}
             />
         };
 
         let mut roots = rfgui::rsx_to_elements(&tree).expect("convert select");
         let mut viewport = rfgui::view::Viewport::new();
         click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
-        assert_eq!(selected.get(), 0);
+        assert_eq!(selected.get(), "Option A");
         assert!(take_state_dirty());
     }
 
@@ -138,7 +148,12 @@ mod tests {
 
     #[test]
     fn button_label_preserves_whitespace() {
-        let tree = rsx! { <Button label="Click Me" variant="contained" /> };
+        let tree = rsx! {
+            <Button
+                label="Click Me"
+                variant={Some(ButtonVariant::Contained)}
+            />
+        };
         let RsxNode::Element(root) = tree else {
             panic!("button should render element root");
         };
@@ -154,8 +169,13 @@ mod tests {
     #[test]
     fn window_supports_children_with_optional_size_props() {
         let tree = rsx! {
-            <Window title="Panel" width=420.0>
-                <Button label="Inside" />
+            <Window
+                title="Panel"
+                width=420.0
+            >
+                <Button
+                    label="Inside"
+                />
             </Window>
         };
         let RsxNode::Element(root) = tree else {

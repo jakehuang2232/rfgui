@@ -18,6 +18,13 @@ pub trait RsxComponent: Sized {
     fn render(props: Self::Props) -> RsxNode;
 }
 
+pub trait RsxPropsBuilder: Sized {
+    type Builder;
+
+    fn builder() -> Self::Builder;
+    fn build(builder: Self::Builder) -> Result<Self, String>;
+}
+
 impl<T> RsxPropSchema for T
 where
     T: RsxComponent,

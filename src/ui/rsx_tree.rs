@@ -500,23 +500,23 @@ impl FromPropValue for TextAlign {
     }
 }
 
-impl IntoPropValue for Vec<String> {
+impl<T: Clone + 'static> IntoPropValue for Vec<T> {
     fn into_prop_value(self) -> PropValue {
         let erased: Rc<dyn Any> = Rc::new(self);
         PropValue::Shared(SharedPropValue::new(erased))
     }
 }
 
-impl FromPropValue for Vec<String> {
+impl<T: Clone + 'static> FromPropValue for Vec<T> {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
             PropValue::Shared(shared) => {
                 let erased = shared.value();
-                let vec = Rc::downcast::<Vec<String>>(erased)
-                    .map_err(|_| "expected Vec<String> value".to_string())?;
+                let vec = Rc::downcast::<Vec<T>>(erased)
+                    .map_err(|_| "expected Vec value with matching type".to_string())?;
                 Ok((*vec).clone())
             }
-            _ => Err("expected Vec<String> value".to_string()),
+            _ => Err("expected Vec value".to_string()),
         }
     }
 }
