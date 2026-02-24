@@ -1,4 +1,5 @@
 use crate::Style;
+use crate::TextAlign;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp,
@@ -204,6 +205,7 @@ pub enum PropValue {
     OnKeyUp(KeyUpHandlerProp),
     OnFocus(FocusHandlerProp),
     OnBlur(BlurHandlerProp),
+    TextAlign(TextAlign),
     Shared(SharedPropValue),
 }
 
@@ -317,6 +319,12 @@ impl From<BlurHandlerProp> for PropValue {
     }
 }
 
+impl From<TextAlign> for PropValue {
+    fn from(value: TextAlign) -> Self {
+        PropValue::TextAlign(value)
+    }
+}
+
 impl IntoPropValue for PropValue {
     fn into_prop_value(self) -> PropValue {
         self
@@ -425,6 +433,12 @@ impl IntoPropValue for BlurHandlerProp {
     }
 }
 
+impl IntoPropValue for TextAlign {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::TextAlign(self)
+    }
+}
+
 impl FromPropValue for PropValue {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         Ok(value)
@@ -474,6 +488,15 @@ impl FromPropValue for i64 {
 impl FromPropValue for i32 {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         Ok(f64::from_prop_value(value)? as i32)
+    }
+}
+
+impl FromPropValue for TextAlign {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::TextAlign(v) => Ok(v),
+            _ => Err("expected TextAlign value".to_string()),
+        }
     }
 }
 

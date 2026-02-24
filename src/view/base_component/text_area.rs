@@ -2,7 +2,7 @@ use crate::ui::MouseButton as UiMouseButton;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::{ColorLike, HexColor};
-use glyphon::cosmic_text::{Affinity, Cursor, Motion};
+use glyphon::cosmic_text::{Affinity, Align, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -797,11 +797,9 @@ impl TextArea {
         let (cursor_line, cursor_index) = line_and_index_from_byte(composed.as_str(), caret_byte);
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
-            let Some(layout_cursor) =
-                Self::with_shared_font_system(|font_system| {
-                    self.glyph_buffer.layout_cursor(font_system, cursor)
-                })
-            else {
+            let Some(layout_cursor) = Self::with_shared_font_system(|font_system| {
+                self.glyph_buffer.layout_cursor(font_system, cursor)
+            }) else {
                 continue;
             };
             if layout_cursor.line != cursor_line {
@@ -918,10 +916,7 @@ impl TextArea {
                 if size[0] <= 0.01 || size[1] <= 0.01 {
                     return None;
                 }
-                Some((
-                    [position[0], position[1] + size[1] - 1.0],
-                    [size[0], 1.0],
-                ))
+                Some(([position[0], position[1] + size[1] - 1.0], [size[0], 1.0]))
             })
             .collect()
     }
@@ -1180,11 +1175,9 @@ impl TextArea {
         let mut layout_cursor_opt = None;
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(line, index, affinity);
-            let Some(layout_cursor) =
-                Self::with_shared_font_system(|font_system| {
-                    self.glyph_buffer.layout_cursor(font_system, cursor)
-                })
-            else {
+            let Some(layout_cursor) = Self::with_shared_font_system(|font_system| {
+                self.glyph_buffer.layout_cursor(font_system, cursor)
+            }) else {
                 continue;
             };
             if layout_cursor.line == line {
@@ -1751,11 +1744,7 @@ impl Layoutable for TextArea {
         let line_count = line_widths.len().max(1);
 
         if self.auto_width {
-            let intrinsic_width = line_widths
-                .iter()
-                .copied()
-                .fold(0.0_f32, f32::max)
-                .max(1.0);
+            let intrinsic_width = line_widths.iter().copied().fold(0.0_f32, f32::max).max(1.0);
             let available = constraints.max_width.max(1.0);
             self.size.width = intrinsic_width.min(available);
             self.element.set_width(self.size.width);
@@ -1774,7 +1763,9 @@ impl Layoutable for TextArea {
                 } else {
                     line_widths
                         .iter()
-                        .map(|line_width| ((*line_width) / effective_width).ceil().max(1.0) as usize)
+                        .map(|line_width| {
+                            ((*line_width) / effective_width).ceil().max(1.0) as usize
+                        })
                         .sum::<usize>()
                 };
                 wrapped_lines.max(line_count)
@@ -1863,7 +1854,10 @@ impl Renderable for TextArea {
                 opacity,
                 self.font_size,
                 self.line_height,
+                400,
                 self.font_families.clone(),
+                Align::Left,
+                self.multiline,
             );
             pass.set_scissor_rect(clip);
             ctx.push_pass(graph, pass);

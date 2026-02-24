@@ -1,11 +1,11 @@
 use proc_macro::TokenStream;
-use quote::{format_ident, quote, quote_spanned, ToTokens};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
-    Expr, FnArg, Ident, ItemFn, Lit, LitStr, Pat, PatIdent, Path, Result, ReturnType, Token,
-    Type, TypePath, braced, parse_quote,
+    Expr, Fields, FnArg, Ident, ItemFn, ItemStruct, Lit, LitStr, Pat, PatIdent, Path, Result,
+    ReturnType, Token, Type, TypePath, braced, parse_quote,
 };
 
 #[proc_macro]
@@ -65,6 +65,17 @@ impl Parse for MultipleNodes {
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = syn::parse_macro_input!(item as ItemFn);
     expand_component(input_fn).into()
+}
+
+#[proc_macro_attribute]
+pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input_struct = syn::parse_macro_input!(item as ItemStruct);
+    expand_prop(input_struct).into()
+}
+
+#[proc_macro_attribute]
+pub fn prop(attr: TokenStream, item: TokenStream) -> TokenStream {
+    props(attr, item)
 }
 
 #[derive(Clone)]
@@ -172,7 +183,10 @@ impl Parse for ElementNode {
         input.parse::<Token![/]>()?;
         let close_tag: Path = input.parse()?;
         if path_key(&close_tag) != path_key(&tag) {
-            return Err(syn::Error::new(close_tag.span(), "closing tag does not match"));
+            return Err(syn::Error::new(
+                close_tag.span(),
+                "closing tag does not match",
+            ));
         }
         input.parse::<Token![>]>()?;
 
@@ -233,7 +247,6 @@ fn normalize_text(input: &str) -> String {
 
 fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     let tag = &element.tag;
-    let tag_name = tag_name(tag).unwrap_or_else(|| tag.to_token_stream().to_string());
     let close_tag = &element.close_tag;
     let has_children = !element.children.is_empty();
     let tag_span = tag.span();
@@ -246,7 +259,6 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     } else {
         quote! {}
     };
-    let prop_statements = element.props.iter().map(|p| expand_prop_set(tag, p));
     let child_statements = element.children.iter().map(|c| {
         let child_expr = expand_node(c);
         quote! {
@@ -254,44 +266,482 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         }
     });
 
+    let prop_schema_checks = element
+        .props
+        .iter()
+        .filter(|p| p.key != "key")
+        .map(|p| expand_prop_schema_check(tag, p));
+    if tag_name(tag).as_deref() == Some("Button") {
+        let label_assignment = button_required_prop_assignment(element, "label");
+        let variant_assignment = button_optional_prop_assignment(
+            element,
+            "variant",
+            quote! {
+                ::core::option::Option::None
+            },
+        );
+        let disabled_assignment = button_optional_prop_assignment(
+            element,
+            "disabled",
+            quote! {
+                ::core::option::Option::None
+            },
+        );
+        let on_click_assignment = button_optional_prop_assignment(
+            element,
+            "on_click",
+            quote! {
+                ::core::option::Option::None
+            },
+        );
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #label_assignment
+                    #variant_assignment
+                    #disabled_assignment
+                    #on_click_assignment
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    if tag_name(tag).as_deref() == Some("Window") {
+        let title_assignment = button_required_prop_assignment(element, "title");
+        let draggable_assignment = button_optional_prop_assignment(
+            element,
+            "draggable",
+            quote! {
+                ::core::option::Option::None
+            },
+        );
+        let width_assignment = button_optional_prop_assignment(
+            element,
+            "width",
+            quote! {
+                ::core::option::Option::None
+            },
+        );
+        let height_assignment = button_optional_prop_assignment(
+            element,
+            "height",
+            quote! {
+                ::core::option::Option::None
+            },
+        );
+        let on_resize_assignment = button_optional_prop_assignment(
+            element,
+            "on_resize",
+            quote! {
+                ::core::option::Option::None
+            },
+        );
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #title_assignment
+                    #draggable_assignment
+                    #width_assignment
+                    #height_assignment
+                    #on_resize_assignment
+                    children: __rsx_children,
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    if tag_name(tag).as_deref() == Some("Checkbox") {
+        let label_assignment = button_required_prop_assignment(element, "label");
+        let binding_assignment = button_optional_prop_assignment(
+            element,
+            "binding",
+            quote! { ::core::option::Option::None },
+        );
+        let checked_assignment = button_optional_prop_assignment(
+            element,
+            "checked",
+            quote! { ::core::option::Option::None },
+        );
+        let disabled_assignment = button_optional_prop_assignment(
+            element,
+            "disabled",
+            quote! { ::core::option::Option::None },
+        );
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #label_assignment
+                    #binding_assignment
+                    #checked_assignment
+                    #disabled_assignment
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    if tag_name(tag).as_deref() == Some("Switch") {
+        let label_assignment = button_required_prop_assignment(element, "label");
+        let binding_assignment = button_optional_prop_assignment(
+            element,
+            "binding",
+            quote! { ::core::option::Option::None },
+        );
+        let checked_assignment = button_optional_prop_assignment(
+            element,
+            "checked",
+            quote! { ::core::option::Option::None },
+        );
+        let disabled_assignment = button_optional_prop_assignment(
+            element,
+            "disabled",
+            quote! { ::core::option::Option::None },
+        );
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #label_assignment
+                    #binding_assignment
+                    #checked_assignment
+                    #disabled_assignment
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    if tag_name(tag).as_deref() == Some("Select") {
+        let options_assignment = button_required_prop_assignment(element, "options");
+        let binding_assignment = button_optional_prop_assignment(
+            element,
+            "binding",
+            quote! { ::core::option::Option::None },
+        );
+        let selected_index_assignment = button_optional_prop_assignment(
+            element,
+            "selected_index",
+            quote! { ::core::option::Option::None },
+        );
+        let disabled_assignment = button_optional_prop_assignment(
+            element,
+            "disabled",
+            quote! { ::core::option::Option::None },
+        );
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #options_assignment
+                    #binding_assignment
+                    #selected_index_assignment
+                    #disabled_assignment
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    if tag_name(tag).as_deref() == Some("Slider") {
+        let value_assignment = button_optional_prop_assignment(
+            element,
+            "value",
+            quote! { ::core::option::Option::None },
+        );
+        let binding_assignment = button_optional_prop_assignment(
+            element,
+            "binding",
+            quote! { ::core::option::Option::None },
+        );
+        let min_assignment = button_optional_prop_assignment(
+            element,
+            "min",
+            quote! { ::core::option::Option::None },
+        );
+        let max_assignment = button_optional_prop_assignment(
+            element,
+            "max",
+            quote! { ::core::option::Option::None },
+        );
+        let disabled_assignment = button_optional_prop_assignment(
+            element,
+            "disabled",
+            quote! { ::core::option::Option::None },
+        );
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #value_assignment
+                    #binding_assignment
+                    #min_assignment
+                    #max_assignment
+                    #disabled_assignment
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    if tag_name(tag).as_deref() == Some("NumberField") {
+        let value_assignment = button_optional_prop_assignment(
+            element,
+            "value",
+            quote! { ::core::option::Option::None },
+        );
+        let binding_assignment = button_optional_prop_assignment(
+            element,
+            "binding",
+            quote! { ::core::option::Option::None },
+        );
+        let min_assignment = button_optional_prop_assignment(
+            element,
+            "min",
+            quote! { ::core::option::Option::None },
+        );
+        let max_assignment = button_optional_prop_assignment(
+            element,
+            "max",
+            quote! { ::core::option::Option::None },
+        );
+        let step_assignment = button_optional_prop_assignment(
+            element,
+            "step",
+            quote! { ::core::option::Option::None },
+        );
+        let disabled_assignment = button_optional_prop_assignment(
+            element,
+            "disabled",
+            quote! { ::core::option::Option::None },
+        );
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #value_assignment
+                    #binding_assignment
+                    #min_assignment
+                    #max_assignment
+                    #step_assignment
+                    #disabled_assignment
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    if tag_name(tag).as_deref() == Some("Text") {
+        let prop_assignments = element
+            .props
+            .iter()
+            .filter(|p| p.key != "key")
+            .map(expand_direct_prop_assignment);
+        let text_child_statements = element.children.iter().map(expand_text_child_statement);
+        return quote! {
+            {
+                let _ = ::core::marker::PhantomData::<#close_tag>;
+                #children_schema_check
+                #(#prop_schema_checks)*
+                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
+                #(#text_child_statements)*
+                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                    #(#prop_assignments)*
+                    children: __rsx_children,
+                    ..<__RsxComponentProps as ::rfgui::ui::OptionalDefault>::optional_default()
+                };
+                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            }
+        };
+    }
+    let prop_assignments = element
+        .props
+        .iter()
+        .filter(|p| p.key != "key")
+        .map(expand_direct_prop_assignment);
+    let default_tail = if should_fill_default_props(tag) {
+        quote! { ..<__RsxComponentProps as ::rfgui::ui::OptionalDefault>::optional_default() }
+    } else {
+        quote! {}
+    };
+    let children_assignment = if has_children {
+        quote! { children: __rsx_children, }
+    } else {
+        quote! {}
+    };
+
     quote! {
         {
             let _ = ::core::marker::PhantomData::<#close_tag>;
             #children_schema_check
-            let mut __rsx_props = ::rfgui::ui::RsxProps::new();
+            #(#prop_schema_checks)*
             let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
-            #(#prop_statements)*
             #(#child_statements)*
-            <#tag as ::rfgui::ui::RsxTag>::rsx_render(__rsx_props, __rsx_children).unwrap_or_else(|__err| {
-                panic!("rsx build error on <{}>. {}", #tag_name, __err)
-            })
+            type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+            let __rsx_props: __RsxComponentProps = __RsxComponentProps {
+                #(#prop_assignments)*
+                #children_assignment
+                #default_tail
+            };
+            <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
         }
     }
 }
 
-fn expand_prop_set(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
-    let key_ident = &prop.key;
-    let key = prop.key.to_string();
-    let value_tokens = match &prop.value {
-        PropValueExpr::Expr(value) => {
-            quote! {
-                __rsx_props.push(#key, ::rfgui::ui::IntoPropValue::into_prop_value(#value));
-            }
-        }
-        PropValueExpr::StyleObject(entries) => {
-            let style_inserts = entries.iter().map(expand_style_entry);
-            quote! {
-                let mut __rsx_style = ::rfgui::Style::new();
-                #(#style_inserts)*
-                __rsx_props.push(#key, ::rfgui::ui::IntoPropValue::into_prop_value(__rsx_style));
-            }
+fn should_fill_default_props(path: &Path) -> bool {
+    matches!(
+        tag_name(path).as_deref(),
+        Some("Element" | "Text" | "TextArea")
+    )
+}
+
+fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
+    let struct_ident = &input_struct.ident;
+
+    let fields = match &input_struct.fields {
+        Fields::Named(named) => &named.named,
+        _ => {
+            return syn::Error::new(
+                input_struct.fields.span(),
+                "#[prop] only supports structs with named fields",
+            )
+            .to_compile_error();
         }
     };
+
+    let mut default_fields = Vec::new();
+    let mut all_optional = true;
+    for field in fields {
+        let field_ident = match &field.ident {
+            Some(ident) => ident,
+            None => {
+                return syn::Error::new(field.span(), "#[prop] field must be named")
+                    .to_compile_error();
+            }
+        };
+        if !is_option_type(&field.ty) {
+            all_optional = false;
+            continue;
+        }
+        default_fields.push(quote! { #field_ident: ::core::option::Option::None, });
+    }
+    if all_optional {
+        quote! {
+            #input_struct
+
+            impl ::rfgui::ui::OptionalDefault for #struct_ident {
+                fn optional_default() -> Self {
+                    Self {
+                        #(#default_fields)*
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {
+            #input_struct
+        }
+    }
+}
+
+fn is_option_type(ty: &Type) -> bool {
+    let Type::Path(TypePath { qself: None, path }) = ty else {
+        return false;
+    };
+    let Some(last) = path.segments.last() else {
+        return false;
+    };
+    last.ident == "Option"
+}
+
+fn button_required_prop_assignment(element: &ElementNode, key: &str) -> proc_macro2::TokenStream {
+    if let Some(prop) = element.props.iter().find(|p| p.key == key) {
+        let value = expand_prop_value_expr(&prop.value);
+        let field = &prop.key;
+        return quote! { #field: (#value).into(), };
+    }
+    let msg = format!("missing required prop `{}`", key);
+    let span = element.tag.span();
+    quote_spanned! {span=>
+        compile_error!(#msg);
+    }
+}
+
+fn button_optional_prop_assignment(
+    element: &ElementNode,
+    key: &str,
+    fallback: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if let Some(prop) = element.props.iter().find(|p| p.key == key) {
+        let value = expand_prop_value_expr(&prop.value);
+        let field = &prop.key;
+        return quote! { #field: ::core::option::Option::Some((#value).into()), };
+    }
+    let field = Ident::new(key, element.tag.span());
+    quote! { #field: #fallback, }
+}
+
+fn expand_direct_prop_assignment(prop: &Prop) -> proc_macro2::TokenStream {
+    let key_ident = &prop.key;
+    let value = expand_prop_value_expr(&prop.value);
+    quote! {
+        #key_ident: (#value).into(),
+    }
+}
+
+fn expand_prop_schema_check(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
+    let key_ident = &prop.key;
     quote! {
         let _ = |__schema: &<#tag as ::rfgui::ui::RsxPropSchema>::PropsSchema| {
             let _ = &__schema.#key_ident;
         };
-        #value_tokens
+    }
+}
+
+fn expand_prop_value_expr(value: &PropValueExpr) -> proc_macro2::TokenStream {
+    match value {
+        PropValueExpr::Expr(value) => quote! { #value },
+        PropValueExpr::StyleObject(entries) => {
+            let style_inserts = entries.iter().map(expand_style_entry);
+            quote! {{
+                let mut __rsx_style = ::rfgui::Style::new();
+                #(#style_inserts)*
+                __rsx_style
+            }}
+        }
     }
 }
 
@@ -318,6 +768,19 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.background requires an expression value");
             },
         },
+        "color" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::Color,
+                    ::rfgui::ParsedValue::Color(
+                        ::rfgui::IntoColor::<::rfgui::Color>::into_color(#value)
+                    ),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.color requires an expression value");
+            },
+        },
         "font" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
@@ -327,6 +790,19 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.font requires an expression value");
+            },
+        },
+        "font_weight" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::FontWeight,
+                    ::rfgui::ParsedValue::FontWeight(
+                        ::rfgui::IntoFontWeight::into_font_weight(#value)
+                    ),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.font_weight requires an expression value");
             },
         },
         "border_radius" => match &entry.value {
@@ -525,6 +1001,27 @@ fn expand_node(child: &Child) -> proc_macro2::TokenStream {
     }
 }
 
+fn expand_text_child_statement(child: &Child) -> proc_macro2::TokenStream {
+    match child {
+        Child::TextLiteral(text) => quote! {
+            __rsx_children.push(::rfgui::ui::RsxNode::text(#text));
+        },
+        Child::TextRaw(text) => quote! {
+            __rsx_children.push(::rfgui::ui::RsxNode::text(#text));
+        },
+        Child::Expr(expr) => quote! {
+            let __text_child: ::std::string::String = (#expr).into();
+            __rsx_children.push(::rfgui::ui::RsxNode::text(__text_child));
+        },
+        Child::Element(node) => {
+            let span = node.tag.span();
+            quote_spanned! {span=>
+                compile_error!("<Text> children must be string");
+            }
+        }
+    }
+}
+
 fn tag_name(path: &Path) -> Option<String> {
     path.segments.last().map(|seg| seg.ident.to_string())
 }
@@ -535,8 +1032,11 @@ fn path_key(path: &Path) -> String {
 
 fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     if !input_fn.sig.generics.params.is_empty() {
-        return syn::Error::new(input_fn.sig.generics.span(), "#[component] does not support generics yet")
-            .to_compile_error();
+        return syn::Error::new(
+            input_fn.sig.generics.span(),
+            "#[component] does not support generics yet",
+        )
+        .to_compile_error();
     }
 
     let vis = &input_fn.vis;
@@ -550,11 +1050,8 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     };
 
     let mut prop_fields = Vec::new();
-    let mut prop_extracts = Vec::new();
     let mut helper_args = Punctuated::<FnArg, Token![,]>::new();
     let mut helper_call_args = Vec::new();
-    let mut field_idents = Vec::new();
-    let mut has_children_param = false;
 
     for arg in &input_fn.sig.inputs {
         let FnArg::Typed(pat_ty) = arg else {
@@ -563,8 +1060,11 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         };
 
         let Pat::Ident(PatIdent { ident, .. }) = pat_ty.pat.as_ref() else {
-            return syn::Error::new(pat_ty.pat.span(), "#[component] parameters must be simple identifiers")
-                .to_compile_error();
+            return syn::Error::new(
+                pat_ty.pat.span(),
+                "#[component] parameters must be simple identifiers",
+            )
+            .to_compile_error();
         };
 
         let field_ident = ident.clone();
@@ -576,53 +1076,22 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
                 return syn::Error::new(ty.span(), "children type must be Vec<RsxNode>")
                     .to_compile_error();
             }
-            has_children_param = true;
             prop_fields.push(quote!(pub #field_ident: Vec<::rfgui::ui::RsxNode>));
-            prop_extracts.push(quote!(let #field_ident = children;));
         } else {
             prop_fields.push(quote!(pub #field_ident: #ty));
-            let key = field_ident.to_string();
-            let extract = build_prop_extract(&field_ident, &ty, &key);
-            prop_extracts.push(extract);
         }
 
         helper_args.push(parse_quote!(#field_ident: #ty));
         helper_call_args.push(quote!(props.#field_ident));
-        field_idents.push(field_ident);
     }
 
     let body = &input_fn.block;
-    let children_guard = if has_children_param {
-        quote! {}
-    } else {
-        quote! {
-            if !children.is_empty() {
-                return Err(format!("<{}> does not accept children", stringify!(#comp_name)));
-            }
-        }
-    };
 
     quote! {
         #vis struct #comp_name;
 
         #vis struct #props_name {
             #(#prop_fields,)*
-        }
-
-        impl ::rfgui::ui::FromRsxProps for #props_name {
-            const ACCEPTS_CHILDREN: bool = #has_children_param;
-
-            fn from_rsx_props(
-                mut props: ::rfgui::ui::RsxProps,
-                children: Vec<::rfgui::ui::RsxNode>,
-            ) -> Result<Self, String> {
-                #children_guard
-                #(#prop_extracts)*
-                props.reject_remaining(stringify!(#comp_name))?;
-                Ok(Self {
-                    #(#field_idents,)*
-                })
-            }
         }
 
         impl ::rfgui::ui::RsxComponent for #comp_name {
@@ -637,23 +1106,6 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
 
         #[allow(non_snake_case)]
         fn #helper_name(#helper_args) -> #output_ty #body
-    }
-}
-
-fn build_prop_extract(field_ident: &Ident, ty: &Type, key: &str) -> proc_macro2::TokenStream {
-    if let Some(inner) = option_inner_type(ty) {
-        return quote! {
-            let #field_ident = props
-                .remove_t::<#inner>(#key)
-                .map_err(|e| format!("prop `{}` parse error: {}", #key, e))?;
-        };
-    }
-
-    quote! {
-        let #field_ident = props
-            .remove_t::<#ty>(#key)
-            .map_err(|e| format!("prop `{}` parse error: {}", #key, e))?
-            .ok_or_else(|| format!("missing required prop `{}`", #key))?;
     }
 }
 
@@ -681,21 +1133,4 @@ fn is_vec_rsx_node(ty: &Type) -> bool {
         .last()
         .map(|s| s.ident == "RsxNode")
         .unwrap_or(false)
-}
-
-fn option_inner_type(ty: &Type) -> Option<&Type> {
-    let Type::Path(TypePath { path, .. }) = ty else {
-        return None;
-    };
-    let seg = path.segments.last()?;
-    if seg.ident != "Option" {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
-        return None;
-    };
-    let Some(syn::GenericArgument::Type(inner)) = args.args.first() else {
-        return None;
-    };
-    Some(inner)
 }

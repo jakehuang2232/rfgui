@@ -1,82 +1,112 @@
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, ClickHandlerProp, RsxNode, component, rsx, use_state};
+use rfgui::ui::{Binding, BlurHandlerProp, ClickHandlerProp, KeyDownHandlerProp, MouseDownHandlerProp, RsxComponent, RsxNode, component, rsx, use_state, props};
 use rfgui::{
     AlignItems, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Display,
     JustifyContent, Length, Padding, ParsedValue, Position, PropertyId, Style,
 };
 
+pub struct Select;
+
+#[props]
 pub struct SelectProps {
     pub options: Vec<String>,
-    pub selected_index: usize,
-    pub selected_binding: Option<Binding<usize>>,
-    pub width: f32,
-    pub height: f32,
-    pub disabled: bool,
+    pub binding: Option<Binding<usize>>,
+    pub selected_index: Option<i64>,
+    pub disabled: Option<bool>,
 }
 
-impl SelectProps {
-    pub fn new(options: Vec<String>) -> Self {
-        Self {
-            options,
-            selected_index: 0,
-            selected_binding: None,
-            width: 220.0,
-            height: 40.0,
-            disabled: false,
+impl RsxComponent for Select {
+    type Props = SelectProps;
+
+    fn render(props: Self::Props) -> RsxNode {
+        let selected_index = props.selected_index.unwrap_or(0);
+        if selected_index < 0 {
+            panic!("rsx build error on <Select>. prop `selected_index` expects non-negative value");
+        }
+        let has_binding = props.binding.is_some();
+        let binding = props
+            .binding
+            .unwrap_or_else(|| Binding::new(selected_index as usize));
+
+        rsx! {
+            <SelectView
+                options={props.options}
+                selected_index={selected_index}
+                selected_binding={binding}
+                has_selected_binding={has_binding}
+                disabled={props.disabled.unwrap_or(false)}
+            />
         }
     }
 }
 
-pub fn build_select_rsx(props: SelectProps) -> RsxNode {
-    let has_selected_binding = props.selected_binding.is_some();
-    let selected_binding = props
-        .selected_binding
-        .unwrap_or_else(|| Binding::new(props.selected_index));
-    rsx! {
-        <SelectComponent
-            options={props.options}
-            selected_index={props.selected_index as i64}
-            selected_binding={selected_binding}
-            has_selected_binding={has_selected_binding}
-            width={props.width}
-            height={props.height}
-            disabled={props.disabled}
-        />
-    }
-}
-
 #[component]
-fn SelectComponent(
+fn SelectView(
     options: Vec<String>,
     selected_index: i64,
     selected_binding: Binding<usize>,
     has_selected_binding: bool,
-    width: f32,
-    height: f32,
     disabled: bool,
 ) -> RsxNode {
     const SELECT_TRIGGER_ANCHOR: &str = "__rfgui_select_trigger_anchor";
-    let fallback_selected = use_state(|| selected_index.max(0) as usize);
+
+    let width = 220.0_f32;
+    let height = 40.0_f32;
+
+    let fallback_selected = use_state(|| selected_index as usize);
     let selected_binding = if has_selected_binding {
         selected_binding
     } else {
         fallback_selected.binding()
     };
+
     let fallback_open = use_state(|| false);
     let open_binding = fallback_open.binding();
+    let menu_pointer_down = use_state(|| false).binding();
     let selected_index = selected_binding.get();
     let option_text = resolve_option_text(&options, selected_index);
     let is_open = !disabled && open_binding.get();
 
     let trigger_click = {
         let open_binding = open_binding.clone();
-        let disabled = disabled;
         ClickHandlerProp::new(move |event| {
             if disabled {
                 return;
             }
             open_binding.set(!open_binding.get());
             event.meta.stop_propagation();
+        })
+    };
+    let trigger_blur = {
+        let open_binding = open_binding.clone();
+        let menu_pointer_down = menu_pointer_down.clone();
+        BlurHandlerProp::new(move |_| {
+            // Keep menu alive during option press so click can complete selection.
+            if menu_pointer_down.get() {
+                menu_pointer_down.set(false);
+                return;
+            }
+            open_binding.set(false);
+        })
+    };
+    let trigger_key_down = {
+        let open_binding = open_binding.clone();
+        KeyDownHandlerProp::new(move |event| {
+            let key = event.key.key.as_str();
+            let code = event.key.code.as_str();
+            if key_matches(key, code, "Escape") {
+                open_binding.set(false);
+                event.meta.stop_propagation();
+                return;
+            }
+            if key_matches(key, code, "Enter") {
+                open_binding.set(!open_binding.get());
+                event.meta.stop_propagation();
+                return;
+            }
+            if key_matches(key, code, "Tab") {
+                open_binding.set(false);
+            }
         })
     };
 
@@ -86,20 +116,16 @@ fn SelectComponent(
                 style={select_trigger_style(width, height, disabled)}
                 anchor={SELECT_TRIGGER_ANCHOR}
                 on_click={trigger_click}
+                on_blur={trigger_blur}
+                on_key_down={trigger_key_down}
             >
                 <Text
-                    font_size=14
-                    line_height=1.0
-                    font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    color={if disabled { "#9E9E9E" } else { "#111827" }}
+                    style={{ color: if disabled { "#9E9E9E" } else { "#111827" } }}
                 >
                     {option_text}
                 </Text>
                 <Text
-                    font_size=14
-                    line_height=1.0
-                    font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    color={if disabled { "#BDBDBD" } else { "#6B7280" }}
+                    style={{ color: if disabled { "#BDBDBD" } else { "#6B7280" } }}
                 >
                     {if is_open { "▴" } else { "▾" }}
                 </Text>
@@ -107,15 +133,14 @@ fn SelectComponent(
         </Element>
     };
 
-    if is_open
-            && let RsxNode::Element(root_node) = &mut root
-    {
+    if is_open && let RsxNode::Element(root_node) = &mut root {
         root_node.children.push(build_menu_node(
             &options,
             width,
             selected_index,
             selected_binding,
             open_binding,
+            menu_pointer_down,
             height,
             SELECT_TRIGGER_ANCHOR,
         ));
@@ -169,7 +194,6 @@ fn select_trigger_style(width: f32, height: f32, disabled: bool) -> Style {
 
 fn select_menu_style(width: f32, trigger_height: f32, anchor_name: &str) -> Style {
     let mut style = Style::new();
-    // style.insert(PropertyId::Display, ParsedValue::Display(Display::flow().column()));
     style.insert(
         PropertyId::Position,
         ParsedValue::Position(
@@ -225,6 +249,7 @@ fn build_menu_node(
     selected_index: usize,
     selected_binding: Binding<usize>,
     menu_open: Binding<bool>,
+    menu_pointer_down: Binding<bool>,
     trigger_height: f32,
     anchor_name: &str,
 ) -> RsxNode {
@@ -235,19 +260,29 @@ fn build_menu_node(
             let option_text = option.clone();
             let binding = selected_binding.clone();
             let menu_open = menu_open.clone();
+            let menu_pointer_down_for_mouse_down = menu_pointer_down.clone();
+            let mouse_down = MouseDownHandlerProp::new(move |_| {
+                menu_pointer_down_for_mouse_down.set(true);
+            });
+            let menu_pointer_down_for_click = menu_pointer_down.clone();
             let click = ClickHandlerProp::new(move |event| {
                 binding.set(index);
                 menu_open.set(false);
+                menu_pointer_down_for_click.set(false);
                 event.meta.stop_propagation();
             });
 
             rsx! {
-                <Element style={select_option_style(width, selected_index == index)} on_click={click}>
+                <Element
+                    style={select_option_style(width, selected_index == index)}
+                    on_mouse_down={mouse_down}
+                    on_click={click}
+                >
                     <Text
                         font_size=13
                         line_height=1.0
                         font="Heiti TC, Noto Sans CJK TC, Roboto"
-                        color={if selected_index == index { "#1D4ED8" } else { "#111827" }}
+                        style={{ color: if selected_index == index { "#1D4ED8" } else { "#111827" } }}
                     >
                         {option_text}
                     </Text>
@@ -271,4 +306,10 @@ fn resolve_option_text(options: &[String], selected_index: usize) -> String {
         .get(selected_index)
         .cloned()
         .unwrap_or_else(|| options[0].clone())
+}
+
+fn key_matches(key: &str, code: &str, token: &str) -> bool {
+    key.eq_ignore_ascii_case(token)
+        || key == format!("Named({token})")
+        || code == format!("Code({token})")
 }

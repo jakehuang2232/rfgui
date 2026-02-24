@@ -35,6 +35,7 @@ pub struct EventMeta {
     target_id: u64,
     current_target_id: u64,
     propagation_stopped: bool,
+    pointer_capture_target_id: Option<u64>,
 }
 
 impl EventMeta {
@@ -43,6 +44,7 @@ impl EventMeta {
             target_id,
             current_target_id: target_id,
             propagation_stopped: false,
+            pointer_capture_target_id: None,
         }
     }
 
@@ -69,6 +71,14 @@ impl EventMeta {
 
     pub fn stop_propagation(&mut self) {
         self.propagation_stopped = true;
+    }
+
+    pub fn request_pointer_capture(&mut self) {
+        self.pointer_capture_target_id = Some(self.current_target_id);
+    }
+
+    pub fn pointer_capture_target_id(&self) -> Option<u64> {
+        self.pointer_capture_target_id
     }
 }
 

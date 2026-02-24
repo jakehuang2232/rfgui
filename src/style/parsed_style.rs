@@ -243,6 +243,13 @@ pub enum AlignItems {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollDirection {
     None,
     Vertical,
@@ -363,11 +370,7 @@ impl Position {
         self
     }
 
-    pub const fn collision(
-        mut self,
-        collision: Collision,
-        boundary: CollisionBoundary,
-    ) -> Self {
+    pub const fn collision(mut self, collision: Collision, boundary: CollisionBoundary) -> Self {
         self.collision = collision;
         self.collision_boundary = boundary;
         self
@@ -867,12 +870,98 @@ impl Border {
 pub struct FontWeight(u16);
 
 impl FontWeight {
+    pub const THIN: Self = Self(100);
+    pub const EXTRA_LIGHT: Self = Self(200);
+    pub const LIGHT: Self = Self(300);
+    pub const NORMAL: Self = Self(400);
+    pub const MEDIUM: Self = Self(500);
+    pub const SEMI_BOLD: Self = Self(600);
+    pub const BOLD: Self = Self(700);
+    pub const EXTRA_BOLD: Self = Self(800);
+    pub const BLACK: Self = Self(900);
+
     pub const fn new(value: u16) -> Self {
         Self(value)
     }
 
+    pub const fn thin() -> Self {
+        Self::THIN
+    }
+
+    pub const fn extra_light() -> Self {
+        Self::EXTRA_LIGHT
+    }
+
+    pub const fn light() -> Self {
+        Self::LIGHT
+    }
+
+    pub const fn normal() -> Self {
+        Self::NORMAL
+    }
+
+    pub const fn medium() -> Self {
+        Self::MEDIUM
+    }
+
+    pub const fn semi_bold() -> Self {
+        Self::SEMI_BOLD
+    }
+
+    pub const fn bold() -> Self {
+        Self::BOLD
+    }
+
+    pub const fn extra_bold() -> Self {
+        Self::EXTRA_BOLD
+    }
+
+    pub const fn black() -> Self {
+        Self::BLACK
+    }
+
     pub const fn value(self) -> u16 {
         self.0
+    }
+}
+
+pub trait IntoFontWeight {
+    fn into_font_weight(self) -> FontWeight;
+}
+
+impl IntoFontWeight for FontWeight {
+    fn into_font_weight(self) -> FontWeight {
+        self
+    }
+}
+
+impl IntoFontWeight for u16 {
+    fn into_font_weight(self) -> FontWeight {
+        FontWeight::new(self)
+    }
+}
+
+impl IntoFontWeight for u32 {
+    fn into_font_weight(self) -> FontWeight {
+        FontWeight::new(self as u16)
+    }
+}
+
+impl IntoFontWeight for usize {
+    fn into_font_weight(self) -> FontWeight {
+        FontWeight::new(self as u16)
+    }
+}
+
+impl IntoFontWeight for i32 {
+    fn into_font_weight(self) -> FontWeight {
+        FontWeight::new(self.max(0) as u16)
+    }
+}
+
+impl IntoFontWeight for i64 {
+    fn into_font_weight(self) -> FontWeight {
+        FontWeight::new(self.max(0) as u16)
     }
 }
 

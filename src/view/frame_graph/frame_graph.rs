@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use super::buffer_resource::{BufferDesc, BufferHandle};
 use super::texture_resource::{TextureDesc, TextureHandle};
-use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
 use crate::view::render_pass::text_pass::{TextPass, execute_text_pass_batch};
+use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
 use crate::view::viewport::Viewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

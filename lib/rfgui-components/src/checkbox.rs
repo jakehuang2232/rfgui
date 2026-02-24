@@ -1,58 +1,47 @@
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, ClickHandlerProp, RsxNode, component, rsx, use_state};
+use rfgui::ui::{Binding, ClickHandlerProp, RsxComponent, RsxNode, component, rsx, use_state, props};
 use rfgui::{
     AlignItems, Border, BorderRadius, Color, Display, Length, Padding, ParsedValue, PropertyId,
     Style,
 };
 
+pub struct Checkbox;
+
+
+#[props]
 pub struct CheckboxProps {
     pub label: String,
-    pub checked: bool,
-    pub checked_binding: Option<Binding<bool>>,
-    pub width: f32,
-    pub height: f32,
-    pub disabled: bool,
+    pub binding: Option<Binding<bool>>,
+    pub checked: Option<bool>,
+    pub disabled: Option<bool>,
 }
 
-impl CheckboxProps {
-    pub fn new(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            checked: false,
-            checked_binding: None,
-            width: 220.0,
-            height: 32.0,
-            disabled: false,
+impl RsxComponent for Checkbox {
+    type Props = CheckboxProps;
+
+    fn render(props: Self::Props) -> RsxNode {
+        let checked = props.checked.unwrap_or(false);
+        let has_binding = props.binding.is_some();
+        let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
+
+        rsx! {
+            <CheckboxView
+                label={props.label}
+                checked={checked}
+                has_binding={has_binding}
+                binding={binding}
+                disabled={props.disabled.unwrap_or(false)}
+            />
         }
     }
 }
 
-pub fn build_checkbox_rsx(props: CheckboxProps) -> RsxNode {
-    let has_binding = props.checked_binding.is_some();
-    let binding = props
-        .checked_binding
-        .unwrap_or_else(|| Binding::new(props.checked));
-    rsx! {
-        <CheckboxComponent
-            label={props.label}
-            checked={props.checked}
-            has_binding={has_binding}
-            binding={binding}
-            width={props.width}
-            height={props.height}
-            disabled={props.disabled}
-        />
-    }
-}
-
 #[component]
-fn CheckboxComponent(
+fn CheckboxView(
     label: String,
     checked: bool,
     has_binding: bool,
     binding: Binding<bool>,
-    width: f32,
-    height: f32,
     disabled: bool,
 ) -> RsxNode {
     let fallback_checked = use_state(|| checked);
@@ -62,6 +51,7 @@ fn CheckboxComponent(
         fallback_checked.binding()
     };
     let checked = checked_binding.get();
+
     let click = if disabled {
         None
     } else {
@@ -78,7 +68,7 @@ fn CheckboxComponent(
             <Text
                 font_size=16
                 font="Heiti TC, Noto Sans CJK TC, Roboto"
-                color={if disabled { "#9E9E9E" } else { "#FFFFFF" }}
+                style={{ color: if disabled { "#9E9E9E" } else { "#FFFFFF" } }}
             >
                 {"✓"}
             </Text>
@@ -86,12 +76,12 @@ fn CheckboxComponent(
     }
 
     let mut root = rsx! {
-        <Element style={checkbox_row_style(width, height)}>
+        <Element style={checkbox_row_style()}>
             {box_node}
             <Text
                 font_size=14
                 font="Heiti TC, Noto Sans CJK TC, Roboto"
-                color={if disabled { "#9E9E9E" } else { "#1F2937" }}
+                style={{ color: if disabled { "#9E9E9E" } else { "#1F2937" } }}
             >
                 {label}
             </Text>
@@ -107,7 +97,7 @@ fn CheckboxComponent(
     root
 }
 
-fn checkbox_row_style(width: f32, height: f32) -> Style {
+fn checkbox_row_style() -> Style {
     let mut style = Style::new();
     style.insert(
         PropertyId::Display,
@@ -118,8 +108,8 @@ fn checkbox_row_style(width: f32, height: f32) -> Style {
         ParsedValue::AlignItems(AlignItems::Center),
     );
     style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(10.0)));
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
+    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(32.0)));
     style.set_padding(Padding::uniform(Length::px(0.0)));
     style
 }
