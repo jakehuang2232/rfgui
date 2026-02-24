@@ -1,5 +1,7 @@
 use rfgui::{Transition, TransitionProperty};
-use rfgui_components::{Button, Checkbox, NumberField, Select, Slider, Switch, Window, on_resize};
+use rfgui_components::{
+    Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Window, on_resize,
+};
 use std::sync::Arc;
 
 use rfgui::ui::host::{Element, Text, TextArea};
@@ -17,12 +19,16 @@ use winit::window::{Window as WinitWindow, WindowId};
 
 #[component]
 fn MainScene() -> RsxNode {
+    fn select_label(item: &String, _: usize) -> String {
+        item.clone()
+    }
+
     let click_count = globalState(|| 0_i32);
     let message =
         use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
     let checked = use_state(|| true);
     let number_value = use_state(|| 3.0_f64);
-    let selected_index = use_state(|| 0_usize);
+    let selected_value = use_state(|| String::from("Option A"));
     let slider_value = use_state(|| 42.0_f64);
     let switch_on = use_state(|| false);
     let panel_size = globalState(|| String::from("360 x 240"));
@@ -31,7 +37,7 @@ fn MainScene() -> RsxNode {
     let message_value = message.get();
     let checked_value = checked.get();
     let number_value_value = number_value.get();
-    let selected_index_value = selected_index.get();
+    let selected_value_value = selected_value.get();
     let slider_value_value = slider_value.get();
     let switch_on_value = switch_on.get();
     let increment_state = click_count.clone();
@@ -168,7 +174,7 @@ fn MainScene() -> RsxNode {
                 <Text font_size=14 style={{ color: "#abb2bf" }} >{format!("Click Count: {}", click_count_value)}</Text>
                 <Button
                     label="Click\nMe"
-                    variant="contained"
+                    variant={Some(ButtonVariant::Contained)}
                     on_click={increment}
                 />
             </Element>
@@ -270,33 +276,59 @@ fn MainScene() -> RsxNode {
                     display: Display::flow().row().no_wrap(),
                     gap: Length::px(8.0)
                 }}>
-                    <Button label="Contained" variant="contained" />
-                    <Button label="Outlined" variant="outlined" />
-                    <Button label="Text" variant="text" />
+                    <Button
+                        label="Contained"
+                        variant={Some(ButtonVariant::Contained)}
+                    />
+                    <Button
+                        label="Outlined"
+                        variant={Some(ButtonVariant::Outlined)}
+                    />
+                    <Button
+                        label="Text"
+                        variant={Some(ButtonVariant::Text)}
+                    />
                 </Element>
-                <Checkbox label="Enable feature" binding={checked.binding()} />
+                <Checkbox
+                    label="Enable feature"
+                    binding={checked.binding()}
+                />
                 <Element style={{
                     display: Display::flow().row().no_wrap(),
                     gap: Length::px(8.0),
                 }}>
-                    <NumberField binding={number_value.binding()} min=0.0 max=10.0 step=0.5 />
+                    <NumberField
+                        binding={number_value.binding()}
+                        min=0.0
+                        max=10.0
+                        step=0.5
+                    />
                     <Select
-                        options={vec![
+                        data={vec![
                             String::from("Option A"),
                             String::from("Option B"),
                             String::from("Option C"),
                         ]}
-                        binding={selected_index.binding()}
+                        to_label={|item, index| format!("Hello, {}!", item)}
+                        to_value={|item, index|item.clone()}
+                        value={selected_value.binding()}
                     />
                 </Element>
-                <Slider binding={slider_value.binding()} min=0.0 max=100.0 />
-                <Switch label="Dark mode" binding={switch_on.binding()} />
+                <Slider
+                    binding={slider_value.binding()}
+                    min=0.0
+                    max=100.0
+                />
+                <Switch
+                    label="Dark mode"
+                    binding={switch_on.binding()}
+                />
                 <Text font_size=12 style={{ color: "#93c5fd" }} >
                     {format!(
                         "checked={} number={:.1} selected={} slider={:.0} switch={}",
                         checked_value,
                         number_value_value,
-                        selected_index_value,
+                        selected_value_value,
                         slider_value_value,
                         switch_on_value
                     )}
@@ -332,7 +364,10 @@ fn MainScene() -> RsxNode {
                     >
                         <Text font_size=12 style={{ color: "#0f172a" }}>Drag title bar to move</Text>
                         <Text font_size=12 style={{ color: "#334155" }}>Drag bottom-right handle to resize</Text>
-                        <Button label="Action" variant="outlined" />
+                        <Button
+                            label="Action"
+                            variant={Some(ButtonVariant::Outlined)}
+                        />
                     </Window>
                 </Element>
             </Element>

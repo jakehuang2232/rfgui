@@ -113,28 +113,34 @@ This document defines the core UI / Style / Layout / Component conventions for t
 - Components should be authored through `RsxComponent`.
 
 ### 11.2 Props rules
-- `Option<T>` fields are optional.
-- Non-`Option<T>` fields are required and must fail at compile time if omitted.
+- Use `#[props]` for component props structs.
+- `Option<T>` fields are optional in RSX usage and should be auto-filled as `None` when omitted.
+- Non-`Option<T>` fields are required and must not be auto-filled.
 - Do not use `Default` to silently fill required props.
-- If a default behavior is needed, model the prop as `Option<T>` and resolve in `render` explicitly.
+- If default behavior is needed, model it as `Option<T>` and resolve explicitly in `render`.
 
-### 11.3 Structure rules
+### 11.3 RSX macro rules
+- `rsx-macro` must use the generic expansion path for component props binding.
+- Do not add tag-name hardcoded branches (for example special-casing `Button` / `Select` / `Window`).
+- Keep validation and error reporting in the typed props/builder path, not in ad-hoc tag branches.
+
+### 11.4 Structure rules
 - Keep one props struct per component (no duplicated `XxxProps` vs `XxxPropSchema` split).
 - Do not add `build_xxx_rsx` indirection unless there is a concrete technical reason.
 - Prefer rendering directly in `RsxComponent::render`.
 - Do not add wrapper subcomponents (for example `XxxComponent`) unless they are required for hook/state boundaries.
 
-### 11.4 Style rules for components
+### 11.5 Style rules for components
 - Prefer declarative `style={{ ... }}` in RSX.
 - Avoid `Style::new() + insert(...)` for simple style composition.
 - Keep all style values typed (`Length`, `Border`, `BorderRadius`, `ColorLike`, etc.).
 
-### 11.5 Event and interaction rules
+### 11.6 Event and interaction rules
 - Event props must use typed handlers (for example `ClickHandlerProp`).
 - Interactive local state should use `#[component]` + `use_state`.
 - Do not add uncontrolled global binding caches unless explicitly required and covered by tests.
 
-### 11.6 Forbidden patterns
+### 11.7 Forbidden patterns
 - Do not add new runtime parsing paths for authored components.
 - Do not reintroduce dynamic tag registration compatibility layers.
 - Do not parse style from raw strings.

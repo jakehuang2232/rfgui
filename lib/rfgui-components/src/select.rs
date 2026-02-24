@@ -1,78 +1,108 @@
+use std::any::Any;
+use std::rc::Rc;
+
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, BlurHandlerProp, ClickHandlerProp, KeyDownHandlerProp, MouseDownHandlerProp, RsxComponent, RsxNode, component, rsx, use_state, props};
+use rfgui::ui::{
+    Binding, BlurHandlerProp, ClickHandlerProp, KeyDownHandlerProp, MouseDownHandlerProp,
+    RsxComponent, RsxNode, component, props, rsx, use_state,
+};
 use rfgui::{
     AlignItems, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Display,
     JustifyContent, Length, Padding, ParsedValue, Position, PropertyId, Style,
 };
 
-pub struct Select;
+pub struct Select<DataType = String, ValueType = String>(
+    std::marker::PhantomData<(DataType, ValueType)>,
+);
 
 #[props]
-pub struct SelectProps {
-    pub options: Vec<String>,
-    pub binding: Option<Binding<usize>>,
-    pub selected_index: Option<i64>,
-    pub disabled: Option<bool>,
+pub struct SelectProps<DataType = String, ValueType: 'static = String> {
+    pub data: Vec<DataType>,
+    pub to_label: fn(&DataType, usize) -> String,
+    pub to_value: Option<fn(&DataType, usize) -> ValueType>,
+    pub to_disabled: Option<fn(&DataType, usize) -> bool>,
+    pub value: Binding<ValueType>,
 }
 
-impl RsxComponent for Select {
-    type Props = SelectProps;
+#[derive(Clone)]
+struct SelectMenuItem {
+    label: String,
+    selected: bool,
+    disabled: bool,
+    on_select: ClickHandlerProp,
+}
+
+impl<DataType, ValueType> RsxComponent for Select<DataType, ValueType>
+where
+    DataType: Clone + 'static,
+    ValueType: Clone + PartialEq + 'static,
+{
+    type Props = SelectProps<DataType, ValueType>;
 
     fn render(props: Self::Props) -> RsxNode {
-        let selected_index = props.selected_index.unwrap_or(0);
-        if selected_index < 0 {
-            panic!("rsx build error on <Select>. prop `selected_index` expects non-negative value");
-        }
-        let has_binding = props.binding.is_some();
-        let binding = props
-            .binding
-            .unwrap_or_else(|| Binding::new(selected_index as usize));
+        let selected_value = props.value.get();
+        let selected_index = resolve_selected_index(
+            &props.data,
+            &selected_value,
+            props.to_value,
+            props.to_label,
+        );
+        let selected_label = resolve_option_text(&props.data, selected_index, props.to_label);
+
+        let menu_items: Vec<SelectMenuItem> = props
+            .data
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let label = (props.to_label)(item, index);
+                let value = value_of_item(item, index, props.to_label, props.to_value);
+                let disabled = props
+                    .to_disabled
+                    .map(|resolver| resolver(item, index))
+                    .unwrap_or(false);
+                let selected = value == selected_value;
+                let value_binding = props.value.clone();
+                let on_select = ClickHandlerProp::new(move |event| {
+                    if disabled {
+                        return;
+                    }
+                    value_binding.set(value.clone());
+                    event.meta.stop_propagation();
+                });
+
+                SelectMenuItem {
+                    label,
+                    selected,
+                    disabled,
+                    on_select,
+                }
+            })
+            .collect();
 
         rsx! {
             <SelectView
-                options={props.options}
-                selected_index={selected_index}
-                selected_binding={binding}
-                has_selected_binding={has_binding}
-                disabled={props.disabled.unwrap_or(false)}
+                selected_label={selected_label}
+                menu_items={menu_items}
             />
         }
     }
 }
 
 #[component]
-fn SelectView(
-    options: Vec<String>,
-    selected_index: i64,
-    selected_binding: Binding<usize>,
-    has_selected_binding: bool,
-    disabled: bool,
-) -> RsxNode {
+fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNode {
     const SELECT_TRIGGER_ANCHOR: &str = "__rfgui_select_trigger_anchor";
 
     let width = 220.0_f32;
     let height = 40.0_f32;
 
-    let fallback_selected = use_state(|| selected_index as usize);
-    let selected_binding = if has_selected_binding {
-        selected_binding
-    } else {
-        fallback_selected.binding()
-    };
-
     let fallback_open = use_state(|| false);
     let open_binding = fallback_open.binding();
     let menu_pointer_down = use_state(|| false).binding();
-    let selected_index = selected_binding.get();
-    let option_text = resolve_option_text(&options, selected_index);
-    let is_open = !disabled && open_binding.get();
+    let is_open = open_binding.get();
 
     let trigger_click = {
         let open_binding = open_binding.clone();
         ClickHandlerProp::new(move |event| {
-            if disabled {
-                return;
-            }
             open_binding.set(!open_binding.get());
             event.meta.stop_propagation();
         })
@@ -113,20 +143,16 @@ fn SelectView(
     let mut root = rsx! {
         <Element style={select_root_style(width)}>
             <Element
-                style={select_trigger_style(width, height, disabled)}
+                style={select_trigger_style(width, height)}
                 anchor={SELECT_TRIGGER_ANCHOR}
                 on_click={trigger_click}
                 on_blur={trigger_blur}
                 on_key_down={trigger_key_down}
             >
-                <Text
-                    style={{ color: if disabled { "#9E9E9E" } else { "#111827" } }}
-                >
-                    {option_text}
+                <Text style={{ color: "#111827" }}>
+                    {selected_label}
                 </Text>
-                <Text
-                    style={{ color: if disabled { "#BDBDBD" } else { "#6B7280" } }}
-                >
+                <Text style={{ color: "#6B7280" }}>
                     {if is_open { "▴" } else { "▾" }}
                 </Text>
             </Element>
@@ -135,10 +161,8 @@ fn SelectView(
 
     if is_open && let RsxNode::Element(root_node) = &mut root {
         root_node.children.push(build_menu_node(
-            &options,
+            &menu_items,
             width,
-            selected_index,
-            selected_binding,
             open_binding,
             menu_pointer_down,
             height,
@@ -159,7 +183,7 @@ fn select_root_style(width: f32) -> Style {
     style
 }
 
-fn select_trigger_style(width: f32, height: f32, disabled: bool) -> Style {
+fn select_trigger_style(width: f32, height: f32) -> Style {
     let mut style = Style::new();
     style.insert(
         PropertyId::Display,
@@ -177,14 +201,7 @@ fn select_trigger_style(width: f32, height: f32, disabled: bool) -> Style {
     style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
     style.set_border_radius(BorderRadius::uniform(Length::px(8.0)));
     style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")));
-    style.insert_color_like(
-        PropertyId::BackgroundColor,
-        if disabled {
-            Color::hex("#F5F5F5")
-        } else {
-            Color::hex("#FFFFFF")
-        },
-    );
+    style.insert_color_like(PropertyId::BackgroundColor, Color::hex("#FFFFFF"));
     style.set_padding(Padding::uniform(Length::px(0.0)).x(Length::px(12.0)));
     let mut hover = Style::new();
     hover.insert_color_like(PropertyId::BackgroundColor, Color::hex("#FAFAFA"));
@@ -216,7 +233,7 @@ fn select_menu_style(width: f32, trigger_height: f32, anchor_name: &str) -> Styl
     style
 }
 
-fn select_option_style(width: f32, selected: bool) -> Style {
+fn select_option_style(width: f32, selected: bool, disabled: bool) -> Style {
     let mut style = Style::new();
     style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
     style.insert(PropertyId::Height, ParsedValue::Length(Length::px(32.0)));
@@ -231,7 +248,9 @@ fn select_option_style(width: f32, selected: bool) -> Style {
     style.set_padding(Padding::uniform(Length::px(0.0)).x(Length::px(12.0)));
     style.insert_color_like(
         PropertyId::BackgroundColor,
-        if selected {
+        if disabled {
+            Color::hex("#F9FAFB")
+        } else if selected {
             Color::hex("#EEF3FE")
         } else {
             Color::hex("#FFFFFF")
@@ -244,29 +263,34 @@ fn select_option_style(width: f32, selected: bool) -> Style {
 }
 
 fn build_menu_node(
-    options: &[String],
+    menu_items: &[SelectMenuItem],
     width: f32,
-    selected_index: usize,
-    selected_binding: Binding<usize>,
     menu_open: Binding<bool>,
     menu_pointer_down: Binding<bool>,
     trigger_height: f32,
     anchor_name: &str,
 ) -> RsxNode {
-    let option_nodes: Vec<RsxNode> = options
+    let option_nodes: Vec<RsxNode> = menu_items
         .iter()
-        .enumerate()
-        .map(|(index, option)| {
-            let option_text = option.clone();
-            let binding = selected_binding.clone();
+        .map(|item| {
             let menu_open = menu_open.clone();
             let menu_pointer_down_for_mouse_down = menu_pointer_down.clone();
-            let mouse_down = MouseDownHandlerProp::new(move |_| {
+            let option_disabled = item.disabled;
+            let mouse_down = MouseDownHandlerProp::new(move |event| {
+                if option_disabled {
+                    return;
+                }
                 menu_pointer_down_for_mouse_down.set(true);
+                event.meta.stop_propagation();
             });
             let menu_pointer_down_for_click = menu_pointer_down.clone();
+            let option_disabled = item.disabled;
+            let on_select = item.on_select.clone();
             let click = ClickHandlerProp::new(move |event| {
-                binding.set(index);
+                if option_disabled {
+                    return;
+                }
+                on_select.call(event);
                 menu_open.set(false);
                 menu_pointer_down_for_click.set(false);
                 event.meta.stop_propagation();
@@ -274,7 +298,7 @@ fn build_menu_node(
 
             rsx! {
                 <Element
-                    style={select_option_style(width, selected_index == index)}
+                    style={select_option_style(width, item.selected, item.disabled)}
                     on_mouse_down={mouse_down}
                     on_click={click}
                 >
@@ -282,9 +306,9 @@ fn build_menu_node(
                         font_size=13
                         line_height=1.0
                         font="Heiti TC, Noto Sans CJK TC, Roboto"
-                        style={{ color: if selected_index == index { "#1D4ED8" } else { "#111827" } }}
+                        style={{ color: if item.disabled { "#9CA3AF" } else if item.selected { "#1D4ED8" } else { "#111827" } }}
                     >
-                        {option_text}
+                        {item.label.clone()}
                     </Text>
                 </Element>
             }
@@ -298,14 +322,55 @@ fn build_menu_node(
     }
 }
 
-fn resolve_option_text(options: &[String], selected_index: usize) -> String {
-    if options.is_empty() {
+fn resolve_option_text<DataType>(
+    data: &[DataType],
+    selected_index: usize,
+    to_label: fn(&DataType, usize) -> String,
+) -> String {
+    if data.is_empty() {
         return String::new();
     }
-    options
-        .get(selected_index)
-        .cloned()
-        .unwrap_or_else(|| options[0].clone())
+    data.get(selected_index)
+        .map(|item| to_label(item, selected_index))
+        .unwrap_or_else(|| to_label(&data[0], 0))
+}
+
+fn resolve_selected_index<DataType, ValueType>(
+    data: &[DataType],
+    selected_value: &ValueType,
+    to_value: Option<fn(&DataType, usize) -> ValueType>,
+    to_label: fn(&DataType, usize) -> String,
+) -> usize
+where
+    ValueType: Clone + PartialEq + 'static,
+{
+    if data.is_empty() {
+        return 0;
+    }
+    data.iter()
+        .enumerate()
+        .position(|(index, item)| value_of_item(item, index, to_label, to_value) == *selected_value)
+        .unwrap_or(0)
+}
+
+fn value_of_item<DataType, ValueType>(
+    item: &DataType,
+    index: usize,
+    to_label: fn(&DataType, usize) -> String,
+    to_value: Option<fn(&DataType, usize) -> ValueType>,
+) -> ValueType
+where
+    ValueType: Clone + 'static,
+{
+    if let Some(to_value) = to_value {
+        return to_value(item, index);
+    }
+    let label = to_label(item, index);
+    let erased: Rc<dyn Any> = Rc::new(label);
+    if let Ok(v) = Rc::downcast::<ValueType>(erased) {
+        return (*v).clone();
+    }
+    panic!("Select prop `to_value` is required when ValueType is not String");
 }
 
 fn key_matches(key: &str, code: &str, token: &str) -> bool {
