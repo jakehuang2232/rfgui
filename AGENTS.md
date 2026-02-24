@@ -1,6 +1,6 @@
-# AGENT.md
+# AGENTS.md
 
-This document defines the core UI / Style / Layout conventions for this project (`rust-gui`) and serves as the single source of truth for implementation and refactoring.
+This document defines the core UI / Style / Layout / Component conventions for this project (`rust-gui`) and serves as the single source of truth for implementation and refactoring.
 
 ## 1. Three-layer Style Model
 
@@ -91,7 +91,7 @@ This document defines the core UI / Style / Layout conventions for this project 
 
 - `style` props inside `rsx!` should be navigable (IDE jump-friendly).
 - Keep `ElementStylePropSchema` aligned with the style system; do not keep deprecated fields (for example old `padding_x`-style fields).
-- rsx components 偏好用宣告式結構
+- RSX components should prefer declarative structure.
 
 ## 10. Implementation Guidelines
 
@@ -104,3 +104,37 @@ This document defines the core UI / Style / Layout conventions for this project 
   5. renderer
   6. tests + example
 - Prioritize regression tests (especially `%`, border radius, scroll, text measurement).
+
+## 11. Component Authoring Rules (Typed-Only)
+
+### 11.1 Core principle
+- Components must use the typed-only RSX path.
+- Do not introduce runtime props parsing for component authoring.
+- Components should be authored through `RsxComponent`.
+
+### 11.2 Props rules
+- `Option<T>` fields are optional.
+- Non-`Option<T>` fields are required and must fail at compile time if omitted.
+- Do not use `Default` to silently fill required props.
+- If a default behavior is needed, model the prop as `Option<T>` and resolve in `render` explicitly.
+
+### 11.3 Structure rules
+- Keep one props struct per component (no duplicated `XxxProps` vs `XxxPropSchema` split).
+- Do not add `build_xxx_rsx` indirection unless there is a concrete technical reason.
+- Prefer rendering directly in `RsxComponent::render`.
+- Do not add wrapper subcomponents (for example `XxxComponent`) unless they are required for hook/state boundaries.
+
+### 11.4 Style rules for components
+- Prefer declarative `style={{ ... }}` in RSX.
+- Avoid `Style::new() + insert(...)` for simple style composition.
+- Keep all style values typed (`Length`, `Border`, `BorderRadius`, `ColorLike`, etc.).
+
+### 11.5 Event and interaction rules
+- Event props must use typed handlers (for example `ClickHandlerProp`).
+- Interactive local state should use `#[component]` + `use_state`.
+- Do not add uncontrolled global binding caches unless explicitly required and covered by tests.
+
+### 11.6 Forbidden patterns
+- Do not add new runtime parsing paths for authored components.
+- Do not reintroduce dynamic tag registration compatibility layers.
+- Do not parse style from raw strings.

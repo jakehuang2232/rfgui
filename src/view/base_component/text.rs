@@ -3,7 +3,8 @@ use std::collections::HashMap;
 
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
-use crate::{ColorLike, HexColor};
+use crate::{ColorLike, HexColor, TextAlign};
+use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
 
 use super::{
@@ -23,9 +24,12 @@ pub struct Text {
     font_families: Vec<String>,
     font_size: f32,
     line_height: f32,
+    font_weight: u16,
+    align: Align,
     opacity: f32,
     auto_width: bool,
     auto_height: bool,
+    allow_wrap: bool,
     measure_revision: u64,
     cached_intrinsic_width: Option<(u64, f32)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
@@ -43,6 +47,7 @@ struct TextMeasureCacheKey {
     max_width_milli: i32,
     font_size_milli: i32,
     line_height_milli: i32,
+    font_weight: u16,
     font_families: Vec<String>,
 }
 
@@ -55,6 +60,7 @@ fn make_measure_cache_key(
     max_width: Option<f32>,
     font_size: f32,
     line_height: f32,
+    font_weight: u16,
     font_families: &[String],
 ) -> TextMeasureCacheKey {
     TextMeasureCacheKey {
@@ -62,6 +68,7 @@ fn make_measure_cache_key(
         max_width_milli: max_width.map(quantize_milli).unwrap_or(-1),
         font_size_milli: quantize_milli(font_size),
         line_height_milli: quantize_milli(line_height),
+        font_weight,
         font_families: font_families.to_vec(),
     }
 }
@@ -108,9 +115,12 @@ impl Text {
             font_families: Vec::new(),
             font_size: 16.0,
             line_height: 1.25,
+            font_weight: 400,
+            align: Align::Left,
             opacity: 1.0,
             auto_width: false,
             auto_height: false,
+            allow_wrap: true,
             measure_revision: 0,
             cached_intrinsic_width: None,
             cached_height_for_width: None,
@@ -205,6 +215,26 @@ impl Text {
         }
     }
 
+    pub fn set_font_weight(&mut self, font_weight: u16) {
+        let clamped = font_weight.clamp(100, 900);
+        if self.font_weight != clamped {
+            self.font_weight = clamped;
+            self.mark_measure_dirty();
+        }
+    }
+
+    pub fn set_align(&mut self, align: Align) {
+        self.align = align;
+    }
+
+    pub fn set_text_align(&mut self, align: TextAlign) {
+        self.align = match align {
+            TextAlign::Left => Align::Left,
+            TextAlign::Center => Align::Center,
+            TextAlign::Right => Align::Right,
+        };
+    }
+
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
     }
@@ -221,11 +251,20 @@ impl Text {
 fn measure_text_size(
     content: &str,
     max_width: Option<f32>,
+    allow_wrap: bool,
     font_size: f32,
     line_height: f32,
+    font_weight: u16,
     font_families: &[String],
 ) -> (f32, f32) {
-    let cache_key = make_measure_cache_key(content, max_width, font_size, line_height, font_families);
+    let cache_key = make_measure_cache_key(
+        content,
+        max_width,
+        font_size,
+        line_height,
+        font_weight,
+        font_families,
+    );
     if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied()) {
         return cached;
     }
@@ -239,13 +278,22 @@ fn measure_text_size(
                 (font_size * line_height.max(0.8)).max(1.0),
             ),
         );
-        buffer.set_wrap(&mut font_system, Wrap::WordOrGlyph);
+        buffer.set_wrap(
+            &mut font_system,
+            if allow_wrap {
+                Wrap::WordOrGlyph
+            } else {
+                Wrap::None
+            },
+        );
         buffer.set_size(&mut font_system, max_width.map(|w| w.max(1.0)), None);
 
         let attrs = if let Some(first) = font_families.first() {
-            Attrs::new().family(Family::Name(first.as_str()))
-        } else {
             Attrs::new()
+                .family(Family::Name(first.as_str()))
+                .weight(Weight(font_weight))
+        } else {
+            Attrs::new().weight(Weight(font_weight))
         };
 
         // Keep one visible line box for empty text to match previous layout semantics.
@@ -403,6 +451,9 @@ impl Layoutable for Text {
     }
 
     fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
+        let parent_width_is_constrained = constraints.percent_base_width.is_some();
+        self.allow_wrap = parent_width_is_constrained;
+
         if !self.auto_width && !self.auto_height {
             return;
         }
@@ -414,8 +465,10 @@ impl Layoutable for Text {
                     let (width, _) = measure_text_size(
                         self.content.as_str(),
                         None,
+                        false,
                         self.font_size,
                         self.line_height,
+                        self.font_weight,
                         self.font_families.as_slice(),
                     );
                     self.cached_intrinsic_width = Some((self.measure_revision, width));
@@ -425,14 +478,20 @@ impl Layoutable for Text {
                 let (width, _) = measure_text_size(
                     self.content.as_str(),
                     None,
+                    false,
                     self.font_size,
                     self.line_height,
+                    self.font_weight,
                     self.font_families.as_slice(),
                 );
                 self.cached_intrinsic_width = Some((self.measure_revision, width));
                 width
             };
-            let available = constraints.max_width.max(1.0);
+            let available = if parent_width_is_constrained {
+                constraints.max_width.max(1.0)
+            } else {
+                f32::INFINITY
+            };
             self.size.width = intrinsic_width.min(available);
             self.element.set_width(self.size.width);
         }
@@ -445,15 +504,18 @@ impl Layoutable for Text {
             let measured_height = if let Some((revision, cached_width, cached_height)) =
                 self.cached_height_for_width
             {
-                if revision == self.measure_revision && (cached_width - effective_width).abs() < 0.01
+                if revision == self.measure_revision
+                    && (cached_width - effective_width).abs() < 0.01
                 {
                     cached_height
                 } else {
                     let (_, height) = measure_text_size(
                         self.content.as_str(),
                         Some(effective_width),
+                        self.allow_wrap,
                         self.font_size,
                         self.line_height,
+                        self.font_weight,
                         self.font_families.as_slice(),
                     );
                     self.cached_height_for_width =
@@ -464,11 +526,14 @@ impl Layoutable for Text {
                 let (_, height) = measure_text_size(
                     self.content.as_str(),
                     Some(effective_width),
+                    self.allow_wrap,
                     self.font_size,
                     self.line_height,
+                    self.font_weight,
                     self.font_families.as_slice(),
                 );
-                self.cached_height_for_width = Some((self.measure_revision, effective_width, height));
+                self.cached_height_for_width =
+                    Some((self.measure_revision, effective_width, height));
                 height
             };
             self.size.height = measured_height.max(1.0);
@@ -528,7 +593,10 @@ impl Renderable for Text {
             opacity,
             self.font_size,
             self.line_height,
+            self.font_weight,
             self.font_families.clone(),
+            self.align,
+            self.allow_wrap,
         );
         pass.set_scissor_rect(None);
         ctx.push_pass(graph, pass);
@@ -569,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_height_accounts_for_wrapped_lines() {
+    fn text_wraps_when_parent_width_is_constrained() {
         let mut text = Text::from_content("123456789012345678901234567890");
         text.set_width(60.0);
         text.set_auto_height(true);
@@ -616,5 +684,127 @@ mod tests {
         });
         let snapshot = text.box_model_snapshot();
         assert!(snapshot.width >= 80.0);
+    }
+
+    #[test]
+    fn auto_width_with_space_includes_following_word() {
+        let mut single = Text::from_content("Click");
+        single.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 200.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(200.0),
+        });
+        single.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 200.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let mut spaced = Text::from_content("Click Me");
+        spaced.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 200.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(200.0),
+        });
+        spaced.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 200.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let a = single.box_model_snapshot().width;
+        let b = spaced.box_model_snapshot().width;
+        assert!(
+            b > a,
+            "expected \"Click Me\" width > \"Click\", got {b} <= {a}"
+        );
+    }
+
+    #[test]
+    fn text_does_not_wrap_when_parent_width_is_unresolved() {
+        let mut text = Text::from_content("Click Me Click Me");
+        text.set_auto_width(true);
+        text.set_auto_height(true);
+        text.measure(LayoutConstraints {
+            max_width: 60.0,
+            max_height: 200.0,
+            percent_base_width: None,
+            percent_base_height: Some(200.0),
+        });
+        text.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 200.0,
+            percent_base_width: None,
+            percent_base_height: Some(200.0),
+        });
+
+        let snapshot = text.box_model_snapshot();
+        assert!(snapshot.width > 60.0);
+        assert!(snapshot.height <= 24.0);
+    }
+
+    #[test]
+    fn text_reflows_when_parent_width_changes() {
+        let mut text =
+            Text::from_content("This is a long sentence that should wrap to multiple lines.");
+        text.set_auto_width(true);
+        text.set_auto_height(true);
+
+        text.measure(LayoutConstraints {
+            max_width: 220.0,
+            max_height: 300.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(300.0),
+        });
+        text.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 220.0,
+            available_height: 300.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(300.0),
+        });
+        let h_wide = text.box_model_snapshot().height;
+
+        text.measure(LayoutConstraints {
+            max_width: 90.0,
+            max_height: 300.0,
+            percent_base_width: Some(90.0),
+            percent_base_height: Some(300.0),
+        });
+        text.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 90.0,
+            available_height: 300.0,
+            percent_base_width: Some(90.0),
+            percent_base_height: Some(300.0),
+        });
+        let h_narrow = text.box_model_snapshot().height;
+
+        assert!(
+            h_narrow > h_wide,
+            "expected text to reflow when parent width shrinks: narrow={h_narrow}, wide={h_wide}"
+        );
     }
 }

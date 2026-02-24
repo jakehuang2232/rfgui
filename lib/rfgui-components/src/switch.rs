@@ -1,46 +1,42 @@
+use rfgui::ui::host::{Element, Text};
+use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, rsx, use_state, props};
 use rfgui::{
     AlignItems, BorderRadius, Color, Display, Length, Padding, ParsedValue, PropertyId, Style,
     Transition, TransitionProperty, Transitions,
 };
-use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, RsxNode, component, on_click, rsx, use_state};
 
+pub struct Switch;
+
+#[props]
 pub struct SwitchProps {
     pub label: String,
-    pub checked: bool,
-    pub checked_binding: Option<Binding<bool>>,
-    pub disabled: bool,
+    pub binding: Option<Binding<bool>>,
+    pub checked: Option<bool>,
+    pub disabled: Option<bool>,
 }
 
-impl SwitchProps {
-    pub fn new(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            checked: false,
-            checked_binding: None,
-            disabled: false,
+impl RsxComponent for Switch {
+    type Props = SwitchProps;
+
+    fn render(props: Self::Props) -> RsxNode {
+        let checked = props.checked.unwrap_or(false);
+        let has_binding = props.binding.is_some();
+        let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
+
+        rsx! {
+            <SwitchView
+                label={props.label}
+                checked={checked}
+                has_binding={has_binding}
+                binding={binding}
+                disabled={props.disabled.unwrap_or(false)}
+            />
         }
     }
 }
 
-pub fn build_switch_rsx(props: SwitchProps) -> RsxNode {
-    let has_binding = props.checked_binding.is_some();
-    let binding = props
-        .checked_binding
-        .unwrap_or_else(|| Binding::new(props.checked));
-    rsx! {
-        <SwitchComponent
-            label={props.label}
-            checked={props.checked}
-            has_binding={has_binding}
-            binding={binding}
-            disabled={props.disabled}
-        />
-    }
-}
-
 #[component]
-fn SwitchComponent(
+fn SwitchView(
     label: String,
     checked: bool,
     has_binding: bool,
@@ -70,7 +66,7 @@ fn SwitchComponent(
                 <Element style={switch_spacer_style(checked)} />
                 <Element style={switch_thumb_style(disabled)} />
             </Element>
-            <Text font_size=14 font="Heiti TC, Noto Sans CJK TC, Roboto" color={label_color}>
+            <Text font_size=14 font="Heiti TC, Noto Sans CJK TC, Roboto" style={{ color: label_color }}>
                 {label}
             </Text>
         </Element>

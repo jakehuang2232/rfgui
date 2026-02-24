@@ -8,6 +8,7 @@ use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource}
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::render_target_view;
+use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport as GlyphonViewport,
@@ -23,7 +24,10 @@ pub struct TextPass {
     opacity: f32,
     font_size: f32,
     line_height: f32,
+    font_weight: u16,
     font_families: Vec<String>,
+    align: Align,
+    allow_wrap: bool,
     scissor_rect: Option<[u32; 4]>,
     color_target: Option<TextureHandle>,
     input: TextInput,
@@ -48,7 +52,10 @@ pub struct TextPassDraw {
     pub opacity: f32,
     pub font_size: f32,
     pub line_height: f32,
+    pub font_weight: u16,
     pub font_families: Vec<String>,
+    pub align: Align,
+    pub allow_wrap: bool,
     pub scissor_rect: Option<[u32; 4]>,
     pub color_target: Option<TextureHandle>,
 }
@@ -75,7 +82,10 @@ impl TextPass {
         opacity: f32,
         font_size: f32,
         line_height: f32,
+        font_weight: u16,
         font_families: Vec<String>,
+        align: Align,
+        allow_wrap: bool,
     ) -> Self {
         Self {
             content,
@@ -87,7 +97,10 @@ impl TextPass {
             opacity,
             font_size,
             line_height,
+            font_weight,
             font_families,
+            align,
+            allow_wrap,
             scissor_rect: None,
             color_target: None,
             input: TextInput::default(),
@@ -130,7 +143,10 @@ impl TextPass {
             opacity: self.opacity,
             font_size: self.font_size,
             line_height: self.line_height,
+            font_weight: self.font_weight,
             font_families: self.font_families.clone(),
+            align: self.align,
+            allow_wrap: self.allow_wrap,
             scissor_rect: self.scissor_rect,
             color_target: self.color_target,
         }
@@ -195,6 +211,7 @@ pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'
     };
 
     let (screen_w, screen_h) = viewport.surface_size();
+    let scale = viewport.scale_factor();
     let format = viewport.surface_format();
 
     let mut global = text_resources(device, queue, format);
@@ -236,13 +253,15 @@ pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'
         }
 
         let bounds = match resolve_text_bounds(
-            draw.x,
-            draw.y,
-            draw.width,
-            draw.height,
+            draw.x * scale,
+            draw.y * scale,
+            draw.width * scale,
+            draw.height * scale,
             screen_w,
             screen_h,
-            draw.scissor_rect,
+            draw.scissor_rect.and_then(|scissor| {
+                viewport.logical_scissor_to_physical(scissor, (screen_w, screen_h))
+            }),
         ) {
             Some(bounds) => bounds,
             None => continue,
@@ -250,16 +269,19 @@ pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'
 
         let buffer = resources.prepare_buffer(
             draw.content.as_str(),
-            draw.width,
-            draw.height,
-            draw.font_size,
+            draw.width * scale,
+            draw.height * scale,
+            draw.font_size * scale,
             draw.line_height,
+            draw.font_weight,
             draw.font_families.as_slice(),
+            draw.align,
+            draw.allow_wrap,
         );
         buffers.push(buffer);
         entries.push(BatchEntry {
-            left: draw.x,
-            top: draw.y,
+            left: draw.x * scale,
+            top: draw.y * scale,
             bounds,
             color: to_glyphon_color(draw.color, draw.opacity),
         });
@@ -331,11 +353,32 @@ impl RenderTargetPass for TextPass {
     }
 
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        TextPass::set_scissor_rect(self, scissor_rect);
+        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
     }
 
     fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
         TextPass::set_color_target(self, color_target);
+    }
+}
+
+fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let a_right = ax.saturating_add(aw);
+            let a_bottom = ay.saturating_add(ah);
+            let b_right = bx.saturating_add(bw);
+            let b_bottom = by.saturating_add(bh);
+            let left = ax.max(bx);
+            let top = ay.max(by);
+            let right = a_right.min(b_right);
+            let bottom = a_bottom.min(b_bottom);
+            if right <= left || bottom <= top {
+                return None;
+            }
+            Some([left, top, right - left, bottom - top])
+        }
     }
 }
 
@@ -441,7 +484,10 @@ impl TextResources {
         height: f32,
         font_size: f32,
         line_height: f32,
+        font_weight: u16,
         font_families: &[String],
+        align: Align,
+        allow_wrap: bool,
     ) -> Buffer {
         let mut buffer = Buffer::new(
             &mut self.font_system,
@@ -450,7 +496,14 @@ impl TextResources {
                 (font_size * line_height.max(0.8)).max(1.0),
             ),
         );
-        buffer.set_wrap(&mut self.font_system, glyphon::Wrap::WordOrGlyph);
+        buffer.set_wrap(
+            &mut self.font_system,
+            if allow_wrap {
+                glyphon::Wrap::WordOrGlyph
+            } else {
+                glyphon::Wrap::None
+            },
+        );
         buffer.set_size(
             &mut self.font_system,
             Some(width.max(1.0)),
@@ -458,9 +511,11 @@ impl TextResources {
         );
 
         let attrs = if let Some(first) = font_families.first() {
-            Attrs::new().family(Family::Name(first.as_str()))
-        } else {
             Attrs::new()
+                .family(Family::Name(first.as_str()))
+                .weight(Weight(font_weight))
+        } else {
+            Attrs::new().weight(Weight(font_weight))
         };
 
         buffer.set_text(
@@ -468,7 +523,7 @@ impl TextResources {
             content,
             &attrs,
             Shaping::Advanced,
-            Some(glyphon::cosmic_text::Align::Left),
+            Some(align),
         );
         buffer.shape_until_scroll(&mut self.font_system, false);
         buffer

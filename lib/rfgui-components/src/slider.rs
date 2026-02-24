@@ -2,70 +2,66 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, RsxNode, component, on_mouse_down, on_mouse_move, on_mouse_up, rsx, use_state};
+use rfgui::ui::{
+    Binding, RsxComponent, RsxNode, component, on_mouse_down, on_mouse_move, on_mouse_up, props,
+    rsx, use_state,
+};
 use rfgui::{
     BorderRadius, Color, Length, ParsedValue, Position, PropertyId, Style, Transition,
     TransitionProperty, Transitions,
 };
 
+pub struct Slider;
+
+#[props]
 pub struct SliderProps {
-    pub value: f64,
-    pub value_binding: Option<Binding<f64>>,
-    pub min: f64,
-    pub max: f64,
-    pub width: f32,
-    pub height: f32,
-    pub disabled: bool,
+    pub value: Option<f64>,
+    pub binding: Option<Binding<f64>>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub disabled: Option<bool>,
 }
 
-impl SliderProps {
-    pub fn new() -> Self {
-        Self {
-            value: 30.0,
-            value_binding: None,
-            min: 0.0,
-            max: 100.0,
-            width: 240.0,
-            height: 32.0,
-            disabled: false,
+impl RsxComponent for Slider {
+    type Props = SliderProps;
+
+    fn render(props: Self::Props) -> RsxNode {
+        let value = props.value.unwrap_or(30.0);
+        let has_binding = props.binding.is_some();
+        let binding = props.binding.unwrap_or_else(|| Binding::new(value));
+
+        rsx! {
+            <SliderView
+                value={value}
+                has_binding={has_binding}
+                binding={binding}
+                min={props.min.unwrap_or(0.0)}
+                max={props.max.unwrap_or(100.0)}
+                disabled={props.disabled.unwrap_or(false)}
+            />
         }
     }
 }
 
-pub fn build_slider_rsx(props: SliderProps) -> RsxNode {
-    let has_binding = props.value_binding.is_some();
-    let binding = props.value_binding.unwrap_or_else(|| Binding::new(props.value));
-    rsx! {
-        <SliderComponent
-            value={props.value}
-            has_binding={has_binding}
-            binding={binding}
-            min={props.min}
-            max={props.max}
-            width={props.width}
-            height={props.height}
-            disabled={props.disabled}
-        />
-    }
-}
-
 #[component]
-fn SliderComponent(
+fn SliderView(
     value: f64,
     has_binding: bool,
     binding: Binding<f64>,
     min: f64,
     max: f64,
-    width: f32,
-    height: f32,
     disabled: bool,
 ) -> RsxNode {
+    let width = 240.0_f32;
+    let height = 32.0_f32;
+
     let fallback_value = use_state(|| value);
     let value_binding = if has_binding {
         binding
     } else {
         fallback_value.binding()
     };
+
     let value = value_binding.get().clamp(min, max);
     let ratio = normalize_ratio(value, min, max);
     let track_y = height * 0.5 - 2.0;
@@ -76,9 +72,8 @@ fn SliderComponent(
     let mut up = None;
     if !disabled {
         let last_sent_value = Rc::new(Cell::new(None::<f64>));
-        let min = min;
-        let max = max;
         let width = width.max(1.0);
+
         let binding = value_binding.clone();
         let last_sent_value_down = last_sent_value.clone();
         down = Some(on_mouse_down(move |event| {
@@ -87,9 +82,6 @@ fn SliderComponent(
             event.meta.stop_propagation();
         }));
 
-        let min = min;
-        let max = max;
-        let width = width.max(1.0);
         let binding = value_binding.clone();
         let last_sent_value_move = last_sent_value.clone();
         mv = Some(on_mouse_move(move |event| {
@@ -116,7 +108,7 @@ fn SliderComponent(
                     font_size=12
                     line_height=1.0
                     font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    color={if disabled { "#9E9E9E" } else { "#374151" }}
+                    style={{ color: if disabled { "#9E9E9E" } else { "#374151" } }}
                 >
                     {format!("{value:.0}")}
                 </Text>

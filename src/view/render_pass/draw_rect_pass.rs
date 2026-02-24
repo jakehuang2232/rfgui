@@ -107,11 +107,32 @@ impl RenderTargetPass for DrawRectPass {
     }
 
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        DrawRectPass::set_scissor_rect(self, scissor_rect);
+        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
     }
 
     fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
         DrawRectPass::set_color_target(self, color_target);
+    }
+}
+
+fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let a_right = ax.saturating_add(aw);
+            let a_bottom = ay.saturating_add(ah);
+            let b_right = bx.saturating_add(bw);
+            let b_bottom = by.saturating_add(bh);
+            let left = ax.max(bx);
+            let top = ay.max(by);
+            let right = a_right.min(b_right);
+            let bottom = a_bottom.min(b_bottom);
+            if right <= left || bottom <= top {
+                return None;
+            }
+            Some([left, top, right - left, bottom - top])
+        }
     }
 }
 
@@ -164,6 +185,7 @@ impl RenderPass for DrawRectPass {
         };
 
         let viewport = &mut ctx.viewport;
+        let scale = viewport.scale_factor();
         let device = match viewport.device() {
             Some(device) => device,
             None => return,
@@ -179,13 +201,18 @@ impl RenderPass for DrawRectPass {
             *resources = create_draw_rect_resources(device, format);
         }
 
+        let scaled_position = [self.position[0] * scale, self.position[1] * scale];
+        let scaled_size = [self.size[0] * scale, self.size[1] * scale];
+        let scaled_border_width = self.border_width * scale;
+        let scaled_border_radii = self.border_radii.map(|radius| radius * scale);
+
         let (vertices, indices) = tessellate_rounded_rect(
-            self.position,
-            self.size,
+            scaled_position,
+            scaled_size,
             self.fill_color,
             self.border_color,
-            self.border_width,
-            self.border_radii,
+            scaled_border_width,
+            scaled_border_radii,
             self.opacity,
             target_w as f32,
             target_h as f32,
@@ -203,6 +230,9 @@ impl RenderPass for DrawRectPass {
             label: Some("DrawRect Index Buffer (Per Pass)"),
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
+        });
+        let scissor_rect_physical = self.scissor_rect.and_then(|scissor_rect| {
+            viewport.logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
 
         let parts = match viewport.frame_parts() {
@@ -228,7 +258,7 @@ impl RenderPass for DrawRectPass {
                 ..Default::default()
             });
         pass.set_pipeline(&resources.pipeline);
-        if let Some([x, y, width, height]) = self.scissor_rect {
+        if let Some([x, y, width, height]) = scissor_rect_physical {
             pass.set_scissor_rect(x, y, width, height);
         }
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));

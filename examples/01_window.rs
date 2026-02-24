@@ -1,5 +1,5 @@
 use rfgui::{Transition, TransitionProperty};
-use rfgui_components::host::{Button, Checkbox, NumberField, Select, Slider, Switch};
+use rfgui_components::{Button, Checkbox, NumberField, Select, Slider, Switch, Window, on_resize};
 use std::sync::Arc;
 
 use rfgui::ui::host::{Element, Text, TextArea};
@@ -13,7 +13,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::Key;
-use winit::window::{Window, WindowId};
+use winit::window::{Window as WinitWindow, WindowId};
 
 #[component]
 fn MainScene() -> RsxNode {
@@ -25,6 +25,7 @@ fn MainScene() -> RsxNode {
     let selected_index = use_state(|| 0_usize);
     let slider_value = use_state(|| 42.0_f64);
     let switch_on = use_state(|| false);
+    let panel_size = globalState(|| String::from("360 x 240"));
 
     let click_count_value = click_count.get();
     let message_value = message.get();
@@ -34,9 +35,13 @@ fn MainScene() -> RsxNode {
     let slider_value_value = slider_value.get();
     let switch_on_value = switch_on.get();
     let increment_state = click_count.clone();
+    let panel_size_state = panel_size.clone();
     let increment = on_click(move |event| {
         increment_state.update(|v| *v += 1);
         event.meta.stop_propagation();
+    });
+    let panel_resize = on_resize(move |w, h| {
+        panel_size_state.update(|value| *value = format!("{w:.0} x {h:.0}"));
     });
 
     rsx! {
@@ -47,8 +52,8 @@ fn MainScene() -> RsxNode {
             gap: Length::px(24.0),
             padding: Padding::uniform(Length::px(20.0)),
             scroll_direction: ScrollDirection::Vertical,
-            font: FontFamily::new(["Heiti TC", "Noto Sans CJK TC", "PingFang TC"]),
-        }}>
+            font: FontFamily::new(["Noto Sans CJK TC", "PingFang TC"]),
+        }} anchor="root">
             <Element style={{
                 width: Length::px(150.0),
                 height: Length::px(150.0),
@@ -157,12 +162,12 @@ fn MainScene() -> RsxNode {
                 gap: Length::px(8.0),
                 padding: Padding::uniform(Length::px(8.0)),
             }} >
-                <Text font_size=22 color="#abb2bf" >
+                <Text font_size=22 style={{ color: "#abb2bf" }} >
                     Button Test
                 </Text>
-                <Text font_size=14 color="#abb2bf" >{format!("Click Count: {}", click_count_value)}</Text>
+                <Text font_size=14 style={{ color: "#abb2bf" }} >{format!("Click Count: {}", click_count_value)}</Text>
                 <Button
-                    label="Click Me"
+                    label="Click\nMe"
                     variant="contained"
                     on_click={increment}
                 />
@@ -176,13 +181,13 @@ fn MainScene() -> RsxNode {
                 opacity: 0.5,
                 display: Display::flow().column(),
             }}>
-                <Text font_size=16 color="#21252b" >
+                <Text font_size=16 style={{ color: "#21252b" }} >
                     Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 0.6 }}>
                     <Element style={{
                         width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                        <Text font_size=12 color="#ffffff"  opacity=0.9>
+                        <Text font_size=12 style={{ color: "#ffffff" }}  opacity=0.9>
                             Alpha
                         </Text>
                     </Element>
@@ -196,13 +201,13 @@ fn MainScene() -> RsxNode {
                 border_radius: 16,
                 display: Display::flow().column(),
             }}>
-                <Text font_size=16 color="#21252b" >
+                <Text font_size=16 style={{ color: "#21252b" }} >
                     Background Opacity Nesting
                 </Text>
                 <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 1 }}>
                     <Element style={{
                         width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                        <Text font_size=12 color="#ffffff"  opacity=0.9>
+                        <Text font_size=12 style={{ color: "#ffffff" }}  opacity=0.9>
                             Alpha
                         </Text>
                     </Element>
@@ -217,19 +222,19 @@ fn MainScene() -> RsxNode {
                 scroll_direction: ScrollDirection::Vertical,
                 display: Display::flow().column(),
             }}>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 1</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 2</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 3</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 4</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 5</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 6</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 7</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 8</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 9</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 10</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 11</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 12</Text>
-                <Text font_size=12 color="#111111" >Scroll down to see more content 13</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 1</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 2</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 3</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 4</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 5</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 6</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 7</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 8</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 9</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 10</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 11</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 12</Text>
+                <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 13</Text>
 
             </Element>
             <Element style={{
@@ -240,8 +245,8 @@ fn MainScene() -> RsxNode {
                 border_radius: 16,
                 display: Display::flow().column().no_wrap(),
             }}>
-                <Text font_size=14 color="#e5e9f0" >TextArea Test</Text>
-                <Text font_size=12 color="#aab4c6" >
+                <Text font_size=14 style={{ color: "#e5e9f0" }} >TextArea Test</Text>
+                <Text font_size=12 style={{ color: "#aab4c6" }} >
                     {format!("Bound chars: {}", message_value.chars().count())}
                 </Text>
                 <TextArea x=12 y=34 width=296 height=78 font_size=13 color="#c8d0e0"  multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
@@ -260,23 +265,21 @@ fn MainScene() -> RsxNode {
                 gap: Length::px(8.0),
                 padding: Padding::uniform(Length::px(12.0)),
             }}>
-                <Text font_size=14 color="#e2e8f0" >MUI Components Demo</Text>
+                <Text font_size=14 style={{ color: "#e2e8f0" }} >MUI Components Demo</Text>
                 <Element style={{
                     display: Display::flow().row().no_wrap(),
                     gap: Length::px(8.0)
                 }}>
-                    <Button label="Contained" width=98 height=34 variant="contained" />
-                    <Button label="Outlined" width=98 height=34 variant="outlined" />
-                    <Button label="Text" width=70 height=34 variant="text" />
+                    <Button label="Contained" variant="contained" />
+                    <Button label="Outlined" variant="outlined" />
+                    <Button label="Text" variant="text" />
                 </Element>
-                <Checkbox label="Enable feature" binding={checked.binding()} width=180 height=30 />
+                <Checkbox label="Enable feature" binding={checked.binding()} />
                 <Element style={{
-                    width: Length::px(300.0),
-                    height: Length::px(36.0),
                     display: Display::flow().row().no_wrap(),
-                    gap: Length::px(8.0)
+                    gap: Length::px(8.0),
                 }}>
-                    <NumberField binding={number_value.binding()} min=0.0 max=10.0 step=0.5 width=136 height=36 />
+                    <NumberField binding={number_value.binding()} min=0.0 max=10.0 step=0.5 />
                     <Select
                         options={vec![
                             String::from("Option A"),
@@ -284,13 +287,11 @@ fn MainScene() -> RsxNode {
                             String::from("Option C"),
                         ]}
                         binding={selected_index.binding()}
-                        width=140
-                        height=36
                     />
                 </Element>
-                <Slider binding={slider_value.binding()} min=0.0 max=100.0 width=180 height=30 />
+                <Slider binding={slider_value.binding()} min=0.0 max=100.0 />
                 <Switch label="Dark mode" binding={switch_on.binding()} />
-                <Text font_size=12 color="#93c5fd" >
+                <Text font_size=12 style={{ color: "#93c5fd" }} >
                     {format!(
                         "checked={} number={:.1} selected={} slider={:.0} switch={}",
                         checked_value,
@@ -302,6 +303,40 @@ fn MainScene() -> RsxNode {
                 </Text>
             </Element>
             <Element style={{
+                width: Length::px(420.0),
+                height: Length::px(340.0),
+                background: "#0b1324",
+                border: Border::uniform(Length::px(2.0), &Color::hex("#1e40af")),
+                border_radius: 14,
+                padding: Padding::uniform(Length::px(12.0)),
+                display: Display::flow().column().no_wrap(),
+                gap: Length::px(8.0),
+            }}>
+                <Text font_size=14 style={{ color: "#dbeafe" }}>Window Component Demo</Text>
+                <Text font_size=12 style={{ color: "#93c5fd" }}>
+                    {format!("size: {}", panel_size.get())}
+                </Text>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    height: Length::px(270.0),
+                    background: "#0f172a",
+                    border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
+                    border_radius: 10,
+                }}>
+                    <Window
+                        title="Inspector Panel"
+                        draggable=true
+                        width=360.0
+                        height=240.0
+                        on_resize={panel_resize}
+                    >
+                        <Text font_size=12 style={{ color: "#0f172a" }}>Drag title bar to move</Text>
+                        <Text font_size=12 style={{ color: "#334155" }}>Drag bottom-right handle to resize</Text>
+                        <Button label="Action" variant="outlined" />
+                    </Window>
+                </Element>
+            </Element>
+            <Element style={{
                 width: Length::percent(100.0),
                 height: Length::px(300.0),
                 background: "#111827",
@@ -311,8 +346,8 @@ fn MainScene() -> RsxNode {
                 display: Display::flow().column().no_wrap(),
                 gap: Length::px(8.0),
             }} anchor="menu_button">
-                <Text font_size=14 color="#e2e8f0">Absolute + Anchor + Collision</Text>
-                <Text font_size=12 color="#94a3b8">
+                <Text font_size=14 style={{ color: "#e2e8f0" }}>Absolute + Anchor + Collision</Text>
+                <Text font_size=12 style={{ color: "#94a3b8" }}>
                     parent anchor = "menu_button"
                 </Text>
                 <Element style={{
@@ -321,7 +356,7 @@ fn MainScene() -> RsxNode {
                     background: "#1d4ed8",
                     border_radius: 8,
                 }}>
-                    <Text font_size=12 color="#eff6ff">Menu Button</Text>
+                    <Text font_size=12 style={{ color: "#eff6ff" }}>Menu Button</Text>
                 </Element>
                 <Element style={{
                     width: Length::percent(100.0),
@@ -337,7 +372,7 @@ fn MainScene() -> RsxNode {
                         border_radius: 8,
                         padding: Padding::uniform(Length::px(8.0)),
                     }}>
-                        <Text font_size=10 color="#cbd5e1">clip=Parent (default)</Text>
+                        <Text font_size=10 style={{ color: "#cbd5e1" }}>clip=Parent (default)</Text>
                         <Element style={{
                             position: Position::absolute()
                                 .top(Length::px(56.0))
@@ -347,7 +382,7 @@ fn MainScene() -> RsxNode {
                             background: "#ef4444",
                             border_radius: 6,
                         }}>
-                            <Text font_size=10 color="#fef2f2">overflow</Text>
+                            <Text font_size=10 style={{ color: "#fef2f2" }}>overflow</Text>
                         </Element>
                     </Element>
                     <Element style={{
@@ -358,7 +393,7 @@ fn MainScene() -> RsxNode {
                         border_radius: 8,
                         padding: Padding::uniform(Length::px(8.0)),
                     }}>
-                        <Text font_size=10 color="#cbd5e1">clip=Viewport</Text>
+                        <Text font_size=10 style={{ color: "#cbd5e1" }}>clip=Viewport</Text>
                         <Element style={{
                             position: Position::absolute()
                                 .top(Length::px(56.0))
@@ -369,7 +404,7 @@ fn MainScene() -> RsxNode {
                             background: "#f59e0b",
                             border_radius: 6,
                         }}>
-                            <Text font_size=10 color="#fffbeb">overflow</Text>
+                            <Text font_size=10 style={{ color: "#fffbeb" }}>overflow</Text>
                         </Element>
                     </Element>
                     <Element style={{
@@ -382,14 +417,14 @@ fn MainScene() -> RsxNode {
                         display: Display::flow().column().no_wrap(),
                         gap: Length::px(6.0),
                     }}>
-                        <Text font_size=10 color="#cbd5e1">clip=AnchorParent</Text>
+                        <Text font_size=10 style={{ color: "#cbd5e1" }}>clip=AnchorParent</Text>
                         <Element style={{
                             width: Length::px(56.0),
                             height: Length::px(26.0),
                             background: "#1d4ed8",
                             border_radius: 6,
                         }} anchor="abs_anchor_test">
-                            <Text font_size=9 color="#dbeafe">anchor</Text>
+                            <Text font_size=9 style={{ color: "#dbeafe" }}>anchor</Text>
                         </Element>
                         <Element style={{
                             position: Position::absolute()
@@ -402,7 +437,7 @@ fn MainScene() -> RsxNode {
                             background: "#22c55e",
                             border_radius: 6,
                         }}>
-                            <Text font_size=9 color="#ecfdf5">anchor clip</Text>
+                            <Text font_size=9 style={{ color: "#ecfdf5" }}>anchor clip</Text>
                         </Element>
                     </Element>
                 </Element>
@@ -421,9 +456,9 @@ fn MainScene() -> RsxNode {
                     display: Display::flow().column(),
                     gap: Length::px(6.0),
                 }}>
-                    <Text font_size=12 color="#bfdbfe">Popover (anchor)</Text>
-                    <Text font_size=11 color="#93c5fd">collision: FlipFit + Viewport</Text>
-                    <Text font_size=11 color="#93c5fd">try resizing window edge</Text>
+                    <Text font_size=12 style={{ color: "#bfdbfe" }}>Popover (anchor)</Text>
+                    <Text font_size=11 style={{ color: "#93c5fd" }}>collision: FlipFit + Viewport</Text>
+                    <Text font_size=11 style={{ color: "#93c5fd" }}>try resizing window edge</Text>
                 </Element>
                 <Element style={{
                     position: Position::absolute()
@@ -435,7 +470,7 @@ fn MainScene() -> RsxNode {
                     background: "#166534",
                     border_radius: 8,
                 }}>
-                    <Text font_size=11 color="#dcfce7">fallback parent anchor</Text>
+                    <Text font_size=11 style={{ color: "#dcfce7" }}>fallback parent anchor</Text>
                 </Element>
             </Element>
         </Element>
@@ -444,7 +479,7 @@ fn MainScene() -> RsxNode {
 
 #[derive(Default)]
 struct App {
-    window: Option<Arc<Window>>,
+    window: Option<Arc<WinitWindow>>,
     viewport: Option<Viewport>,
     app: Option<RsxNode>,
     ime_composing: bool,
@@ -476,12 +511,7 @@ impl App {
 
         let mut next_area = None;
         if let Some((x, y, w, h)) = viewport.focused_ime_cursor_rect() {
-            next_area = Some((
-                x.max(0.0).round() as i32,
-                y.max(0.0).round() as i32,
-                w.max(1.0).ceil() as u32,
-                h.max(1.0).ceil() as u32,
-            ));
+            next_area = Some(viewport.logical_to_physical_rect(x, y, w, h));
         }
         // Enable IME as long as there is a focused node; cursor area can arrive later.
         let next_allowed = focused_id.is_some();
@@ -507,10 +537,11 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes())
+                .create_window(WinitWindow::default_attributes())
                 .unwrap(),
         );
         let mut viewport = Viewport::new();
+        viewport.set_scale_factor(window.scale_factor() as f32);
         let size = window.inner_size();
         viewport.set_size(size.width, size.height);
         viewport.set_clear_color(Box::new(HexColor::new("#282c34")));
@@ -563,7 +594,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(viewport) = &mut self.viewport {
-                    viewport.set_mouse_position_viewport(position.x as f32, position.y as f32);
+                    let (logical_x, logical_y) =
+                        viewport.physical_to_logical_point(position.x as f32, position.y as f32);
+                    viewport.set_mouse_position_viewport(logical_x, logical_y);
                     viewport.dispatch_mouse_move_event();
                 }
             }
@@ -576,7 +609,9 @@ impl ApplicationHandler for App {
                 if let Some(viewport) = &mut self.viewport {
                     let (dx, dy) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (x * 24.0, y * 24.0),
-                        MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
+                        MouseScrollDelta::PixelDelta(pos) => {
+                            viewport.physical_to_logical_point(pos.x as f32, pos.y as f32)
+                        }
                     };
                     viewport.dispatch_mouse_wheel_event(-dx, -dy);
                 }

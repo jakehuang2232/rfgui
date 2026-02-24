@@ -141,6 +141,7 @@ impl RenderPass for CompositeLayerPass {
             None => surface_size,
         };
         let (layer_w, layer_h) = render_target_size(ctx, layer_handle).unwrap_or(surface_size);
+        let scale = ctx.viewport.scale_factor();
 
         let device = match ctx.viewport.device() {
             Some(device) => device,
@@ -156,10 +157,14 @@ impl RenderPass for CompositeLayerPass {
             *resources = create_resources(device, format);
         }
 
+        let scaled_rect_pos = [self.rect_pos[0] * scale, self.rect_pos[1] * scale];
+        let scaled_rect_size = [self.rect_size[0] * scale, self.rect_size[1] * scale];
+        let scaled_corner_radii = self.corner_radii.map(|radius| radius * scale);
+
         let (vertices, indices) = tessellate_composite_layer(
-            self.rect_pos,
-            self.rect_size,
-            self.corner_radii,
+            scaled_rect_pos,
+            scaled_rect_size,
+            scaled_corner_radii,
             self.opacity,
             target_w as f32,
             target_h as f32,
@@ -195,6 +200,10 @@ impl RenderPass for CompositeLayerPass {
                 },
             ],
         });
+        let scissor_rect_physical = self.scissor_rect.and_then(|scissor_rect| {
+            ctx.viewport
+                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
+        });
 
         let parts = match ctx.viewport.frame_parts() {
             Some(parts) => parts,
@@ -218,7 +227,7 @@ impl RenderPass for CompositeLayerPass {
                 depth_stencil_attachment: None,
                 ..Default::default()
             });
-        if let Some([x, y, width, height]) = self.scissor_rect {
+        if let Some([x, y, width, height]) = scissor_rect_physical {
             pass.set_scissor_rect(x, y, width, height);
         }
         pass.set_pipeline(&resources.pipeline);
@@ -239,11 +248,32 @@ impl RenderTargetPass for CompositeLayerPass {
     }
 
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        CompositeLayerPass::set_scissor_rect(self, scissor_rect);
+        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
     }
 
     fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
         CompositeLayerPass::set_color_target(self, color_target);
+    }
+}
+
+fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let a_right = ax.saturating_add(aw);
+            let a_bottom = ay.saturating_add(ah);
+            let b_right = bx.saturating_add(bw);
+            let b_bottom = by.saturating_add(bh);
+            let left = ax.max(bx);
+            let top = ay.max(by);
+            let right = a_right.min(b_right);
+            let bottom = a_bottom.min(b_bottom);
+            if right <= left || bottom <= top {
+                return None;
+            }
+            Some([left, top, right - left, bottom - top])
+        }
     }
 }
 

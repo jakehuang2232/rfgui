@@ -164,6 +164,8 @@ impl TransitionHost<TrackTarget> for TransitionHostAdapter<'_> {
 pub struct Viewport {
     clear_color: Box<dyn ColorLike>,
     scale_factor: f32,
+    logical_width: f32,
+    logical_height: f32,
     surface: Option<wgpu::Surface<'static>>,
     surface_config: wgpu::SurfaceConfiguration,
     device: Option<wgpu::Device>,
@@ -400,14 +402,13 @@ impl Viewport {
                 registered_channels: &self.transition_channels,
                 claims: &mut self.transition_claims,
             };
-            self.layout_transition_plugin
-                .run_tracks(
-                    TransitionFrame {
-                        dt_seconds: dt,
-                        now_seconds,
-                    },
-                    &mut host,
-                )
+            self.layout_transition_plugin.run_tracks(
+                TransitionFrame {
+                    dt_seconds: dt,
+                    now_seconds,
+                },
+                &mut host,
+            )
         };
         let mut changed = false;
         let layout_samples = self.layout_transition_plugin.take_samples();
@@ -511,42 +512,39 @@ impl Viewport {
                 registered_channels: &self.transition_channels,
                 claims: &mut self.transition_claims,
             };
-            self.scroll_transition_plugin
-                .run_tracks(
-                    TransitionFrame {
-                        dt_seconds: dt,
-                        now_seconds,
-                    },
-                    &mut host,
-                )
+            self.scroll_transition_plugin.run_tracks(
+                TransitionFrame {
+                    dt_seconds: dt,
+                    now_seconds,
+                },
+                &mut host,
+            )
         };
         let style_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transition_channels,
                 claims: &mut self.transition_claims,
             };
-            self.style_transition_plugin
-                .run_tracks(
-                    TransitionFrame {
-                        dt_seconds: dt,
-                        now_seconds,
-                    },
-                    &mut host,
-                )
+            self.style_transition_plugin.run_tracks(
+                TransitionFrame {
+                    dt_seconds: dt,
+                    now_seconds,
+                },
+                &mut host,
+            )
         };
         let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transition_channels,
                 claims: &mut self.transition_claims,
             };
-            self.visual_transition_plugin
-                .run_tracks(
-                    TransitionFrame {
-                        dt_seconds: dt,
-                        now_seconds,
-                    },
-                    &mut host,
-                )
+            self.visual_transition_plugin.run_tracks(
+                TransitionFrame {
+                    dt_seconds: dt,
+                    now_seconds,
+                },
+                &mut host,
+            )
         };
         let samples = self.scroll_transition_plugin.take_samples();
         let mut changed = false;
@@ -684,6 +682,8 @@ impl Viewport {
         Viewport {
             clear_color: Box::new(HexColor::new("#000000")),
             scale_factor: 1.0,
+            logical_width: 1.0,
+            logical_height: 1.0,
             surface: None,
             surface_config: wgpu::SurfaceConfiguration {
                 usage: TextureUsages::RENDER_ATTACHMENT
@@ -760,6 +760,7 @@ impl Viewport {
         if height == 0 {
             height = 1;
         }
+        self.update_logical_size(width, height);
         if self.surface_config.width == width
             && self.surface_config.height == height
             && self.pending_size.is_none()
@@ -775,7 +776,61 @@ impl Viewport {
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
-        self.scale_factor = scale_factor;
+        self.scale_factor = scale_factor.max(0.0001);
+        self.update_logical_size(self.surface_config.width, self.surface_config.height);
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    pub fn logical_size(&self) -> (f32, f32) {
+        (self.logical_width, self.logical_height)
+    }
+
+    pub fn logical_scissor_to_physical(
+        &self,
+        scissor_rect: [u32; 4],
+        target_size: (u32, u32),
+    ) -> Option<[u32; 4]> {
+        let scale = self.scale_factor.max(0.0001);
+        let [x, y, width, height] = scissor_rect;
+        let left = (x as f32 * scale).floor().max(0.0) as i64;
+        let top = (y as f32 * scale).floor().max(0.0) as i64;
+        let right = ((x as f32 + width as f32) * scale).ceil().max(0.0) as i64;
+        let bottom = ((y as f32 + height as f32) * scale).ceil().max(0.0) as i64;
+        let max_w = target_size.0 as i64;
+        let max_h = target_size.1 as i64;
+
+        let clamped_left = left.clamp(0, max_w);
+        let clamped_top = top.clamp(0, max_h);
+        let clamped_right = right.clamp(0, max_w);
+        let clamped_bottom = bottom.clamp(0, max_h);
+        if clamped_right <= clamped_left || clamped_bottom <= clamped_top {
+            return None;
+        }
+
+        Some([
+            clamped_left as u32,
+            clamped_top as u32,
+            (clamped_right - clamped_left) as u32,
+            (clamped_bottom - clamped_top) as u32,
+        ])
+    }
+
+    pub fn physical_to_logical_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let scale = self.scale_factor.max(0.0001);
+        (x / scale, y / scale)
+    }
+
+    pub fn logical_to_physical_rect(&self, x: f32, y: f32, w: f32, h: f32) -> (i32, i32, u32, u32) {
+        let scale = self.scale_factor.max(0.0001);
+        (
+            (x.max(0.0) * scale).round() as i32,
+            (y.max(0.0) * scale).round() as i32,
+            (w.max(1.0) * scale).ceil() as u32,
+            (h.max(1.0) * scale).ceil() as u32,
+        )
     }
 
     pub fn request_redraw(&mut self) {
@@ -919,10 +974,10 @@ impl Viewport {
         let measure_started_at = Instant::now();
         for root in roots.iter_mut() {
             root.measure(super::base_component::LayoutConstraints {
-                max_width: self.surface_config.width as f32,
-                max_height: self.surface_config.height as f32,
-                percent_base_width: Some(self.surface_config.width as f32),
-                percent_base_height: Some(self.surface_config.height as f32),
+                max_width: self.logical_width,
+                max_height: self.logical_height,
+                percent_base_width: Some(self.logical_width),
+                percent_base_height: Some(self.logical_height),
             });
         }
         let layout_measure_elapsed_ms = measure_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -933,10 +988,10 @@ impl Viewport {
                 parent_y: 0.0,
                 visual_offset_x: 0.0,
                 visual_offset_y: 0.0,
-                available_width: self.surface_config.width as f32,
-                available_height: self.surface_config.height as f32,
-                percent_base_width: Some(self.surface_config.width as f32),
-                percent_base_height: Some(self.surface_config.height as f32),
+                available_width: self.logical_width,
+                available_height: self.logical_height,
+                percent_base_width: Some(self.logical_width),
+                percent_base_height: Some(self.logical_height),
             });
         }
         let layout_place_elapsed_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -968,10 +1023,10 @@ impl Viewport {
                     parent_y: 0.0,
                     visual_offset_x: 0.0,
                     visual_offset_y: 0.0,
-                    available_width: self.surface_config.width as f32,
-                    available_height: self.surface_config.height as f32,
-                    percent_base_width: Some(self.surface_config.width as f32),
-                    percent_base_height: Some(self.surface_config.height as f32),
+                    available_width: self.logical_width,
+                    available_height: self.logical_height,
+                    percent_base_width: Some(self.logical_width),
+                    percent_base_height: Some(self.logical_height),
                 });
             }
             relayout_place_elapsed_ms = relayout_place_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1000,6 +1055,26 @@ impl Viewport {
         ctx.set_last_target(output);
         for root in roots.iter_mut() {
             root.build(&mut graph, &mut ctx);
+        }
+        let mut deferred_node_ids = ctx.take_deferred_node_ids();
+        let mut deferred_index = 0usize;
+        while deferred_index < deferred_node_ids.len() {
+            let node_id = deferred_node_ids[deferred_index];
+            deferred_index += 1;
+            for root in roots.iter_mut() {
+                if super::base_component::build_node_by_id(
+                    root.as_mut(),
+                    node_id,
+                    &mut graph,
+                    &mut ctx,
+                ) {
+                    break;
+                }
+            }
+            let newly_deferred = ctx.take_deferred_node_ids();
+            if !newly_deferred.is_empty() {
+                deferred_node_ids.extend(newly_deferred);
+            }
         }
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -1147,6 +1222,12 @@ impl Viewport {
 
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
+    }
+
+    fn update_logical_size(&mut self, physical_width: u32, physical_height: u32) {
+        let scale = self.scale_factor.max(0.0001);
+        self.logical_width = (physical_width as f32 / scale).max(1.0);
+        self.logical_height = (physical_height as f32 / scale).max(1.0);
     }
 
     pub fn frame_texture(&self) -> Option<&wgpu::Texture> {
@@ -1298,6 +1379,9 @@ impl Viewport {
             }
         }
         self.ui_roots = roots;
+        if let Some(capture_target_id) = event.meta.pointer_capture_target_id() {
+            self.input_state.pointer_capture_node_id = Some(capture_target_id);
+        }
         self.sync_focus_dispatch();
         if handled {
             let clicked_target = event.meta.target_id();

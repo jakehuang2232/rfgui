@@ -1,58 +1,50 @@
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, ClickHandlerProp, RsxNode, component, rsx, use_state};
+use rfgui::ui::{
+    Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
+};
 use rfgui::{
     AlignItems, Border, BorderRadius, Color, Display, JustifyContent, Length, ParsedValue,
     PropertyId, Style,
 };
 
+pub struct NumberField;
+
+#[props]
 pub struct NumberFieldProps {
-    pub value: f64,
-    pub value_binding: Option<Binding<f64>>,
+    pub value: Option<f64>,
+    pub binding: Option<Binding<f64>>,
     pub min: Option<f64>,
     pub max: Option<f64>,
-    pub step: f64,
-    pub width: f32,
-    pub height: f32,
-    pub disabled: bool,
+    pub step: Option<f64>,
+    pub disabled: Option<bool>,
 }
 
-impl NumberFieldProps {
-    pub fn new() -> Self {
-        Self {
-            value: 0.0,
-            value_binding: None,
-            min: None,
-            max: None,
-            step: 1.0,
-            width: 140.0,
-            height: 40.0,
-            disabled: false,
+impl RsxComponent for NumberField {
+    type Props = NumberFieldProps;
+
+    fn render(props: Self::Props) -> RsxNode {
+        let value = props.value.unwrap_or(0.0);
+        let has_binding = props.binding.is_some();
+        let binding = props.binding.unwrap_or_else(|| Binding::new(value));
+
+        rsx! {
+            <NumberFieldView
+                value={value}
+                has_binding={has_binding}
+                binding={binding}
+                has_min={props.min.is_some()}
+                min_value={props.min.unwrap_or(0.0)}
+                has_max={props.max.is_some()}
+                max_value={props.max.unwrap_or(0.0)}
+                step={props.step.unwrap_or(1.0)}
+                disabled={props.disabled.unwrap_or(false)}
+            />
         }
     }
 }
 
-pub fn build_number_field_rsx(props: NumberFieldProps) -> RsxNode {
-    let has_binding = props.value_binding.is_some();
-    let binding = props.value_binding.unwrap_or_else(|| Binding::new(props.value));
-    rsx! {
-        <NumberFieldComponent
-            value={props.value}
-            has_binding={has_binding}
-            binding={binding}
-            has_min={props.min.is_some()}
-            min_value={props.min.unwrap_or(0.0)}
-            has_max={props.max.is_some()}
-            max_value={props.max.unwrap_or(0.0)}
-            step={props.step}
-            width={props.width}
-            height={props.height}
-            disabled={props.disabled}
-        />
-    }
-}
-
 #[component]
-fn NumberFieldComponent(
+fn NumberFieldView(
     value: f64,
     has_binding: bool,
     binding: Binding<f64>,
@@ -61,10 +53,11 @@ fn NumberFieldComponent(
     has_max: bool,
     max_value: f64,
     step: f64,
-    width: f32,
-    height: f32,
     disabled: bool,
 ) -> RsxNode {
+    let width = 140.0_f32;
+    let height = 40.0_f32;
+
     let fallback_value = use_state(|| value);
     let value_binding = if has_binding {
         binding
@@ -97,7 +90,7 @@ fn NumberFieldComponent(
                     font_size=18
                     line_height=1.0
                     font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    color={if disabled { "#BDBDBD" } else { "#374151" }}
+                    style={{ color: if disabled { "#BDBDBD" } else { "#374151" } }}
                 >
                     {"−"}
                 </Text>
@@ -107,7 +100,7 @@ fn NumberFieldComponent(
                     font_size=14
                     line_height=1.0
                     font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    color={if disabled { "#9E9E9E" } else { "#111827" }}
+                    style={{ color: if disabled { "#9E9E9E" } else { "#111827" } }}
                 >
                     {format_number(current)}
                 </Text>
@@ -117,7 +110,7 @@ fn NumberFieldComponent(
                     font_size=16
                     line_height=1.0
                     font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    color={if disabled { "#BDBDBD" } else { "#374151" }}
+                    style={{ color: if disabled { "#BDBDBD" } else { "#374151" } }}
                 >
                     {"+"}
                 </Text>
@@ -136,7 +129,9 @@ fn NumberFieldComponent(
         if let Some(handler) = plus_click
             && let Some(RsxNode::Element(plus_node)) = root_node.children.get_mut(2)
         {
-            plus_node.props.push(("on_click".to_string(), handler.into()));
+            plus_node
+                .props
+                .push(("on_click".to_string(), handler.into()));
         }
     }
 

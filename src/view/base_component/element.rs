@@ -164,6 +164,7 @@ pub struct UiBuildContext {
     target_height: u32,
     target_format: wgpu::TextureFormat,
     scissor_rect: Option<[u32; 4]>,
+    deferred_node_ids: Vec<u64>,
 }
 
 impl UiBuildContext {
@@ -179,6 +180,7 @@ impl UiBuildContext {
             target_height: viewport_height.max(1),
             target_format: viewport_format,
             scissor_rect: None,
+            deferred_node_ids: Vec::new(),
         }
     }
 
@@ -218,6 +220,26 @@ impl UiBuildContext {
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {
         self.scissor_rect
+    }
+
+    pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
+        let previous = self.scissor_rect;
+        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
+        previous
+    }
+
+    pub(crate) fn restore_scissor_rect(&mut self, previous: Option<[u32; 4]>) {
+        self.scissor_rect = previous;
+    }
+
+    pub(crate) fn append_to_defer(&mut self, node_id: u64) {
+        if !self.deferred_node_ids.contains(&node_id) {
+            self.deferred_node_ids.push(node_id);
+        }
+    }
+
+    pub(crate) fn take_deferred_node_ids(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.deferred_node_ids)
     }
 
     pub(crate) fn push_pass<P: RenderTargetPass + RenderPass + 'static>(
@@ -468,6 +490,7 @@ pub struct Element {
     layout_dirty: bool,
     last_layout_proposal: Option<LayoutProposal>,
     flex_info: Option<FlexLayoutInfo>,
+    has_absolute_descendant_for_hit_test: bool,
     children: Vec<Box<dyn ElementTrait>>,
 }
 
@@ -933,6 +956,10 @@ impl Renderable for Element {
             return;
         }
 
+        let previous_scissor_rect = self
+            .absolute_viewport_clip_scissor_rect()
+            .map(|scissor| ctx.push_scissor_rect(Some(scissor)));
+
         let outer_radii = normalize_corner_radii(
             self.border_radii,
             self.core.layout_size.width.max(0.0),
@@ -953,6 +980,9 @@ impl Renderable for Element {
         let layer = if use_layer {
             let layer = ctx.allocate_layer(graph);
             let Some(layer_handle) = layer.handle() else {
+                if let Some(previous) = previous_scissor_rect {
+                    ctx.restore_scissor_rect(previous);
+                }
                 return;
             };
             ctx.set_color_target(Some(layer_handle));
@@ -990,6 +1020,9 @@ impl Renderable for Element {
             let previous_color_target = ctx.color_target();
             let layer = ctx.allocate_layer(graph);
             let Some(layer_handle) = layer.handle() else {
+                if let Some(previous) = previous_scissor_rect {
+                    ctx.restore_scissor_rect(previous);
+                }
                 return;
             };
             ctx.set_color_target(Some(layer_handle));
@@ -1017,6 +1050,14 @@ impl Renderable for Element {
 
         for idx in overflow_child_indices {
             if let Some(child) = self.children.get_mut(idx) {
+                if child
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .is_some_and(Element::should_append_to_root_viewport_render)
+                {
+                    ctx.append_to_defer(child.id());
+                    continue;
+                }
                 child.build(graph, ctx);
             }
         }
@@ -1036,10 +1077,31 @@ impl Renderable for Element {
             );
             ctx.push_pass(graph, composite);
         }
+
+        if let Some(previous) = previous_scissor_rect {
+            ctx.restore_scissor_rect(previous);
+        }
     }
 }
 
 impl Element {
+    fn absolute_viewport_clip_scissor_rect(&self) -> Option<[u32; 4]> {
+        if self.computed_style.position.mode() != PositionMode::Absolute {
+            return None;
+        }
+        if self.computed_style.position.clip_mode() != ClipMode::Viewport {
+            return None;
+        }
+        let (viewport_w, viewport_h) = self
+            .viewport_size_from_runtime(self.core.layout_size.width, self.core.layout_size.height);
+        rect_to_scissor_rect(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: viewport_w.max(0.0),
+            height: viewport_h.max(0.0),
+        })
+    }
+
     fn current_layout_transition_size(&self) -> (f32, f32) {
         (
             self.layout_transition_override_width
@@ -1140,6 +1202,7 @@ impl Element {
             layout_dirty: true,
             last_layout_proposal: None,
             flex_info: None,
+            has_absolute_descendant_for_hit_test: false,
             children: Vec::new(),
         };
         el.recompute_style();
@@ -1179,6 +1242,10 @@ impl Element {
         self.layout_dirty = true;
     }
 
+    pub fn mark_layout_dirty(&mut self) {
+        self.layout_dirty = true;
+    }
+
     pub fn set_background_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.background_color = Box::new(color);
     }
@@ -1201,10 +1268,12 @@ impl Element {
 
     pub fn set_layout_transition_width(&mut self, value: f32) {
         self.layout_transition_override_width = Some(value.max(0.0));
+        self.layout_dirty = true;
     }
 
     pub fn set_layout_transition_height(&mut self, value: f32) {
         self.layout_transition_override_height = Some(value.max(0.0));
+        self.layout_dirty = true;
     }
 
     pub fn seed_layout_transition_snapshot(
@@ -2083,8 +2152,34 @@ impl Element {
         if child.parent_id() != Some(self.core.id) {
             child.set_parent_id(Some(self.core.id));
         }
+        if let Some(element) = child.as_any().downcast_ref::<Element>() {
+            self.has_absolute_descendant_for_hit_test |= element
+                .is_absolute_positioned_for_hit_test()
+                || element.has_absolute_descendant_for_hit_test;
+        }
         self.children.push(child);
         self.layout_dirty = true;
+    }
+
+    pub(crate) fn has_absolute_descendant_for_hit_test(&self) -> bool {
+        self.has_absolute_descendant_for_hit_test
+    }
+
+    pub(crate) fn is_absolute_positioned_for_hit_test(&self) -> bool {
+        self.computed_style.position.mode() == PositionMode::Absolute
+    }
+
+    pub(crate) fn clip_mode_for_hit_test(&self) -> ClipMode {
+        self.computed_style.position.clip_mode()
+    }
+
+    pub(crate) fn has_anchor_name_for_hit_test(&self) -> bool {
+        self.computed_style.position.anchor_name().is_some()
+    }
+
+    pub(crate) fn should_append_to_root_viewport_render(&self) -> bool {
+        self.computed_style.position.mode() == PositionMode::Absolute
+            && self.computed_style.position.clip_mode() == ClipMode::Viewport
     }
 
     fn measure_flex_children(&mut self, proposal: LayoutProposal) {
@@ -2153,19 +2248,36 @@ impl Element {
             });
         }
         let info = self.compute_flex_info(inner_w, inner_h);
+        let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
 
         if self.computed_style.width == SizeValue::Auto {
-            self.core
-                .set_width(info.total_main + bw_l + bw_r + p_l + p_r);
+            let auto_width = if is_row {
+                info.total_main
+            } else {
+                info.total_cross
+            };
+            self.core.set_width(auto_width + bw_l + bw_r + p_l + p_r);
         }
         if self.computed_style.height == SizeValue::Auto {
-            self.core
-                .set_height(info.total_cross + bw_t + bw_b + p_t + p_b);
+            let auto_height = if is_row {
+                info.total_cross
+            } else {
+                info.total_main
+            };
+            self.core.set_height(auto_height + bw_t + bw_b + p_t + p_b);
         }
 
         self.content_size = Size {
-            width: info.total_main,
-            height: info.total_cross,
+            width: if is_row {
+                info.total_main
+            } else {
+                info.total_cross
+            },
+            height: if is_row {
+                info.total_cross
+            } else {
+                info.total_main
+            },
         };
         self.flex_info = Some(info);
     }
@@ -3295,6 +3407,18 @@ impl Element {
             })
     }
 
+    fn recompute_absolute_descendant_for_hit_test(&mut self) {
+        self.has_absolute_descendant_for_hit_test = self.children.iter().any(|child| {
+            child
+                .as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(|element| {
+                    element.is_absolute_positioned_for_hit_test()
+                        || element.has_absolute_descendant_for_hit_test
+                })
+        });
+    }
+
     fn place_children(
         &mut self,
         child_percent_base_width: Option<f32>,
@@ -3352,6 +3476,7 @@ impl Element {
         }
         self.update_content_size_from_children();
         self.clamp_scroll_offset();
+        self.recompute_absolute_descendant_for_hit_test();
     }
 
     fn place_flex_children(
@@ -3536,6 +3661,43 @@ fn colors_like_eq(a: &dyn ColorLike, b: &dyn ColorLike) -> bool {
     a.to_rgba_u8() == b.to_rgba_u8()
 }
 
+fn rect_to_scissor_rect(rect: Rect) -> Option<[u32; 4]> {
+    let left = rect.x.floor().max(0.0) as i64;
+    let top = rect.y.floor().max(0.0) as i64;
+    let right = (rect.x + rect.width).ceil().max(0.0) as i64;
+    let bottom = (rect.y + rect.height).ceil().max(0.0) as i64;
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some([
+        left as u32,
+        top as u32,
+        (right - left) as u32,
+        (bottom - top) as u32,
+    ])
+}
+
+fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let a_right = ax.saturating_add(aw);
+            let a_bottom = ay.saturating_add(ah);
+            let b_right = bx.saturating_add(bw);
+            let b_bottom = by.saturating_add(bh);
+            let left = ax.max(bx);
+            let top = ay.max(by);
+            let right = a_right.min(b_right);
+            let bottom = a_bottom.min(b_bottom);
+            if right <= left || bottom <= top {
+                return None;
+            }
+            Some([left, top, right - left, bottom - top])
+        }
+    }
+}
+
 fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.0001
 }
@@ -3680,12 +3842,15 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
 
 #[cfg(test)]
 mod tests {
-    use super::{
+    use crate::Display;
+use super::{
         Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::LayoutField;
-    use crate::{AnchorName, Border, ClipMode, Collision, CollisionBoundary, Color, Length, Position, Style};
+    use crate::{
+        AnchorName, Border, ClipMode, Collision, CollisionBoundary, Color, Length, Position, Style,
+    };
 
     #[test]
     fn child_layout_uses_parent_inner_box_with_padding() {
@@ -3882,6 +4047,43 @@ mod tests {
 
         let snapshot = parent.box_model_snapshot();
         assert_eq!(snapshot.width, 80.0);
+        assert_eq!(snapshot.height, 40.0);
+    }
+
+    #[test]
+    fn column_flow_auto_size_uses_cross_for_width_and_main_for_height() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Display,
+            ParsedValue::Display(Display::flow().column().no_wrap()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 80.0, 30.0)));
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 10.0)));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let snapshot = parent.box_model_snapshot();
+        assert_eq!(snapshot.width, 120.0);
         assert_eq!(snapshot.height, 40.0);
     }
 

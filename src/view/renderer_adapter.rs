@@ -3,7 +3,7 @@ use crate::Style;
 use crate::ui::{Binding, FromPropValue, PropValue, RenderBackend, RsxElementNode, RsxNode};
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
-use crate::{AnchorName, ParsedValue, PropertyId};
+use crate::{AnchorName, Color, Length, ParsedValue, PropertyId};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -59,6 +59,8 @@ pub fn rsx_to_elements_lossy(root: &RsxNode) -> (Vec<Box<dyn ElementTrait>>, Vec
 #[derive(Clone, Debug, Default)]
 struct InheritedTextStyle {
     font_families: Vec<String>,
+    font_weight: Option<u16>,
+    color: Option<Color>,
 }
 
 pub struct ViewportRenderBackend<'a> {
@@ -207,6 +209,12 @@ fn convert_node(
             if !inherited_text_style.font_families.is_empty() {
                 text_node.set_fonts(inherited_text_style.font_families.clone());
             }
+            if let Some(font_weight) = inherited_text_style.font_weight {
+                text_node.set_font_weight(font_weight);
+            }
+            if let Some(color) = inherited_text_style.color {
+                text_node.set_color(color);
+            }
             Ok(Box::new(text_node))
         }
         RsxNode::Fragment(_) => Err("fragment must be flattened before conversion".to_string()),
@@ -258,6 +266,12 @@ fn convert_container_element(
             if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
                 child_inherited_text_style.font_families = font_family.as_slice().to_vec();
             }
+            if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
+                child_inherited_text_style.font_weight = Some(font_weight.value());
+            }
+            if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+                child_inherited_text_style.color = Some(*color);
+            }
             user_style = user_style + style;
             has_user_style = true;
         }
@@ -268,13 +282,27 @@ fn convert_container_element(
         base_style
     };
     element.apply_style(effective_style);
+    let auto_focus_on_mouse_down = node.props.iter().any(|(key, _)| {
+        matches!(
+            key.as_str(),
+            "on_key_down" | "on_key_up" | "on_focus" | "on_blur"
+        )
+    });
+    if auto_focus_on_mouse_down {
+        let focus_target_id = element.id();
+        element.on_mouse_down(move |_event, control| {
+            control.set_focus(Some(focus_target_id));
+        });
+    }
 
     for (key, value) in &node.props {
         if key.as_str() == "key" {
             continue;
         }
         match key.as_str() {
-            "anchor" => element.set_anchor_name(Some(AnchorName::new(as_owned_string(value, key)?))),
+            "anchor" => {
+                element.set_anchor_name(Some(AnchorName::new(as_owned_string(value, key)?)))
+            }
             "padding" => element.set_padding(as_f32(value, key)?),
             "padding_x" => element.set_padding_x(as_f32(value, key)?),
             "padding_y" => element.set_padding_y(as_f32(value, key)?),
@@ -375,38 +403,58 @@ fn convert_text_element(
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut text_content = String::new();
     let mut text = Text::from_content_with_id(stable_node_id(path, "Text"), "");
+    let mut style: Option<Style> = None;
     let mut width: Option<f32> = None;
     let mut height: Option<f32> = None;
     let mut has_explicit_font = false;
+    let mut has_explicit_font_weight = false;
+    let mut has_explicit_color = false;
 
     for (key, value) in &node.props {
         if key.as_str() == "key" {
             continue;
         }
         match key.as_str() {
-            "content" => {
-                text_content = as_owned_string(value, key)?;
-            }
-            "width" => {
-                width = Some(as_f32(value, key)?);
-            }
-            "height" => {
-                height = Some(as_f32(value, key)?);
-            }
+            "style" => style = Some(as_style(value, key)?),
             "font_size" => text.set_font_size(as_f32(value, key)?),
             "line_height" => text.set_line_height(as_f32(value, key)?),
+            "align" => {
+                text.set_text_align(as_text_align(value, key)?);
+            }
             "font" => {
                 text.set_font(as_string(value, key)?);
                 has_explicit_font = true;
             }
-            "color" => text.set_color(HexColor::new(as_owned_string(value, key)?)),
             "opacity" => text.set_opacity(as_f32(value, key)?),
             _ => return Err(format!("unknown prop `{}` on <Text>", key,)),
         }
     }
 
+    if let Some(style) = &style {
+        if let Some(value) = style.get(PropertyId::Width) {
+            width = length_from_parsed_value(value, "Text style.width")?;
+        }
+        if let Some(value) = style.get(PropertyId::Height) {
+            height = length_from_parsed_value(value, "Text style.height")?;
+        }
+        if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
+            text.set_font_weight(font_weight.value());
+            has_explicit_font_weight = true;
+        }
+        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+            text.set_color(*color);
+            has_explicit_color = true;
+        }
+    }
+
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
         text.set_fonts(inherited_text_style.font_families.clone());
+    }
+    if !has_explicit_font_weight && let Some(font_weight) = inherited_text_style.font_weight {
+        text.set_font_weight(font_weight);
+    }
+    if !has_explicit_color && let Some(color) = inherited_text_style.color {
+        text.set_color(color);
     }
     if let Some(width) = width {
         text.set_width(width);
@@ -419,17 +467,40 @@ fn convert_text_element(
         text.set_auto_height(true);
     }
 
-    if text_content.is_empty() {
-        for child in &node.children {
-            match child {
-                RsxNode::Text(content) => text_content.push_str(content),
-                _ => return Err("<Text> children must be text".to_string()),
-            }
-        }
+    for child in &node.children {
+        append_text_children(&mut text_content, child)?;
     }
 
     text.set_text(text_content);
     Ok(Box::new(text))
+}
+
+fn length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option<f32>, String> {
+    match value {
+        ParsedValue::Length(Length::Px(v)) => Ok(Some(*v)),
+        ParsedValue::Length(Length::Zero) => Ok(Some(0.0)),
+        ParsedValue::Auto => Ok(None),
+        ParsedValue::Length(Length::Percent(_)) => {
+            Err(format!("{context} does not support percent length"))
+        }
+        _ => Err(format!("{context} expects Length value")),
+    }
+}
+
+fn append_text_children(out: &mut String, node: &RsxNode) -> Result<(), String> {
+    match node {
+        RsxNode::Text(content) => {
+            out.push_str(content);
+            Ok(())
+        }
+        RsxNode::Fragment(children) => {
+            for child in children {
+                append_text_children(out, child)?;
+            }
+            Ok(())
+        }
+        _ => Err("<Text> children must be string".to_string()),
+    }
 }
 
 fn convert_text_area_element(
@@ -641,6 +712,13 @@ fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
 
 fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
     Ok(as_string(value, key)?.to_string())
+}
+
+fn as_text_align(value: &PropValue, key: &str) -> Result<crate::TextAlign, String> {
+    match value {
+        PropValue::TextAlign(v) => Ok(*v),
+        _ => Err(format!("prop `{key}` expects TextAlign value")),
+    }
 }
 
 fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
@@ -875,6 +953,11 @@ mod tests {
         style
     }
 
+    fn style_with_color(mut style: Style, color_hex: &str) -> Style {
+        style.insert_color_like(PropertyId::Color, Color::hex(color_hex));
+        style
+    }
+
     fn walk_layout(
         node: &mut dyn crate::view::base_component::ElementTrait,
         out: &mut Vec<(f32, f32, f32, f32)>,
@@ -910,7 +993,7 @@ mod tests {
             .with_child(
                 RsxNode::element("Text")
                     .with_prop("font_size", 26)
-                    .with_prop("color", "#0F172A")
+                    .with_prop("style", style_with_color(Style::new(), "#0F172A"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Hello Rust GUI Text Test")),
             );
@@ -927,14 +1010,14 @@ mod tests {
             .with_child(
                 RsxNode::element("Text")
                     .with_prop("font_size", 22)
-                    .with_prop("color", "#E2E8F0")
+                    .with_prop("style", style_with_color(Style::new(), "#E2E8F0"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Test Component")),
             )
             .with_child(
                 RsxNode::element("Text")
                     .with_prop("font_size", 14)
-                    .with_prop("color", "#CBD5E1")
+                    .with_prop("style", style_with_color(Style::new(), "#CBD5E1"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text(
                         "Used to verify event hit-testing and bubbling.",
@@ -943,7 +1026,7 @@ mod tests {
             .with_child(
                 RsxNode::element("Text")
                     .with_prop("font_size", 14)
-                    .with_prop("color", "#F8FAFC")
+                    .with_prop("style", style_with_color(Style::new(), "#F8FAFC"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Click Count: 0")),
             );
@@ -995,9 +1078,8 @@ mod tests {
             .with_prop("padding_bottom", 10)
             .with_child(
                 RsxNode::element("Text")
-                    .with_prop("content", "inner")
-                    .with_prop("width", 300)
-                    .with_prop("height", 300),
+                    .with_prop("style", style_with_size(Style::new(), 300.0, 300.0))
+                    .with_child(RsxNode::text("inner")),
             );
 
         let mut roots = rsx_to_elements(&tree).expect("convert rsx");
@@ -1091,13 +1173,13 @@ mod tests {
             .with_prop("style", style_with_size(Style::new(), 120.0, 60.0))
             .with_child(RsxNode::fragment(vec![
                 RsxNode::element("Text")
-                    .with_prop("content", "A")
-                    .with_prop("width", 16)
-                    .with_prop("height", 16),
-                RsxNode::fragment(vec![RsxNode::element("Text")
-                    .with_prop("content", "B")
-                    .with_prop("width", 16)
-                    .with_prop("height", 16)]),
+                    .with_prop("style", style_with_size(Style::new(), 16.0, 16.0))
+                    .with_child(RsxNode::text("A")),
+                RsxNode::fragment(vec![
+                    RsxNode::element("Text")
+                        .with_prop("style", style_with_size(Style::new(), 16.0, 16.0))
+                        .with_child(RsxNode::text("B")),
+                ]),
             ]));
 
         let converted = rsx_to_elements(&tree);
