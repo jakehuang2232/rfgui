@@ -1,10 +1,9 @@
 use super::{ElementCore, Position, Size};
-use crate::ColorLike;
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::style::{
-    AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-    ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
-    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
+    compute_style, AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary,
+    Color, ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length,
+    PositionMode, ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming,
 };
 use crate::transition::{
     LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
@@ -23,6 +22,7 @@ use crate::view::render_pass::{
     ShadowPass,
 };
 use crate::view::viewport::ViewportControl;
+use crate::ColorLike;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -135,6 +135,7 @@ struct PlacementRuntime {
     viewport_width: f32,
     viewport_height: f32,
     anchors: std::collections::HashMap<String, AnchorSnapshot>,
+    child_clip_stack: Vec<Rect>,
 }
 
 thread_local! {
@@ -1062,6 +1063,9 @@ impl Renderable for Element {
             );
         }
         if !self.core.should_render {
+            if self.has_absolute_descendant_for_hit_test {
+                self.collect_root_viewport_deferred_descendants(ctx);
+            }
             return;
         }
 
@@ -1194,6 +1198,8 @@ impl Renderable for Element {
 }
 
 impl Element {
+    const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
+
     fn absolute_viewport_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         if self.computed_style.position.mode() != PositionMode::Absolute {
             return None;
@@ -2394,6 +2400,18 @@ impl Element {
             && self.computed_style.position.clip_mode() == ClipMode::Viewport
     }
 
+    fn collect_root_viewport_deferred_descendants(&self, ctx: &mut UiBuildContext) {
+        for child in &self.children {
+            let Some(element) = child.as_any().downcast_ref::<Element>() else {
+                continue;
+            };
+            if element.should_append_to_root_viewport_render() {
+                ctx.append_to_defer(element.id());
+            }
+            element.collect_root_viewport_deferred_descendants(ctx);
+        }
+    }
+
     fn measure_flex_children(&mut self, proposal: LayoutProposal) {
         let bw_l = resolve_px_or_zero(
             self.computed_style.border_widths.left,
@@ -2879,7 +2897,12 @@ impl Element {
         self.push_pass(graph, ctx, pass);
     }
 
-    fn render_box_shadows(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext, opacity: f32) {
+    fn render_box_shadows(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        opacity: f32,
+    ) {
         if self.box_shadows.is_empty() {
             return;
         }
@@ -3615,7 +3638,7 @@ impl Element {
         let cull_rect = if is_absolute {
             absolute_clip_rect.unwrap_or(parent_rect)
         } else {
-            parent_rect
+            self.current_parent_child_clip_rect().unwrap_or(parent_rect)
         };
         let parent_left = cull_rect.x;
         let parent_top = cull_rect.y;
@@ -3815,6 +3838,7 @@ impl Element {
             let mut runtime = runtime.borrow_mut();
             if runtime.depth == 0 {
                 runtime.anchors.clear();
+                runtime.child_clip_stack.clear();
                 runtime.viewport_width = placement.viewport_width.max(0.0);
                 runtime.viewport_height = placement.viewport_height.max(0.0);
             }
@@ -3830,8 +3854,25 @@ impl Element {
             }
             if runtime.depth == 0 {
                 runtime.anchors.clear();
+                runtime.child_clip_stack.clear();
             }
         });
+    }
+
+    fn push_child_clip_scope(&self, rect: Rect) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().child_clip_stack.push(rect);
+        });
+    }
+
+    fn pop_child_clip_scope(&self) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().child_clip_stack.pop();
+        });
+    }
+
+    fn current_parent_child_clip_rect(&self) -> Option<Rect> {
+        PLACEMENT_RUNTIME.with(|runtime| runtime.borrow().child_clip_stack.last().copied())
     }
 
     fn register_anchor_snapshot(&self) {
@@ -3925,6 +3966,13 @@ impl Element {
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
     ) {
+        let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
+        self.push_child_clip_scope(Rect {
+            x: self.layout_inner_position.x - overscan,
+            y: self.layout_inner_position.y - overscan,
+            width: (self.layout_inner_size.width + overscan * 2.0).max(0.0),
+            height: (self.layout_inner_size.height + overscan * 2.0).max(0.0),
+        });
         let (child_available_width, child_available_height) = self.child_layout_limits();
         let is_flex = matches!(
             self.computed_style.display,
@@ -3984,6 +4032,7 @@ impl Element {
         self.update_content_size_from_children();
         self.clamp_scroll_offset();
         self.recompute_absolute_descendant_for_hit_test();
+        self.pop_child_clip_scope();
     }
 
     fn place_flex_children(
@@ -4395,12 +4444,13 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
 #[cfg(test)]
 mod tests {
     use super::{
-        Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
-        resolve_px_with_base, resolve_signed_px_with_base,
+        resolve_px_with_base, resolve_signed_px_with_base, Element, ElementTrait, EventTarget,
+        LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
     };
-    use crate::Display;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
+    use crate::view::frame_graph::FrameGraph;
+    use crate::Display;
     use crate::{
         AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, Length,
         Position, Style,
@@ -4984,6 +5034,33 @@ mod tests {
             .core
             .should_render;
         assert!(rendered);
+    }
+
+    #[test]
+    fn viewport_clipped_absolute_descendant_is_deferred_even_if_parent_is_not_rendered() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(10.0))
+                    .top(Length::px(10.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+        parent.core.should_render = false;
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm);
+        parent.build(&mut graph, &mut ctx);
+
+        let deferred = ctx.take_deferred_node_ids();
+        let child_id = parent.children().expect("has child")[0].id();
+        assert!(deferred.contains(&child_id));
     }
 
     #[test]
