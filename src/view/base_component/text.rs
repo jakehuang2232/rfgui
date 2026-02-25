@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
-use crate::{ColorLike, HexColor, TextAlign};
+use crate::{ColorLike, Cursor, HexColor, Style, TextAlign};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
 
@@ -246,6 +246,12 @@ impl Text {
     pub fn set_auto_height(&mut self, auto: bool) {
         self.auto_height = auto;
     }
+
+    pub fn set_cursor(&mut self, cursor: Cursor) {
+        let mut style = Style::new();
+        style.set_cursor(cursor);
+        self.element.apply_style(style);
+    }
 }
 
 fn measure_text_size(
@@ -427,6 +433,10 @@ impl EventTarget for Text {
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         self.element.dispatch_blur(event, control);
+    }
+
+    fn cursor(&self) -> crate::Cursor {
+        self.element.cursor()
     }
 }
 
@@ -615,8 +625,10 @@ mod tests {
         text.measure(LayoutConstraints {
             max_width: 240.0,
             max_height: 140.0,
+            viewport_width: 240.0,
             percent_base_width: Some(240.0),
             percent_base_height: Some(140.0),
+            viewport_height: 140.0,
         });
         text.place(LayoutPlacement {
             parent_x: 40.0,
@@ -625,8 +637,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 240.0,
             available_height: 140.0,
+            viewport_width: 240.0,
             percent_base_width: Some(240.0),
             percent_base_height: Some(140.0),
+            viewport_height: 140.0,
         });
 
         let snapshot = text.box_model_snapshot();
@@ -644,8 +658,10 @@ mod tests {
         text.measure(LayoutConstraints {
             max_width: 60.0,
             max_height: 200.0,
+            viewport_width: 60.0,
             percent_base_width: Some(60.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
         text.place(LayoutPlacement {
             parent_x: 0.0,
@@ -654,8 +670,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 60.0,
             available_height: 200.0,
+            viewport_width: 60.0,
             percent_base_width: Some(60.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
 
         let snapshot = text.box_model_snapshot();
@@ -669,8 +687,10 @@ mod tests {
         text.measure(LayoutConstraints {
             max_width: 300.0,
             max_height: 200.0,
+            viewport_width: 300.0,
             percent_base_width: Some(300.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
         text.place(LayoutPlacement {
             parent_x: 0.0,
@@ -679,8 +699,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 300.0,
             available_height: 200.0,
+            viewport_width: 300.0,
             percent_base_width: Some(300.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
         let snapshot = text.box_model_snapshot();
         assert!(snapshot.width >= 80.0);
@@ -692,8 +714,10 @@ mod tests {
         single.measure(LayoutConstraints {
             max_width: 400.0,
             max_height: 200.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
         single.place(LayoutPlacement {
             parent_x: 0.0,
@@ -702,16 +726,20 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 200.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
 
         let mut spaced = Text::from_content("Click Me");
         spaced.measure(LayoutConstraints {
             max_width: 400.0,
             max_height: 200.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
         spaced.place(LayoutPlacement {
             parent_x: 0.0,
@@ -720,8 +748,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 200.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
 
         let a = single.box_model_snapshot().width;
@@ -740,8 +770,10 @@ mod tests {
         text.measure(LayoutConstraints {
             max_width: 60.0,
             max_height: 200.0,
+            viewport_width: 60.0,
             percent_base_width: None,
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
         text.place(LayoutPlacement {
             parent_x: 0.0,
@@ -750,8 +782,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 200.0,
+            viewport_width: 400.0,
             percent_base_width: None,
             percent_base_height: Some(200.0),
+            viewport_height: 200.0,
         });
 
         let snapshot = text.box_model_snapshot();
@@ -769,8 +803,10 @@ mod tests {
         text.measure(LayoutConstraints {
             max_width: 220.0,
             max_height: 300.0,
+            viewport_width: 220.0,
             percent_base_width: Some(220.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         text.place(LayoutPlacement {
             parent_x: 0.0,
@@ -779,16 +815,20 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 220.0,
             available_height: 300.0,
+            viewport_width: 220.0,
             percent_base_width: Some(220.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         let h_wide = text.box_model_snapshot().height;
 
         text.measure(LayoutConstraints {
             max_width: 90.0,
             max_height: 300.0,
+            viewport_width: 90.0,
             percent_base_width: Some(90.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         text.place(LayoutPlacement {
             parent_x: 0.0,
@@ -797,8 +837,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 90.0,
             available_height: 300.0,
+            viewport_width: 90.0,
             percent_base_width: Some(90.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         let h_narrow = text.box_model_snapshot().height;
 

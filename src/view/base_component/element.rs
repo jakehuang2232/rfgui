@@ -2,9 +2,9 @@ use super::{ElementCore, Position, Size};
 use crate::ColorLike;
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::style::{
-    AlignItems, AnchorName, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle, Display,
-    FlowDirection, FlowWrap, JustifyContent, Length, PositionMode, ScrollDirection, SizeValue,
-    Style, TransitionProperty, TransitionTiming, compute_style,
+    AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
+    ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
+    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
     LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
@@ -18,7 +18,10 @@ use crate::ui::{
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{FrameGraph, InSlot, RenderPass, TextureDesc};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
-use crate::view::render_pass::{ClearPass, CompositeLayerPass, DrawRectPass, LayerOut, LayerTag};
+use crate::view::render_pass::{
+    ClearPass, CompositeLayerPass, DrawRectPass, LayerOut, LayerTag, ShadowMesh, ShadowParams,
+    ShadowPass,
+};
 use crate::view::viewport::ViewportControl;
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -36,6 +39,8 @@ struct EdgeInsets {
 struct LayoutProposal {
     width: f32,
     height: f32,
+    viewport_width: f32,
+    viewport_height: f32,
     percent_base_width: Option<f32>,
     percent_base_height: Option<f32>,
 }
@@ -264,9 +269,21 @@ impl UiBuildContext {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutContext {
+    pub width: f32,
+    pub height: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub percent_base_width: Option<f32>,
+    pub percent_base_height: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutConstraints {
     pub max_width: f32,
     pub max_height: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
     pub percent_base_width: Option<f32>,
     pub percent_base_height: Option<f32>,
 }
@@ -279,8 +296,36 @@ pub struct LayoutPlacement {
     pub visual_offset_y: f32,
     pub available_width: f32,
     pub available_height: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
     pub percent_base_width: Option<f32>,
     pub percent_base_height: Option<f32>,
+}
+
+impl LayoutConstraints {
+    fn context(self) -> LayoutContext {
+        LayoutContext {
+            width: self.max_width,
+            height: self.max_height,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            percent_base_width: self.percent_base_width,
+            percent_base_height: self.percent_base_height,
+        }
+    }
+}
+
+impl LayoutPlacement {
+    fn context(self) -> LayoutContext {
+        LayoutContext {
+            width: self.available_width,
+            height: self.available_height,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            percent_base_width: self.percent_base_width,
+            percent_base_height: self.percent_base_height,
+        }
+    }
 }
 
 pub trait Layoutable {
@@ -344,6 +389,9 @@ pub trait EventTarget {
     fn ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
         None
     }
+    fn cursor(&self) -> Cursor {
+        Cursor::Default
+    }
     fn wants_animation_frame(&self) -> bool {
         false
     }
@@ -378,6 +426,10 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
     }
 
     fn restore_state(&mut self, _snapshot: &dyn std::any::Any) -> bool {
+        false
+    }
+
+    fn intercepts_pointer_at(&self, _viewport_x: f32, _viewport_y: f32) -> bool {
         false
     }
 }
@@ -456,6 +508,7 @@ pub struct Element {
     border_widths: EdgeInsets,
     border_radii: CornerRadii,
     border_radius: f32,
+    box_shadows: Vec<BoxShadow>,
     foreground_color: Color,
     opacity: f32,
     scroll_direction: ScrollDirection,
@@ -463,6 +516,7 @@ pub struct Element {
     content_size: Size,
     scrollbar_drag: Option<ScrollbarDragState>,
     last_scrollbar_interaction: Option<Instant>,
+    scrollbar_shadow_blur_radius: f32,
     pending_style_transition_requests: Vec<StyleTrackRequest>,
     pending_layout_transition_requests: Vec<LayoutTrackRequest>,
     pending_visual_transition_requests: Vec<VisualTrackRequest>,
@@ -534,6 +588,12 @@ impl ElementTrait for Element {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
+        let local_x = viewport_x - self.core.layout_position.x;
+        let local_y = viewport_y - self.core.layout_position.y;
+        self.is_scrollbar_hit(local_x, local_y)
     }
 
     fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
@@ -611,35 +671,49 @@ impl EventTarget for Element {
     fn dispatch_mouse_down(
         &mut self,
         event: &mut MouseDownEvent,
-        _control: &mut ViewportControl<'_>,
+        control: &mut ViewportControl<'_>,
     ) {
-        self.handle_scrollbar_mouse_down(event, _control);
+        if self.handle_scrollbar_mouse_down(event, control) {
+            event.meta.request_keep_focus();
+            event.meta.stop_propagation();
+            return;
+        }
         for handler in &mut self.mouse_down_handlers {
-            handler(event, _control);
+            handler(event, control);
         }
     }
 
-    fn dispatch_mouse_up(&mut self, event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
-        self.handle_scrollbar_mouse_up(event, _control);
+    fn dispatch_mouse_up(&mut self, event: &mut MouseUpEvent, control: &mut ViewportControl<'_>) {
+        if self.handle_scrollbar_mouse_up(event, control) {
+            event.meta.stop_propagation();
+            return;
+        }
         for handler in &mut self.mouse_up_handlers {
-            handler(event, _control);
+            handler(event, control);
         }
     }
 
     fn dispatch_mouse_move(
         &mut self,
         event: &mut MouseMoveEvent,
-        _control: &mut ViewportControl<'_>,
+        control: &mut ViewportControl<'_>,
     ) {
-        self.handle_scrollbar_mouse_move(event, _control);
+        if self.handle_scrollbar_mouse_move(event, control) {
+            event.meta.stop_propagation();
+            return;
+        }
         for handler in &mut self.mouse_move_handlers {
-            handler(event, _control);
+            handler(event, control);
         }
     }
 
-    fn dispatch_click(&mut self, event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_click(&mut self, event: &mut ClickEvent, control: &mut ViewportControl<'_>) {
+        if self.is_scrollbar_hit(event.mouse.local_x, event.mouse.local_y) {
+            event.meta.stop_propagation();
+            return;
+        }
         for handler in &mut self.click_handlers {
-            handler(event, _control);
+            handler(event, control);
         }
     }
 
@@ -751,6 +825,10 @@ impl EventTarget for Element {
         self.scroll_offset.y = offset.1;
     }
 
+    fn cursor(&self) -> Cursor {
+        self.computed_style.cursor
+    }
+
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
         std::mem::take(&mut self.pending_style_transition_requests)
     }
@@ -766,11 +844,14 @@ impl EventTarget for Element {
 
 impl Layoutable for Element {
     fn measure(&mut self, constraints: LayoutConstraints) {
+        let context = constraints.context();
         let proposal = LayoutProposal {
-            width: constraints.max_width,
-            height: constraints.max_height,
-            percent_base_width: constraints.percent_base_width,
-            percent_base_height: constraints.percent_base_height,
+            width: context.width,
+            height: context.height,
+            viewport_width: context.viewport_width,
+            viewport_height: context.viewport_height,
+            percent_base_width: context.percent_base_width,
+            percent_base_height: context.percent_base_height,
         };
 
         if !self.layout_dirty && self.last_layout_proposal == Some(proposal) {
@@ -778,6 +859,7 @@ impl Layoutable for Element {
         }
 
         self.measure_self(proposal);
+        self.apply_size_constraints(proposal, false);
 
         // We should always measure children because they might be Auto or use Percent units
         // that depend on our inner size.
@@ -791,35 +873,51 @@ impl Layoutable for Element {
             let bw_l = resolve_px_or_zero(
                 self.computed_style.border_widths.left,
                 proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
             let bw_r = resolve_px_or_zero(
                 self.computed_style.border_widths.right,
                 proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
             let bw_t = resolve_px_or_zero(
                 self.computed_style.border_widths.top,
                 proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
             let bw_b = resolve_px_or_zero(
                 self.computed_style.border_widths.bottom,
                 proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
 
             let p_l = resolve_px_or_zero(
                 self.computed_style.padding.left,
                 proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
             let p_r = resolve_px_or_zero(
                 self.computed_style.padding.right,
                 proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
             let p_t = resolve_px_or_zero(
                 self.computed_style.padding.top,
                 proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
             let p_b = resolve_px_or_zero(
                 self.computed_style.padding.bottom,
                 proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
 
             let (layout_w, layout_h) = self.current_layout_transition_size();
@@ -848,6 +946,8 @@ impl Layoutable for Element {
                 child.measure(LayoutConstraints {
                     max_width: child_available_width,
                     max_height: child_available_height,
+                    viewport_width: proposal.viewport_width,
+                    viewport_height: proposal.viewport_height,
                     percent_base_width: child_percent_base_width,
                     percent_base_height: child_percent_base_height,
                 });
@@ -859,6 +959,7 @@ impl Layoutable for Element {
                 self.update_size_from_measured_children();
             }
         }
+        self.apply_size_constraints(proposal, true);
 
         self.last_layout_proposal = Some(proposal);
         self.layout_dirty = false;
@@ -866,11 +967,14 @@ impl Layoutable for Element {
 
     fn place(&mut self, placement: LayoutPlacement) {
         self.begin_place_scope(placement);
+        let context = placement.context();
         let proposal = LayoutProposal {
-            width: placement.available_width,
-            height: placement.available_height,
-            percent_base_width: placement.percent_base_width,
-            percent_base_height: placement.percent_base_height,
+            width: context.width,
+            height: context.height,
+            viewport_width: context.viewport_width,
+            viewport_height: context.viewport_height,
+            percent_base_width: context.percent_base_width,
+            percent_base_height: context.percent_base_height,
         };
         self.resolve_lengths_from_parent_inner(proposal);
         self.place_self(
@@ -881,7 +985,7 @@ impl Layoutable for Element {
             placement.visual_offset_y,
         );
         self.register_anchor_snapshot();
-        self.resolve_corner_radii_from_self_box();
+        self.resolve_corner_radii_from_self_box(proposal);
         let max_bw = (self
             .core
             .layout_size
@@ -919,7 +1023,12 @@ impl Layoutable for Element {
         } else {
             None
         };
-        self.place_children(child_percent_base_width, child_percent_base_height);
+        self.place_children(
+            proposal.viewport_width,
+            proposal.viewport_height,
+            child_percent_base_width,
+            child_percent_base_height,
+        );
         self.end_place_scope();
     }
 
@@ -1165,6 +1274,7 @@ impl Element {
             },
             border_radii: CornerRadii::zero(),
             border_radius: 0.0,
+            box_shadows: Vec::new(),
             foreground_color: Color::rgb(0, 0, 0),
             opacity: 1.0,
             scroll_direction: ScrollDirection::None,
@@ -1175,6 +1285,7 @@ impl Element {
             },
             scrollbar_drag: None,
             last_scrollbar_interaction: None,
+            scrollbar_shadow_blur_radius: 3.0,
             pending_style_transition_requests: Vec::new(),
             pending_layout_transition_requests: Vec::new(),
             pending_visual_transition_requests: Vec::new(),
@@ -1230,6 +1341,10 @@ impl Element {
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.core.set_size(width, height);
         self.layout_dirty = true;
+    }
+
+    pub fn set_scrollbar_shadow_blur_radius(&mut self, radius: f32) {
+        self.scrollbar_shadow_blur_radius = radius.max(0.0);
     }
 
     pub fn set_width(&mut self, width: f32) {
@@ -1859,16 +1974,36 @@ impl Element {
         Some(ratio * max_scroll)
     }
 
+    fn is_scrollbar_hit(&self, local_x: f32, local_y: f32) -> bool {
+        if self.scrollbar_visibility_alpha() <= 0.0 {
+            return false;
+        }
+        let (inner_x, inner_y) = self.local_inner_origin();
+        let geometry = self.scrollbar_geometry(inner_x, inner_y);
+        geometry
+            .vertical_track
+            .is_some_and(|track| track.contains(local_x, local_y))
+            || geometry
+                .vertical_thumb
+                .is_some_and(|thumb| thumb.contains(local_x, local_y))
+            || geometry
+                .horizontal_track
+                .is_some_and(|track| track.contains(local_x, local_y))
+            || geometry
+                .horizontal_thumb
+                .is_some_and(|thumb| thumb.contains(local_x, local_y))
+    }
+
     fn handle_scrollbar_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         control: &mut ViewportControl<'_>,
-    ) {
+    ) -> bool {
         if event.mouse.button != Some(UiMouseButton::Left) {
-            return;
+            return false;
         }
-        if self.scrollbar_visibility_alpha() <= 0.0 {
-            return;
+        if !self.is_scrollbar_hit(event.mouse.local_x, event.mouse.local_y) {
+            return false;
         }
         let local_x = event.mouse.local_x;
         let local_y = event.mouse.local_y;
@@ -1885,7 +2020,7 @@ impl Element {
                 });
                 control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
-                return;
+                return true;
             }
         }
         if let Some(track) = geometry.vertical_track {
@@ -1907,7 +2042,7 @@ impl Element {
                 });
                 control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
-                return;
+                return true;
             }
         }
 
@@ -1921,7 +2056,7 @@ impl Element {
                 });
                 control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
-                return;
+                return true;
             }
         }
         if let Some(track) = geometry.horizontal_track {
@@ -1943,15 +2078,17 @@ impl Element {
                 });
                 control.set_pointer_capture(self.core.id);
                 self.note_scrollbar_interaction();
+                return true;
             }
         }
+        false
     }
 
     fn handle_scrollbar_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
         control: &mut ViewportControl<'_>,
-    ) {
+    ) -> bool {
         if let Some(drag) = self.scrollbar_drag {
             let mut drag = drag;
             match drag.axis {
@@ -1985,10 +2122,10 @@ impl Element {
             if changed {
                 self.note_scrollbar_interaction();
             }
-            return;
+            return true;
         }
         if self.scrollbar_visibility_alpha() <= 0.0 {
-            return;
+            return false;
         }
         let (inner_x, inner_y) = self.local_inner_origin();
         let geometry = self.scrollbar_geometry(inner_x, inner_y);
@@ -2003,20 +2140,57 @@ impl Element {
         {
             self.note_scrollbar_interaction();
         }
+        false
     }
 
     fn handle_scrollbar_mouse_up(
         &mut self,
         event: &MouseUpEvent,
         control: &mut ViewportControl<'_>,
-    ) {
+    ) -> bool {
         if event.mouse.button != Some(UiMouseButton::Left) {
-            return;
+            return false;
         }
         if self.scrollbar_drag.take().is_some() {
             control.release_pointer_capture(self.core.id);
             self.note_scrollbar_interaction();
+            return true;
         }
+        if self.is_scrollbar_hit(event.mouse.local_x, event.mouse.local_y) {
+            self.note_scrollbar_interaction();
+            return true;
+        }
+        false
+    }
+
+    fn render_scrollbar_shadow(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        rect: Rect,
+        border_radius: f32,
+        color: [f32; 4],
+    ) {
+        let mesh = ShadowMesh::rounded_rect(
+            rect.x,
+            rect.y,
+            rect.width.max(0.0),
+            rect.height.max(0.0),
+            border_radius.max(0.0),
+        );
+        let pass = ShadowPass::new(
+            mesh,
+            ShadowParams {
+                offset_x: 1.0,
+                offset_y: 1.0,
+                blur_radius: self.scrollbar_shadow_blur_radius.max(0.0),
+                color,
+                opacity: 1.0,
+                spread: 0.0,
+                clip_to_geometry: true,
+            },
+        );
+        self.push_pass(graph, ctx, pass);
     }
 
     fn render_scrollbars(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
@@ -2024,13 +2198,27 @@ impl Element {
         if alpha <= 0.0 {
             return;
         }
+        const TRACK_SHADOW_ALPHA: f32 = 0.5;
+        const THUMB_SHADOW_ALPHA: f32 = 0.5;
         let geometry =
             self.scrollbar_geometry(self.layout_inner_position.x, self.layout_inner_position.y);
-        let track_alpha = (0.22 * alpha).clamp(0.0, 1.0);
+        let track_alpha = (0.35 * alpha).clamp(0.0, 1.0);
         let thumb_alpha = (0.58 * alpha).clamp(0.0, 1.0);
+        let track_shadow_alpha = (TRACK_SHADOW_ALPHA * alpha).clamp(0.0, 1.0);
+        let thumb_shadow_alpha = (THUMB_SHADOW_ALPHA * alpha).clamp(0.0, 1.0);
+        let track_shadow_color = [0.0, 0.0, 0.0, track_shadow_alpha];
+        let thumb_shadow_color = [0.0, 0.0, 0.0, thumb_shadow_alpha];
         let track_color = [0.95, 0.95, 0.95, track_alpha];
         let thumb_color = [0.95, 0.95, 0.95, thumb_alpha];
         if let Some(track) = geometry.vertical_track {
+            self.render_scrollbar_shadow(
+                graph,
+                ctx,
+                track,
+                (track.width * 0.5).max(0.0),
+                track_shadow_color,
+            );
+
             let mut pass = DrawRectPass::new(
                 [track.x, track.y],
                 [track.width, track.height],
@@ -2042,6 +2230,14 @@ impl Element {
             self.push_pass(graph, ctx, pass);
         }
         if let Some(track) = geometry.horizontal_track {
+            self.render_scrollbar_shadow(
+                graph,
+                ctx,
+                track,
+                (track.height * 0.5).max(0.0),
+                track_shadow_color,
+            );
+
             let mut pass = DrawRectPass::new(
                 [track.x, track.y],
                 [track.width, track.height],
@@ -2053,6 +2249,14 @@ impl Element {
             self.push_pass(graph, ctx, pass);
         }
         if let Some(thumb) = geometry.vertical_thumb {
+            self.render_scrollbar_shadow(
+                graph,
+                ctx,
+                thumb,
+                (thumb.width * 0.5).max(0.0),
+                thumb_shadow_color,
+            );
+
             let mut pass = DrawRectPass::new(
                 [thumb.x, thumb.y],
                 [thumb.width, thumb.height],
@@ -2064,6 +2268,14 @@ impl Element {
             self.push_pass(graph, ctx, pass);
         }
         if let Some(thumb) = geometry.horizontal_thumb {
+            self.render_scrollbar_shadow(
+                graph,
+                ctx,
+                thumb,
+                (thumb.height * 0.5).max(0.0),
+                thumb_shadow_color,
+            );
+
             let mut pass = DrawRectPass::new(
                 [thumb.x, thumb.y],
                 [thumb.width, thumb.height],
@@ -2186,35 +2398,51 @@ impl Element {
         let bw_l = resolve_px_or_zero(
             self.computed_style.border_widths.left,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_r = resolve_px_or_zero(
             self.computed_style.border_widths.right,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_t = resolve_px_or_zero(
             self.computed_style.border_widths.top,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_b = resolve_px_or_zero(
             self.computed_style.border_widths.bottom,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
 
         let p_l = resolve_px_or_zero(
             self.computed_style.padding.left,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_r = resolve_px_or_zero(
             self.computed_style.padding.right,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_t = resolve_px_or_zero(
             self.computed_style.padding.top,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_b = resolve_px_or_zero(
             self.computed_style.padding.bottom,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
 
         let (layout_w, layout_h) = self.current_layout_transition_size();
@@ -2243,11 +2471,18 @@ impl Element {
             child.measure(LayoutConstraints {
                 max_width: child_available_width,
                 max_height: child_available_height,
+                viewport_width: proposal.viewport_width,
+                viewport_height: proposal.viewport_height,
                 percent_base_width: child_percent_base_width,
                 percent_base_height: child_percent_base_height,
             });
         }
-        let info = self.compute_flex_info(inner_w, inner_h);
+        let info = self.compute_flex_info(
+            inner_w,
+            inner_h,
+            proposal.viewport_width,
+            proposal.viewport_height,
+        );
         let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
 
         if self.computed_style.width == SizeValue::Auto {
@@ -2282,12 +2517,23 @@ impl Element {
         self.flex_info = Some(info);
     }
 
-    fn compute_flex_info(&self, inner_w: f32, inner_h: f32) -> FlexLayoutInfo {
+    fn compute_flex_info(
+        &self,
+        inner_w: f32,
+        inner_h: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> FlexLayoutInfo {
         let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
         let wrap = matches!(self.computed_style.flow_wrap, FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
         let gap_base = if is_row { inner_w } else { inner_h };
-        let gap = resolve_px(self.computed_style.gap, gap_base);
+        let gap = resolve_px(
+            self.computed_style.gap,
+            gap_base,
+            viewport_width,
+            viewport_height,
+        );
 
         let mut child_sizes = vec![(0.0_f32, 0.0_f32); self.children.len()];
         for (idx, child) in self.children.iter().enumerate() {
@@ -2358,6 +2604,7 @@ impl Element {
         let border_color = self.border_colors.top.as_ref().to_rgba_f32();
         let same_color = colors_close(fill_color, border_color);
         let opacity = if force_opaque { 1.0 } else { self.opacity };
+        self.render_box_shadows(graph, ctx, opacity);
 
         let max_bw = (self
             .core
@@ -2445,36 +2692,89 @@ impl Element {
     fn sync_props_from_computed_style(&mut self) {
         self.background_color = Box::new(self.computed_style.background_color);
         self.foreground_color = self.computed_style.color;
+        self.box_shadows = self.computed_style.box_shadow.clone();
         self.border_colors.left = Box::new(self.computed_style.border_colors.left);
         self.border_colors.right = Box::new(self.computed_style.border_colors.right);
         self.border_colors.top = Box::new(self.computed_style.border_colors.top);
         self.border_colors.bottom = Box::new(self.computed_style.border_colors.bottom);
-        self.border_widths.left =
-            resolve_px(self.computed_style.border_widths.left, self.core.size.width);
+        self.border_widths.left = resolve_px(
+            self.computed_style.border_widths.left,
+            self.core.size.width,
+            0.0,
+            0.0,
+        );
         self.border_widths.right = resolve_px(
             self.computed_style.border_widths.right,
             self.core.size.width,
+            0.0,
+            0.0,
         );
-        self.border_widths.top =
-            resolve_px(self.computed_style.border_widths.top, self.core.size.height);
+        self.border_widths.top = resolve_px(
+            self.computed_style.border_widths.top,
+            self.core.size.height,
+            0.0,
+            0.0,
+        );
         self.border_widths.bottom = resolve_px(
             self.computed_style.border_widths.bottom,
             self.core.size.height,
+            0.0,
+            0.0,
         );
         let radius_base = self.core.size.width.min(self.core.size.height).max(0.0);
         self.border_radii = CornerRadii {
-            top_left: resolve_px(self.computed_style.border_radii.top_left, radius_base),
-            top_right: resolve_px(self.computed_style.border_radii.top_right, radius_base),
-            bottom_right: resolve_px(self.computed_style.border_radii.bottom_right, radius_base),
-            bottom_left: resolve_px(self.computed_style.border_radii.bottom_left, radius_base),
+            top_left: resolve_px(
+                self.computed_style.border_radii.top_left,
+                radius_base,
+                0.0,
+                0.0,
+            ),
+            top_right: resolve_px(
+                self.computed_style.border_radii.top_right,
+                radius_base,
+                0.0,
+                0.0,
+            ),
+            bottom_right: resolve_px(
+                self.computed_style.border_radii.bottom_right,
+                radius_base,
+                0.0,
+                0.0,
+            ),
+            bottom_left: resolve_px(
+                self.computed_style.border_radii.bottom_left,
+                radius_base,
+                0.0,
+                0.0,
+            ),
         };
         self.border_radius = self.border_radii.max();
         self.opacity = self.computed_style.opacity.clamp(0.0, 1.0);
         self.scroll_direction = self.computed_style.scroll_direction;
-        self.padding.left = resolve_px(self.computed_style.padding.left, self.core.size.width);
-        self.padding.right = resolve_px(self.computed_style.padding.right, self.core.size.width);
-        self.padding.top = resolve_px(self.computed_style.padding.top, self.core.size.height);
-        self.padding.bottom = resolve_px(self.computed_style.padding.bottom, self.core.size.height);
+        self.padding.left = resolve_px(
+            self.computed_style.padding.left,
+            self.core.size.width,
+            0.0,
+            0.0,
+        );
+        self.padding.right = resolve_px(
+            self.computed_style.padding.right,
+            self.core.size.width,
+            0.0,
+            0.0,
+        );
+        self.padding.top = resolve_px(
+            self.computed_style.padding.top,
+            self.core.size.height,
+            0.0,
+            0.0,
+        );
+        self.padding.bottom = resolve_px(
+            self.computed_style.padding.bottom,
+            self.core.size.height,
+            0.0,
+            0.0,
+        );
     }
 
     fn push_edge_border_passes(
@@ -2579,22 +2879,137 @@ impl Element {
         self.push_pass(graph, ctx, pass);
     }
 
+    fn render_box_shadows(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext, opacity: f32) {
+        if self.box_shadows.is_empty() {
+            return;
+        }
+        let layout_x = self.core.layout_position.x;
+        let layout_y = self.core.layout_position.y;
+        let layout_w = self.core.layout_size.width.max(0.0);
+        let layout_h = self.core.layout_size.height.max(0.0);
+        if layout_w <= 0.0 || layout_h <= 0.0 {
+            return;
+        }
+        let shadows = self.box_shadows.clone();
+        for shadow in shadows {
+            let spread = shadow.spread;
+            let mesh = ShadowMesh::rounded_rect(
+                layout_x - spread,
+                layout_y - spread,
+                layout_w + spread * 2.0,
+                layout_h + spread * 2.0,
+                (self.border_radius + spread).max(0.0),
+            );
+            let pass = ShadowPass::new(
+                mesh,
+                ShadowParams {
+                    offset_x: shadow.offset_x,
+                    offset_y: shadow.offset_y,
+                    blur_radius: shadow.blur.max(0.0),
+                    color: shadow.color.to_rgba_f32(),
+                    opacity: opacity.clamp(0.0, 1.0),
+                    spread: 0.0,
+                    clip_to_geometry: false,
+                },
+            );
+            self.push_pass(graph, ctx, pass);
+        }
+    }
+
     fn measure_self(&mut self, proposal: LayoutProposal) {
         if let SizeValue::Length(width) = self.computed_style.width {
-            if let Some(resolved) = resolve_px_with_base(width, proposal.percent_base_width) {
+            if let Some(resolved) = resolve_px_with_base(
+                width,
+                proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ) {
                 self.core.set_width(resolved);
             }
         }
         if let SizeValue::Length(height) = self.computed_style.height {
-            if let Some(resolved) = resolve_px_with_base(height, proposal.percent_base_height) {
+            if let Some(resolved) = resolve_px_with_base(
+                height,
+                proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ) {
                 self.core.set_height(resolved);
             }
+        }
+    }
+
+    fn resolve_size_constraint(
+        value: SizeValue,
+        percent_base: Option<f32>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Option<f32> {
+        let SizeValue::Length(length) = value else {
+            return None;
+        };
+        resolve_px_with_base(length, percent_base, viewport_width, viewport_height)
+            .map(|v| v.max(0.0))
+    }
+
+    fn apply_size_constraints(&mut self, proposal: LayoutProposal, include_auto: bool) {
+        let min_width = Self::resolve_size_constraint(
+            self.computed_style.min_width,
+            proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
+        )
+        .unwrap_or(0.0);
+        let min_height = Self::resolve_size_constraint(
+            self.computed_style.min_height,
+            proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
+        )
+        .unwrap_or(0.0);
+
+        let mut max_width = Self::resolve_size_constraint(
+            self.computed_style.max_width,
+            proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
+        );
+        let mut max_height = Self::resolve_size_constraint(
+            self.computed_style.max_height,
+            proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
+        );
+
+        if let Some(value) = max_width {
+            max_width = Some(value.max(min_width));
+        }
+        if let Some(value) = max_height {
+            max_height = Some(value.max(min_height));
+        }
+
+        if include_auto || self.computed_style.width != SizeValue::Auto {
+            let mut width = self.core.size.width.max(0.0).max(min_width);
+            if let Some(max_width) = max_width {
+                width = width.min(max_width);
+            }
+            self.core.set_width(width);
+        }
+
+        if include_auto || self.computed_style.height != SizeValue::Auto {
+            let mut height = self.core.size.height.max(0.0).max(min_height);
+            if let Some(max_height) = max_height {
+                height = height.min(max_height);
+            }
+            self.core.set_height(height);
         }
     }
 
     fn width_is_known(&self, proposal: LayoutProposal) -> bool {
         match self.computed_style.width {
             SizeValue::Length(Length::Percent(_)) => proposal.percent_base_width.is_some(),
+            SizeValue::Length(Length::Vw(_)) => true,
+            SizeValue::Length(Length::Vh(_)) => true,
             SizeValue::Length(_) => true,
             SizeValue::Auto => false,
         }
@@ -2603,6 +3018,8 @@ impl Element {
     fn height_is_known(&self, proposal: LayoutProposal) -> bool {
         match self.computed_style.height {
             SizeValue::Length(Length::Percent(_)) => proposal.percent_base_height.is_some(),
+            SizeValue::Length(Length::Vw(_)) => true,
+            SizeValue::Length(Length::Vh(_)) => true,
             SizeValue::Length(_) => true,
             SizeValue::Auto => false,
         }
@@ -2612,18 +3029,26 @@ impl Element {
         self.border_widths.left = resolve_px_or_zero(
             self.computed_style.border_widths.left,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         self.border_widths.right = resolve_px_or_zero(
             self.computed_style.border_widths.right,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         self.border_widths.top = resolve_px_or_zero(
             self.computed_style.border_widths.top,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         self.border_widths.bottom = resolve_px_or_zero(
             self.computed_style.border_widths.bottom,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
 
         if self
@@ -2634,6 +3059,8 @@ impl Element {
             self.padding.left = resolve_px_or_zero(
                 self.computed_style.padding.left,
                 proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
         }
         if self
@@ -2644,6 +3071,8 @@ impl Element {
             self.padding.right = resolve_px_or_zero(
                 self.computed_style.padding.right,
                 proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
         }
         if self
@@ -2654,6 +3083,8 @@ impl Element {
             self.padding.top = resolve_px_or_zero(
                 self.computed_style.padding.top,
                 proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
         }
         if self
@@ -2664,11 +3095,13 @@ impl Element {
             self.padding.bottom = resolve_px_or_zero(
                 self.computed_style.padding.bottom,
                 proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
             );
         }
     }
 
-    fn resolve_corner_radii_from_self_box(&mut self) {
+    fn resolve_corner_radii_from_self_box(&mut self, proposal: LayoutProposal) {
         let radius_base = self
             .core
             .layout_size
@@ -2676,10 +3109,30 @@ impl Element {
             .min(self.core.layout_size.height)
             .max(0.0);
         self.border_radii = CornerRadii {
-            top_left: resolve_px(self.computed_style.border_radii.top_left, radius_base),
-            top_right: resolve_px(self.computed_style.border_radii.top_right, radius_base),
-            bottom_right: resolve_px(self.computed_style.border_radii.bottom_right, radius_base),
-            bottom_left: resolve_px(self.computed_style.border_radii.bottom_left, radius_base),
+            top_left: resolve_px(
+                self.computed_style.border_radii.top_left,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
+            top_right: resolve_px(
+                self.computed_style.border_radii.top_right,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
+            bottom_right: resolve_px(
+                self.computed_style.border_radii.bottom_right,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
+            bottom_left: resolve_px(
+                self.computed_style.border_radii.bottom_left,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
         };
         self.border_radius = self.border_radii.max();
     }
@@ -2728,35 +3181,51 @@ impl Element {
         let bw_l = resolve_px_or_zero(
             self.computed_style.border_widths.left,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_r = resolve_px_or_zero(
             self.computed_style.border_widths.right,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_t = resolve_px_or_zero(
             self.computed_style.border_widths.top,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_b = resolve_px_or_zero(
             self.computed_style.border_widths.bottom,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
 
         let p_l = resolve_px_or_zero(
             self.computed_style.padding.left,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_r = resolve_px_or_zero(
             self.computed_style.padding.right,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_t = resolve_px_or_zero(
             self.computed_style.padding.top,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_b = resolve_px_or_zero(
             self.computed_style.padding.bottom,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
 
         let (layout_w, layout_h) = self.current_layout_transition_size();
@@ -2786,6 +3255,8 @@ impl Element {
         let proposal = self.last_layout_proposal.unwrap_or(LayoutProposal {
             width: 10_000.0,
             height: 10_000.0,
+            viewport_width: 0.0,
+            viewport_height: 0.0,
             percent_base_width: None,
             percent_base_height: None,
         });
@@ -2793,35 +3264,51 @@ impl Element {
         let bw_l = resolve_px_or_zero(
             self.computed_style.border_widths.left,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_r = resolve_px_or_zero(
             self.computed_style.border_widths.right,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_t = resolve_px_or_zero(
             self.computed_style.border_widths.top,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let bw_b = resolve_px_or_zero(
             self.computed_style.border_widths.bottom,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
 
         let p_l = resolve_px_or_zero(
             self.computed_style.padding.left,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_r = resolve_px_or_zero(
             self.computed_style.padding.right,
             proposal.percent_base_width,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_t = resolve_px_or_zero(
             self.computed_style.padding.top,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
         let p_b = resolve_px_or_zero(
             self.computed_style.padding.bottom,
             proposal.percent_base_height,
+            proposal.viewport_width,
+            proposal.viewport_height,
         );
 
         if self.computed_style.width == SizeValue::Auto {
@@ -2854,26 +3341,38 @@ impl Element {
                 height: proposal.height.max(0.0),
             };
             let anchor = self.resolve_anchor_snapshot(fallback_anchor);
-            let left = self
-                .computed_style
-                .position
-                .left_inset()
-                .and_then(|v| resolve_px_with_base(v, Some(anchor.width)));
-            let right = self
-                .computed_style
-                .position
-                .right_inset()
-                .and_then(|v| resolve_px_with_base(v, Some(anchor.width)));
-            let top = self
-                .computed_style
-                .position
-                .top_inset()
-                .and_then(|v| resolve_px_with_base(v, Some(anchor.height)));
-            let bottom = self
-                .computed_style
-                .position
-                .bottom_inset()
-                .and_then(|v| resolve_px_with_base(v, Some(anchor.height)));
+            let left = self.computed_style.position.left_inset().and_then(|v| {
+                resolve_signed_px_with_base(
+                    v,
+                    Some(anchor.width),
+                    proposal.viewport_width,
+                    proposal.viewport_height,
+                )
+            });
+            let right = self.computed_style.position.right_inset().and_then(|v| {
+                resolve_signed_px_with_base(
+                    v,
+                    Some(anchor.width),
+                    proposal.viewport_width,
+                    proposal.viewport_height,
+                )
+            });
+            let top = self.computed_style.position.top_inset().and_then(|v| {
+                resolve_signed_px_with_base(
+                    v,
+                    Some(anchor.height),
+                    proposal.viewport_width,
+                    proposal.viewport_height,
+                )
+            });
+            let bottom = self.computed_style.position.bottom_inset().and_then(|v| {
+                resolve_signed_px_with_base(
+                    v,
+                    Some(anchor.height),
+                    proposal.viewport_width,
+                    proposal.viewport_height,
+                )
+            });
 
             if let (Some(l), Some(r)) = (left, right) {
                 target_width = (anchor.width - l - r).max(0.0);
@@ -3316,8 +3815,8 @@ impl Element {
             let mut runtime = runtime.borrow_mut();
             if runtime.depth == 0 {
                 runtime.anchors.clear();
-                runtime.viewport_width = placement.available_width.max(0.0);
-                runtime.viewport_height = placement.available_height.max(0.0);
+                runtime.viewport_width = placement.viewport_width.max(0.0);
+                runtime.viewport_height = placement.viewport_height.max(0.0);
             }
             runtime.depth += 1;
         });
@@ -3421,6 +3920,8 @@ impl Element {
 
     fn place_children(
         &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
     ) {
@@ -3433,6 +3934,8 @@ impl Element {
             self.place_flex_children(
                 child_available_width,
                 child_available_height,
+                viewport_width,
+                viewport_height,
                 child_percent_base_width,
                 child_percent_base_height,
             );
@@ -3453,6 +3956,8 @@ impl Element {
                     visual_offset_y,
                     available_width: child_available_width,
                     available_height: child_available_height,
+                    viewport_width,
+                    viewport_height,
                     percent_base_width: child_percent_base_width,
                     percent_base_height: child_percent_base_height,
                 });
@@ -3469,6 +3974,8 @@ impl Element {
                     visual_offset_y,
                     available_width: child_available_width,
                     available_height: child_available_height,
+                    viewport_width,
+                    viewport_height,
                     percent_base_width: child_percent_base_width,
                     percent_base_height: child_percent_base_height,
                 });
@@ -3483,6 +3990,8 @@ impl Element {
         &mut self,
         child_available_width: f32,
         child_available_height: f32,
+        viewport_width: f32,
+        viewport_height: f32,
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
     ) {
@@ -3493,7 +4002,12 @@ impl Element {
         let info = if let Some(info) = self.flex_info.take() {
             info
         } else {
-            self.compute_flex_info(self.layout_inner_size.width, self.layout_inner_size.height)
+            self.compute_flex_info(
+                self.layout_inner_size.width,
+                self.layout_inner_size.height,
+                viewport_width,
+                viewport_height,
+            )
         };
 
         let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
@@ -3512,7 +4026,12 @@ impl Element {
         } else {
             self.layout_inner_size.height
         };
-        let gap = resolve_px(self.computed_style.gap, gap_base);
+        let gap = resolve_px(
+            self.computed_style.gap,
+            gap_base,
+            viewport_width,
+            viewport_height,
+        );
         let origin_x = self.layout_flow_inner_position.x - self.scroll_offset.x;
         let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
         let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
@@ -3560,6 +4079,8 @@ impl Element {
                     visual_offset_y,
                     available_width: child_available_width,
                     available_height: child_available_height,
+                    viewport_width,
+                    viewport_height,
                     percent_base_width: child_percent_base_width,
                     percent_base_height: child_percent_base_height,
                 });
@@ -3580,6 +4101,8 @@ impl Element {
                 visual_offset_y,
                 available_width: child_available_width,
                 available_height: child_available_height,
+                viewport_width,
+                viewport_height,
                 percent_base_width: child_percent_base_width,
                 percent_base_height: child_percent_base_height,
             });
@@ -3811,24 +4334,53 @@ fn trace_layout_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_LAYOUT").is_ok())
 }
 
-fn resolve_px(length: Length, base: f32) -> f32 {
+fn resolve_px(length: Length, base: f32, viewport_width: f32, viewport_height: f32) -> f32 {
     match length {
         Length::Px(v) => v.max(0.0),
         Length::Percent(v) => (base.max(0.0) * v * 0.01).max(0.0),
+        Length::Vw(v) => (viewport_width.max(0.0) * v * 0.01).max(0.0),
+        Length::Vh(v) => (viewport_height.max(0.0) * v * 0.01).max(0.0),
         Length::Zero => 0.0,
     }
 }
 
-fn resolve_px_with_base(length: Length, base: Option<f32>) -> Option<f32> {
+fn resolve_px_with_base(
+    length: Length,
+    base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Option<f32> {
     match length {
         Length::Px(v) => Some(v.max(0.0)),
         Length::Percent(v) => base.map(|b| (b.max(0.0) * v * 0.01).max(0.0)),
+        Length::Vw(v) => Some((viewport_width.max(0.0) * v * 0.01).max(0.0)),
+        Length::Vh(v) => Some((viewport_height.max(0.0) * v * 0.01).max(0.0)),
         Length::Zero => Some(0.0),
     }
 }
 
-fn resolve_px_or_zero(length: Length, base: Option<f32>) -> f32 {
-    resolve_px_with_base(length, base).unwrap_or(0.0)
+fn resolve_signed_px_with_base(
+    length: Length,
+    base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Option<f32> {
+    match length {
+        Length::Px(v) => Some(v),
+        Length::Percent(v) => base.map(|b| b.max(0.0) * v * 0.01),
+        Length::Vw(v) => Some(viewport_width.max(0.0) * v * 0.01),
+        Length::Vh(v) => Some(viewport_height.max(0.0) * v * 0.01),
+        Length::Zero => Some(0.0),
+    }
+}
+
+fn resolve_px_or_zero(
+    length: Length,
+    base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> f32 {
+    resolve_px_with_base(length, base, viewport_width, viewport_height).unwrap_or(0.0)
 }
 
 fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
@@ -3842,14 +4394,16 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
 
 #[cfg(test)]
 mod tests {
-    use crate::Display;
-use super::{
+    use super::{
         Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+        resolve_px_with_base, resolve_signed_px_with_base,
     };
+    use crate::Display;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
-    use crate::transition::LayoutField;
+    use crate::transition::{LayoutField, VisualField};
     use crate::{
-        AnchorName, Border, ClipMode, Collision, CollisionBoundary, Color, Length, Position, Style,
+        AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, Length,
+        Position, Style,
     };
 
     #[test]
@@ -3866,8 +4420,10 @@ use super::{
         root.measure(crate::view::base_component::LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         root.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
@@ -3876,8 +4432,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         let children = root.children().expect("element has children");
         let snapshot = children[0].box_model_snapshot();
@@ -3905,8 +4463,10 @@ use super::{
         root.measure(crate::view::base_component::LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         root.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
@@ -3915,8 +4475,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         let children = root.children().expect("element has children");
         let snapshot = children[0].box_model_snapshot();
@@ -3951,8 +4513,10 @@ use super::{
         parent.measure(crate::view::base_component::LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         parent.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
@@ -3961,8 +4525,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         let snapshot_unknown = parent.children().expect("child")[0].box_model_snapshot();
         assert_eq!(snapshot_unknown.width, 123.0);
@@ -3990,8 +4556,10 @@ use super::{
         known_parent.measure(crate::view::base_component::LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         known_parent.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
@@ -4000,12 +4568,114 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         let snapshot_known = known_parent.children().expect("child")[0].box_model_snapshot();
         assert_eq!(snapshot_known.width, 120.0);
         assert_eq!(snapshot_known.height, 60.0);
+    }
+
+    #[test]
+    fn vh_child_size_resolves_against_viewport_height() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 10.0, 10.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::vh(50.0)));
+        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::vh(50.0)));
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(snapshot.width, 300.0);
+        assert_eq!(snapshot.height, 300.0);
+    }
+
+    #[test]
+    fn vw_child_size_resolves_against_viewport_width() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 10.0, 10.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::vw(50.0)));
+        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::vw(50.0)));
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(snapshot.width, 400.0);
+        assert_eq!(snapshot.height, 400.0);
+    }
+
+    #[test]
+    fn vh_falls_back_to_zero_when_viewport_is_unknown() {
+        assert_eq!(
+            resolve_px_with_base(Length::vh(50.0), None, 0.0, 0.0),
+            Some(0.0)
+        );
+        assert_eq!(
+            resolve_signed_px_with_base(Length::vh(-20.0), None, 0.0, 0.0),
+            Some(0.0)
+        );
+        assert_eq!(
+            resolve_px_with_base(Length::vw(50.0), None, 0.0, 0.0),
+            Some(0.0)
+        );
+        assert_eq!(
+            resolve_signed_px_with_base(Length::vw(-20.0), None, 0.0, 0.0),
+            Some(0.0)
+        );
     }
 
     #[test]
@@ -4031,8 +4701,10 @@ use super::{
         parent.measure(LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         parent.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4041,8 +4713,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let snapshot = parent.box_model_snapshot();
@@ -4068,8 +4742,10 @@ use super::{
         parent.measure(LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         parent.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4078,8 +4754,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let snapshot = parent.box_model_snapshot();
@@ -4102,8 +4780,10 @@ use super::{
         parent.measure(LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         parent.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4112,8 +4792,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let children = parent.children().expect("has child");
@@ -4143,8 +4825,10 @@ use super::{
         parent.measure(LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         parent.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4153,8 +4837,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let children = parent.children().expect("has child");
@@ -4163,6 +4849,53 @@ use super::{
         assert_eq!(snapshot.y, 25.0);
         assert_eq!(snapshot.width, 170.0);
         assert_eq!(snapshot.height, 100.0);
+    }
+
+    #[test]
+    fn absolute_negative_insets_are_preserved() {
+        let mut parent = Element::new(10.0, 20.0, 200.0, 120.0);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(-10.0))
+                    .right(Length::px(20.0))
+                    .top(Length::px(-5.0))
+                    .bottom(Length::px(15.0)),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("has child");
+        let snapshot = children[0].box_model_snapshot();
+        assert_eq!(snapshot.x, 0.0);
+        assert_eq!(snapshot.y, 15.0);
+        assert_eq!(snapshot.width, 190.0);
+        assert_eq!(snapshot.height, 110.0);
     }
 
     #[test]
@@ -4183,8 +4916,10 @@ use super::{
         el.measure(LayoutConstraints {
             max_width: 400.0,
             max_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         el.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4193,8 +4928,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         let snapshot = el.box_model_snapshot();
         assert_eq!(snapshot.x, 350.0);
@@ -4221,8 +4958,10 @@ use super::{
         parent.measure(LayoutConstraints {
             max_width: 400.0,
             max_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         parent.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4231,8 +4970,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
 
         let children = parent.children().expect("has child");
@@ -4265,8 +5006,10 @@ use super::{
         parent.measure(LayoutConstraints {
             max_width: 400.0,
             max_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         parent.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4275,8 +5018,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
 
         let children = parent.children().expect("has child");
@@ -4314,8 +5059,10 @@ use super::{
         parent.measure(LayoutConstraints {
             max_width: 600.0,
             max_height: 300.0,
+            viewport_width: 600.0,
             percent_base_width: Some(600.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         parent.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4324,8 +5071,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 600.0,
             available_height: 300.0,
+            viewport_width: 600.0,
             percent_base_width: Some(600.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
 
         let children = parent.children().expect("has children");
@@ -4354,8 +5103,10 @@ use super::{
         el.measure(LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         el.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4364,10 +5115,12 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
-        let _ = el.take_layout_transition_requests();
+        let _ = el.take_visual_transition_requests();
 
         let mut next_style = Style::new();
         next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
@@ -4376,8 +5129,10 @@ use super::{
         el.measure(LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         el.place(LayoutPlacement {
             parent_x: 0.0,
@@ -4386,8 +5141,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let reqs = el.take_layout_transition_requests();
@@ -4411,8 +5168,10 @@ use super::{
         let constraints = LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         };
         let placement_at_100 = LayoutPlacement {
             parent_x: 100.0,
@@ -4421,13 +5180,15 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         };
 
         el.measure(constraints);
         el.place(placement_at_100);
-        let _ = el.take_layout_transition_requests();
+        let _ = el.take_visual_transition_requests();
 
         // Simulate an in-flight visual offset frame: target rel-x=50, offset=30 => abs x = 180.
         el.set_layout_transition_x(30.0);
@@ -4443,14 +5204,16 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
-        let reqs = el.take_layout_transition_requests();
+        let reqs = el.take_visual_transition_requests();
         let x_req = reqs
             .iter()
-            .find(|r| r.field == LayoutField::X)
+            .find(|r| r.field == VisualField::X)
             .expect("x transition request should exist");
         // current abs(180) - new parent_x(130) = 50, target rel-x=120 => offset = -70
         assert!((x_req.from + 70.0).abs() < 0.01);
@@ -4473,8 +5236,10 @@ use super::{
         let constraints = LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         };
         let placement = LayoutPlacement {
             parent_x: 100.0,
@@ -4483,8 +5248,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         };
 
         el.measure(constraints);
@@ -4508,8 +5275,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let reqs = el.take_layout_transition_requests();
@@ -4537,8 +5306,10 @@ use super::{
         let constraints = LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         };
         let placement = LayoutPlacement {
             parent_x: 100.0,
@@ -4547,8 +5318,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         };
 
         el.measure(constraints);
@@ -4572,8 +5345,10 @@ use super::{
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let reqs = el.take_layout_transition_requests();
@@ -4617,5 +5392,215 @@ use super::{
         assert_eq!(restored.layout_transition_target_height, Some(80.0));
         assert!((restored.last_parent_layout_x - 21.0).abs() < 0.001);
         assert!((restored.last_parent_layout_y - 34.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn min_and_max_size_clamp_explicit_width_and_height() {
+        let mut el = Element::new(0.0, 0.0, 320.0, 20.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(320.0)));
+        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        style.insert(PropertyId::MinWidth, ParsedValue::Length(Length::px(120.0)));
+        style.insert(PropertyId::MaxWidth, ParsedValue::Length(Length::px(180.0)));
+        style.insert(PropertyId::MinHeight, ParsedValue::Length(Length::px(40.0)));
+        style.insert(PropertyId::MaxHeight, ParsedValue::Length(Length::px(60.0)));
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let snapshot = el.box_model_snapshot();
+        assert_eq!(snapshot.width, 180.0);
+        assert_eq!(snapshot.height, 40.0);
+    }
+
+    #[test]
+    fn percent_min_and_max_size_resolve_against_parent_inner_size() {
+        let mut parent = Element::new(0.0, 0.0, 300.0, 200.0);
+        let mut child = Element::new(0.0, 0.0, 500.0, 10.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(500.0)));
+        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(10.0)));
+        child_style.insert(
+            PropertyId::MinWidth,
+            ParsedValue::Length(Length::percent(50.0)),
+        );
+        child_style.insert(
+            PropertyId::MaxWidth,
+            ParsedValue::Length(Length::percent(60.0)),
+        );
+        child_style.insert(
+            PropertyId::MinHeight,
+            ParsedValue::Length(Length::percent(40.0)),
+        );
+        child_style.insert(
+            PropertyId::MaxHeight,
+            ParsedValue::Length(Length::percent(45.0)),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let child_snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(child_snapshot.width, 180.0);
+        assert_eq!(child_snapshot.height, 80.0);
+    }
+
+    #[test]
+    fn percent_min_and_max_size_do_not_apply_when_parent_size_is_unresolved() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
+        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        child_style.insert(
+            PropertyId::MinWidth,
+            ParsedValue::Length(Length::percent(60.0)),
+        );
+        child_style.insert(
+            PropertyId::MinHeight,
+            ParsedValue::Length(Length::percent(70.0)),
+        );
+        child_style.insert(
+            PropertyId::MaxWidth,
+            ParsedValue::Length(Length::percent(10.0)),
+        );
+        child_style.insert(
+            PropertyId::MaxHeight,
+            ParsedValue::Length(Length::percent(10.0)),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let child_snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(child_snapshot.width, 20.0);
+        assert_eq!(child_snapshot.height, 20.0);
+    }
+
+    #[test]
+    fn min_greater_than_max_uses_min_as_effective_max() {
+        let mut el = Element::new(0.0, 0.0, 10.0, 10.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(30.0)));
+        style.insert(PropertyId::MinWidth, ParsedValue::Length(Length::px(120.0)));
+        style.insert(PropertyId::MaxWidth, ParsedValue::Length(Length::px(90.0)));
+        style.insert(PropertyId::MinHeight, ParsedValue::Length(Length::px(50.0)));
+        style.insert(PropertyId::MaxHeight, ParsedValue::Length(Length::px(40.0)));
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let snapshot = el.box_model_snapshot();
+        assert_eq!(snapshot.width, 120.0);
+        assert_eq!(snapshot.height, 50.0);
+    }
+
+    #[test]
+    fn apply_style_syncs_box_shadow_into_element_state() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.set_box_shadow(vec![
+            BoxShadow::new()
+                .color(Color::hex("#223344"))
+                .offset_x(3.0)
+                .offset_y(5.0)
+                .blur(8.0)
+                .spread(2.0),
+            BoxShadow::new().offset(-1.0),
+        ]);
+        el.apply_style(style);
+
+        assert_eq!(el.computed_style.box_shadow.len(), 2);
+        assert_eq!(el.box_shadows.len(), 2);
+        assert_eq!(el.box_shadows[0].offset_x, 3.0);
+        assert_eq!(el.box_shadows[0].offset_y, 5.0);
+        assert_eq!(el.box_shadows[0].blur, 8.0);
+        assert_eq!(el.box_shadows[0].spread, 2.0);
+        assert_eq!(el.box_shadows[1].offset_x, -1.0);
+        assert_eq!(el.box_shadows[1].offset_y, -1.0);
     }
 }

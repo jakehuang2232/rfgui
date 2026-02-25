@@ -19,10 +19,8 @@ pub struct NumberFieldProps {
     pub disabled: Option<bool>,
 }
 
-impl RsxComponent for NumberField {
-    type Props = NumberFieldProps;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<NumberFieldProps> for NumberField {
+    fn render(props: NumberFieldProps) -> RsxNode {
         let value = props.value.unwrap_or(0.0);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(value));

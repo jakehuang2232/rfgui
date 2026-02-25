@@ -30,6 +30,10 @@ impl Color {
     pub fn hex(raw: &str) -> HexColor<'_> {
         HexColor::new(raw)
     }
+    
+    pub fn transparent() -> Self {
+        Self::rgba(0, 0, 0, 0)
+    }
 }
 
 pub trait ColorLike {

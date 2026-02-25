@@ -5,15 +5,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rfgui::ClipMode::Viewport;
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{MouseButton, MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxComponent, RsxNode, on_mouse_down, on_mouse_move, on_mouse_up, rsx, use_state, props};
+use rfgui::ui::{
+    MouseButton, MouseDownHandlerProp, RsxComponent, RsxNode, ViewportListenerHandle,
+    on_mouse_down, props, rsx, use_state,
+};
 use rfgui::{
-    AlignItems, Border, BorderRadius, Color, Display, FontWeight, JustifyContent, Length, Padding,
-    Position,
+    AlignItems, Border, BorderRadius, BoxShadow, Color, Cursor, Display, FontWeight,
+    JustifyContent, Length, Padding, Position,
 };
 
 const MIN_WIDTH: f32 = 220.0;
 const MIN_HEIGHT: f32 = 140.0;
 const TITLE_BAR_HEIGHT: f32 = 24.0;
+const RESIZE_EDGE_THICKNESS: f32 = 2.0;
+const RESIZE_CORNER_SIZE: f32 = 14.0;
 
 #[derive(Clone)]
 pub struct ResizeHandlerProp {
@@ -77,11 +82,41 @@ enum WindowInteraction {
         start_y: f32,
     },
     Resizing {
+        edge: ResizeEdge,
         start_mouse_x: f32,
         start_mouse_y: f32,
+        start_x: f32,
+        start_y: f32,
         start_width: f32,
         start_height: f32,
     },
+}
+
+#[derive(Clone, Copy)]
+enum ResizeEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    BottomLeft,
+    BottomRight,
+}
+
+impl ResizeEdge {
+    fn cursor(self) -> Cursor {
+        match self {
+            Self::Left | Self::Right => Cursor::EwResize,
+            Self::Top | Self::Bottom => Cursor::NsResize,
+            Self::BottomLeft => Cursor::NeswResize,
+            Self::BottomRight => Cursor::NwseResize,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct WindowViewportListenerState {
+    move_listener: Option<ViewportListenerHandle>,
+    up_listener: Option<ViewportListenerHandle>,
 }
 
 pub struct Window;
@@ -93,13 +128,49 @@ pub struct WindowProps {
     pub width: Option<f64>,
     pub height: Option<f64>,
     pub on_resize: Option<ResizeHandlerProp>,
+    pub window_slots: Option<WindowSlotsProp>,
     pub children: Vec<RsxNode>,
 }
 
-impl RsxComponent for Window {
-    type Props = WindowProps;
+#[props]
+pub struct WindowSlotsProp {
+    pub root_style: Option<WindowRootStyleSlot>,
+    pub title_bar_style: Option<WindowTitleBarStyleSlot>,
+    pub title_text_style: Option<WindowTitleTextStyleSlot>,
+    pub content_style: Option<WindowContentStyleSlot>,
+}
 
-    fn render(props: Self::Props) -> RsxNode {
+#[props]
+pub struct WindowRootStyleSlot {
+    pub background: Option<Color>,
+    pub border: Option<Border>,
+    pub border_radius: Option<BorderRadius>,
+}
+
+#[props]
+#[derive(Clone, Copy)]
+pub struct WindowTitleBarStyleSlot {
+    pub background: Option<Color>,
+    pub padding: Option<Padding>,
+    pub height: Option<Length>,
+}
+
+#[props]
+#[derive(Clone, Copy)]
+pub struct WindowTitleTextStyleSlot {
+    pub color: Option<Color>,
+    pub font_weight: Option<FontWeight>,
+}
+
+#[props]
+#[derive(Clone, Copy)]
+pub struct WindowContentStyleSlot {
+    pub padding: Option<Padding>,
+    pub background: Option<Color>,
+}
+
+impl RsxComponent<WindowProps> for Window {
+    fn render(props: WindowProps) -> RsxNode {
         let width = props.width.unwrap_or(360.0).max(MIN_WIDTH as f64) as f32;
         let height = props.height.unwrap_or(240.0).max(MIN_HEIGHT as f64) as f32;
 
@@ -110,6 +181,7 @@ impl RsxComponent for Window {
                 initial_width={width}
                 initial_height={height}
                 on_resize={props.on_resize}
+                window_slots={props.window_slots}
                 children={props.children}
             />
         }
@@ -123,103 +195,252 @@ fn WindowView(
     initial_width: f32,
     initial_height: f32,
     on_resize: Option<ResizeHandlerProp>,
+    window_slots: Option<WindowSlotsProp>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     let position = use_state(|| (24.0_f32, 24.0_f32));
     let size = use_state(|| (initial_width, initial_height));
     let interaction = use_state(|| WindowInteraction::Idle);
+    let viewport_listeners = use_state(WindowViewportListenerState::default);
 
     let (x, y) = position.get();
     let (width, height) = size.get();
-    let content_height = (height - TITLE_BAR_HEIGHT).max(0.0);
+    let (root_style_slot, title_bar_style_slot, title_text_style_slot, content_style_slot) =
+        if let Some(slots) = window_slots {
+            (
+                slots.root_style,
+                slots.title_bar_style,
+                slots.title_text_style,
+                slots.content_style,
+            )
+        } else {
+            (None, None, None, None)
+        };
+
+    let mut root_background = None;
+    let mut root_border = None;
+    let mut root_border_radius = None;
+    if let Some(root_style) = root_style_slot {
+        root_background = root_style.background;
+        root_border = root_style.border;
+        root_border_radius = root_style.border_radius;
+    }
+
+    let root_background = root_background.unwrap_or(Color::rgba(0, 0, 0, 0));
+    let root_border =
+        root_border.unwrap_or(Border::uniform(Length::px(1.0), &Color::hex("#94A3B8")));
+    let root_border_radius = root_border_radius.unwrap_or(BorderRadius::uniform(Length::px(10.0)));
+
+    let title_bar_height_length = title_bar_style_slot
+        .and_then(|style| style.height)
+        .unwrap_or(Length::px(TITLE_BAR_HEIGHT));
+    let title_bar_height_px = match title_bar_height_length {
+        Length::Px(value) => value,
+        Length::Percent(value) => height * (value / 100.0),
+        Length::Vw(value) => width * (value / 100.0),
+        Length::Vh(value) => height * (value / 100.0),
+        Length::Zero => 0.0,
+    };
+    let content_height = (height - title_bar_height_px).max(0.0);
+
+    let title_bar_background = title_bar_style_slot
+        .and_then(|style| style.background)
+        .unwrap_or(Color::rgb(226, 232, 240));
+    let title_bar_padding = title_bar_style_slot
+        .and_then(|style| style.padding)
+        .unwrap_or(Padding::uniform(Length::px(0.0)).x(Length::px(8.0)));
+    let title_text_color = title_text_style_slot
+        .and_then(|style| style.color)
+        .unwrap_or(Color::rgb(15, 23, 42));
+    let title_text_weight = title_text_style_slot
+        .and_then(|style| style.font_weight)
+        .unwrap_or(FontWeight::semi_bold());
+    let content_padding = content_style_slot
+        .and_then(|style| style.padding)
+        .unwrap_or(Padding::uniform(Length::px(0.0)));
+    let content_background = content_style_slot
+        .and_then(|style| style.background)
+        .unwrap_or(Color::rgb(255, 255, 255));
 
     let title_down: MouseDownHandlerProp = {
         let interaction = interaction.binding();
+        let position = position.binding();
+        let viewport_listeners = viewport_listeners.binding();
         on_mouse_down(move |event| {
             if !draggable || event.mouse.button != Some(MouseButton::Left) {
                 return;
             }
-            event.meta.request_pointer_capture();
+            let (start_x, start_y) = position.get();
             interaction.set(WindowInteraction::Dragging {
                 start_mouse_x: event.mouse.viewport_x,
                 start_mouse_y: event.mouse.viewport_y,
-                start_x: x,
-                start_y: y,
+                start_x,
+                start_y,
+            });
+            let listeners = viewport_listeners.get();
+            if let Some(handle) = listeners.move_listener {
+                event.viewport.remove_listener(handle);
+            }
+            if let Some(handle) = listeners.up_listener {
+                event.viewport.remove_listener(handle);
+            }
+            let interaction_for_move = interaction.clone();
+            let position_for_move = position.clone();
+            let move_listener =
+                event.viewport.add_mouse_move_listener(
+                    move |move_event| match interaction_for_move.get() {
+                        WindowInteraction::Dragging {
+                            start_mouse_x,
+                            start_mouse_y,
+                            start_x,
+                            start_y,
+                        } => {
+                            let next_x = start_x + (move_event.mouse.viewport_x - start_mouse_x);
+                            let next_y = start_y + (move_event.mouse.viewport_y - start_mouse_y);
+                            position_for_move.set((next_x, next_y));
+                            move_event.meta.stop_propagation();
+                        }
+                        WindowInteraction::Resizing { .. } => {}
+                        WindowInteraction::Idle => {}
+                    },
+                );
+            let interaction_for_up = interaction.clone();
+            let viewport_listeners_for_up = viewport_listeners.clone();
+            let up_listener = event.viewport.add_mouse_up_listener_until(move |up_event| {
+                if up_event.mouse.button != Some(MouseButton::Left) {
+                    return false;
+                }
+                up_event.viewport.remove_listener(move_listener);
+                interaction_for_up.set(WindowInteraction::Idle);
+                viewport_listeners_for_up.set(WindowViewportListenerState::default());
+                up_event.meta.stop_propagation();
+                true
+            });
+            viewport_listeners.set(WindowViewportListenerState {
+                move_listener: Some(move_listener),
+                up_listener: Some(up_listener),
             });
             event.meta.stop_propagation();
         })
     };
 
-    let resize_down: MouseDownHandlerProp = {
+    let make_resize_down = |edge: ResizeEdge| {
         let interaction = interaction.binding();
+        let size = size.binding();
+        let position = position.binding();
+        let on_resize = on_resize.clone();
+        let viewport_listeners = viewport_listeners.binding();
         on_mouse_down(move |event| {
             if event.mouse.button != Some(MouseButton::Left) {
                 return;
             }
-            event.meta.request_pointer_capture();
+            event.viewport.set_cursor(Some(edge.cursor()));
+            let (start_x, start_y) = position.get();
+            let (start_width, start_height) = size.get();
             interaction.set(WindowInteraction::Resizing {
+                edge,
                 start_mouse_x: event.mouse.viewport_x,
                 start_mouse_y: event.mouse.viewport_y,
-                start_width: width,
-                start_height: height,
+                start_x,
+                start_y,
+                start_width,
+                start_height,
             });
-            event.meta.stop_propagation();
-        })
-    };
-
-    let root_move: MouseMoveHandlerProp = {
-        let interaction = interaction.binding();
-        let position = position.binding();
-        let size = size.binding();
-        let on_resize = on_resize.clone();
-        on_mouse_move(move |event| {
-            if !event.mouse.buttons.left {
-                interaction.set(WindowInteraction::Idle);
-                return;
+            let listeners = viewport_listeners.get();
+            if let Some(handle) = listeners.move_listener {
+                event.viewport.remove_listener(handle);
             }
-
-            match interaction.get() {
-                WindowInteraction::Idle => {}
-                WindowInteraction::Dragging {
+            if let Some(handle) = listeners.up_listener {
+                event.viewport.remove_listener(handle);
+            }
+            let interaction_for_move = interaction.clone();
+            let size_for_move = size.clone();
+            let position_for_move = position.clone();
+            let on_resize_for_move = on_resize.clone();
+            let move_listener = event.viewport.add_mouse_move_listener(move |move_event| {
+                if let WindowInteraction::Resizing {
+                    edge,
                     start_mouse_x,
                     start_mouse_y,
                     start_x,
                     start_y,
-                } => {
-                    let next_x = start_x + (event.mouse.viewport_x - start_mouse_x);
-                    let next_y = start_y + (event.mouse.viewport_y - start_mouse_y);
-                    position.set((next_x, next_y));
-                    event.meta.stop_propagation();
-                }
-                WindowInteraction::Resizing {
-                    start_mouse_x,
-                    start_mouse_y,
                     start_width,
                     start_height,
-                } => {
-                    let next_width =
-                        (start_width + (event.mouse.viewport_x - start_mouse_x)).max(MIN_WIDTH);
-                    let next_height =
-                        (start_height + (event.mouse.viewport_y - start_mouse_y)).max(MIN_HEIGHT);
-                    size.set((next_width, next_height));
-                    if let Some(handler) = &on_resize {
+                } = interaction_for_move.get()
+                {
+                    let dx = move_event.mouse.viewport_x - start_mouse_x;
+                    let dy = move_event.mouse.viewport_y - start_mouse_y;
+
+                    let mut next_x = start_x;
+                    let mut next_y = start_y;
+                    let mut next_width = start_width;
+                    let mut next_height = start_height;
+
+                    match edge {
+                        ResizeEdge::Right => {
+                            next_width = (start_width + dx).max(MIN_WIDTH);
+                        }
+                        ResizeEdge::Bottom => {
+                            next_height = (start_height + dy).max(MIN_HEIGHT);
+                        }
+                        ResizeEdge::BottomRight => {
+                            next_width = (start_width + dx).max(MIN_WIDTH);
+                            next_height = (start_height + dy).max(MIN_HEIGHT);
+                        }
+                        ResizeEdge::Left => {
+                            let raw_width = start_width - dx;
+                            next_width = raw_width.max(MIN_WIDTH);
+                            next_x = start_x + (start_width - next_width);
+                        }
+                        ResizeEdge::Top => {
+                            let raw_height = start_height - dy;
+                            next_height = raw_height.max(MIN_HEIGHT);
+                            next_y = start_y + (start_height - next_height);
+                        }
+                        ResizeEdge::BottomLeft => {
+                            let raw_width = start_width - dx;
+                            next_width = raw_width.max(MIN_WIDTH);
+                            next_x = start_x + (start_width - next_width);
+                            next_height = (start_height + dy).max(MIN_HEIGHT);
+                        }
+                    }
+
+                    position_for_move.set((next_x, next_y));
+                    size_for_move.set((next_width, next_height));
+                    if let Some(handler) = &on_resize_for_move {
                         handler.call(next_width, next_height);
                     }
-                    event.meta.stop_propagation();
+                    move_event.meta.stop_propagation();
                 }
-            }
+            });
+            let interaction_for_up = interaction.clone();
+            let viewport_listeners_for_up = viewport_listeners.clone();
+            let up_listener = event.viewport.add_mouse_up_listener_until(move |up_event| {
+                if up_event.mouse.button != Some(MouseButton::Left) {
+                    return false;
+                }
+                up_event.viewport.remove_listener(move_listener);
+                if let WindowInteraction::Resizing { .. } = interaction_for_up.get() {
+                    up_event.viewport.set_cursor(None);
+                }
+                interaction_for_up.set(WindowInteraction::Idle);
+                viewport_listeners_for_up.set(WindowViewportListenerState::default());
+                up_event.meta.stop_propagation();
+                true
+            });
+            viewport_listeners.set(WindowViewportListenerState {
+                move_listener: Some(move_listener),
+                up_listener: Some(up_listener),
+            });
+            event.meta.stop_propagation();
         })
     };
-
-    let root_up: MouseUpHandlerProp = {
-        let interaction = interaction.binding();
-        on_mouse_up(move |event| {
-            if event.mouse.button == Some(MouseButton::Left) {
-                interaction.set(WindowInteraction::Idle);
-                event.meta.stop_propagation();
-            }
-        })
-    };
+    let resize_left_down = make_resize_down(ResizeEdge::Left);
+    let resize_right_down = make_resize_down(ResizeEdge::Right);
+    let resize_top_down = make_resize_down(ResizeEdge::Top);
+    let resize_bottom_down = make_resize_down(ResizeEdge::Bottom);
+    let resize_bottom_left_down = make_resize_down(ResizeEdge::BottomLeft);
+    let resize_bottom_right_down = make_resize_down(ResizeEdge::BottomRight);
 
     rsx! {
         <Element
@@ -228,35 +449,40 @@ fn WindowView(
                 width: Length::px(width),
                 height: Length::px(height),
                 display: Display::flow().column().no_wrap(),
-                border: Border::uniform(Length::px(1.0), &Color::hex("#94A3B8")),
-                border_radius: BorderRadius::uniform(Length::px(10.0)),
-                background: Color::hex("#FFFFFF"),
+                background: root_background,
+                border: root_border,
+                border_radius: root_border_radius,
+                box_shadow: vec![
+                    BoxShadow::new()
+                        .color(Color::hex("#000000ff"))
+                        .offset_y(8.0)
+                        .blur(24.0)
+                        .spread(0.0),
+                ],
             }}
-            on_mouse_move={root_move}
-            on_mouse_up={root_up}
         >
             <Element
                 style={{
-                    height: Length::px(TITLE_BAR_HEIGHT),
+                    height: title_bar_height_length,
                     width: Length::percent(100.0),
                     display: Display::flow().row().no_wrap(),
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::SpaceBetween,
-                    padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
-                    background: Color::hex("#E2E8F0"),
+                    padding: title_bar_padding,
+                    background: title_bar_background,
                     border_radius: BorderRadius::uniform(Length::px(0.0)).top(Length::px(10.0)),
                 }}
                 on_mouse_down={title_down}
             >
-                <Text style={{ color: "#0F172A", font_weight: FontWeight::semi_bold() }}>{title}</Text>
+                <Text style={{ color: title_text_color, font_weight: title_text_weight }}>{title}</Text>
             </Element>
             <Element
                 style={{
                     width: Length::percent(100.0),
                     height: Length::px(content_height),
-                    padding: Padding::uniform(Length::px(12.0)),
+                    padding: content_padding,
                     display: Display::flow().column(),
-                    background: Color::hex("#FFFFFF"),
+                    background: content_background,
                 }}
             >
                 {children}
@@ -264,14 +490,74 @@ fn WindowView(
             <Element
                 style={{
                     position: Position::absolute()
-                        .right(Length::px(0.0))
-                        .bottom(Length::px(0.0)),
-                    width: Length::px(14.0),
-                    height: Length::px(14.0),
-                    background: Color::hex("#CBD5E1"),
-                    border_radius: BorderRadius::uniform(Length::px(3.0)),
+                        .left(Length::px(-RESIZE_EDGE_THICKNESS))
+                        .top(Length::px(0.0))
+                        .bottom(Length::px(0.0))
+                        .clip(Viewport),
+                    width: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
+                    cursor: Cursor::EwResize,
                 }}
-                on_mouse_down={resize_down}
+                on_mouse_down={resize_left_down}
+            />
+            <Element
+                style={{
+                    position: Position::absolute()
+                        .right(Length::px(-RESIZE_EDGE_THICKNESS))
+                        .top(Length::px(0.0))
+                        .bottom(Length::px(0.0))
+                        .clip(Viewport),
+                    width: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
+                    cursor: Cursor::EwResize,
+                }}
+                on_mouse_down={resize_right_down}
+            />
+            <Element
+                style={{
+                    position: Position::absolute()
+                        .left(Length::px(0.0))
+                        .right(Length::px(0.0))
+                        .top(Length::px(-RESIZE_EDGE_THICKNESS))
+                        .clip(Viewport),
+                    height: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
+                    cursor: Cursor::NsResize,
+                }}
+                on_mouse_down={resize_top_down}
+            />
+            <Element
+                style={{
+                    position: Position::absolute()
+                        .left(Length::px(0.0))
+                        .right(Length::px(0.0))
+                        .bottom(Length::px(-RESIZE_EDGE_THICKNESS))
+                        .clip(Viewport),
+                    height: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
+                    cursor: Cursor::NsResize,
+                }}
+                on_mouse_down={resize_bottom_down}
+            />
+            <Element
+                style={{
+                    position: Position::absolute()
+                        .left(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .bottom(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .clip(Viewport),
+                    width: Length::px(RESIZE_CORNER_SIZE),
+                    height: Length::px(RESIZE_CORNER_SIZE),
+                    cursor: Cursor::NeswResize,
+                }}
+                on_mouse_down={resize_bottom_left_down}
+            />
+            <Element
+                style={{
+                    position: Position::absolute()
+                        .right(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .bottom(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .clip(Viewport),
+                    width: Length::px(RESIZE_CORNER_SIZE),
+                    height: Length::px(RESIZE_CORNER_SIZE),
+                    cursor: Cursor::NwseResize,
+                }}
+                on_mouse_down={resize_bottom_right_down}
             />
         </Element>
     }

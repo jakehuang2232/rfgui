@@ -41,6 +41,7 @@ mod tests {
         root.measure(rfgui::view::base_component::LayoutConstraints {
             max_width: 320.0,
             max_height: 120.0,
+            viewport_width: 320.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(120.0),
         });
@@ -51,6 +52,7 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 320.0,
             available_height: 120.0,
+            viewport_width: 320.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(120.0),
         });
@@ -110,6 +112,7 @@ mod tests {
         root.measure(rfgui::view::base_component::LayoutConstraints {
             max_width: 320.0,
             max_height: 240.0,
+            viewport_width: 320.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(240.0),
         });
@@ -120,6 +123,7 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 320.0,
             available_height: 240.0,
+            viewport_width: 320.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(240.0),
         });

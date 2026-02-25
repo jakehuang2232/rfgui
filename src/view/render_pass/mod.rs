@@ -4,13 +4,17 @@ use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
 
 pub mod clear_pass;
+pub mod blur_pass;
 pub mod composite_layer_pass;
 pub mod draw_rect_pass;
 pub(crate) mod render_target;
+pub mod shadow_pass;
 pub mod text_pass;
+pub use blur_pass::BlurPass;
 pub use clear_pass::ClearPass;
 pub use composite_layer_pass::{CompositeLayerPass, LayerOut, LayerTag};
 pub use draw_rect_pass::DrawRectPass;
+pub use shadow_pass::{ShadowMesh, ShadowParams, ShadowPass};
 pub use text_pass::{TextPass, prewarm_text_pipeline};
 
 pub trait RenderPass {

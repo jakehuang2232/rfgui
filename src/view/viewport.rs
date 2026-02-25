@@ -21,14 +21,31 @@ use crate::transition::{
 use crate::ui::{
     BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyEventData,
     KeyModifiers, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent, MouseEventData,
-    MouseMoveEvent, MouseUpEvent, RsxNode, TextInputEvent, take_state_dirty,
+    MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
+    ViewportListenerAction, ViewportListenerHandle, take_state_dirty,
 };
-use crate::{ColorLike, HexColor};
+use crate::{ColorLike, Cursor, HexColor};
 
 pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
 impl<T: HasWindowHandle + HasDisplayHandle> WindowHandle for T {}
 
 pub type Window = Arc<dyn WindowHandle + Send + Sync>;
+type CursorHandler = Box<dyn FnMut(Cursor)>;
+
+#[derive(Clone)]
+enum ViewportMouseUpListener {
+    Persistent(crate::ui::MouseUpHandlerProp),
+    Until(MouseUpUntilHandler),
+}
+
+impl ViewportMouseUpListener {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Persistent(handler) => handler.id(),
+            Self::Until(handler) => handler.id(),
+        }
+    }
+}
 
 fn highlight_ms(ms: f64) -> String {
     let color = if ms >= 16.7 {
@@ -58,8 +75,35 @@ struct InputState {
     pointer_capture_node_id: Option<u64>,
     hovered_node_id: Option<u64>,
     mouse_position_viewport: Option<(f32, f32)>,
+    pending_click: Option<PendingClick>,
     pressed_mouse_buttons: HashSet<MouseButton>,
     pressed_keys: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingClick {
+    button: MouseButton,
+    target_id: u64,
+    viewport_x: f32,
+    viewport_y: f32,
+}
+
+fn is_valid_click_candidate(
+    pending_click: PendingClick,
+    button: MouseButton,
+    hit_target: Option<u64>,
+    up_x: f32,
+    up_y: f32,
+) -> bool {
+    if pending_click.button != button {
+        return false;
+    }
+    if hit_target != Some(pending_click.target_id) {
+        return false;
+    }
+    const CLICK_MAX_TRAVEL_SQ: f32 = 25.0;
+    distance_sq(up_x, up_y, pending_click.viewport_x, pending_click.viewport_y)
+        <= CLICK_MAX_TRAVEL_SQ
 }
 
 pub struct ViewportControl<'a> {
@@ -197,6 +241,11 @@ pub struct Viewport {
     scroll_transition: ScrollTransition,
     last_transition_tick: Option<Instant>,
     transition_epoch: Option<Instant>,
+    cursor_handler: Option<CursorHandler>,
+    cursor_override: Option<Cursor>,
+    frame_presented: bool,
+    viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
+    viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
 }
 
 impl Viewport {
@@ -693,7 +742,7 @@ impl Viewport {
                 width: 1,
                 height: 1,
                 present_mode: Self::present_mode_from_env(),
-                desired_maximum_frame_latency: 1,
+                desired_maximum_frame_latency: 2,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
                 view_formats: vec![],
             },
@@ -743,6 +792,11 @@ impl Viewport {
             scroll_transition: ScrollTransition::new(250).ease_out(),
             last_transition_tick: None,
             transition_epoch: None,
+            cursor_handler: None,
+            cursor_override: None,
+            frame_presented: false,
+            viewport_mouse_move_listeners: Vec::new(),
+            viewport_mouse_up_listeners: Vec::new(),
         }
     }
 
@@ -773,6 +827,17 @@ impl Viewport {
 
     pub fn set_clear_color(&mut self, clear_color: Box<dyn ColorLike>) {
         self.clear_color = clear_color;
+    }
+
+    pub fn set_cursor_handler<F>(&mut self, handler: F)
+    where
+        F: FnMut(Cursor) + 'static,
+    {
+        self.cursor_handler = Some(Box::new(handler));
+    }
+
+    pub fn set_cursor(&mut self, cursor: Option<Cursor>) {
+        self.cursor_override = cursor;
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
@@ -976,6 +1041,8 @@ impl Viewport {
             root.measure(super::base_component::LayoutConstraints {
                 max_width: self.logical_width,
                 max_height: self.logical_height,
+                viewport_width: self.logical_width,
+                viewport_height: self.logical_height,
                 percent_base_width: Some(self.logical_width),
                 percent_base_height: Some(self.logical_height),
             });
@@ -990,6 +1057,8 @@ impl Viewport {
                 visual_offset_y: 0.0,
                 available_width: self.logical_width,
                 available_height: self.logical_height,
+                viewport_width: self.logical_width,
+                viewport_height: self.logical_height,
                 percent_base_width: Some(self.logical_width),
                 percent_base_height: Some(self.logical_height),
             });
@@ -1025,6 +1094,8 @@ impl Viewport {
                     visual_offset_y: 0.0,
                     available_width: self.logical_width,
                     available_height: self.logical_height,
+                    viewport_width: self.logical_width,
+                    viewport_height: self.logical_height,
                     percent_base_width: Some(self.logical_width),
                     percent_base_height: Some(self.logical_height),
                 });
@@ -1196,6 +1267,9 @@ impl Viewport {
             self.request_redraw();
         }
         self.ui_roots = roots;
+        if std::mem::take(&mut self.frame_presented) {
+            self.notify_cursor_handler();
+        }
         Ok(())
     }
 
@@ -1254,6 +1328,42 @@ impl Viewport {
 
     pub fn pointer_capture_node_id(&self) -> Option<u64> {
         self.input_state.pointer_capture_node_id
+    }
+
+    pub fn has_viewport_mouse_listeners(&self) -> bool {
+        !self.viewport_mouse_move_listeners.is_empty()
+            || !self.viewport_mouse_up_listeners.is_empty()
+    }
+
+    fn apply_viewport_listener_actions(&mut self, actions: Vec<ViewportListenerAction>) {
+        for action in actions {
+            match action {
+                ViewportListenerAction::AddMouseMoveListener(handler) => {
+                    self.viewport_mouse_move_listeners.push(handler);
+                }
+                ViewportListenerAction::AddMouseUpListener(handler) => {
+                    self.viewport_mouse_up_listeners
+                        .push(ViewportMouseUpListener::Persistent(handler));
+                }
+                ViewportListenerAction::AddMouseUpListenerUntil(handler) => {
+                    self.viewport_mouse_up_listeners
+                        .push(ViewportMouseUpListener::Until(handler));
+                }
+                ViewportListenerAction::SetCursor(cursor) => {
+                    self.set_cursor(cursor);
+                }
+                ViewportListenerAction::RemoveListener(handle) => {
+                    self.remove_viewport_listener(handle);
+                }
+            }
+        }
+    }
+
+    fn remove_viewport_listener(&mut self, handle: ViewportListenerHandle) {
+        self.viewport_mouse_move_listeners
+            .retain(|listener| listener.id() != handle.0);
+        self.viewport_mouse_up_listeners
+            .retain(|listener| listener.id() != handle.0);
     }
 
     pub fn set_selects(&mut self, selects: Vec<u64>) {
@@ -1337,6 +1447,8 @@ impl Viewport {
         self.set_focused_node_id(None);
         self.sync_focus_dispatch();
         self.input_state = InputState::default();
+        self.viewport_mouse_move_listeners.clear();
+        self.viewport_mouse_up_listeners.clear();
         self.dispatched_focus_node_id = None;
         let hover_changed = Self::apply_hover_target(&mut self.ui_roots, None);
         let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
@@ -1345,14 +1457,61 @@ impl Viewport {
         }
     }
 
+    fn dispatch_viewport_mouse_move_listeners(&mut self, event: &mut MouseMoveEvent) -> bool {
+        if self.viewport_mouse_move_listeners.is_empty() {
+            return false;
+        }
+        let mut handled = false;
+        for listener in &mut self.viewport_mouse_move_listeners {
+            listener.call(event);
+            handled = true;
+            if event.meta.propagation_stopped() {
+                break;
+            }
+        }
+        handled
+    }
+
+    fn dispatch_viewport_mouse_up_listeners(&mut self, event: &mut MouseUpEvent) -> bool {
+        if self.viewport_mouse_up_listeners.is_empty() {
+            return false;
+        }
+        let mut handled = false;
+        let mut remove_ids = Vec::new();
+        for listener in &mut self.viewport_mouse_up_listeners {
+            match listener {
+                ViewportMouseUpListener::Persistent(handler) => {
+                    handler.call(event);
+                    handled = true;
+                }
+                ViewportMouseUpListener::Until(handler) => {
+                    handled = true;
+                    if handler.call(event) {
+                        remove_ids.push(handler.id());
+                    }
+                }
+            }
+            if event.meta.propagation_stopped() {
+                break;
+            }
+        }
+        if !remove_ids.is_empty() {
+            self.viewport_mouse_up_listeners
+                .retain(|listener| !remove_ids.contains(&listener.id()));
+        }
+        handled
+    }
+
     pub fn dispatch_mouse_down_event(&mut self, button: MouseButton) -> bool {
         let Some((x, y)) = self.mouse_position_viewport() else {
             return false;
         };
+        self.input_state.pending_click = None;
         let focus_before = self.focused_node_id();
         let buttons = self.current_ui_mouse_buttons();
+        let meta = EventMeta::new(0);
         let mut event = MouseDownEvent {
-            meta: EventMeta::new(0),
+            meta: meta.clone(),
             mouse: MouseEventData {
                 viewport_x: x,
                 viewport_y: y,
@@ -1362,6 +1521,7 @@ impl Viewport {
                 buttons,
                 modifiers: self.current_key_modifiers(),
             },
+            viewport: meta.viewport(),
         };
         let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
@@ -1379,15 +1539,26 @@ impl Viewport {
             }
         }
         self.ui_roots = roots;
+        if handled {
+            self.input_state.pending_click = Some(PendingClick {
+                button,
+                target_id: event.meta.target_id(),
+                viewport_x: x,
+                viewport_y: y,
+            });
+        }
         if let Some(capture_target_id) = event.meta.pointer_capture_target_id() {
             self.input_state.pointer_capture_node_id = Some(capture_target_id);
         }
+        self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
         self.sync_focus_dispatch();
         if handled {
             let clicked_target = event.meta.target_id();
+            let keep_focus_requested = event.meta.keep_focus_requested();
             let focus_after = self.focused_node_id();
             let focus_changed_by_handler = focus_after != focus_before;
-            if !focus_changed_by_handler
+            if !keep_focus_requested
+                && !focus_changed_by_handler
                 && focus_before.is_some()
                 && Some(clicked_target) != focus_before
             {
@@ -1413,8 +1584,9 @@ impl Viewport {
             return false;
         };
         let buttons = self.current_ui_mouse_buttons();
+        let meta = EventMeta::new(0);
         let mut event = MouseUpEvent {
-            meta: EventMeta::new(0),
+            meta: meta.clone(),
             mouse: MouseEventData {
                 viewport_x: x,
                 viewport_y: y,
@@ -1424,6 +1596,7 @@ impl Viewport {
                 buttons,
                 modifiers: self.current_key_modifiers(),
             },
+            viewport: meta.viewport(),
         };
         let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
@@ -1455,11 +1628,13 @@ impl Viewport {
                 }
             }
         }
+        let listener_handled = self.dispatch_viewport_mouse_up_listeners(&mut event);
+        self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
         self.ui_roots = roots;
-        if handled {
+        if handled || listener_handled {
             self.request_redraw();
         }
-        handled
+        handled || listener_handled
     }
 
     pub fn dispatch_mouse_move_event(&mut self) -> bool {
@@ -1476,8 +1651,9 @@ impl Viewport {
         }
         let hover_changed = Self::apply_hover_target(&mut roots, hover_target);
         let buttons = self.current_ui_mouse_buttons();
+        let meta = EventMeta::new(0);
         let mut event = MouseMoveEvent {
-            meta: EventMeta::new(0),
+            meta: meta.clone(),
             mouse: MouseEventData {
                 viewport_x: x,
                 viewport_y: y,
@@ -1487,6 +1663,7 @@ impl Viewport {
                 buttons,
                 modifiers: self.current_key_modifiers(),
             },
+            viewport: meta.viewport(),
         };
         let mut handled = false;
         {
@@ -1519,18 +1696,37 @@ impl Viewport {
                 }
             }
         }
+        let listener_handled = self.dispatch_viewport_mouse_move_listeners(&mut event);
+        self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
         self.ui_roots = roots;
-        if handled || hover_changed {
+        if handled || hover_changed || listener_handled {
             self.request_redraw();
         }
-        handled || hover_changed
+        handled || hover_changed || listener_handled
     }
 
     pub fn dispatch_click_event(&mut self, button: MouseButton) -> bool {
         let Some((x, y)) = self.mouse_position_viewport() else {
             return false;
         };
+        let Some(pending_click) = self.input_state.pending_click.take() else {
+            return false;
+        };
+        if pending_click.button != button {
+            return false;
+        }
         let buttons = self.current_ui_mouse_buttons();
+        let mut roots = std::mem::take(&mut self.ui_roots);
+        let hit_target = roots
+            .iter()
+            .rev()
+            .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y));
+        let is_valid_click =
+            is_valid_click_candidate(pending_click, button, hit_target, x, y);
+        if !is_valid_click {
+            self.ui_roots = roots;
+            return false;
+        }
         let mut event = ClickEvent {
             meta: EventMeta::new(0),
             mouse: MouseEventData {
@@ -1543,13 +1739,13 @@ impl Viewport {
                 modifiers: self.current_key_modifiers(),
             },
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
             for root in roots.iter_mut().rev() {
-                if super::base_component::dispatch_click_from_hit_test(
+                if super::base_component::dispatch_click_to_target(
                     root.as_mut(),
+                    pending_click.target_id,
                     &mut event,
                     &mut control,
                 ) {
@@ -1897,6 +2093,29 @@ impl Viewport {
         self.dispatched_focus_node_id = desired;
     }
 
+    fn resolve_cursor(&self) -> Cursor {
+        if let Some(cursor) = self.cursor_override {
+            return cursor;
+        }
+        let Some(target_id) = self.input_state.hovered_node_id else {
+            return Cursor::Default;
+        };
+        for root in self.ui_roots.iter().rev() {
+            if let Some(cursor) = super::base_component::get_cursor_by_id(root.as_ref(), target_id)
+            {
+                return cursor;
+            }
+        }
+        Cursor::Default
+    }
+
+    fn notify_cursor_handler(&mut self) {
+        let cursor = self.resolve_cursor();
+        if let Some(handler) = self.cursor_handler.as_mut() {
+            handler(cursor);
+        }
+    }
+
     fn begin_frame(&mut self) -> bool {
         if self.frame_state.is_some() {
             return true;
@@ -1956,6 +2175,7 @@ impl Viewport {
             .unwrap()
             .submit(Some(frame.encoder.finish()));
         frame.render_texture.present();
+        self.frame_presented = true;
     }
 }
 
@@ -1968,6 +2188,12 @@ fn to_ui_mouse_button(button: MouseButton) -> crate::ui::MouseButton {
         MouseButton::Forward => crate::ui::MouseButton::Forward,
         MouseButton::Other(v) => crate::ui::MouseButton::Other(v),
     }
+}
+
+fn distance_sq(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let dx = x1 - x2;
+    let dy = y1 - y2;
+    dx * dx + dy * dy
 }
 
 struct FrameStats {
@@ -2050,5 +2276,67 @@ impl<'a> FrameParts<'a> {
                     store: wgpu::StoreOp::Store,
                 }),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MouseButton, PendingClick, is_valid_click_candidate};
+
+    #[test]
+    fn click_requires_same_button_and_target() {
+        let pending = PendingClick {
+            button: MouseButton::Left,
+            target_id: 42,
+            viewport_x: 10.0,
+            viewport_y: 10.0,
+        };
+
+        assert!(is_valid_click_candidate(
+            pending,
+            MouseButton::Left,
+            Some(42),
+            12.0,
+            12.0
+        ));
+        assert!(!is_valid_click_candidate(
+            pending,
+            MouseButton::Right,
+            Some(42),
+            12.0,
+            12.0
+        ));
+        assert!(!is_valid_click_candidate(
+            pending,
+            MouseButton::Left,
+            Some(99),
+            12.0,
+            12.0
+        ));
+    }
+
+    #[test]
+    fn click_rejects_large_pointer_travel() {
+        let pending = PendingClick {
+            button: MouseButton::Left,
+            target_id: 7,
+            viewport_x: 10.0,
+            viewport_y: 10.0,
+        };
+
+        assert!(is_valid_click_candidate(
+            pending,
+            MouseButton::Left,
+            Some(7),
+            14.0,
+            13.0
+        ));
+        assert!(!is_valid_click_candidate(
+            pending,
+            MouseButton::Left,
+            Some(7),
+            16.0,
+            10.0
+        ));
     }
 }

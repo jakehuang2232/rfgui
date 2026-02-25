@@ -5,9 +5,9 @@ use crate::ui::{
     RsxComponent,
 };
 use crate::{
-    AlignItems, BorderRadius, ColorLike, Display, FlowDirection, FlowWrap, FontFamily, FontWeight,
-    JustifyContent, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign,
-    Transitions,
+    AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Display, FlowDirection, FlowWrap,
+    FontFamily, FontWeight, JustifyContent, Length, Opacity, Padding, Position, ScrollDirection,
+    Style, TextAlign, Transitions,
 };
 
 pub struct Element;
@@ -40,6 +40,10 @@ pub struct ElementStylePropSchema {
     pub position: Position,
     pub width: Length,
     pub height: Length,
+    pub min_width: Length,
+    pub max_width: Length,
+    pub min_height: Length,
+    pub max_height: Length,
     pub display: Display,
     pub flow_direction: FlowDirection,
     pub flow_wrap: FlowWrap,
@@ -47,6 +51,7 @@ pub struct ElementStylePropSchema {
     pub align_items: AlignItems,
     pub gap: Length,
     pub scroll_direction: ScrollDirection,
+    pub cursor: Cursor,
     pub color: Box<dyn ColorLike>,
     pub border: BorderStylePropSchema,
     pub background: Box<dyn ColorLike>,
@@ -56,6 +61,7 @@ pub struct ElementStylePropSchema {
     pub border_radius: BorderRadius,
     pub hover: Style,
     pub opacity: Opacity,
+    pub box_shadow: Vec<BoxShadow>,
     pub padding: Padding,
     pub transition: Transitions,
 }
@@ -173,10 +179,8 @@ impl crate::ui::OptionalDefault for TextAreaPropSchema {
     }
 }
 
-impl RsxComponent for Element {
-    type Props = ElementPropSchema;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<ElementPropSchema> for Element {
+    fn render(props: ElementPropSchema) -> RsxNode {
         let mut node = RsxNode::element("Element");
         if !props.anchor.is_empty() {
             node = node.with_prop("anchor", props.anchor);
@@ -215,10 +219,8 @@ impl RsxComponent for Element {
     }
 }
 
-impl RsxComponent for Text {
-    type Props = TextPropSchema;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<TextPropSchema> for Text {
+    fn render(props: TextPropSchema) -> RsxNode {
         let mut node = RsxNode::element("Text");
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
@@ -243,10 +245,8 @@ impl RsxComponent for Text {
     }
 }
 
-impl RsxComponent for TextArea {
-    type Props = TextAreaPropSchema;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<TextAreaPropSchema> for TextArea {
+    fn render(props: TextAreaPropSchema) -> RsxNode {
         let mut node = RsxNode::element("TextArea");
         if !props.content.is_empty() {
             node = node.with_prop("content", props.content);

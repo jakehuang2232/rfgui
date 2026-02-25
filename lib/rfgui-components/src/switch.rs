@@ -1,5 +1,5 @@
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, rsx, use_state, props};
+use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
 use rfgui::{
     AlignItems, BorderRadius, Color, Display, Length, Padding, ParsedValue, PropertyId, Style,
     Transition, TransitionProperty, Transitions,
@@ -15,10 +15,8 @@ pub struct SwitchProps {
     pub disabled: Option<bool>,
 }
 
-impl RsxComponent for Switch {
-    type Props = SwitchProps;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<SwitchProps> for Switch {
+    fn render(props: SwitchProps) -> RsxNode {
         let checked = props.checked.unwrap_or(false);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(checked));

@@ -1,3 +1,4 @@
+use crate::Cursor;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -30,55 +31,214 @@ pub struct MouseButtons {
     pub forward: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct EventMeta {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ViewportListenerHandle(pub u64);
+
+#[derive(Clone)]
+pub struct MouseUpUntilHandler {
+    id: u64,
+    handler: Rc<RefCell<dyn FnMut(&mut MouseUpEvent) -> bool>>,
+}
+
+impl MouseUpUntilHandler {
+    pub fn new<F>(handler: F) -> Self
+    where
+        F: FnMut(&mut MouseUpEvent) -> bool + 'static,
+    {
+        Self {
+            id: next_handler_id(),
+            handler: Rc::new(RefCell::new(handler)),
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn call(&self, event: &mut MouseUpEvent) -> bool {
+        (self.handler.borrow_mut())(event)
+    }
+}
+
+impl PartialEq for MouseUpUntilHandler {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl fmt::Debug for MouseUpUntilHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MouseUpUntilHandler")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ViewportListenerAction {
+    AddMouseMoveListener(MouseMoveHandlerProp),
+    AddMouseUpListener(MouseUpHandlerProp),
+    AddMouseUpListenerUntil(MouseUpUntilHandler),
+    SetCursor(Option<Cursor>),
+    RemoveListener(ViewportListenerHandle),
+}
+
+#[derive(Default)]
+struct EventMetaState {
     target_id: u64,
     current_target_id: u64,
     propagation_stopped: bool,
+    keep_focus_requested: bool,
     pointer_capture_target_id: Option<u64>,
+    viewport_listener_actions: Vec<ViewportListenerAction>,
+}
+
+#[derive(Clone)]
+pub struct EventMeta {
+    state: Rc<RefCell<EventMetaState>>,
+}
+
+impl fmt::Debug for EventMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = self.state.borrow();
+        f.debug_struct("EventMeta")
+            .field("target_id", &state.target_id)
+            .field("current_target_id", &state.current_target_id)
+            .field("propagation_stopped", &state.propagation_stopped)
+            .finish()
+    }
 }
 
 impl EventMeta {
     pub fn new(target_id: u64) -> Self {
         Self {
-            target_id,
-            current_target_id: target_id,
-            propagation_stopped: false,
-            pointer_capture_target_id: None,
+            state: Rc::new(RefCell::new(EventMetaState {
+                target_id,
+                current_target_id: target_id,
+                ..EventMetaState::default()
+            })),
         }
     }
 
     pub fn target_id(&self) -> u64 {
-        self.target_id
+        self.state.borrow().target_id
     }
 
     pub fn current_target_id(&self) -> u64 {
-        self.current_target_id
+        self.state.borrow().current_target_id
     }
 
     pub fn set_target_id(&mut self, target_id: u64) {
-        self.target_id = target_id;
-        self.current_target_id = target_id;
+        let mut state = self.state.borrow_mut();
+        state.target_id = target_id;
+        state.current_target_id = target_id;
     }
 
     pub fn set_current_target_id(&mut self, current_target_id: u64) {
-        self.current_target_id = current_target_id;
+        self.state.borrow_mut().current_target_id = current_target_id;
     }
 
     pub fn propagation_stopped(&self) -> bool {
-        self.propagation_stopped
+        self.state.borrow().propagation_stopped
     }
 
     pub fn stop_propagation(&mut self) {
-        self.propagation_stopped = true;
+        self.state.borrow_mut().propagation_stopped = true;
+    }
+
+    pub fn request_keep_focus(&mut self) {
+        self.state.borrow_mut().keep_focus_requested = true;
+    }
+
+    pub fn keep_focus_requested(&self) -> bool {
+        self.state.borrow().keep_focus_requested
     }
 
     pub fn request_pointer_capture(&mut self) {
-        self.pointer_capture_target_id = Some(self.current_target_id);
+        let current_target_id = self.state.borrow().current_target_id;
+        self.state.borrow_mut().pointer_capture_target_id = Some(current_target_id);
     }
 
     pub fn pointer_capture_target_id(&self) -> Option<u64> {
-        self.pointer_capture_target_id
+        self.state.borrow().pointer_capture_target_id
+    }
+
+    pub fn viewport(&self) -> EventViewport {
+        EventViewport {
+            state: self.state.clone(),
+        }
+    }
+
+    pub fn take_viewport_listener_actions(&mut self) -> Vec<ViewportListenerAction> {
+        std::mem::take(&mut self.state.borrow_mut().viewport_listener_actions)
+    }
+}
+
+#[derive(Clone)]
+pub struct EventViewport {
+    state: Rc<RefCell<EventMetaState>>,
+}
+
+impl fmt::Debug for EventViewport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let pending = self.state.borrow().viewport_listener_actions.len();
+        f.debug_struct("EventViewport")
+            .field("pending_actions", &pending)
+            .finish()
+    }
+}
+
+impl EventViewport {
+    pub fn add_mouse_move_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
+    where
+        F: FnMut(&mut MouseMoveEvent) + 'static,
+    {
+        let handler_prop = MouseMoveHandlerProp::new(handler);
+        let handle = ViewportListenerHandle(handler_prop.id());
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(ViewportListenerAction::AddMouseMoveListener(handler_prop));
+        handle
+    }
+
+    pub fn add_mouse_up_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
+    where
+        F: FnMut(&mut MouseUpEvent) + 'static,
+    {
+        let handler_prop = MouseUpHandlerProp::new(handler);
+        let handle = ViewportListenerHandle(handler_prop.id());
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(ViewportListenerAction::AddMouseUpListener(handler_prop));
+        handle
+    }
+
+    pub fn add_mouse_up_listener_until<F>(&mut self, handler: F) -> ViewportListenerHandle
+    where
+        F: FnMut(&mut MouseUpEvent) -> bool + 'static,
+    {
+        let handler_prop = MouseUpUntilHandler::new(handler);
+        let handle = ViewportListenerHandle(handler_prop.id());
+        self.state.borrow_mut().viewport_listener_actions.push(
+            ViewportListenerAction::AddMouseUpListenerUntil(handler_prop),
+        );
+        handle
+    }
+
+    pub fn remove_listener(&mut self, handle: ViewportListenerHandle) {
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(ViewportListenerAction::RemoveListener(handle));
+    }
+
+    pub fn set_cursor(&mut self, cursor: Option<Cursor>) {
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(ViewportListenerAction::SetCursor(cursor));
     }
 }
 
@@ -101,25 +261,28 @@ pub struct KeyEventData {
     pub modifiers: KeyModifiers,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MouseDownEvent {
     pub meta: EventMeta,
     pub mouse: MouseEventData,
+    pub viewport: EventViewport,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MouseUpEvent {
     pub meta: EventMeta,
     pub mouse: MouseEventData,
+    pub viewport: EventViewport,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MouseMoveEvent {
     pub meta: EventMeta,
     pub mouse: MouseEventData,
+    pub viewport: EventViewport,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ClickEvent {
     pub meta: EventMeta,
     pub mouse: MouseEventData,
@@ -150,12 +313,12 @@ pub struct ImePreeditEvent {
     pub cursor: Option<(usize, usize)>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FocusEvent {
     pub meta: EventMeta,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct BlurEvent {
     pub meta: EventMeta,
 }

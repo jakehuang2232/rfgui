@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use proc_macro2::{Delimiter, Span, TokenTree};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
@@ -121,6 +122,16 @@ impl Parse for ElementNode {
         let mut props = Vec::new();
         while !input.peek(Token![>]) && !(input.peek(Token![/]) && input.peek2(Token![>])) {
             let key: Ident = input.parse()?;
+            if input.peek(Token![:]) {
+                let colon: Token![:] = input.parse()?;
+                return Err(syn::Error::new(
+                    colon.spans[0],
+                    format!(
+                        "invalid prop syntax on `{}`: use `=` for props (for example `{}={{expr}}`).",
+                        key, key
+                    ),
+                ));
+            }
             input.parse::<Token![=]>()?;
             let value: PropValueExpr = if input.peek(syn::token::Brace) {
                 let content;
@@ -134,7 +145,40 @@ impl Parse for ElementNode {
                     }
                     PropValueExpr::StyleObject(entries)
                 } else {
-                    PropValueExpr::Expr(content.parse()?)
+                    let expr_tokens: proc_macro2::TokenStream = content.parse()?;
+                    match syn::parse2::<Expr>(expr_tokens.clone()) {
+                        Ok(expr) => PropValueExpr::Expr(expr),
+                        Err(parse_err) => {
+                            if let Some(object_span) = rsx_object_assignment_span(&expr_tokens) {
+                                let key_name = key.to_string();
+                                return Err(syn::Error::new(
+                                    object_span,
+                                    format!(
+                                        "invalid RSX object syntax on prop `{}`: use a Rust expression (for example `{0}=Some(Type {{ ... }})`). RSX object syntax `{{{{ key: value }}}}` is only for `style`.",
+                                        key_name
+                                    ),
+                                ));
+                            }
+                            if let Some(assign_span) = prop_assignment_like_span(&expr_tokens) {
+                                return Err(syn::Error::new(
+                                    assign_span,
+                                    format!(
+                                        "syntax error inside prop `{}`: `{{...}}` must be a valid Rust expression. It looks like field assignment (`name=...`). Use a Rust value such as `Some(Type {{ name: value }})`.",
+                                        key
+                                    ),
+                                ));
+                            }
+                            let mut err = syn::Error::new(
+                                parse_err.span(),
+                                format!(
+                                    "invalid Rust expression for prop `{}` inside `{{...}}`",
+                                    key
+                                ),
+                            );
+                            err.combine(parse_err);
+                            return Err(err);
+                        }
+                    }
                 }
             } else {
                 let lit: Lit = input.parse()?;
@@ -194,10 +238,53 @@ impl Parse for ElementNode {
     }
 }
 
+fn rsx_object_assignment_span(tokens: &proc_macro2::TokenStream) -> Option<Span> {
+    let mut iter = tokens.clone().into_iter();
+    let Some(TokenTree::Group(group)) = iter.next() else {
+        return None;
+    };
+    if group.delimiter() != Delimiter::Brace || iter.next().is_some() {
+        return None;
+    }
+    let inner = group.stream().to_string();
+    if inner.contains('=') && inner.contains(',') {
+        return Some(group.span());
+    }
+    None
+}
+
+fn prop_assignment_like_span(tokens: &proc_macro2::TokenStream) -> Option<Span> {
+    let mut iter = tokens.clone().into_iter().peekable();
+    while let Some(token) = iter.next() {
+        let TokenTree::Ident(_) = token else {
+            continue;
+        };
+        let Some(next) = iter.peek() else {
+            continue;
+        };
+        if let TokenTree::Punct(punct) = next {
+            if punct.as_char() == '=' {
+                return Some(punct.span());
+            }
+        }
+    }
+    None
+}
+
 fn parse_style_entries(input: ParseStream) -> Result<Vec<StyleEntry>> {
     let mut entries = Vec::new();
     while !input.is_empty() {
         let style_key: Ident = input.parse()?;
+        if input.peek(Token![=]) {
+            let eq: Token![=] = input.parse()?;
+            return Err(syn::Error::new(
+                eq.spans[0],
+                format!(
+                    "invalid style syntax on `{}`: use `:` inside style objects (for example `{}: value`).",
+                    style_key, style_key
+                ),
+            ));
+        }
         input.parse::<Token![:]>()?;
         let style_value = if style_key == "hover" && input.peek(syn::token::Brace) {
             let nested;
@@ -244,16 +331,6 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     let tag = &element.tag;
     let close_tag = &element.close_tag;
     let has_children = !element.children.is_empty();
-    let tag_span = tag.span();
-    let children_schema_check = if has_children {
-        quote_spanned! {tag_span=>
-            let _ = |__schema: &<#tag as ::rfgui::ui::RsxPropSchema>::PropsSchema| {
-                let _ = &__schema.children;
-            };
-        }
-    } else {
-        quote! {}
-    };
     let child_statements = element.children.iter().map(|c| {
         let child_expr = expand_node(c);
         quote! {
@@ -261,12 +338,16 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         }
     });
 
-    let prop_schema_checks = element
-        .props
-        .iter()
-        .filter(|p| p.key != "key")
-        .map(|p| expand_prop_schema_check(tag, p));
     if should_fill_default_props(tag) {
+        let Some(direct_props_type) = direct_props_type_tokens(tag) else {
+            return syn::Error::new(tag.span(), "unsupported default-props host component tag")
+                .to_compile_error();
+        };
+        let prop_schema_checks = element
+            .props
+            .iter()
+            .filter(|p| p.key != "key")
+            .map(expand_direct_prop_schema_check);
         let prop_assignments = element
             .props
             .iter()
@@ -280,21 +361,25 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         return quote! {
             {
                 let _ = ::core::marker::PhantomData::<#close_tag>;
-                #children_schema_check
-                #(#prop_schema_checks)*
                 let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
                 #(#child_statements)*
-                type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
+                type __RsxComponentProps = #direct_props_type;
+                #(#prop_schema_checks)*
                 let __rsx_props: __RsxComponentProps = __RsxComponentProps {
                     #(#prop_assignments)*
                     #children_assignment
                     ..<__RsxComponentProps as ::rfgui::ui::OptionalDefault>::optional_default()
                 };
-                <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+                <#tag as ::rfgui::ui::RsxComponent<__RsxComponentProps>>::render(__rsx_props)
             }
         };
     }
 
+    let prop_schema_checks = element
+        .props
+        .iter()
+        .filter(|p| p.key != "key")
+        .map(expand_builder_prop_schema_check);
     let builder_assignments = element
         .props
         .iter()
@@ -305,21 +390,48 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     } else {
         quote! {}
     };
+    let children_schema_check = if has_children {
+        quote! {
+            let _ = &__rsx_props_builder.children;
+        }
+    } else {
+        quote! {}
+    };
     quote! {
         {
             let _ = ::core::marker::PhantomData::<#close_tag>;
-            #children_schema_check
-            #(#prop_schema_checks)*
             let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
             #(#child_statements)*
-            type __RsxComponentProps = <#tag as ::rfgui::ui::RsxComponent>::Props;
-            let mut __rsx_props_builder = <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::builder();
+            fn __rsx_builder_for_props<__RsxComponentProps>() -> <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::Builder
+            where
+                __RsxComponentProps: ::rfgui::ui::RsxPropsBuilder,
+                #tag: ::rfgui::ui::RsxComponent<__RsxComponentProps>,
+            {
+                <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::builder()
+            }
+            fn __rsx_build_props<__RsxComponentProps>(
+                builder: <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::Builder,
+            ) -> ::core::result::Result<__RsxComponentProps, ::std::string::String>
+            where
+                __RsxComponentProps: ::rfgui::ui::RsxPropsBuilder,
+                #tag: ::rfgui::ui::RsxComponent<__RsxComponentProps>,
+            {
+                <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::build(builder)
+            }
+            fn __rsx_render_props<__RsxComponentProps>(props: __RsxComponentProps) -> ::rfgui::ui::RsxNode
+            where
+                #tag: ::rfgui::ui::RsxComponent<__RsxComponentProps>,
+            {
+                <#tag as ::rfgui::ui::RsxComponent<__RsxComponentProps>>::render(props)
+            }
+            let mut __rsx_props_builder = __rsx_builder_for_props::<_>();
+            #(#prop_schema_checks)*
+            #children_schema_check
             #(#builder_assignments)*
             #children_assignment
-            let __rsx_props: __RsxComponentProps =
-                <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::build(__rsx_props_builder)
-                    .expect(concat!("rsx build error on <", stringify!(#tag), ">"));
-            <#tag as ::rfgui::ui::RsxComponent>::render(__rsx_props)
+            let __rsx_props = __rsx_build_props(__rsx_props_builder)
+                .expect(concat!("rsx build error on <", stringify!(#tag), ">"));
+            __rsx_render_props(__rsx_props)
         }
     }
 }
@@ -329,6 +441,15 @@ fn should_fill_default_props(path: &Path) -> bool {
         tag_name(path).as_deref(),
         Some("Element" | "Text" | "TextArea")
     )
+}
+
+fn direct_props_type_tokens(path: &Path) -> Option<proc_macro2::TokenStream> {
+    match tag_name(path).as_deref() {
+        Some("Element") => Some(quote! { ::rfgui::ui::host::ElementPropSchema }),
+        Some("Text") => Some(quote! { ::rfgui::ui::host::TextPropSchema }),
+        Some("TextArea") => Some(quote! { ::rfgui::ui::host::TextAreaPropSchema }),
+        _ => None,
+    }
 }
 
 fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
@@ -539,12 +660,19 @@ fn expand_builder_assignment(prop: &Prop) -> proc_macro2::TokenStream {
     }
 }
 
-fn expand_prop_schema_check(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
+fn expand_direct_prop_schema_check(prop: &Prop) -> proc_macro2::TokenStream {
     let key_ident = &prop.key;
     quote! {
-        let _ = |__schema: &<#tag as ::rfgui::ui::RsxPropSchema>::PropsSchema| {
+        let _ = |__schema: &__RsxComponentProps| {
             let _ = &__schema.#key_ident;
         };
+    }
+}
+
+fn expand_builder_prop_schema_check(prop: &Prop) -> proc_macro2::TokenStream {
+    let key_ident = &prop.key;
+    quote! {
+        let _ = &__rsx_props_builder.#key_ident;
     }
 }
 
@@ -641,6 +769,17 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.opacity requires an expression value");
             },
         },
+        "box_shadow" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::BoxShadow,
+                    ::rfgui::ParsedValue::BoxShadow(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.box_shadow requires an expression value");
+            },
+        },
         "transition" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
@@ -680,6 +819,28 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.width requires an expression value");
             },
         },
+        "min_width" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::MinWidth,
+                    ::rfgui::ParsedValue::Length(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.min_width requires an expression value");
+            },
+        },
+        "max_width" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::MaxWidth,
+                    ::rfgui::ParsedValue::Length(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.max_width requires an expression value");
+            },
+        },
         "height" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
@@ -689,6 +850,28 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.height requires an expression value");
+            },
+        },
+        "min_height" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::MinHeight,
+                    ::rfgui::ParsedValue::Length(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.min_height requires an expression value");
+            },
+        },
+        "max_height" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::MaxHeight,
+                    ::rfgui::ParsedValue::Length(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.max_height requires an expression value");
             },
         },
         "display" => match &entry.value {
@@ -766,6 +949,17 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.scroll_direction requires an expression value");
+            },
+        },
+        "cursor" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::Cursor,
+                    ::rfgui::ParsedValue::Cursor(#value),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.cursor requires an expression value");
             },
         },
         "hover" => match &entry.value {
@@ -1033,10 +1227,8 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             }
         }
 
-        impl #impl_generics ::rfgui::ui::RsxComponent for #comp_name #ty_generics #where_clause {
-            type Props = #props_name #ty_generics;
-
-            fn render(props: Self::Props) -> ::rfgui::ui::RsxNode {
+        impl #impl_generics ::rfgui::ui::RsxComponent<#props_name #ty_generics> for #comp_name #ty_generics #where_clause {
+            fn render(props: #props_name #ty_generics) -> ::rfgui::ui::RsxNode {
                 ::rfgui::ui::render_component::<Self, _>(|| {
                     #helper_name(#(#helper_call_args),*)
                 })
