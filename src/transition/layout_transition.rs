@@ -77,6 +77,7 @@ pub struct LayoutTrackRequest {
 struct LayoutTrackState {
     from: f32,
     to: f32,
+    current: f32,
     started_at_seconds: Option<f64>,
     transition: LayoutTransition,
 }
@@ -122,12 +123,13 @@ impl LayoutTransitionPlugin {
             target,
             channel: field.channel_id(),
         };
+        let mut next_from = from;
         if let Some(existing) = self.tracks.get(&key) {
             let same_to = (existing.to - to).abs() <= 0.0001;
-            let same_from = (existing.from - from).abs() <= 0.0001;
-            if same_to && same_from {
+            if same_to {
                 return Ok(());
             }
+            next_from = existing.current;
         }
         if !host.is_channel_registered(key.channel) {
             return Err(StartTrackError::ChannelNotRegistered(key.channel));
@@ -138,8 +140,9 @@ impl LayoutTransitionPlugin {
         self.tracks.insert(
             key,
             LayoutTrackState {
-                from,
+                from: next_from,
                 to,
+                current: next_from,
                 started_at_seconds: None,
                 transition,
             },
@@ -208,6 +211,7 @@ impl Transition<TrackTarget> for LayoutTransitionPlugin {
             };
             let eased = state.transition.timing.sample(progress);
             let value = state.from + (state.to - state.from) * eased;
+            state.current = value;
             let field = match key.channel {
                 CHANNEL_LAYOUT_X => LayoutField::X,
                 CHANNEL_LAYOUT_Y => LayoutField::Y,
@@ -221,6 +225,7 @@ impl Transition<TrackTarget> for LayoutTransitionPlugin {
                 value,
             });
             if progress >= 1.0 {
+                state.current = state.to;
                 finished.push(*key);
             }
         }
@@ -298,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn start_layout_track_overwrites_same_target_and_channel() {
+    fn start_layout_track_retarget_uses_current_value_as_from() {
         let mut plugin = LayoutTransitionPlugin::new();
         let mut host = TestHost::with_channels(&[
             CHANNEL_LAYOUT_X,
@@ -320,6 +325,21 @@ mod tests {
                 LayoutTransition::new(1_000),
             )
             .expect("first track should start");
+        plugin.run_tracks(
+            TransitionFrame {
+                dt_seconds: 0.016,
+                now_seconds: 1.0,
+            },
+            &mut host,
+        );
+        let current_before = plugin
+            .tracks
+            .get(&TrackKey {
+                target,
+                channel: field.channel_id(),
+            })
+            .expect("track should exist after first frame")
+            .current;
         plugin
             .start_layout_track(
                 &mut host,
@@ -329,7 +349,7 @@ mod tests {
                 20.0,
                 LayoutTransition::new(250),
             )
-            .expect("second track should overwrite first one");
+            .expect("second track should retarget");
 
         let key = TrackKey {
             target,
@@ -339,10 +359,142 @@ mod tests {
             .tracks
             .get(&key)
             .copied()
-            .expect("track should exist after overwrite");
+            .expect("track should exist after retarget");
         assert_eq!(plugin.tracks.len(), 1);
-        assert_eq!(state.from, 10.0);
+        assert!((state.from - current_before).abs() <= 0.0001);
         assert_eq!(state.to, 20.0);
         assert_eq!(state.transition.duration_ms, 250);
+        assert!(state.started_at_seconds.is_none());
+    }
+
+    #[test]
+    fn start_layout_track_keeps_existing_when_destination_unchanged() {
+        let mut plugin = LayoutTransitionPlugin::new();
+        let mut host = TestHost::with_channels(&[
+            CHANNEL_LAYOUT_X,
+            CHANNEL_LAYOUT_Y,
+            CHANNEL_LAYOUT_WIDTH,
+            CHANNEL_LAYOUT_HEIGHT,
+        ]);
+
+        let target = 7_u64;
+        let field = LayoutField::X;
+
+        plugin
+            .start_layout_track(
+                &mut host,
+                target,
+                field,
+                1.0,
+                100.0,
+                LayoutTransition::new(1_000),
+            )
+            .expect("first track should start");
+        plugin
+            .start_layout_track(
+                &mut host,
+                target,
+                field,
+                50.0,
+                100.0,
+                LayoutTransition::new(250),
+            )
+            .expect("second track with same destination should be ignored");
+
+        let key = TrackKey {
+            target,
+            channel: field.channel_id(),
+        };
+        let state = plugin
+            .tracks
+            .get(&key)
+            .copied()
+            .expect("track should exist");
+        assert_eq!(plugin.tracks.len(), 1);
+        assert_eq!(state.from, 1.0);
+        assert_eq!(state.to, 100.0);
+        assert_eq!(state.transition.duration_ms, 1_000);
+    }
+
+    #[test]
+    fn updating_x_track_does_not_restart_y_track_timeline() {
+        let mut plugin = LayoutTransitionPlugin::new();
+        let mut host = TestHost::with_channels(&[
+            CHANNEL_LAYOUT_X,
+            CHANNEL_LAYOUT_Y,
+            CHANNEL_LAYOUT_WIDTH,
+            CHANNEL_LAYOUT_HEIGHT,
+        ]);
+        let target = 42_u64;
+
+        plugin
+            .start_layout_track(
+                &mut host,
+                target,
+                LayoutField::X,
+                0.0,
+                100.0,
+                LayoutTransition::new(1_000),
+            )
+            .expect("x track should start");
+        plugin
+            .start_layout_track(
+                &mut host,
+                target,
+                LayoutField::Y,
+                0.0,
+                200.0,
+                LayoutTransition::new(1_000),
+            )
+            .expect("y track should start");
+
+        plugin.run_tracks(
+            TransitionFrame {
+                dt_seconds: 0.016,
+                now_seconds: 1.0,
+            },
+            &mut host,
+        );
+
+        let x_key = TrackKey {
+            target,
+            channel: CHANNEL_LAYOUT_X,
+        };
+        let y_key = TrackKey {
+            target,
+            channel: CHANNEL_LAYOUT_Y,
+        };
+        let y_started_before = plugin
+            .tracks
+            .get(&y_key)
+            .expect("y track should exist")
+            .started_at_seconds;
+        assert!(y_started_before.is_some());
+
+        plugin
+            .start_layout_track(
+                &mut host,
+                target,
+                LayoutField::X,
+                50.0,
+                120.0,
+                LayoutTransition::new(1_000),
+            )
+            .expect("updating x track should succeed");
+
+        let y_started_after = plugin
+            .tracks
+            .get(&y_key)
+            .expect("y track should exist after x update")
+            .started_at_seconds;
+        assert_eq!(y_started_after, y_started_before);
+        assert!(
+            plugin
+                .tracks
+                .get(&x_key)
+                .expect("x track should exist after update")
+                .started_at_seconds
+                .is_none()
+        );
     }
 }
