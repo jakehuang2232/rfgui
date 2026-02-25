@@ -184,9 +184,18 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
     }
 
     fn find_viewport_clip_priority(node: &dyn ElementTrait, x: f32, y: f32) -> Option<u64> {
+        fn has_absolute_descendant(node: &dyn ElementTrait) -> bool {
+            node.as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(Element::has_absolute_descendant_for_hit_test)
+        }
+
         fn find_deepest_in_subtree(node: &dyn ElementTrait, x: f32, y: f32) -> Option<u64> {
             let snapshot = node.box_model_snapshot();
-            if !snapshot.should_render || !point_in_box_model(&snapshot, x, y) {
+            if !snapshot.should_render && !has_absolute_descendant(node) {
+                return None;
+            }
+            if !point_in_box_model(&snapshot, x, y) {
                 return None;
             }
             if node.intercepts_pointer_at(x, y) {
@@ -203,7 +212,7 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
         }
 
         let snapshot = node.box_model_snapshot();
-        if !snapshot.should_render {
+        if !snapshot.should_render && !has_absolute_descendant(node) {
             return None;
         }
 
@@ -233,17 +242,17 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
 
     fn find(node: &dyn ElementTrait, x: f32, y: f32, viewport_rect: Rect) -> Option<u64> {
         let snapshot = node.box_model_snapshot();
-        if !snapshot.should_render {
+        let has_absolute_descendant = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .is_some_and(Element::has_absolute_descendant_for_hit_test);
+        if !snapshot.should_render && !has_absolute_descendant {
             return None;
         }
         let in_self = point_in_box_model(&snapshot, x, y);
         if in_self && node.intercepts_pointer_at(x, y) {
             return Some(snapshot.node_id);
         }
-        let has_absolute_descendant = node
-            .as_any()
-            .downcast_ref::<Element>()
-            .is_some_and(Element::has_absolute_descendant_for_hit_test);
         if !in_self && !has_absolute_descendant {
             return None;
         }
@@ -1149,7 +1158,9 @@ pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{dispatch_click_from_hit_test, dispatch_mouse_down_from_hit_test, hit_test};
-    use crate::style::{ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style};
+    use crate::style::{
+        ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
+    };
     use crate::ui::{
         ClickEvent, EventMeta, KeyModifiers, MouseButton, MouseButtons, MouseDownEvent,
         MouseEventData,
@@ -1158,6 +1169,7 @@ mod tests {
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::{Viewport, ViewportControl};
+    use crate::AnchorName;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -1202,6 +1214,62 @@ mod tests {
             viewport_height: 300.0,
         });
 
+        assert_eq!(hit_test(&root, 135.0, 15.0), Some(child_id));
+    }
+
+    #[test]
+    fn hit_test_allows_absolute_viewport_clip_when_parent_not_rendered() {
+        let mut root = Element::new(0.0, 0.0, 400.0, 300.0);
+        root.set_anchor_name(Some(AnchorName::new("root_anchor")));
+        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(500.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::Parent),
+            ),
+        );
+        parent.apply_style(parent_style);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let child_id = child.id();
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(130.0))
+                    .top(Length::px(10.0))
+                    .anchor("root_anchor")
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+        root.add_child(Box::new(parent));
+
+        root.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
         assert_eq!(hit_test(&root, 135.0, 15.0), Some(child_id));
     }
 
