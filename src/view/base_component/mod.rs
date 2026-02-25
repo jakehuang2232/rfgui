@@ -189,6 +189,9 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
             if !snapshot.should_render || !point_in_box_model(&snapshot, x, y) {
                 return None;
             }
+            if node.intercepts_pointer_at(x, y) {
+                return Some(snapshot.node_id);
+            }
             if let Some(children) = node.children() {
                 for child in children.iter().rev() {
                     if let Some(id) = find_deepest_in_subtree(child.as_ref(), x, y) {
@@ -234,6 +237,9 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
             return None;
         }
         let in_self = point_in_box_model(&snapshot, x, y);
+        if in_self && node.intercepts_pointer_at(x, y) {
+            return Some(snapshot.node_id);
+        }
         let has_absolute_descendant = node
             .as_any()
             .downcast_ref::<Element>()
@@ -338,6 +344,16 @@ pub fn dispatch_click_from_hit_test(
     let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
         return false;
     };
+    event.meta.set_target_id(target_id);
+    dispatch_click_bubble(root, target_id, event, control)
+}
+
+pub fn dispatch_click_to_target(
+    root: &mut dyn ElementTrait,
+    target_id: u64,
+    event: &mut ClickEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
     event.meta.set_target_id(target_id);
     dispatch_click_bubble(root, target_id, event, control)
 }
@@ -1102,6 +1118,20 @@ pub fn get_ime_cursor_rect_by_id(
     None
 }
 
+pub fn get_cursor_by_id(root: &dyn ElementTrait, node_id: u64) -> Option<crate::Cursor> {
+    if root.id() == node_id {
+        return Some(root.cursor());
+    }
+    if let Some(children) = root.children() {
+        for child in children {
+            if let Some(cursor) = get_cursor_by_id(child.as_ref(), node_id) {
+                return Some(cursor);
+            }
+        }
+    }
+    None
+}
+
 pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
     if root.wants_animation_frame() {
         return true;
@@ -1118,9 +1148,18 @@ pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::hit_test;
-    use crate::style::{ClipMode, Length, ParsedValue, Position, PropertyId, Style};
-    use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement, Layoutable};
+    use super::{dispatch_click_from_hit_test, dispatch_mouse_down_from_hit_test, hit_test};
+    use crate::style::{ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style};
+    use crate::ui::{
+        ClickEvent, EventMeta, KeyModifiers, MouseButton, MouseButtons, MouseDownEvent,
+        MouseEventData,
+    };
+    use crate::view::base_component::{
+        Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+    };
+    use crate::view::{Viewport, ViewportControl};
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     #[test]
     fn hit_test_allows_absolute_viewport_clip_outside_parent() {
@@ -1145,8 +1184,10 @@ mod tests {
         root.measure(LayoutConstraints {
             max_width: 400.0,
             max_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         root.place(LayoutPlacement {
             parent_x: 0.0,
@@ -1155,8 +1196,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
 
         assert_eq!(hit_test(&root, 135.0, 15.0), Some(child_id));
@@ -1185,8 +1228,10 @@ mod tests {
         root.measure(LayoutConstraints {
             max_width: 400.0,
             max_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
         root.place(LayoutPlacement {
             parent_x: 0.0,
@@ -1195,10 +1240,167 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 400.0,
             available_height: 300.0,
+            viewport_width: 400.0,
             percent_base_width: Some(400.0),
             percent_base_height: Some(300.0),
+            viewport_height: 300.0,
         });
 
         assert_ne!(hit_test(&root, 135.0, 15.0), Some(child_id));
+    }
+
+    #[test]
+    fn hit_test_prefers_scrollbar_over_children() {
+        let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+        let root_id = root.id();
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root.apply_style(root_style);
+        root.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 360.0)));
+
+        root.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+            viewport_height: 120.0,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+            viewport_height: 120.0,
+        });
+        let _ = root.set_hovered(true);
+
+        assert_eq!(hit_test(&root, 115.0, 60.0), Some(root_id));
+    }
+
+    #[test]
+    fn click_on_scrollbar_does_not_reach_click_handlers() {
+        let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root.apply_style(root_style);
+
+        let child_clicked = Rc::new(Cell::new(false));
+        let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
+        let child_clicked_flag = child_clicked.clone();
+        child.on_click(move |_, _| child_clicked_flag.set(true));
+        root.add_child(Box::new(child));
+
+        let root_clicked = Rc::new(Cell::new(false));
+        let root_clicked_flag = root_clicked.clone();
+        root.on_click(move |_, _| root_clicked_flag.set(true));
+
+        root.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+            viewport_height: 120.0,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+            viewport_height: 120.0,
+        });
+        let _ = root.set_hovered(true);
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut click = ClickEvent {
+            meta: EventMeta::new(0),
+            mouse: MouseEventData {
+                viewport_x: 115.0,
+                viewport_y: 60.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(MouseButton::Left),
+                buttons: MouseButtons::default(),
+                modifiers: KeyModifiers::default(),
+            },
+        };
+
+        let handled = dispatch_click_from_hit_test(&mut root, &mut click, &mut control);
+        assert!(handled);
+        assert!(!child_clicked.get());
+        assert!(!root_clicked.get());
+    }
+
+    #[test]
+    fn mouse_down_on_scrollbar_requests_focus_keep() {
+        let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root.apply_style(root_style);
+        root.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 360.0)));
+
+        root.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+            viewport_height: 120.0,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+            viewport_height: 120.0,
+        });
+        let _ = root.set_hovered(true);
+
+        let mut viewport = Viewport::new();
+        let meta = EventMeta::new(0);
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut down = MouseDownEvent {
+            meta: meta.clone(),
+            mouse: MouseEventData {
+                viewport_x: 115.0,
+                viewport_y: 60.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(MouseButton::Left),
+                buttons: MouseButtons::default(),
+                modifiers: KeyModifiers::default(),
+            },
+            viewport: meta.viewport(),
+        };
+
+        let handled = dispatch_mouse_down_from_hit_test(&mut root, &mut down, &mut control);
+        assert!(handled);
+        assert!(down.meta.keep_focus_requested());
     }
 }

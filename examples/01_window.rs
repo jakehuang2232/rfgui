@@ -7,15 +7,15 @@ use std::sync::Arc;
 use rfgui::ui::host::{Element, Text, TextArea};
 use rfgui::ui::{RsxNode, component, globalState, on_click, rsx, take_state_dirty, use_state};
 use rfgui::{
-    Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Display, FontFamily,
-    HexColor, Length, Padding, Position, ScrollDirection, Viewport,
+    Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Cursor, Display,
+    FontFamily, HexColor, Length, Padding, Position, ScrollDirection, Viewport,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::Key;
-use winit::window::{Window as WinitWindow, WindowId};
+use winit::window::{CursorIcon, Window as WinitWindow, WindowId};
 
 #[component]
 fn MainScene() -> RsxNode {
@@ -304,13 +304,9 @@ fn MainScene() -> RsxNode {
                         step=0.5
                     />
                     <Select
-                        data={vec![
-                            String::from("Option A"),
-                            String::from("Option B"),
-                            String::from("Option C"),
-                        ]}
-                        to_label={|item, index| format!("Hello, {}!", item)}
-                        to_value={|item, index|item.clone()}
+                        data={(1..100).collect::<Vec<i32>>()}
+                        to_label={|item, index| format!("{} Hello, Very Long Item!", item)}
+                        to_value={|item, index| format!("{}", item)}
                         value={selected_value.binding()}
                     />
                 </Element>
@@ -522,6 +518,8 @@ struct App {
     last_ime_focus_id: Option<u64>,
     last_ime_allowed: bool,
     last_ime_area: Option<(i32, i32, u32, u32)>,
+    cursor_in_window: bool,
+    last_mouse_position_viewport: Option<(f32, f32)>,
 }
 
 impl App {
@@ -580,6 +578,10 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         viewport.set_size(size.width, size.height);
         viewport.set_clear_color(Box::new(HexColor::new("#282c34")));
+        let cursor_window = window.clone();
+        viewport.set_cursor_handler(move |cursor| {
+            cursor_window.set_cursor(map_cursor_icon(cursor));
+        });
         pollster::block_on(viewport.set_window(window.clone()));
         pollster::block_on(viewport.create_surface());
         window.set_ime_allowed(false);
@@ -591,6 +593,8 @@ impl ApplicationHandler for App {
         self.last_ime_focus_id = None;
         self.last_ime_allowed = false;
         self.last_ime_area = None;
+        self.cursor_in_window = false;
+        self.last_mouse_position_viewport = None;
         self.rebuild_app();
     }
 
@@ -628,14 +632,17 @@ impl ApplicationHandler for App {
                 self.mark_ime_dirty();
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_in_window = true;
                 if let Some(viewport) = &mut self.viewport {
                     let (logical_x, logical_y) =
                         viewport.physical_to_logical_point(position.x as f32, position.y as f32);
+                    self.last_mouse_position_viewport = Some((logical_x, logical_y));
                     viewport.set_mouse_position_viewport(logical_x, logical_y);
                     viewport.dispatch_mouse_move_event();
                 }
             }
             WindowEvent::CursorLeft { .. } => {
+                self.cursor_in_window = false;
                 if let Some(viewport) = &mut self.viewport {
                     viewport.clear_mouse_position_viewport();
                 }
@@ -731,6 +738,50 @@ impl ApplicationHandler for App {
         }
         self.sync_ime_state(false);
     }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        if self.cursor_in_window {
+            return;
+        }
+        let Some(viewport) = &mut self.viewport else {
+            return;
+        };
+        if !viewport.has_viewport_mouse_listeners() {
+            return;
+        }
+
+        match event {
+            DeviceEvent::MouseMotion { delta } => {
+                let Some((x, y)) = self.last_mouse_position_viewport else {
+                    return;
+                };
+                let (dx, dy) = viewport.physical_to_logical_point(delta.0 as f32, delta.1 as f32);
+                let next = (x + dx, y + dy);
+                self.last_mouse_position_viewport = Some(next);
+                viewport.set_mouse_position_viewport(next.0, next.1);
+                viewport.dispatch_mouse_move_event();
+            }
+            DeviceEvent::Button { button, state } => {
+                if state != ElementState::Released {
+                    return;
+                }
+                let Some(mapped_button) = map_device_button(button) else {
+                    return;
+                };
+                if let Some((x, y)) = self.last_mouse_position_viewport {
+                    viewport.set_mouse_position_viewport(x, y);
+                }
+                viewport.set_mouse_button_pressed(mapped_button, false);
+                viewport.dispatch_mouse_up_event(mapped_button);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn map_mouse_button(button: winit::event::MouseButton) -> rfgui::MouseButton {
@@ -741,6 +792,17 @@ fn map_mouse_button(button: winit::event::MouseButton) -> rfgui::MouseButton {
         winit::event::MouseButton::Back => rfgui::MouseButton::Back,
         winit::event::MouseButton::Forward => rfgui::MouseButton::Forward,
         winit::event::MouseButton::Other(v) => rfgui::MouseButton::Other(v),
+    }
+}
+
+fn map_device_button(button: u32) -> Option<rfgui::MouseButton> {
+    match button {
+        1 => Some(rfgui::MouseButton::Left),
+        2 => Some(rfgui::MouseButton::Right),
+        3 => Some(rfgui::MouseButton::Middle),
+        4 => Some(rfgui::MouseButton::Back),
+        5 => Some(rfgui::MouseButton::Forward),
+        _ => None,
     }
 }
 
@@ -773,6 +835,47 @@ fn should_dispatch_keyboard_text(viewport: &Viewport, text: &str) -> bool {
         || viewport.is_key_pressed("Code(MetaLeft)")
         || viewport.is_key_pressed("Code(MetaRight)");
     !(has_alt || has_ctrl || has_meta)
+}
+
+fn map_cursor_icon(cursor: Cursor) -> CursorIcon {
+    match cursor {
+        Cursor::Default => CursorIcon::Default,
+        Cursor::ContextMenu => CursorIcon::ContextMenu,
+        Cursor::Help => CursorIcon::Help,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::Progress => CursorIcon::Progress,
+        Cursor::Wait => CursorIcon::Wait,
+        Cursor::Cell => CursorIcon::Cell,
+        Cursor::Crosshair => CursorIcon::Crosshair,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::VerticalText => CursorIcon::VerticalText,
+        Cursor::Alias => CursorIcon::Alias,
+        Cursor::Copy => CursorIcon::Copy,
+        Cursor::Move => CursorIcon::Move,
+        Cursor::NoDrop => CursorIcon::NoDrop,
+        Cursor::NotAllowed => CursorIcon::NotAllowed,
+        Cursor::Grab => CursorIcon::Grab,
+        Cursor::Grabbing => CursorIcon::Grabbing,
+        Cursor::EResize => CursorIcon::EResize,
+        Cursor::NResize => CursorIcon::NResize,
+        Cursor::NeResize => CursorIcon::NeResize,
+        Cursor::NwResize => CursorIcon::NwResize,
+        Cursor::SResize => CursorIcon::SResize,
+        Cursor::SeResize => CursorIcon::SeResize,
+        Cursor::SwResize => CursorIcon::SwResize,
+        Cursor::WResize => CursorIcon::WResize,
+        Cursor::EwResize => CursorIcon::EwResize,
+        Cursor::NsResize => CursorIcon::NsResize,
+        Cursor::NeswResize => CursorIcon::NeswResize,
+        Cursor::NwseResize => CursorIcon::NwseResize,
+        Cursor::ColResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
+        Cursor::AllScroll => CursorIcon::AllScroll,
+        Cursor::ZoomIn => CursorIcon::ZoomIn,
+        Cursor::ZoomOut => CursorIcon::ZoomOut,
+        Cursor::DndAsk => CursorIcon::DndAsk,
+        Cursor::AllResize => CursorIcon::AllResize,
+    }
 }
 
 fn main() {

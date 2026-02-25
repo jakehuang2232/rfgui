@@ -1,7 +1,7 @@
 use crate::ui::MouseButton as UiMouseButton;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::{DrawRectPass, TextPass};
-use crate::{ColorLike, HexColor};
+use crate::{ColorLike, Cursor as UiCursor, HexColor, Style};
 use glyphon::cosmic_text::{Affinity, Align, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::cell::RefCell;
@@ -381,6 +381,12 @@ impl TextArea {
 
     pub fn set_auto_height(&mut self, auto: bool) {
         self.auto_height = auto;
+    }
+
+    pub fn set_cursor(&mut self, cursor: UiCursor) {
+        let mut style = Style::new();
+        style.set_cursor(cursor);
+        self.element.apply_style(style);
     }
 
     pub fn set_multiline(&mut self, multiline: bool) {
@@ -1584,6 +1590,10 @@ impl EventTarget for TextArea {
         self.element.dispatch_click(event, control);
     }
 
+    fn cursor(&self) -> crate::Cursor {
+        crate::Cursor::Text
+    }
+
     fn dispatch_key_down(
         &mut self,
         event: &mut crate::ui::KeyDownEvent,
@@ -1921,8 +1931,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 20.0,
             available_height: 100.0,
+            viewport_width: 20.0,
             percent_base_width: Some(20.0),
             percent_base_height: Some(100.0),
+            viewport_height: 100.0,
         });
 
         area.cursor_char = 2;

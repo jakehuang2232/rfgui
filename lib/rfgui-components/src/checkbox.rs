@@ -1,12 +1,13 @@
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, ClickHandlerProp, RsxComponent, RsxNode, component, rsx, use_state, props};
+use rfgui::ui::{
+    Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
+};
 use rfgui::{
     AlignItems, Border, BorderRadius, Color, Display, Length, Padding, ParsedValue, PropertyId,
     Style,
 };
 
 pub struct Checkbox;
-
 
 #[props]
 pub struct CheckboxProps {
@@ -16,10 +17,8 @@ pub struct CheckboxProps {
     pub disabled: Option<bool>,
 }
 
-impl RsxComponent for Checkbox {
-    type Props = CheckboxProps;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<CheckboxProps> for Checkbox {
+    fn render(props: CheckboxProps) -> RsxNode {
         let checked = props.checked.unwrap_or(false);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(checked));

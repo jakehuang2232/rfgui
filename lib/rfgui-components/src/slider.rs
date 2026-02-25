@@ -22,10 +22,8 @@ pub struct SliderProps {
     pub disabled: Option<bool>,
 }
 
-impl RsxComponent for Slider {
-    type Props = SliderProps;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<SliderProps> for Slider {
+    fn render(props: SliderProps) -> RsxNode {
         let value = props.value.unwrap_or(30.0);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(value));

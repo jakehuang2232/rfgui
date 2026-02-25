@@ -26,6 +26,7 @@ pub enum PropertyId {
     PaddingLeft,
     Gap,
     ScrollDirection,
+    Cursor,
     Color,
     BackgroundColor,
     FontFamily,
@@ -48,6 +49,7 @@ pub enum PropertyId {
     BorderBottomColor,
     BorderLeftColor,
     Opacity,
+    BoxShadow,
     Transition,
 }
 
@@ -258,6 +260,46 @@ pub enum ScrollDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cursor {
+    Default,
+    ContextMenu,
+    Help,
+    Pointer,
+    Progress,
+    Wait,
+    Cell,
+    Crosshair,
+    Text,
+    VerticalText,
+    Alias,
+    Copy,
+    Move,
+    NoDrop,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    EResize,
+    NResize,
+    NeResize,
+    NwResize,
+    SResize,
+    SeResize,
+    SwResize,
+    WResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ColResize,
+    RowResize,
+    AllScroll,
+    ZoomIn,
+    ZoomOut,
+    DndAsk,
+    AllResize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PositionMode {
     Static,
     Relative,
@@ -438,6 +480,8 @@ impl Default for Position {
 pub enum Length {
     Px(f32),
     Percent(f32),
+    Vw(f32),
+    Vh(f32),
     Zero,
 }
 
@@ -448,6 +492,14 @@ impl Length {
 
     pub const fn percent(value: f32) -> Self {
         Self::Percent(value)
+    }
+
+    pub const fn vw(value: f32) -> Self {
+        Self::Vw(value)
+    }
+
+    pub const fn vh(value: f32) -> Self {
+        Self::Vh(value)
     }
 }
 
@@ -468,6 +520,14 @@ impl Unit {
 
     pub const fn precent(value: f32) -> Length {
         Length::Percent(value)
+    }
+
+    pub const fn vw(value: f32) -> Length {
+        Length::Vw(value)
+    }
+
+    pub const fn vh(value: f32) -> Length {
+        Length::Vh(value)
     }
 }
 
@@ -717,6 +777,65 @@ pub struct Border {
     pub right_color: Option<Box<dyn ColorLike>>,
     pub bottom_color: Option<Box<dyn ColorLike>>,
     pub left_color: Option<Box<dyn ColorLike>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxShadow {
+    pub color: Color,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur: f32,
+    pub spread: f32,
+}
+
+impl Default for BoxShadow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BoxShadow {
+    pub const fn new() -> Self {
+        Self {
+            color: Color::rgb(0, 0, 0),
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 0.0,
+            spread: 0.0,
+        }
+    }
+
+    pub fn color<T: ColorLike>(mut self, color: T) -> Self {
+        let [r, g, b, a] = color.to_rgba_u8();
+        self.color = Color::rgba(r, g, b, a);
+        self
+    }
+
+    pub const fn offset(mut self, value: f32) -> Self {
+        self.offset_x = value;
+        self.offset_y = value;
+        self
+    }
+
+    pub const fn offset_x(mut self, value: f32) -> Self {
+        self.offset_x = value;
+        self
+    }
+
+    pub const fn offset_y(mut self, value: f32) -> Self {
+        self.offset_y = value;
+        self
+    }
+
+    pub const fn blur(mut self, value: f32) -> Self {
+        self.blur = if value < 0.0 { 0.0 } else { value };
+        self
+    }
+
+    pub const fn spread(mut self, value: f32) -> Self {
+        self.spread = value;
+        self
+    }
 }
 
 impl Border {
@@ -999,6 +1118,7 @@ pub enum ParsedValue {
     JustifyContent(JustifyContent),
     AlignItems(AlignItems),
     ScrollDirection(ScrollDirection),
+    Cursor(Cursor),
     Position(Position),
     Auto,
     Length(Length),
@@ -1006,6 +1126,7 @@ pub enum ParsedValue {
     FontWeight(FontWeight),
     LineHeight(LineHeight),
     Opacity(Opacity),
+    BoxShadow(Vec<BoxShadow>),
     Transition(Transitions),
     Color(Color),
 }
@@ -1112,6 +1233,15 @@ impl Style {
         self
     }
 
+    pub fn set_cursor(&mut self, cursor: Cursor) {
+        self.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
+    }
+
+    pub fn with_cursor(mut self, cursor: Cursor) -> Self {
+        self.set_cursor(cursor);
+        self
+    }
+
     pub fn set_border_radius(&mut self, border_radius: BorderRadius) {
         self.insert(
             PropertyId::BorderTopLeftRadius,
@@ -1177,6 +1307,15 @@ impl Style {
 
     pub fn with_border(mut self, border: Border) -> Self {
         self.set_border(border);
+        self
+    }
+
+    pub fn set_box_shadow(&mut self, box_shadow: Vec<BoxShadow>) {
+        self.insert(PropertyId::BoxShadow, ParsedValue::BoxShadow(box_shadow));
+    }
+
+    pub fn with_box_shadow(mut self, box_shadow: Vec<BoxShadow>) -> Self {
+        self.set_box_shadow(box_shadow);
         self
     }
 }

@@ -8,15 +8,13 @@ use rfgui::ui::{
 };
 use rfgui::{
     AlignItems, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Display,
-    JustifyContent, Length, Padding, ParsedValue, Position, PropertyId, Style,
+    JustifyContent, Length, Padding, Position, ScrollDirection,
 };
 
-pub struct Select<DataType = String, ValueType = String>(
-    std::marker::PhantomData<(DataType, ValueType)>,
-);
+pub struct Select;
 
 #[props]
-pub struct SelectProps<DataType = String, ValueType: 'static = String> {
+pub struct SelectProps<DataType, ValueType: 'static> {
     pub data: Vec<DataType>,
     pub to_label: fn(&DataType, usize) -> String,
     pub to_value: Option<fn(&DataType, usize) -> ValueType>,
@@ -32,21 +30,15 @@ struct SelectMenuItem {
     on_select: ClickHandlerProp,
 }
 
-impl<DataType, ValueType> RsxComponent for Select<DataType, ValueType>
+impl<DataType, ValueType> RsxComponent<SelectProps<DataType, ValueType>> for Select
 where
     DataType: Clone + 'static,
     ValueType: Clone + PartialEq + 'static,
 {
-    type Props = SelectProps<DataType, ValueType>;
-
-    fn render(props: Self::Props) -> RsxNode {
+    fn render(props: SelectProps<DataType, ValueType>) -> RsxNode {
         let selected_value = props.value.get();
-        let selected_index = resolve_selected_index(
-            &props.data,
-            &selected_value,
-            props.to_value,
-            props.to_label,
-        );
+        let selected_index =
+            resolve_selected_index(&props.data, &selected_value, props.to_value, props.to_label);
         let selected_label = resolve_option_text(&props.data, selected_index, props.to_label);
 
         let menu_items: Vec<SelectMenuItem> = props
@@ -141,18 +133,36 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     };
 
     let mut root = rsx! {
-        <Element style={select_root_style(width)}>
+        <Element
+            style={{
+                width: Length::px(width),
+                display: Display::flow().column().no_wrap(),
+            }}
+        >
             <Element
-                style={select_trigger_style(width, height)}
+                style={{
+                    display: Display::flow().row().no_wrap(),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    width: Length::px(width),
+                    height: Length::px(height),
+                    border_radius: BorderRadius::uniform(Length::px(8.0)),
+                    border: Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")),
+                    background: Color::hex("#FFFFFF"),
+                    padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+                    hover: {
+                        background: Color::hex("#FAFAFA"),
+                    }
+                }}
                 anchor={SELECT_TRIGGER_ANCHOR}
                 on_click={trigger_click}
                 on_blur={trigger_blur}
                 on_key_down={trigger_key_down}
             >
-                <Text style={{ color: "#111827" }}>
+                <Text style={{ color: Color::hex("#111827") }}>
                     {selected_label}
                 </Text>
-                <Text style={{ color: "#6B7280" }}>
+                <Text style={{ color: Color::hex("#6B7280") }}>
                     {if is_open { "▴" } else { "▾" }}
                 </Text>
             </Element>
@@ -171,95 +181,6 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     }
 
     root
-}
-
-fn select_root_style(width: f32) -> Style {
-    let mut style = Style::new();
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().column().no_wrap()),
-    );
-    style
-}
-
-fn select_trigger_style(width: f32, height: f32) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().row().no_wrap()),
-    );
-    style.insert(
-        PropertyId::AlignItems,
-        ParsedValue::AlignItems(AlignItems::Center),
-    );
-    style.insert(
-        PropertyId::JustifyContent,
-        ParsedValue::JustifyContent(JustifyContent::SpaceBetween),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-    style.set_border_radius(BorderRadius::uniform(Length::px(8.0)));
-    style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")));
-    style.insert_color_like(PropertyId::BackgroundColor, Color::hex("#FFFFFF"));
-    style.set_padding(Padding::uniform(Length::px(0.0)).x(Length::px(12.0)));
-    let mut hover = Style::new();
-    hover.insert_color_like(PropertyId::BackgroundColor, Color::hex("#FAFAFA"));
-    style.set_hover(hover);
-    style
-}
-
-fn select_menu_style(width: f32, trigger_height: f32, anchor_name: &str) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(
-            Position::absolute()
-                .anchor(anchor_name)
-                .top(Length::px(trigger_height + 4.0))
-                .left(Length::px(0.0))
-                .collision(Collision::FlipFit, CollisionBoundary::Viewport)
-                .clip(ClipMode::Viewport),
-        ),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().column().no_wrap()),
-    );
-    style.set_border_radius(BorderRadius::uniform(Length::px(8.0)));
-    style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")));
-    style.insert_color_like(PropertyId::BackgroundColor, Color::hex("#FFFFFF"));
-    style
-}
-
-fn select_option_style(width: f32, selected: bool, disabled: bool) -> Style {
-    let mut style = Style::new();
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(32.0)));
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().row().no_wrap()),
-    );
-    style.insert(
-        PropertyId::AlignItems,
-        ParsedValue::AlignItems(AlignItems::Center),
-    );
-    style.set_padding(Padding::uniform(Length::px(0.0)).x(Length::px(12.0)));
-    style.insert_color_like(
-        PropertyId::BackgroundColor,
-        if disabled {
-            Color::hex("#F9FAFB")
-        } else if selected {
-            Color::hex("#EEF3FE")
-        } else {
-            Color::hex("#FFFFFF")
-        },
-    );
-    let mut hover = Style::new();
-    hover.insert_color_like(PropertyId::BackgroundColor, Color::hex("#F5F7FA"));
-    style.set_hover(hover);
-    style
 }
 
 fn build_menu_node(
@@ -298,7 +219,23 @@ fn build_menu_node(
 
             rsx! {
                 <Element
-                    style={select_option_style(width, item.selected, item.disabled)}
+                    style={{
+                        width: Length::px(width),
+                        height: Length::px(32.0),
+                        display: Display::flow().row().no_wrap(),
+                        align_items: AlignItems::Center,
+                        padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+                        background: if item.disabled {
+                            Color::hex("#F9FAFB9E")
+                        } else if item.selected {
+                            Color::hex("#EEF3FE9E")
+                        } else {
+                            Color::hex("#00000000")
+                        },
+                        hover: {
+                            background: Color::hex("#F5F7FA"),
+                        }
+                    }}
                     on_mouse_down={mouse_down}
                     on_click={click}
                 >
@@ -306,7 +243,7 @@ fn build_menu_node(
                         font_size=13
                         line_height=1.0
                         font="Heiti TC, Noto Sans CJK TC, Roboto"
-                        style={{ color: if item.disabled { "#9CA3AF" } else if item.selected { "#1D4ED8" } else { "#111827" } }}
+                        style={{ color: if item.disabled { Color::hex("#9CA3AF") } else if item.selected { Color::hex("#1D4ED8") } else { Color::hex("#111827") } }}
                     >
                         {item.label.clone()}
                     </Text>
@@ -316,7 +253,23 @@ fn build_menu_node(
         .collect();
 
     rsx! {
-        <Element style={select_menu_style(width, trigger_height, anchor_name)}>
+        <Element
+            style={{
+                position: Position::absolute()
+                    .anchor(anchor_name)
+                    .top(Length::px(trigger_height + 4.0))
+                    .left(Length::px(0.0))
+                    .collision(Collision::FlipFit, CollisionBoundary::Viewport)
+                    .clip(ClipMode::Viewport),
+                width: Length::px(width),
+                max_height: Length::vh(50.0),
+                display: Display::flow().column().no_wrap(),
+                border_radius: BorderRadius::uniform(Length::px(8.0)),
+                border: Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")),
+                background: Color::hex("#FFFFFF"),
+                scroll_direction: ScrollDirection::Vertical,
+            }}
+        >
             {option_nodes}
         </Element>
     }

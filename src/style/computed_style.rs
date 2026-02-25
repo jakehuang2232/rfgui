@@ -1,7 +1,7 @@
 use crate::style::color::Color;
 use crate::style::parsed_style::{
-    AlignItems, Display, FlowDirection, FlowWrap, JustifyContent, Length, ParsedValue, Position,
-    PropertyId, ScrollDirection, Style, Transitions,
+    AlignItems, BoxShadow, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length,
+    ParsedValue, Position, PropertyId, ScrollDirection, Style, Transitions,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,6 +44,7 @@ pub struct ComputedStyle {
     pub padding: EdgeInsets<Length>,
     pub gap: Length,
     pub scroll_direction: ScrollDirection,
+    pub cursor: Cursor,
     pub color: Color,
     pub background_color: Color,
     pub font_families: Vec<String>,
@@ -57,6 +58,7 @@ pub struct ComputedStyle {
     pub border_widths: EdgeInsets<Length>,
     pub border_colors: EdgeInsets<Color>,
     pub opacity: f32,
+    pub box_shadow: Vec<BoxShadow>,
     pub transition: Transitions,
 }
 
@@ -89,6 +91,7 @@ impl Default for ComputedStyle {
             },
             gap: Length::Px(0.0),
             scroll_direction: ScrollDirection::None,
+            cursor: Cursor::Default,
             color: Color::rgb(0, 0, 0),
             background_color: Color::rgba(0, 0, 0, 0),
             font_families: Vec::new(),
@@ -117,6 +120,7 @@ impl Default for ComputedStyle {
                 left: Color::rgb(0, 0, 0),
             },
             opacity: 1.0,
+            box_shadow: Vec::new(),
             transition: Transitions::default(),
         }
     }
@@ -229,6 +233,11 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                     computed.scroll_direction = *value;
                 }
             }
+            PropertyId::Cursor => {
+                if let ParsedValue::Cursor(value) = &declaration.value {
+                    computed.cursor = *value;
+                }
+            }
             PropertyId::Color => {
                 computed.color = parse_color(&declaration.value).unwrap_or(computed.color)
             }
@@ -332,6 +341,11 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                     computed.opacity = value.value().clamp(0.0, 1.0);
                 }
             }
+            PropertyId::BoxShadow => {
+                if let ParsedValue::BoxShadow(value) = &declaration.value {
+                    computed.box_shadow = value.clone();
+                }
+            }
             PropertyId::Transition => {
                 if let ParsedValue::Transition(value) = &declaration.value {
                     computed.transition = value.clone();
@@ -386,10 +400,41 @@ fn resolve_length_px(length: Length) -> f32 {
     match length {
         Length::Px(v) => v,
         Length::Percent(v) => v,
+        Length::Vw(v) => v,
+        Length::Vh(v) => v,
         Length::Zero => 0.0,
     }
 }
 
 fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
     a.max(b).max(c).max(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_style;
+    use crate::style::{BoxShadow, Color, Style};
+
+    #[test]
+    fn compute_style_applies_box_shadow_list() {
+        let mut style = Style::new();
+        style.set_box_shadow(vec![
+            BoxShadow::new()
+                .color(Color::hex("#112233"))
+                .offset_x(2.0)
+                .offset_y(3.0)
+                .blur(4.0)
+                .spread(5.0),
+            BoxShadow::new().color(Color::hex("#445566")).offset(-1.5),
+        ]);
+
+        let computed = compute_style(&style, None);
+        assert_eq!(computed.box_shadow.len(), 2);
+        assert_eq!(computed.box_shadow[0].offset_x, 2.0);
+        assert_eq!(computed.box_shadow[0].offset_y, 3.0);
+        assert_eq!(computed.box_shadow[0].blur, 4.0);
+        assert_eq!(computed.box_shadow[0].spread, 5.0);
+        assert_eq!(computed.box_shadow[1].offset_x, -1.5);
+        assert_eq!(computed.box_shadow[1].offset_y, -1.5);
+    }
 }

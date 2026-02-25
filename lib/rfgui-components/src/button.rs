@@ -1,9 +1,9 @@
 use rfgui::TextAlign::Center;
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, rsx, props};
+use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, props, rsx};
 use rfgui::{
-    AlignItems, Border, BorderRadius, Color, Display, FlowDirection, JustifyContent, Length,
-    Padding, Transition, TransitionProperty, Transitions,
+    AlignItems, Border, BorderRadius, Color, Cursor, Display, FlowDirection, JustifyContent,
+    Length, Padding, Transition, TransitionProperty, Transitions,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,10 +40,8 @@ pub struct ButtonProps {
     pub on_click: Option<ClickHandlerProp>,
 }
 
-impl RsxComponent for Button {
-    type Props = ButtonProps;
-
-    fn render(props: Self::Props) -> RsxNode {
+impl RsxComponent<ButtonProps> for Button {
+    fn render(props: ButtonProps) -> RsxNode {
         let variant = props.variant.unwrap_or(ButtonVariant::Contained);
         let disabled = props.disabled.unwrap_or(false);
         let (background, border_color, hover_background, text_color) = if disabled {
@@ -89,6 +87,7 @@ impl RsxComponent for Button {
                     transition: Transitions::single(
                         Transition::new(TransitionProperty::BackgroundColor, 180).ease_in_out(),
                     ),
+                    cursor: Cursor::Pointer,
                     hover: {
                         background: hover_background,
                     },

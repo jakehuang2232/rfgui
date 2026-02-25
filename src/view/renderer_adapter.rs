@@ -3,7 +3,7 @@ use crate::Style;
 use crate::ui::{Binding, FromPropValue, PropValue, RenderBackend, RsxElementNode, RsxNode};
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
-use crate::{AnchorName, Color, Length, ParsedValue, PropertyId};
+use crate::{AnchorName, Color, Cursor, Length, ParsedValue, PropertyId};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -61,6 +61,7 @@ struct InheritedTextStyle {
     font_families: Vec<String>,
     font_weight: Option<u16>,
     color: Option<Color>,
+    cursor: Option<Cursor>,
 }
 
 pub struct ViewportRenderBackend<'a> {
@@ -256,6 +257,9 @@ fn convert_container_element(
     let mut base_style = Style::new();
     base_style.insert(PropertyId::Width, ParsedValue::Auto);
     base_style.insert(PropertyId::Height, ParsedValue::Auto);
+    if let Some(cursor) = inherited_text_style.cursor {
+        base_style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
+    }
 
     let mut child_inherited_text_style = inherited_text_style.clone();
     let mut user_style = Style::new();
@@ -271,6 +275,9 @@ fn convert_container_element(
             }
             if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
                 child_inherited_text_style.color = Some(*color);
+            }
+            if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
+                child_inherited_text_style.cursor = Some(*cursor);
             }
             user_style = user_style + style;
             has_user_style = true;
@@ -409,6 +416,7 @@ fn convert_text_element(
     let mut has_explicit_font = false;
     let mut has_explicit_font_weight = false;
     let mut has_explicit_color = false;
+    let mut has_explicit_cursor = false;
 
     for (key, value) in &node.props {
         if key.as_str() == "key" {
@@ -445,6 +453,10 @@ fn convert_text_element(
             text.set_color(*color);
             has_explicit_color = true;
         }
+        if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
+            text.set_cursor(*cursor);
+            has_explicit_cursor = true;
+        }
     }
 
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
@@ -455,6 +467,9 @@ fn convert_text_element(
     }
     if !has_explicit_color && let Some(color) = inherited_text_style.color {
         text.set_color(color);
+    }
+    if !has_explicit_cursor && let Some(cursor) = inherited_text_style.cursor {
+        text.set_cursor(cursor);
     }
     if let Some(width) = width {
         text.set_width(width);
@@ -480,8 +495,8 @@ fn length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option
         ParsedValue::Length(Length::Px(v)) => Ok(Some(*v)),
         ParsedValue::Length(Length::Zero) => Ok(Some(0.0)),
         ParsedValue::Auto => Ok(None),
-        ParsedValue::Length(Length::Percent(_)) => {
-            Err(format!("{context} does not support percent length"))
+        ParsedValue::Length(Length::Percent(_) | Length::Vh(_) | Length::Vw(_)) => {
+            Err(format!("{context} does not support relative length"))
         }
         _ => Err(format!("{context} expects Length value")),
     }
@@ -561,6 +576,9 @@ fn convert_text_area_element(
     text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
         text_area.set_fonts(inherited_text_style.font_families.clone());
+    }
+    if let Some(cursor) = inherited_text_style.cursor {
+        text_area.set_cursor(cursor);
     }
     if let Some(width) = width {
         text_area.set_width(width);
@@ -872,9 +890,10 @@ fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandle
 mod tests {
     use super::{identity_token_from_keyed_props, rsx_to_elements, rsx_to_elements_lossy};
     use crate::ui::{PropValue, RsxNode};
+    use crate::view::base_component::{get_cursor_by_id, hit_test};
     use crate::{
-        Border, BorderRadius, Color, Display, IntoColor, Length, ParsedValue, PropertyId, Style,
-        Unit,
+        Border, BorderRadius, Color, Cursor, Display, IntoColor, Length, ParsedValue, PropertyId,
+        Style, Unit,
     };
     fn style_bg(hex: &str) -> Style {
         let mut style = Style::new();
@@ -1038,8 +1057,10 @@ mod tests {
             root.measure(crate::view::base_component::LayoutConstraints {
                 max_width: 800.0,
                 max_height: 600.0,
+                viewport_width: 800.0,
                 percent_base_width: Some(800.0),
                 percent_base_height: Some(600.0),
+                viewport_height: 600.0,
             });
             root.place(crate::view::base_component::LayoutPlacement {
                 parent_x: 0.0,
@@ -1048,8 +1069,10 @@ mod tests {
                 visual_offset_y: 0.0,
                 available_width: 800.0,
                 available_height: 600.0,
+                viewport_width: 800.0,
                 percent_base_width: Some(800.0),
                 percent_base_height: Some(600.0),
+                viewport_height: 600.0,
             });
         }
 
@@ -1087,8 +1110,10 @@ mod tests {
             root.measure(crate::view::base_component::LayoutConstraints {
                 max_width: 800.0,
                 max_height: 600.0,
+                viewport_width: 800.0,
                 percent_base_width: Some(800.0),
                 percent_base_height: Some(600.0),
+                viewport_height: 600.0,
             });
             root.place(crate::view::base_component::LayoutPlacement {
                 parent_x: 0.0,
@@ -1097,8 +1122,10 @@ mod tests {
                 visual_offset_y: 0.0,
                 available_width: 800.0,
                 available_height: 600.0,
+                viewport_width: 800.0,
                 percent_base_width: Some(800.0),
                 percent_base_height: Some(600.0),
+                viewport_height: 600.0,
             });
         }
 
@@ -1148,8 +1175,10 @@ mod tests {
         root.measure(crate::view::base_component::LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
         root.place(crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
@@ -1158,8 +1187,10 @@ mod tests {
             visual_offset_y: 0.0,
             available_width: 800.0,
             available_height: 600.0,
+            viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         });
 
         let snapshot = root.box_model_snapshot();
@@ -1195,5 +1226,91 @@ mod tests {
         let (converted, errors) = rsx_to_elements_lossy(&tree);
         assert_eq!(converted.len(), 1);
         assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn cursor_style_inherits_to_child_when_child_has_no_cursor() {
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent_style.set_cursor(Cursor::Pointer);
+
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(40.0)));
+        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+
+        let tree = RsxNode::element("Element")
+            .with_prop("style", parent_style)
+            .with_child(RsxNode::element("Element").with_prop("style", child_style));
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let root = roots.first_mut().expect("single root");
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let target_id = hit_test(root.as_ref(), 10.0, 10.0).expect("hit child");
+        let cursor = get_cursor_by_id(root.as_ref(), target_id).expect("cursor exists");
+        assert_eq!(cursor, Cursor::Pointer);
+    }
+
+    #[test]
+    fn cursor_style_inherits_to_text_child() {
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
+        parent_style.set_cursor(Cursor::Pointer);
+
+        let tree = RsxNode::element("Element")
+            .with_prop("style", parent_style)
+            .with_child(
+                RsxNode::element("Text")
+                    .with_prop("font_size", 16.0)
+                    .with_child(RsxNode::text("Button label")),
+            );
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let root = roots.first_mut().expect("single root");
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let target_id = hit_test(root.as_ref(), 10.0, 10.0).expect("hit text child");
+        let cursor = get_cursor_by_id(root.as_ref(), target_id).expect("cursor exists");
+        assert_eq!(cursor, Cursor::Pointer);
     }
 }
