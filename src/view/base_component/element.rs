@@ -1421,14 +1421,6 @@ impl Element {
         self.last_parent_layout_x = parent_layout_x;
         self.last_parent_layout_y = parent_layout_y;
         self.has_layout_snapshot = true;
-        self.layout_transition_visual_offset_x = 0.0;
-        self.layout_transition_visual_offset_y = 0.0;
-        self.layout_transition_override_width = None;
-        self.layout_transition_override_height = None;
-        self.layout_transition_target_x = None;
-        self.layout_transition_target_y = None;
-        self.layout_transition_target_width = None;
-        self.layout_transition_target_height = None;
     }
 
     pub fn set_border_top_color(&mut self, color: Color) {
@@ -3529,8 +3521,10 @@ impl Element {
             self.layout_transition_override_height = None;
             self.layout_transition_target_height = None;
         }
-        let current_visual_rel_x = self.core.layout_position.x - parent_x - parent_visual_offset_x;
-        let current_visual_rel_y = self.core.layout_position.y - parent_y - parent_visual_offset_y;
+        let current_visual_rel_x =
+            (self.layout_flow_position.x - parent_x) + self.layout_transition_visual_offset_x;
+        let current_visual_rel_y =
+            (self.layout_flow_position.y - parent_y) + self.layout_transition_visual_offset_y;
         let prev_target_rel_x = self.layout_flow_position.x - self.last_parent_layout_x;
         let prev_target_rel_y = self.layout_flow_position.y - self.last_parent_layout_y;
         let current_offset_x = current_visual_rel_x - target_rel_x;

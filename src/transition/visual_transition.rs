@@ -51,6 +51,7 @@ pub struct VisualTrackRequest {
 struct VisualTrackState {
     from: f32,
     to: f32,
+    current: f32,
     started_at_seconds: Option<f64>,
     transition: VisualTransition,
 }
@@ -96,12 +97,13 @@ impl VisualTransitionPlugin {
             target,
             channel: field.channel_id(),
         };
+        let mut next_from = from;
         if let Some(existing) = self.tracks.get(&key) {
             let same_to = (existing.to - to).abs() <= 0.0001;
-            let same_from = (existing.from - from).abs() <= 0.0001;
-            if same_to && same_from {
+            if same_to {
                 return Ok(());
             }
+            next_from = existing.current;
         }
         if !host.is_channel_registered(key.channel) {
             return Err(StartTrackError::ChannelNotRegistered(key.channel));
@@ -112,8 +114,9 @@ impl VisualTransitionPlugin {
         self.tracks.insert(
             key,
             VisualTrackState {
-                from,
+                from: next_from,
                 to,
+                current: next_from,
                 started_at_seconds: None,
                 transition,
             },
@@ -186,6 +189,7 @@ impl Transition<TrackTarget> for VisualTransitionPlugin {
             };
             let eased = state.transition.timing.sample(progress);
             let value = state.from + (state.to - state.from) * eased;
+            state.current = value;
             let field = match key.channel {
                 CHANNEL_VISUAL_X => VisualField::X,
                 CHANNEL_VISUAL_Y => VisualField::Y,
@@ -197,6 +201,7 @@ impl Transition<TrackTarget> for VisualTransitionPlugin {
                 value,
             });
             if progress >= 1.0 {
+                state.current = state.to;
                 finished.push(*key);
             }
         }
@@ -211,5 +216,171 @@ impl Transition<TrackTarget> for VisualTransitionPlugin {
             needs_paint: !self.frame_samples.is_empty(),
             keep_running: !self.tracks.is_empty(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn transition(duration_ms: u32) -> VisualTransition {
+        VisualTransition {
+            duration_ms,
+            delay_ms: 0,
+            timing: TimeFunction::EaseOut,
+        }
+    }
+
+    struct TestHost {
+        registered_channels: HashSet<ChannelId>,
+        claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+    }
+
+    impl TestHost {
+        fn with_channels(channels: &[ChannelId]) -> Self {
+            Self {
+                registered_channels: channels.iter().copied().collect(),
+                claims: HashMap::new(),
+            }
+        }
+    }
+
+    impl TransitionHost<TrackTarget> for TestHost {
+        fn is_channel_registered(&self, channel: ChannelId) -> bool {
+            self.registered_channels.contains(&channel)
+        }
+
+        fn claim_track(
+            &mut self,
+            plugin_id: TransitionPluginId,
+            key: TrackKey<TrackTarget>,
+            mode: ClaimMode,
+        ) -> bool {
+            if let Some(current) = self.claims.get(&key).copied() {
+                if current == plugin_id {
+                    return true;
+                }
+                if matches!(mode, ClaimMode::Replace) {
+                    self.claims.insert(key, plugin_id);
+                    return true;
+                }
+                return false;
+            }
+            self.claims.insert(key, plugin_id);
+            true
+        }
+
+        fn release_track_claim(
+            &mut self,
+            plugin_id: TransitionPluginId,
+            key: TrackKey<TrackTarget>,
+        ) {
+            if self.claims.get(&key).copied() == Some(plugin_id) {
+                self.claims.remove(&key);
+            }
+        }
+
+        fn release_all_claims(&mut self, plugin_id: TransitionPluginId) {
+            self.claims.retain(|_, owner| *owner != plugin_id);
+        }
+    }
+
+    #[test]
+    fn start_visual_track_keeps_existing_when_destination_unchanged() {
+        let mut plugin = VisualTransitionPlugin::new();
+        let mut host = TestHost::with_channels(&[CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y]);
+        let target = 7_u64;
+        let field = VisualField::Y;
+
+        plugin
+            .start_visual_track(
+                &mut host,
+                target,
+                field,
+                -5.0,
+                0.0,
+                transition(1_000),
+            )
+            .expect("first track should start");
+        plugin
+            .start_visual_track(
+                &mut host,
+                target,
+                field,
+                -100.0,
+                0.0,
+                transition(250),
+            )
+            .expect("same destination should be ignored");
+
+        let key = TrackKey {
+            target,
+            channel: field.channel_id(),
+        };
+        let state = plugin
+            .tracks
+            .get(&key)
+            .copied()
+            .expect("track should exist");
+        assert_eq!(state.from, -5.0);
+        assert_eq!(state.to, 0.0);
+        assert_eq!(state.transition.duration_ms, 1_000);
+    }
+
+    #[test]
+    fn start_visual_track_retarget_uses_current_value_as_from() {
+        let mut plugin = VisualTransitionPlugin::new();
+        let mut host = TestHost::with_channels(&[CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y]);
+        let target = 42_u64;
+        let field = VisualField::X;
+        let key = TrackKey {
+            target,
+            channel: field.channel_id(),
+        };
+
+        plugin
+            .start_visual_track(
+                &mut host,
+                target,
+                field,
+                0.0,
+                100.0,
+                transition(1_000),
+            )
+            .expect("first track should start");
+        plugin.run_tracks(
+            TransitionFrame {
+                dt_seconds: 0.016,
+                now_seconds: 1.0,
+            },
+            &mut host,
+        );
+        let current_before = plugin
+            .tracks
+            .get(&key)
+            .expect("track should exist after first frame")
+            .current;
+
+        plugin
+            .start_visual_track(
+                &mut host,
+                target,
+                field,
+                10.0,
+                20.0,
+                transition(500),
+            )
+            .expect("second track should retarget");
+
+        let state = plugin
+            .tracks
+            .get(&key)
+            .copied()
+            .expect("track should exist after retarget");
+        assert!((state.from - current_before).abs() <= 0.0001);
+        assert_eq!(state.to, 20.0);
+        assert_eq!(state.transition.duration_ms, 500);
+        assert!(state.started_at_seconds.is_none());
     }
 }
