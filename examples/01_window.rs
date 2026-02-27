@@ -331,7 +331,7 @@ fn MainScene() -> RsxNode {
                     width: Length::px(150.0),
                     height: Length::px(150.0),
                     background: "#61afef",
-                    border: Border::uniform(Length::px(10.0), &Color::hex("#21252b"))
+                    border: Border::uniform(Length::px(10.0), &Color::hex("#274f8b"))
                         .top(Some(Length::px(20.0)), Some(&Color::hex("#e06c75")))
                         .left(Some(Length::px(15.0)), Some(&Color::hex("#2db353"))),
                     border_radius: BorderRadius::uniform(Length::px(10.0))

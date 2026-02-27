@@ -1,8 +1,26 @@
-# rfgui 🚀
-
-A Rust GUI/rendering experiment with typed styles, RSX-based UI authoring, and a frame-graph-driven renderer.
+# 🧩 RFGUI
 
 ![example](https://github.com/user-attachments/assets/5274eb04-0329-46c2-9e14-424fd0dd3791)
+
+**RFGUI** is a **🦀 Rust-based retained-mode GUI framework** built on top of a **🧠 frame graph–driven rendering architecture**.
+
+It is designed for developers who want **🎛 explicit control over rendering passes**, predictable performance, and a **📐 modern retained UI model**, rather than an immediate-mode GUI.
+
+RFGUI treats UI rendering as a **🔗 directed acyclic graph (DAG) of render passes**, similar to frame graph systems used in modern game engines.  
+Each UI component contributes render passes and resources, which are composed and scheduled automatically.
+
+## ✨ Key Characteristics
+
+- 🧱 **Retained-mode GUI** — UI state is preserved and updated declaratively, instead of redrawn every frame
+- 🧠 **Frame Graph architecture** — rendering is expressed as connected render passes with explicit resource dependencies
+- 🧮 **Deterministic rendering order** — pass execution is derived from graph topology, not ad-hoc draw calls
+- 🗂 **Explicit resource management** — textures, buffers, and render targets are modeled as graph resources
+- 🚀 **Designed for modern GPU APIs** — suitable for rendering backends
+
+RFGUI is **not** an immediate-mode GUI like egui or imgui.  
+It is closer in spirit to **🏗 retained UI frameworks combined with 🎮 engine-style render pipelines**.
+
+🛠 This project is currently under active development and focuses on **core architecture, correctness, and composability** before higher-level widgets.
 
 ## Features
 
