@@ -71,6 +71,7 @@ pub enum MouseButton {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ViewportDebugOptions {
     pub trace_fps: bool,
+    pub trace_render_time: bool,
     pub geometry_overlay: bool,
 }
 
@@ -78,6 +79,7 @@ impl ViewportDebugOptions {
     fn from_env() -> Self {
         Self {
             trace_fps: std::env::var("RFGUI_TRACE_FPS").is_ok(),
+            trace_render_time: std::env::var("RFGUI_TRACE_RENDER_TIME").is_ok(),
             geometry_overlay: std::env::var("RFGUI_DEBUG_GEOMETRY_OVERLAY").is_ok(),
         }
     }
@@ -184,6 +186,10 @@ impl<'a> ViewportControl<'a> {
 
     pub fn set_debug_trace_fps(&mut self, enabled: bool) {
         self.viewport.set_debug_trace_fps(enabled);
+    }
+
+    pub fn set_debug_trace_render_time(&mut self, enabled: bool) {
+        self.viewport.set_debug_trace_render_time(enabled);
     }
 
     pub fn set_debug_options(&mut self, options: ViewportDebugOptions) {
@@ -938,6 +944,14 @@ impl Viewport {
         self.frame_stats.set_enabled(enabled);
     }
 
+    pub fn debug_trace_render_time(&self) -> bool {
+        self.debug_options.trace_render_time
+    }
+
+    pub fn set_debug_trace_render_time(&mut self, enabled: bool) {
+        self.debug_options.trace_render_time = enabled;
+    }
+
     pub fn debug_geometry_overlay(&self) -> bool {
         self.debug_options.geometry_overlay
     }
@@ -1362,25 +1376,27 @@ impl Viewport {
         let end_frame_elapsed_ms = end_frame_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let total_elapsed_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
-        // println!(
-        //     "\x1b[1;36mrender_tree\x1b[0m: total={} begin_frame={} layout={}(measure={} place={} collect={}) post_layout_transition={} relayout_after_transition={}(place={} collect={}) build_graph={} compile={} execute={}(passes={}, top=[{}]) end_frame={}",
-        //     highlight_ms(total_elapsed_ms),
-        //     highlight_ms(begin_frame_elapsed_ms),
-        //     highlight_ms(layout_elapsed_ms),
-        //     highlight_ms(layout_measure_elapsed_ms),
-        //     highlight_ms(layout_place_elapsed_ms),
-        //     highlight_ms(layout_collect_box_models_elapsed_ms),
-        //     highlight_ms(post_layout_transition_elapsed_ms),
-        //     highlight_ms(relayout_after_transition_elapsed_ms),
-        //     highlight_ms(relayout_place_elapsed_ms),
-        //     highlight_ms(relayout_collect_box_models_elapsed_ms),
-        //     highlight_ms(build_graph_elapsed_ms),
-        //     highlight_ms(compile_elapsed_ms),
-        //     highlight_ms(execute_elapsed_ms),
-        //     execute_pass_count,
-        //     execute_top_passes,
-        //     highlight_ms(end_frame_elapsed_ms)
-        // );
+        if self.debug_options.trace_render_time {
+            println!(
+                "\x1b[1;36mrender_tree\x1b[0m: total={} begin_frame={} layout={}(measure={} place={} collect={}) post_layout_transition={} relayout_after_transition={}(place={} collect={}) build_graph={} compile={} execute={}(passes={}, top=[{}]) end_frame={}",
+                highlight_ms(total_elapsed_ms),
+                highlight_ms(begin_frame_elapsed_ms),
+                highlight_ms(layout_elapsed_ms),
+                highlight_ms(layout_measure_elapsed_ms),
+                highlight_ms(layout_place_elapsed_ms),
+                highlight_ms(layout_collect_box_models_elapsed_ms),
+                highlight_ms(post_layout_transition_elapsed_ms),
+                highlight_ms(relayout_after_transition_elapsed_ms),
+                highlight_ms(relayout_place_elapsed_ms),
+                highlight_ms(relayout_collect_box_models_elapsed_ms),
+                highlight_ms(build_graph_elapsed_ms),
+                highlight_ms(compile_elapsed_ms),
+                highlight_ms(execute_elapsed_ms),
+                execute_pass_count,
+                execute_top_passes,
+                highlight_ms(end_frame_elapsed_ms)
+            );
+        }
         self.frame_stats.record_frame(frame_start.elapsed());
         transition_changed_after_layout
     }
