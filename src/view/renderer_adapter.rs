@@ -33,35 +33,97 @@ pub fn rsx_to_element_scoped(
     root: &RsxNode,
     scope_path: &[u64],
 ) -> Result<Box<dyn ElementTrait>, String> {
-    convert_node(root, scope_path, &InheritedTextStyle::default())
+    let inherited = InheritedTextStyle::from_viewport_style(&Style::new(), 0.0, 0.0);
+    convert_node(root, scope_path, &inherited)
 }
 
 pub fn rsx_to_elements(root: &RsxNode) -> Result<Vec<Box<dyn ElementTrait>>, String> {
+    rsx_to_elements_with_context(root, &Style::new(), 0.0, 0.0)
+}
+
+pub fn rsx_to_elements_with_context(
+    root: &RsxNode,
+    viewport_style: &Style,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<Vec<Box<dyn ElementTrait>>, String> {
     let mut out = Vec::new();
-    append_nodes(root, &mut out)?;
+    append_nodes(
+        root,
+        &mut out,
+        viewport_style,
+        viewport_width,
+        viewport_height,
+    )?;
     Ok(out)
 }
 
 pub fn rsx_to_elements_lossy(root: &RsxNode) -> (Vec<Box<dyn ElementTrait>>, Vec<String>) {
+    rsx_to_elements_lossy_with_context(root, &Style::new(), 0.0, 0.0)
+}
+
+pub fn rsx_to_elements_lossy_with_context(
+    root: &RsxNode,
+    viewport_style: &Style,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> (Vec<Box<dyn ElementTrait>>, Vec<String>) {
     let mut out = Vec::new();
     let mut errors = Vec::new();
     let mut path = Vec::new();
-    append_nodes_with_path_lossy(
-        root,
-        &mut out,
-        &mut path,
-        &InheritedTextStyle::default(),
-        &mut errors,
-    );
+    let inherited =
+        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
+    append_nodes_with_path_lossy(root, &mut out, &mut path, &inherited, &mut errors);
     (out, errors)
 }
 
 #[derive(Clone, Debug, Default)]
 struct InheritedTextStyle {
     font_families: Vec<String>,
+    font_size: Option<f32>,
+    root_font_size: f32,
+    viewport_width: f32,
+    viewport_height: f32,
     font_weight: Option<u16>,
     color: Option<Color>,
     cursor: Option<Cursor>,
+}
+
+impl InheritedTextStyle {
+    fn from_viewport_style(style: &Style, viewport_width: f32, viewport_height: f32) -> Self {
+        let default_root_font_size = 16.0;
+        let root_font_size = resolve_font_size_from_style(
+            style,
+            default_root_font_size,
+            default_root_font_size,
+            viewport_width,
+            viewport_height,
+        )
+        .unwrap_or(default_root_font_size);
+        let mut inherited = Self {
+            font_families: Vec::new(),
+            font_size: Some(root_font_size),
+            root_font_size,
+            viewport_width,
+            viewport_height,
+            font_weight: None,
+            color: None,
+            cursor: None,
+        };
+        if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
+            inherited.font_families = font_family.as_slice().to_vec();
+        }
+        if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
+            inherited.font_weight = Some(font_weight.value());
+        }
+        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+            inherited.color = Some(*color);
+        }
+        if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
+            inherited.cursor = Some(*cursor);
+        }
+        inherited
+    }
 }
 
 pub struct ViewportRenderBackend<'a> {
@@ -149,9 +211,17 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
     }
 }
 
-fn append_nodes(node: &RsxNode, out: &mut Vec<Box<dyn ElementTrait>>) -> Result<(), String> {
+fn append_nodes(
+    node: &RsxNode,
+    out: &mut Vec<Box<dyn ElementTrait>>,
+    viewport_style: &Style,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<(), String> {
     let mut path = Vec::new();
-    append_nodes_with_path(node, out, &mut path, &InheritedTextStyle::default())
+    let inherited =
+        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
+    append_nodes_with_path(node, out, &mut path, &inherited)
 }
 
 fn append_nodes_with_path(
@@ -210,11 +280,17 @@ fn convert_node(
             if !inherited_text_style.font_families.is_empty() {
                 text_node.set_fonts(inherited_text_style.font_families.clone());
             }
+            if let Some(font_size) = inherited_text_style.font_size {
+                text_node.set_font_size(font_size);
+            }
             if let Some(font_weight) = inherited_text_style.font_weight {
                 text_node.set_font_weight(font_weight);
             }
             if let Some(color) = inherited_text_style.color {
                 text_node.set_color(color);
+            }
+            if let Some(cursor) = inherited_text_style.cursor {
+                text_node.set_cursor(cursor);
             }
             Ok(Box::new(text_node))
         }
@@ -270,6 +346,17 @@ fn convert_container_element(
             if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
                 child_inherited_text_style.font_families = font_family.as_slice().to_vec();
             }
+            if let Some(font_size) = resolve_font_size_from_style(
+                &style,
+                child_inherited_text_style
+                    .font_size
+                    .unwrap_or(child_inherited_text_style.root_font_size),
+                child_inherited_text_style.root_font_size,
+                child_inherited_text_style.viewport_width,
+                child_inherited_text_style.viewport_height,
+            ) {
+                child_inherited_text_style.font_size = Some(font_size);
+            }
             if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
                 child_inherited_text_style.font_weight = Some(font_weight.value());
             }
@@ -289,19 +376,6 @@ fn convert_container_element(
         base_style
     };
     element.apply_style(effective_style);
-    let auto_focus_on_mouse_down = node.props.iter().any(|(key, _)| {
-        matches!(
-            key.as_str(),
-            "on_key_down" | "on_key_up" | "on_focus" | "on_blur"
-        )
-    });
-    if auto_focus_on_mouse_down {
-        let focus_target_id = element.id();
-        element.on_mouse_down(move |_event, control| {
-            control.set_focus(Some(focus_target_id));
-        });
-    }
-
     for (key, value) in &node.props {
         if key.as_str() == "key" {
             continue;
@@ -414,6 +488,7 @@ fn convert_text_element(
     let mut width: Option<f32> = None;
     let mut height: Option<f32> = None;
     let mut has_explicit_font = false;
+    let mut has_explicit_font_size = false;
     let mut has_explicit_font_weight = false;
     let mut has_explicit_color = false;
     let mut has_explicit_cursor = false;
@@ -424,7 +499,19 @@ fn convert_text_element(
         }
         match key.as_str() {
             "style" => style = Some(as_style(value, key)?),
-            "font_size" => text.set_font_size(as_f32(value, key)?),
+            "font_size" => {
+                text.set_font_size(as_font_size_px(
+                    value,
+                    key,
+                    inherited_text_style
+                        .font_size
+                        .unwrap_or(inherited_text_style.root_font_size),
+                    inherited_text_style.root_font_size,
+                    inherited_text_style.viewport_width,
+                    inherited_text_style.viewport_height,
+                )?);
+                has_explicit_font_size = true;
+            }
             "line_height" => text.set_line_height(as_f32(value, key)?),
             "align" => {
                 text.set_text_align(as_text_align(value, key)?);
@@ -445,6 +532,20 @@ fn convert_text_element(
         if let Some(value) = style.get(PropertyId::Height) {
             height = length_from_parsed_value(value, "Text style.height")?;
         }
+        if !has_explicit_font_size
+            && let Some(font_size) = resolve_font_size_from_style(
+                style,
+                inherited_text_style
+                    .font_size
+                    .unwrap_or(inherited_text_style.root_font_size),
+                inherited_text_style.root_font_size,
+                inherited_text_style.viewport_width,
+                inherited_text_style.viewport_height,
+            )
+        {
+            text.set_font_size(font_size);
+            has_explicit_font_size = true;
+        }
         if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
             text.set_font_weight(font_weight.value());
             has_explicit_font_weight = true;
@@ -461,6 +562,9 @@ fn convert_text_element(
 
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
         text.set_fonts(inherited_text_style.font_families.clone());
+    }
+    if !has_explicit_font_size && let Some(font_size) = inherited_text_style.font_size {
+        text.set_font_size(font_size);
     }
     if !has_explicit_font_weight && let Some(font_weight) = inherited_text_style.font_weight {
         text.set_font_weight(font_weight);
@@ -494,11 +598,53 @@ fn length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option
     match value {
         ParsedValue::Length(Length::Px(v)) => Ok(Some(*v)),
         ParsedValue::Length(Length::Zero) => Ok(Some(0.0)),
+        ParsedValue::Length(length @ Length::Calc(_)) => {
+            if length.needs_percent_base() {
+                return Err(format!("{context} does not support relative length"));
+            }
+            Ok(Some(length.resolve_without_percent_base(0.0, 0.0)))
+        }
         ParsedValue::Auto => Ok(None),
         ParsedValue::Length(Length::Percent(_) | Length::Vh(_) | Length::Vw(_)) => {
             Err(format!("{context} does not support relative length"))
         }
         _ => Err(format!("{context} expects Length value")),
+    }
+}
+
+fn resolve_font_size_from_style(
+    style: &Style,
+    parent_font_size: f32,
+    root_font_size: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Option<f32> {
+    let value = style.get(PropertyId::FontSize)?;
+    resolve_font_size_parsed_value(
+        value,
+        parent_font_size,
+        root_font_size,
+        viewport_width,
+        viewport_height,
+    )
+}
+
+fn resolve_font_size_parsed_value(
+    value: &ParsedValue,
+    parent_font_size: f32,
+    root_font_size: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Option<f32> {
+    match value {
+        ParsedValue::FontSize(font_size) => Some(font_size.resolve_px(
+            parent_font_size,
+            root_font_size,
+            viewport_width,
+            viewport_height,
+        )),
+        ParsedValue::Length(Length::Px(px)) => Some((*px).max(0.0)),
+        _ => None,
     }
 }
 
@@ -532,6 +678,7 @@ fn convert_text_area_element(
     let mut width: Option<f32> = None;
     let mut height: Option<f32> = None;
     let mut has_explicit_font = false;
+    let mut has_explicit_font_size = false;
 
     for (key, value) in &node.props {
         if key.as_str() == "key" {
@@ -559,7 +706,19 @@ fn convert_text_area_element(
             "height" => {
                 height = Some(as_f32(value, key)?);
             }
-            "font_size" => text_area.set_font_size(as_f32(value, key)?),
+            "font_size" => {
+                text_area.set_font_size(as_font_size_px(
+                    value,
+                    key,
+                    inherited_text_style
+                        .font_size
+                        .unwrap_or(inherited_text_style.root_font_size),
+                    inherited_text_style.root_font_size,
+                    inherited_text_style.viewport_width,
+                    inherited_text_style.viewport_height,
+                )?);
+                has_explicit_font_size = true;
+            }
             "font" => {
                 text_area.set_font(as_string(value, key)?);
                 has_explicit_font = true;
@@ -576,6 +735,9 @@ fn convert_text_area_element(
     text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
         text_area.set_fonts(inherited_text_style.font_families.clone());
+    }
+    if !has_explicit_font_size && let Some(font_size) = inherited_text_style.font_size {
+        text_area.set_font_size(font_size);
     }
     if let Some(cursor) = inherited_text_style.cursor {
         text_area.set_cursor(cursor);
@@ -710,6 +872,29 @@ fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
         PropValue::I64(v) => Ok(*v as f32),
         PropValue::F64(v) => Ok(*v as f32),
         _ => Err(format!("prop `{key}` expects numeric value")),
+    }
+}
+
+fn as_font_size_px(
+    value: &PropValue,
+    key: &str,
+    parent_font_size: f32,
+    root_font_size: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<f32, String> {
+    match value {
+        PropValue::I64(v) => Ok((*v as f32).max(0.0)),
+        PropValue::F64(v) => Ok((*v as f32).max(0.0)),
+        PropValue::FontSize(v) => Ok(v.resolve_px(
+            parent_font_size,
+            root_font_size,
+            viewport_width,
+            viewport_height,
+        )),
+        _ => Err(format!(
+            "prop `{key}` expects numeric or FontSize value"
+        )),
     }
 }
 
@@ -888,12 +1073,15 @@ fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandle
 
 #[cfg(test)]
 mod tests {
-    use super::{identity_token_from_keyed_props, rsx_to_elements, rsx_to_elements_lossy};
+    use super::{
+        identity_token_from_keyed_props, rsx_to_elements, rsx_to_elements_lossy,
+        rsx_to_elements_with_context,
+    };
     use crate::ui::{PropValue, RsxNode};
-    use crate::view::base_component::{get_cursor_by_id, hit_test};
+    use crate::view::base_component::{ElementTrait, Text, TextArea, get_cursor_by_id, hit_test};
     use crate::{
-        Border, BorderRadius, Color, Cursor, Display, IntoColor, Length, ParsedValue, PropertyId,
-        Style, Unit,
+        Border, BorderRadius, Color, Cursor, Display, FontSize, IntoColor, Length, ParsedValue,
+        PropertyId, Style, Unit,
     };
     fn style_bg(hex: &str) -> Style {
         let mut style = Style::new();
@@ -986,6 +1174,18 @@ mod tests {
         if let Some(children) = node.children_mut() {
             for child in children {
                 walk_layout(child.as_mut(), out);
+            }
+        }
+    }
+
+    fn collect_text_like_boxes(node: &dyn ElementTrait, out: &mut Vec<(f32, f32)>) {
+        if node.as_any().is::<Text>() || node.as_any().is::<TextArea>() {
+            let snapshot = node.box_model_snapshot();
+            out.push((snapshot.width, snapshot.height));
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                collect_text_like_boxes(child.as_ref(), out);
             }
         }
     }
@@ -1312,5 +1512,185 @@ mod tests {
         let target_id = hit_test(root.as_ref(), 10.0, 10.0).expect("hit text child");
         let cursor = get_cursor_by_id(root.as_ref(), target_id).expect("cursor exists");
         assert_eq!(cursor, Cursor::Pointer);
+    }
+
+    #[test]
+    fn text_style_font_size_em_inherits_from_parent_font_size() {
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(20.0)),
+        );
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::em(1.5)),
+        );
+
+        let tree = RsxNode::element("Element")
+            .with_prop("style", parent_style)
+            .with_child(
+                RsxNode::element("Text")
+                    .with_prop("style", child_style)
+                    .with_child(RsxNode::text("MMMMMMMM")),
+            );
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let root = roots.first_mut().expect("single root");
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let mut text_boxes = Vec::new();
+        collect_text_like_boxes(root.as_ref(), &mut text_boxes);
+        let (width, height) = text_boxes.first().copied().expect("text box should exist");
+        assert!(width > 150.0);
+        assert!(height >= 30.0);
+    }
+
+    #[test]
+    fn rem_font_size_uses_viewport_style_root_font_size() {
+        let text_tree = RsxNode::element("Text")
+            .with_prop("style", {
+                let mut style = Style::new();
+                style.insert(
+                    PropertyId::FontSize,
+                    ParsedValue::FontSize(FontSize::rem(2.0)),
+                );
+                style
+            })
+            .with_child(RsxNode::text("MMMMMMMM"));
+
+        let mut small_root_style = Style::new();
+        small_root_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(10.0)),
+        );
+        let mut large_root_style = Style::new();
+        large_root_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(20.0)),
+        );
+
+        let mut small = rsx_to_elements_with_context(&text_tree, &small_root_style, 800.0, 600.0)
+            .expect("convert with small root style");
+        let mut large = rsx_to_elements_with_context(&text_tree, &large_root_style, 800.0, 600.0)
+            .expect("convert with large root style");
+
+        for root in &mut small {
+            root.measure(crate::view::base_component::LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            });
+            root.place(crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            });
+        }
+        for root in &mut large {
+            root.measure(crate::view::base_component::LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            });
+            root.place(crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            });
+        }
+
+        let small_snapshot = small.first().expect("small root").box_model_snapshot();
+        let large_snapshot = large.first().expect("large root").box_model_snapshot();
+        assert!(large_snapshot.width > small_snapshot.width * 1.5);
+        assert!(large_snapshot.height > small_snapshot.height * 1.5);
+    }
+
+    #[test]
+    fn textarea_inherits_font_size_from_parent_style() {
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(24.0)),
+        );
+
+        let tree = RsxNode::element("Element")
+            .with_prop("style", parent_style)
+            .with_child(
+                RsxNode::element("TextArea")
+                    .with_prop("content", "hello")
+                    .with_prop("multiline", false),
+            );
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let root = roots.first_mut().expect("single root");
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let mut text_boxes = Vec::new();
+        collect_text_like_boxes(root.as_ref(), &mut text_boxes);
+        let (_width, height) = text_boxes
+            .iter()
+            .copied()
+            .find(|(_, h)| *h > 0.0)
+            .expect("textarea box should exist");
+        assert!(height >= 24.0);
     }
 }

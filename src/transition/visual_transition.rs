@@ -294,24 +294,10 @@ mod tests {
         let field = VisualField::Y;
 
         plugin
-            .start_visual_track(
-                &mut host,
-                target,
-                field,
-                -5.0,
-                0.0,
-                transition(1_000),
-            )
+            .start_visual_track(&mut host, target, field, -5.0, 0.0, transition(1_000))
             .expect("first track should start");
         plugin
-            .start_visual_track(
-                &mut host,
-                target,
-                field,
-                -100.0,
-                0.0,
-                transition(250),
-            )
+            .start_visual_track(&mut host, target, field, -100.0, 0.0, transition(250))
             .expect("same destination should be ignored");
 
         let key = TrackKey {
@@ -340,14 +326,7 @@ mod tests {
         };
 
         plugin
-            .start_visual_track(
-                &mut host,
-                target,
-                field,
-                0.0,
-                100.0,
-                transition(1_000),
-            )
+            .start_visual_track(&mut host, target, field, 0.0, 100.0, transition(1_000))
             .expect("first track should start");
         plugin.run_tracks(
             TransitionFrame {
@@ -363,14 +342,7 @@ mod tests {
             .current;
 
         plugin
-            .start_visual_track(
-                &mut host,
-                target,
-                field,
-                10.0,
-                20.0,
-                transition(500),
-            )
+            .start_visual_track(&mut host, target, field, 10.0, 20.0, transition(500))
             .expect("second track should retarget");
 
         let state = plugin

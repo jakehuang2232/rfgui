@@ -385,6 +385,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         .iter()
         .filter(|p| p.key != "key")
         .map(expand_builder_assignment);
+    let component_key = component_key_tokens(element);
     let children_assignment = if has_children {
         quote! { __rsx_props_builder.children = ::core::option::Option::Some(__rsx_children); }
     } else {
@@ -431,8 +432,26 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
             #children_assignment
             let __rsx_props = __rsx_build_props(__rsx_props_builder)
                 .expect(concat!("rsx build error on <", stringify!(#tag), ">"));
-            __rsx_render_props(__rsx_props)
+            ::rfgui::ui::with_component_key(#component_key, || {
+                ::rfgui::ui::render_component::<#tag, _>(|| {
+                    __rsx_render_props(__rsx_props)
+                })
+            })
         }
+    }
+}
+
+fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
+    let Some(prop) = element.props.iter().find(|p| p.key == "key") else {
+        return quote! { ::core::option::Option::None };
+    };
+    match &prop.value {
+        PropValueExpr::Expr(expr) => {
+            quote! { ::core::option::Option::Some(::rfgui::ui::component_key_token(&(#expr))) }
+        }
+        PropValueExpr::StyleObject(_) => quote_spanned! {prop.key.span()=>
+            compile_error!("`key` must be a Rust expression, not a style object")
+        },
     }
 }
 
@@ -701,27 +720,18 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             },
         },
         "background" | "background_color" => match &entry.value {
-            StyleValueExpr::Expr(value) => quote! {
-                __rsx_style.insert(
-                    ::rfgui::PropertyId::BackgroundColor,
-                    ::rfgui::ParsedValue::Color(
-                        ::rfgui::IntoColor::<::rfgui::Color>::into_color(#value)
-                    ),
-                );
-            },
+            StyleValueExpr::Expr(value) => expand_color_style_value(
+                value,
+                quote!(::rfgui::PropertyId::BackgroundColor),
+            ),
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.background requires an expression value");
             },
         },
         "color" => match &entry.value {
-            StyleValueExpr::Expr(value) => quote! {
-                __rsx_style.insert(
-                    ::rfgui::PropertyId::Color,
-                    ::rfgui::ParsedValue::Color(
-                        ::rfgui::IntoColor::<::rfgui::Color>::into_color(#value)
-                    ),
-                );
-            },
+            StyleValueExpr::Expr(value) => {
+                expand_color_style_value(value, quote!(::rfgui::PropertyId::Color))
+            }
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.color requires an expression value");
             },
@@ -735,6 +745,19 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             },
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.font requires an expression value");
+            },
+        },
+        "font_size" => match &entry.value {
+            StyleValueExpr::Expr(value) => quote! {
+                __rsx_style.insert(
+                    ::rfgui::PropertyId::FontSize,
+                    ::rfgui::ParsedValue::FontSize(
+                        ::rfgui::IntoFontSize::into_font_size(#value)
+                    ),
+                );
+            },
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.font_size requires an expression value");
             },
         },
         "font_weight" => match &entry.value {
@@ -885,39 +908,6 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.display requires an expression value");
             },
         },
-        "flow_direction" => match &entry.value {
-            StyleValueExpr::Expr(value) => quote! {
-                __rsx_style.insert(
-                    ::rfgui::PropertyId::FlowDirection,
-                    ::rfgui::ParsedValue::FlowDirection(#value),
-                );
-            },
-            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.flow_direction requires an expression value");
-            },
-        },
-        "flow_wrap" => match &entry.value {
-            StyleValueExpr::Expr(value) => quote! {
-                __rsx_style.insert(
-                    ::rfgui::PropertyId::FlowWrap,
-                    ::rfgui::ParsedValue::FlowWrap(#value),
-                );
-            },
-            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.flow_wrap requires an expression value");
-            },
-        },
-        "justify_content" => match &entry.value {
-            StyleValueExpr::Expr(value) => quote! {
-                __rsx_style.insert(
-                    ::rfgui::PropertyId::JustifyContent,
-                    ::rfgui::ParsedValue::JustifyContent(#value),
-                );
-            },
-            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.justify_content requires an expression value");
-            },
-        },
         "align_items" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! {
                 __rsx_style.insert(
@@ -988,6 +978,21 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             let _ = &__style_schema.#key_ident;
         };
         #style_value_tokens
+    }
+}
+
+fn expand_color_style_value(
+    value: &Expr,
+    property: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    quote! {
+        {
+            let __rsx_color = ::rfgui::IntoColor::<::rfgui::Color>::into_color(#value);
+            __rsx_style.insert(
+                #property,
+                ::rfgui::ParsedValue::Color(__rsx_color),
+            );
+        }
     }
 }
 

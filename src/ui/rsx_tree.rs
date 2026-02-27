@@ -1,3 +1,4 @@
+use crate::FontSize;
 use crate::Style;
 use crate::TextAlign;
 use crate::ui::{
@@ -195,6 +196,7 @@ pub enum PropValue {
     Bool(bool),
     I64(i64),
     F64(f64),
+    FontSize(FontSize),
     String(String),
     Style(Style),
     OnMouseDown(MouseDownHandlerProp),
@@ -250,6 +252,12 @@ impl From<f32> for PropValue {
 impl From<f64> for PropValue {
     fn from(value: f64) -> Self {
         PropValue::F64(value)
+    }
+}
+
+impl From<FontSize> for PropValue {
+    fn from(value: FontSize) -> Self {
+        PropValue::FontSize(value)
     }
 }
 
@@ -367,6 +375,12 @@ impl IntoPropValue for f64 {
     }
 }
 
+impl IntoPropValue for FontSize {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::FontSize(self)
+    }
+}
+
 impl IntoPropValue for &str {
     fn into_prop_value(self) -> PropValue {
         PropValue::String(self.to_string())
@@ -469,6 +483,17 @@ impl FromPropValue for f64 {
             PropValue::I64(v) => Ok(v as f64),
             PropValue::F64(v) => Ok(v),
             _ => Err("expected numeric value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for FontSize {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::FontSize(v) => Ok(v),
+            PropValue::I64(v) => Ok(FontSize::px(v as f32)),
+            PropValue::F64(v) => Ok(FontSize::px(v as f32)),
+            _ => Err("expected FontSize value".to_string()),
         }
     }
 }

@@ -5,9 +5,9 @@ use crate::ui::{
     RsxComponent,
 };
 use crate::{
-    AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Display, FlowDirection, FlowWrap,
-    FontFamily, FontWeight, JustifyContent, Length, Opacity, Padding, Position, ScrollDirection,
-    Style, TextAlign, Transitions,
+    AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Display, FontFamily, FontSize,
+    FontWeight, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign,
+    Transitions,
 };
 
 pub struct Element;
@@ -45,9 +45,6 @@ pub struct ElementStylePropSchema {
     pub min_height: Length,
     pub max_height: Length,
     pub display: Display,
-    pub flow_direction: FlowDirection,
-    pub flow_wrap: FlowWrap,
-    pub justify_content: JustifyContent,
     pub align_items: AlignItems,
     pub gap: Length,
     pub scroll_direction: ScrollDirection,
@@ -57,6 +54,7 @@ pub struct ElementStylePropSchema {
     pub background: Box<dyn ColorLike>,
     pub background_color: Box<dyn ColorLike>,
     pub font: FontFamily,
+    pub font_size: FontSize,
     pub font_weight: FontWeight,
     pub border_radius: BorderRadius,
     pub hover: Style,
@@ -74,7 +72,7 @@ pub struct BorderStylePropSchema {
 pub struct TextPropSchema {
     pub style: Option<Style>,
     pub align: TextAlign,
-    pub font_size: f64,
+    pub font_size: FontSize,
     pub line_height: f64,
     pub font: String,
     pub opacity: f64,
@@ -90,7 +88,7 @@ pub struct TextAreaPropSchema {
     pub y: f64,
     pub width: f64,
     pub height: f64,
-    pub font_size: f64,
+    pub font_size: FontSize,
     pub font: String,
     pub opacity: f64,
     pub multiline: bool,
@@ -136,7 +134,7 @@ impl Default for TextPropSchema {
         Self {
             style: None,
             align: TextAlign::Left,
-            font_size: 0.0,
+            font_size: FontSize::px(0.0),
             line_height: 0.0,
             font: String::new(),
             opacity: 0.0,
@@ -162,7 +160,7 @@ impl Default for TextAreaPropSchema {
             y: 0.0,
             width: 0.0,
             height: 0.0,
-            font_size: 0.0,
+            font_size: FontSize::px(0.0),
             font: String::new(),
             opacity: 0.0,
             multiline: false,
@@ -226,7 +224,7 @@ impl RsxComponent<TextPropSchema> for Text {
             node = node.with_prop("style", style);
         }
         node = node.with_prop("align", props.align);
-        if props.font_size != 0.0 {
+        if !is_unset_font_size(props.font_size) {
             node = node.with_prop("font_size", props.font_size);
         }
         if props.line_height != 0.0 {
@@ -275,7 +273,7 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         if props.height != 0.0 {
             node = node.with_prop("height", props.height);
         }
-        if props.font_size != 0.0 {
+        if !is_unset_font_size(props.font_size) {
             node = node.with_prop("font_size", props.font_size);
         }
         if !props.font.is_empty() {
@@ -305,4 +303,8 @@ impl RsxChildrenPolicy for Text {
 
 impl RsxChildrenPolicy for TextArea {
     const ACCEPTS_CHILDREN: bool = true;
+}
+
+fn is_unset_font_size(font_size: FontSize) -> bool {
+    matches!(font_size, FontSize::Px(v) if v == 0.0)
 }

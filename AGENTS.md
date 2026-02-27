@@ -26,9 +26,9 @@ This document defines the core UI / Style / Layout / Component conventions for t
   - `Length::percent(f32)`
   - `Length::Zero`
 - `%` rules (important):
-  1. Effective only when parent content size is known.
-  2. If parent size is unresolved, `%` is treated as `auto` (for `width/height`).
-  3. `%` must not back-propagate to influence parent measurement.
+  1. Effective when the containing block size is definite (resolvable during the current layout pass).
+  2. If the containing block size is indefinite, `%` is treated as `auto` (for `width/height`).
+  3. `%` resolution must not back-propagate to influence parent measurement.
 
 ## 3. Color System
 

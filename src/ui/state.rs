@@ -1,4 +1,5 @@
 use std::any::{Any, TypeId};
+use std::collections::hash_map::DefaultHasher;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -133,6 +134,7 @@ thread_local! {
     static STORE: RefCell<StateStore> = RefCell::new(StateStore::default());
     static GLOBAL_STORE: RefCell<HashMap<TypeId, Box<dyn Any>>> = RefCell::new(HashMap::new());
     static CONTEXT: RefCell<RenderContext> = RefCell::new(RenderContext::default());
+    static COMPONENT_KEY_STACK: RefCell<Vec<Option<u64>>> = const { RefCell::new(Vec::new()) };
     static REDRAW_CALLBACK: RefCell<Option<Rc<dyn Fn()>>> = RefCell::new(None);
     static STATE_DIRTY: Cell<bool> = const { Cell::new(false) };
 }
@@ -199,21 +201,59 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     out
 }
 
+pub fn component_key_token<T: ?Sized + Hash>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn with_component_key<R>(key: Option<u64>, f: impl FnOnce() -> R) -> R {
+    struct StackGuard;
+    impl Drop for StackGuard {
+        fn drop(&mut self) {
+            COMPONENT_KEY_STACK.with(|stack| {
+                let _ = stack.borrow_mut().pop();
+            });
+        }
+    }
+
+    COMPONENT_KEY_STACK.with(|stack| {
+        stack.borrow_mut().push(key);
+    });
+    let _guard = StackGuard;
+    f()
+}
+
+fn current_component_key() -> Option<u64> {
+    COMPONENT_KEY_STACK.with(|stack| stack.borrow().last().copied().flatten())
+}
+
 pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
+    const KEYED_PATH_MARKER: usize = usize::MAX;
     let path = CONTEXT.with(|context| {
         let mut context = context.borrow_mut();
+        let component_key = current_component_key();
         if let Some(parent) = context.frames.last_mut() {
             let child_index = parent.child_cursor;
             parent.child_cursor += 1;
             let mut path = parent.path.clone();
-            path.push(child_index);
+            if let Some(key) = component_key {
+                path.push(KEYED_PATH_MARKER);
+                path.push(key as usize);
+            } else {
+                path.push(child_index);
+            }
             path
         } else {
             STORE.with(|store| {
                 let mut store = store.borrow_mut();
                 let root_index = store.root_cursor;
                 store.root_cursor += 1;
-                vec![root_index]
+                if let Some(key) = component_key {
+                    vec![KEYED_PATH_MARKER, key as usize]
+                } else {
+                    vec![root_index]
+                }
             })
         }
     });
@@ -332,7 +372,7 @@ pub fn use_global_state<T: Clone + 'static>() -> GlobalState<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_scope, take_state_dirty, use_state};
+    use super::{build_scope, take_state_dirty, use_state, with_component_key};
     use crate::ui::RsxNode;
 
     #[test]
@@ -356,6 +396,43 @@ mod tests {
             })
         });
         assert_eq!(state_after.get(), 7);
+    }
+
+    #[test]
+    fn keyed_component_keeps_state_when_order_changes() {
+        let first = build_scope(|| {
+            let a = with_component_key(Some(1), || {
+                crate::ui::render_component::<u32, _>(|| {
+                    let state = use_state(|| 10_i32);
+                    state.get()
+                })
+            });
+            let b = with_component_key(Some(2), || {
+                crate::ui::render_component::<u32, _>(|| {
+                    let state = use_state(|| 20_i32);
+                    state.get()
+                })
+            });
+            (a, b)
+        });
+        assert_eq!(first, (10, 20));
+
+        let second = build_scope(|| {
+            let b = with_component_key(Some(2), || {
+                crate::ui::render_component::<u32, _>(|| {
+                    let state = use_state(|| 999_i32);
+                    state.get()
+                })
+            });
+            let a = with_component_key(Some(1), || {
+                crate::ui::render_component::<u32, _>(|| {
+                    let state = use_state(|| 999_i32);
+                    state.get()
+                })
+            });
+            (b, a)
+        });
+        assert_eq!(second, (20, 10));
     }
 }
 

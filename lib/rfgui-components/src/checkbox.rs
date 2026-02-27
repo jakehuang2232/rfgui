@@ -1,11 +1,9 @@
+use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
     Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
-use rfgui::{
-    AlignItems, Border, BorderRadius, Color, Display, Length, Padding, ParsedValue, PropertyId,
-    Style,
-};
+use rfgui::{AlignItems, Border, BorderRadius, Color, Display, Length, Padding, Transition, TransitionProperty};
 
 pub struct Checkbox;
 
@@ -43,6 +41,7 @@ fn CheckboxView(
     binding: Binding<bool>,
     disabled: bool,
 ) -> RsxNode {
+    let theme = use_theme().get();
     let fallback_checked = use_state(|| checked);
     let checked_binding = if has_binding {
         binding
@@ -59,28 +58,49 @@ fn CheckboxView(
         }))
     };
 
-    let mut box_node = rsx! {
-        <Element style={checkbox_box_style(checked, disabled)} />
-    };
-    if checked && let RsxNode::Element(node) = &mut box_node {
-        node.children.push(rsx! {
-            <Text
-                font_size=16
-                font="Heiti TC, Noto Sans CJK TC, Roboto"
-                style={{ color: if disabled { "#9E9E9E" } else { "#FFFFFF" } }}
-            >
-                {"✓"}
-            </Text>
-        });
-    }
-
     let mut root = rsx! {
-        <Element style={checkbox_row_style()}>
-            {box_node}
+        <Element style={{
+            display: Display::flow().row().no_wrap(),
+            align_items: AlignItems::Center,
+            gap: theme.spacing.md,
+        }}>
+            <Element style={{
+                width: Length::px(18.0),
+                height: Length::px(18.0),
+                border_radius: BorderRadius::uniform(theme.radius.sm),
+                background: if disabled {
+                    theme.color.state.disabled.clone()
+                } else if checked {
+                    theme.color.primary.base.clone()
+                } else {
+                    theme.color.layer.surface.clone()
+                },
+                border: if disabled {
+                    Border::uniform(Length::px(1.0), theme.color.border.as_ref())
+                } else if checked {
+                    Border::uniform(Length::px(1.0), theme.color.primary.base.as_ref())
+                } else {
+                    Border::uniform(Length::px(1.0), theme.color.border.as_ref())
+                },
+                transition: [Transition::new(TransitionProperty::BackgroundColor, 180).timing(theme.motion.easing.standard)]
+            }} >
+                <Element
+                    style={{ 
+                        color: if checked {
+                            if disabled { theme.color.text.disabled.clone() } else { theme.color.surface.on.clone() }
+                        }else {
+                            Box::new(Color::transparent())
+                        },
+                        font_size: theme.typography.size.md,
+                        transition: [Transition::new(TransitionProperty::Color, 180).timing(theme.motion.easing.standard)]
+                    }}
+                >
+                    {"✓"}
+                </Element>
+            </Element>
             <Text
-                font_size=14
-                font="Heiti TC, Noto Sans CJK TC, Roboto"
-                style={{ color: if disabled { "#9E9E9E" } else { "#1F2937" } }}
+                font_size={theme.typography.size.sm}
+                style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.primary.clone() } }}
             >
                 {label}
             </Text>
@@ -94,39 +114,4 @@ fn CheckboxView(
     }
 
     root
-}
-
-fn checkbox_row_style() -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().row().no_wrap()),
-    );
-    style.insert(
-        PropertyId::AlignItems,
-        ParsedValue::AlignItems(AlignItems::Center),
-    );
-    style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(10.0)));
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(32.0)));
-    style.set_padding(Padding::uniform(Length::px(0.0)));
-    style
-}
-
-fn checkbox_box_style(checked: bool, disabled: bool) -> Style {
-    let mut style = Style::new();
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(18.0)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
-    style.set_border_radius(BorderRadius::uniform(Length::px(4.0)));
-    if disabled {
-        style.insert_color_like(PropertyId::BackgroundColor, Color::hex("#F5F5F5"));
-        style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#BDBDBD")));
-    } else if checked {
-        style.insert_color_like(PropertyId::BackgroundColor, Color::hex("#1976D2"));
-        style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1976D2")));
-    } else {
-        style.insert_color_like(PropertyId::BackgroundColor, Color::hex("#FFFFFF"));
-        style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#6B7280")));
-    }
-    style
 }

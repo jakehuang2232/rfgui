@@ -6,6 +6,7 @@ use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource}
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
+use std::collections::HashSet;
 use wgpu::util::DeviceExt;
 
 const COMPOSITE_LAYER_RESOURCES: u64 = 201;
@@ -48,9 +49,17 @@ struct CompositeVertex {
 
 struct CompositeLayerResources {
     pipeline: wgpu::RenderPipeline,
+    debug_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pipeline_format: wgpu::TextureFormat,
+}
+
+#[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct DebugVertex {
+    position: [f32; 2],
+    color: [f32; 4],
 }
 
 impl CompositeLayerPass {
@@ -144,17 +153,17 @@ impl RenderPass for CompositeLayerPass {
         let scale = ctx.viewport.scale_factor();
 
         let device = match ctx.viewport.device() {
-            Some(device) => device,
+            Some(device) => device.clone(),
             None => return,
         };
         let format = ctx.viewport.surface_format();
         let resources = ctx
             .cache
             .get_or_insert_with::<CompositeLayerResources, _>(COMPOSITE_LAYER_RESOURCES, || {
-                create_resources(device, format)
+                create_resources(&device, format)
             });
         if resources.pipeline_format != format {
-            *resources = create_resources(device, format);
+            *resources = create_resources(&device, format);
         }
 
         let scaled_rect_pos = [self.rect_pos[0] * scale, self.rect_pos[1] * scale];
@@ -205,6 +214,7 @@ impl RenderPass for CompositeLayerPass {
                 .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
 
+        let debug_geometry_overlay = ctx.viewport.debug_geometry_overlay();
         let parts = match ctx.viewport.frame_parts() {
             Some(parts) => parts,
             None => return,
@@ -235,6 +245,34 @@ impl RenderPass for CompositeLayerPass {
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+
+        if debug_geometry_overlay {
+            let (debug_vertices, debug_indices) = build_debug_overlay_geometry(
+                &vertices,
+                &indices,
+                target_w as f32,
+                target_h as f32,
+                [0.2, 1.0, 0.95, 0.95],
+                [0.2, 1.0, 0.35, 0.95],
+            );
+            if !debug_vertices.is_empty() && !debug_indices.is_empty() {
+                let debug_vertex_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Composite Debug Vertex Buffer"),
+                        contents: bytemuck::cast_slice(&debug_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                let debug_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Composite Debug Index Buffer"),
+                    contents: bytemuck::cast_slice(&debug_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                pass.set_pipeline(&resources.debug_pipeline);
+                pass.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
+                pass.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
+            }
+        }
     }
 }
 
@@ -383,8 +421,62 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
         cache: None,
     });
 
+    let debug_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Composite Debug Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/rect.wgsl").into()),
+    });
+    let debug_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Composite Debug Pipeline Layout"),
+        bind_group_layouts: &[],
+        immediate_size: 0,
+    });
+    let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Composite Debug Pipeline"),
+        layout: Some(&debug_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &debug_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<DebugVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: std::mem::size_of::<[f32; 2]>() as u64,
+                        shader_location: 1,
+                    },
+                ],
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &debug_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+
     CompositeLayerResources {
         pipeline,
+        debug_pipeline,
         bind_group_layout,
         sampler,
         pipeline_format: format,
@@ -629,72 +721,9 @@ fn append_convex_fan(
     }
 
     let base = (vertices.len() - cleaned.len()) as u32;
-    for tri in triangulate_polygon_indices(&cleaned) {
-        indices.extend_from_slice(&[
-            base + tri[0] as u32,
-            base + tri[1] as u32,
-            base + tri[2] as u32,
-        ]);
+    for i in 1..(cleaned.len() - 1) {
+        indices.extend_from_slice(&[base, base + i as u32, base + (i as u32 + 1)]);
     }
-}
-
-fn triangulate_polygon_indices(polygon: &[[f32; 2]]) -> Vec<[usize; 3]> {
-    let n = polygon.len();
-    if n < 3 {
-        return Vec::new();
-    }
-    if n == 3 {
-        return vec![[0, 1, 2]];
-    }
-
-    let ccw = polygon_signed_area(polygon) >= 0.0;
-    let mut verts: Vec<usize> = if ccw {
-        (0..n).collect()
-    } else {
-        (0..n).rev().collect()
-    };
-    let mut out = Vec::with_capacity(n.saturating_sub(2));
-    let mut guard = 0usize;
-    let max_guard = n * n;
-
-    while verts.len() > 3 && guard < max_guard {
-        guard += 1;
-        let m = verts.len();
-        let mut ear_found = false;
-        for i in 0..m {
-            let prev = verts[(i + m - 1) % m];
-            let curr = verts[i];
-            let next = verts[(i + 1) % m];
-            if !is_convex_ccw(polygon[prev], polygon[curr], polygon[next]) {
-                continue;
-            }
-            let mut has_inside = false;
-            for &other in &verts {
-                if other == prev || other == curr || other == next {
-                    continue;
-                }
-                if point_in_triangle(polygon[other], polygon[prev], polygon[curr], polygon[next]) {
-                    has_inside = true;
-                    break;
-                }
-            }
-            if has_inside {
-                continue;
-            }
-            out.push([prev, curr, next]);
-            verts.remove(i);
-            ear_found = true;
-            break;
-        }
-        if !ear_found {
-            break;
-        }
-    }
-
-    if verts.len() == 3 {
-        out.push([verts[0], verts[1], verts[2]]);
-    }
-    out
 }
 
 fn sanitize_polygon(polygon: &[[f32; 2]]) -> Vec<[f32; 2]> {
@@ -719,30 +748,6 @@ fn sanitize_polygon(polygon: &[[f32; 2]]) -> Vec<[f32; 2]> {
         }
     }
     out
-}
-
-fn polygon_signed_area(polygon: &[[f32; 2]]) -> f32 {
-    let mut area = 0.0f32;
-    for i in 0..polygon.len() {
-        let j = (i + 1) % polygon.len();
-        area += polygon[i][0] * polygon[j][1] - polygon[j][0] * polygon[i][1];
-    }
-    area * 0.5
-}
-
-fn is_convex_ccw(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
-    cross(a, b, c) > 1e-5
-}
-
-fn point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
-    let c1 = cross(a, b, p);
-    let c2 = cross(b, c, p);
-    let c3 = cross(c, a, p);
-    (c1 >= -1e-5 && c2 >= -1e-5 && c3 >= -1e-5) || (c1 <= 1e-5 && c2 <= 1e-5 && c3 <= 1e-5)
-}
-
-fn cross(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
 fn append_ring(
@@ -793,8 +798,133 @@ fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
     [(x / screen_w) * 2.0 - 1.0, 1.0 - (y / screen_h) * 2.0]
 }
 
+fn ndc_to_pixel(pos: [f32; 2], screen_w: f32, screen_h: f32) -> [f32; 2] {
+    [((pos[0] + 1.0) * 0.5) * screen_w, ((1.0 - pos[1]) * 0.5) * screen_h]
+}
+
 fn pixel_to_uv(x: f32, y: f32, layer_w: f32, layer_h: f32) -> [f32; 2] {
     [x / layer_w, y / layer_h]
+}
+
+fn build_debug_overlay_geometry(
+    vertices: &[CompositeVertex],
+    indices: &[u32],
+    screen_w: f32,
+    screen_h: f32,
+    edge_color: [f32; 4],
+    point_color: [f32; 4],
+) -> (Vec<DebugVertex>, Vec<u32>) {
+    let mut out_vertices = Vec::new();
+    let mut out_indices = Vec::new();
+    if vertices.is_empty() || indices.len() < 3 {
+        return (out_vertices, out_indices);
+    }
+
+    let mut edges: HashSet<(u32, u32)> = HashSet::new();
+    for tri in indices.chunks_exact(3) {
+        let a = tri[0];
+        let b = tri[1];
+        let c = tri[2];
+        for (u, v) in [(a, b), (b, c), (c, a)] {
+            let key = if u < v { (u, v) } else { (v, u) };
+            edges.insert(key);
+        }
+    }
+
+    for (u, v) in edges {
+        let a = vertices[u as usize].position;
+        let b = vertices[v as usize].position;
+        append_debug_line_quad(
+            &mut out_vertices,
+            &mut out_indices,
+            ndc_to_pixel(a, screen_w, screen_h),
+            ndc_to_pixel(b, screen_w, screen_h),
+            1.5,
+            edge_color,
+            screen_w,
+            screen_h,
+        );
+    }
+
+    for v in vertices {
+        append_debug_point_quad(
+            &mut out_vertices,
+            &mut out_indices,
+            ndc_to_pixel(v.position, screen_w, screen_h),
+            2.5,
+            point_color,
+            screen_w,
+            screen_h,
+        );
+    }
+
+    (out_vertices, out_indices)
+}
+
+fn append_debug_line_quad(
+    vertices: &mut Vec<DebugVertex>,
+    indices: &mut Vec<u32>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    thickness_px: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 1e-5 {
+        return;
+    }
+    let nx = -dy / len;
+    let ny = dx / len;
+    let hw = thickness_px * 0.5;
+    let o = [nx * hw, ny * hw];
+    let quad = [
+        [p0[0] + o[0], p0[1] + o[1]],
+        [p0[0] - o[0], p0[1] - o[1]],
+        [p1[0] - o[0], p1[1] - o[1]],
+        [p1[0] + o[0], p1[1] + o[1]],
+    ];
+    append_debug_quad(vertices, indices, quad, color, screen_w, screen_h);
+}
+
+fn append_debug_point_quad(
+    vertices: &mut Vec<DebugVertex>,
+    indices: &mut Vec<u32>,
+    center: [f32; 2],
+    size_px: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let h = size_px * 0.5;
+    let quad = [
+        [center[0] - h, center[1] - h],
+        [center[0] + h, center[1] - h],
+        [center[0] + h, center[1] + h],
+        [center[0] - h, center[1] + h],
+    ];
+    append_debug_quad(vertices, indices, quad, color, screen_w, screen_h);
+}
+
+fn append_debug_quad(
+    vertices: &mut Vec<DebugVertex>,
+    indices: &mut Vec<u32>,
+    quad: [[f32; 2]; 4],
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let base = vertices.len() as u32;
+    for p in quad {
+        vertices.push(DebugVertex {
+            position: pixel_to_ndc(p[0], p[1], screen_w, screen_h),
+            color,
+        });
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 #[cfg(test)]

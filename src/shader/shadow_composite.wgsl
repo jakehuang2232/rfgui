@@ -35,5 +35,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let c = textureSample(shadow_tex, shadow_sampler, in.uv);
     let m = textureSample(mask_tex, shadow_sampler, in.uv).a;
     let mask_alpha = mix(1.0, m, clamp(composite.data.x, 0.0, 1.0));
-    return vec4<f32>(c.rgb, c.a * mask_alpha);
+    return vec4<f32>(c.rgb * mask_alpha, c.a * mask_alpha);
 }

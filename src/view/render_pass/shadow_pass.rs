@@ -272,10 +272,7 @@ impl RenderPass for ShadowPass {
             .map(|[x, y]| [x * scale, y * scale])
             .collect::<Vec<_>>();
         let mut shadow_vertices = base_vertices.clone();
-        apply_spread(
-            &mut shadow_vertices,
-            (self.params.spread * scale).max(0.0),
-        );
+        apply_spread(&mut shadow_vertices, (self.params.spread * scale).max(0.0));
         let offset = [self.params.offset_x * scale, self.params.offset_y * scale];
         for v in &mut shadow_vertices {
             v[0] += offset[0];
@@ -339,7 +336,12 @@ impl RenderPass for ShadowPass {
 
         let fill_color = {
             let a = (self.params.color[3] * self.params.opacity).clamp(0.0, 1.0);
-            [self.params.color[0], self.params.color[1], self.params.color[2], a]
+            [
+                self.params.color[0],
+                self.params.color[1],
+                self.params.color[2],
+                a,
+            ]
         };
         draw_mesh_fill(
             ctx,
@@ -453,9 +455,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
     });
     let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Shadow Composite Shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../shader/shadow_composite.wgsl").into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/shadow_composite.wgsl").into()),
     });
 
     let fill_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -515,37 +515,38 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
         cache: None,
     });
 
-    let blur_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Shadow Blur Bind Group Layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
+    let blur_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Shadow Blur Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
                 },
-                count: None,
-            },
-        ],
-    });
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
     let composite_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow Composite Bind Group Layout"),
@@ -632,7 +633,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -679,7 +680,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
                 format,
                 blend: Some(wgpu::BlendState {
                     color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        src_factor: wgpu::BlendFactor::One,
                         dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
                         operation: wgpu::BlendOperation::Add,
                     },

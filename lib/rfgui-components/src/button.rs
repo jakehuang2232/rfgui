@@ -1,9 +1,10 @@
 use rfgui::TextAlign::Center;
+use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, props, rsx};
 use rfgui::{
-    AlignItems, Border, BorderRadius, Color, Cursor, Display, FlowDirection, JustifyContent,
-    Length, Padding, Transition, TransitionProperty, Transitions,
+    AlignItems, Border, Color, ColorLike, Cursor, Display, JustifyContent, Length, Transition,
+    TransitionProperty, Transitions,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,50 +43,59 @@ pub struct ButtonProps {
 
 impl RsxComponent<ButtonProps> for Button {
     fn render(props: ButtonProps) -> RsxNode {
+        let theme = use_theme().get();
         let variant = props.variant.unwrap_or(ButtonVariant::Contained);
         let disabled = props.disabled.unwrap_or(false);
-        let (background, border_color, hover_background, text_color) = if disabled {
+        let (background, border_color, hover_background, text_color): (
+            Box<dyn ColorLike>,
+            Box<dyn ColorLike>,
+            Box<dyn ColorLike>,
+            Box<dyn ColorLike>,
+        ) = if disabled {
             (
-                Color::hex("#E0E0E0"),
-                Color::hex("#E0E0E0"),
-                Color::hex("#E0E0E0"),
-                "#9E9E9E",
+                theme.color.state.disabled.clone(),
+                theme.color.state.disabled.clone(),
+                theme.color.state.disabled.clone(),
+                theme.color.text.disabled.clone(),
             )
         } else {
             match variant {
                 ButtonVariant::Contained => (
-                    Color::hex("#1976D2"),
-                    Color::hex("#1976D2"),
-                    Color::hex("#1565C0"),
-                    "#FFFFFF",
+                    theme.color.primary.base.clone(),
+                    theme.color.primary.base.clone(),
+                    theme.color.state.active.clone(),
+                    theme.color.primary.on.clone(),
                 ),
                 ButtonVariant::Outlined => (
-                    Color::hex("#FFFFFF"),
-                    Color::hex("#1976D2"),
-                    Color::hex("#E3F2FD"),
-                    "#1976D2",
+                    theme.color.layer.surface.clone(),
+                    theme.color.primary.base.clone(),
+                    theme.color.state.hover.clone(),
+                    theme.color.text.primary.clone(),
                 ),
                 ButtonVariant::Text => (
-                    Color::hex("#FFFFFF"),
-                    Color::hex("#FFFFFF"),
-                    Color::hex("#E3F2FD"),
-                    "#1976D2",
+                    Box::new(Color::transparent()) as Box<dyn ColorLike>,
+                    Box::new(Color::transparent()) as Box<dyn ColorLike>,
+                    theme.color.state.hover.clone(),
+                    theme.color.text.primary.clone(),
                 ),
             }
         };
+        let transition_duration = theme.motion.duration.normal;
         let mut root = rsx! {
             <Element
                 style={{
-                    display: Display::flow().row().no_wrap(),
-                    flow_direction: FlowDirection::Row,
-                    justify_content: JustifyContent::Center,
+                    display: Display::flow()
+                        .row()
+                        .no_wrap()
+                        .justify_content(JustifyContent::Center),
                     align_items: AlignItems::Center,
-                    padding: Padding::uniform(Length::px(8.0)).x(Length::px(16.0)),
-                    border_radius: BorderRadius::uniform(Length::px(8.0)),
-                    border: Border::uniform(Length::px(1.0), &border_color),
+                    padding: theme.component.button.padding,
+                    border_radius: theme.component.button.radius,
+                    border: Border::uniform(Length::px(1.0), border_color.as_ref()),
                     background: background,
                     transition: Transitions::single(
-                        Transition::new(TransitionProperty::BackgroundColor, 180).ease_in_out(),
+                        Transition::new(TransitionProperty::BackgroundColor, transition_duration)
+                            .ease_in_out(),
                     ),
                     cursor: Cursor::Pointer,
                     hover: {
