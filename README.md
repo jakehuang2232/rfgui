@@ -2,7 +2,7 @@
 
 A Rust GUI/rendering experiment with typed styles, RSX-based UI authoring, and a frame-graph-driven renderer.
 
-![example](https://github.com/user-attachments/assets/928dabf3-f3bf-4ab2-a40b-a43a98f9d279)
+![example](https://github.com/user-attachments/assets/5274eb04-0329-46c2-9e14-424fd0dd3791)
 
 ## Features
 
