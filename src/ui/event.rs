@@ -389,7 +389,7 @@ macro_rules! impl_handler_prop {
         impl $ty {
             pub fn new<F>(handler: F) -> Self
             where
-                F: FnMut(&mut $event_ty) + 'static,
+                F: for<'a> FnMut(&'a mut $event_ty) + 'static,
             {
                 Self {
                     id: next_handler_id(),
@@ -419,6 +419,15 @@ macro_rules! impl_handler_prop {
                     .finish()
             }
         }
+
+        impl<F> From<F> for $ty
+        where
+            F: for<'a> FnMut(&'a mut $event_ty) + 'static,
+        {
+            fn from(handler: F) -> Self {
+                $ty::new(handler)
+            }
+        }
     };
 }
 
@@ -433,56 +442,56 @@ impl_handler_prop!(BlurHandlerProp, BlurEvent);
 
 pub fn on_mouse_down<F>(handler: F) -> MouseDownHandlerProp
 where
-    F: FnMut(&mut MouseDownEvent) + 'static,
+    F: for<'a> FnMut(&'a mut MouseDownEvent) + 'static,
 {
     MouseDownHandlerProp::new(handler)
 }
 
 pub fn on_mouse_up<F>(handler: F) -> MouseUpHandlerProp
 where
-    F: FnMut(&mut MouseUpEvent) + 'static,
+    F: for<'a> FnMut(&'a mut MouseUpEvent) + 'static,
 {
     MouseUpHandlerProp::new(handler)
 }
 
 pub fn on_mouse_move<F>(handler: F) -> MouseMoveHandlerProp
 where
-    F: FnMut(&mut MouseMoveEvent) + 'static,
+    F: for<'a> FnMut(&'a mut MouseMoveEvent) + 'static,
 {
     MouseMoveHandlerProp::new(handler)
 }
 
 pub fn on_click<F>(handler: F) -> ClickHandlerProp
 where
-    F: FnMut(&mut ClickEvent) + 'static,
+    F: for<'a> FnMut(&'a mut ClickEvent) + 'static,
 {
     ClickHandlerProp::new(handler)
 }
 
 pub fn on_key_down<F>(handler: F) -> KeyDownHandlerProp
 where
-    F: FnMut(&mut KeyDownEvent) + 'static,
+    F: for<'a> FnMut(&'a mut KeyDownEvent) + 'static,
 {
     KeyDownHandlerProp::new(handler)
 }
 
 pub fn on_key_up<F>(handler: F) -> KeyUpHandlerProp
 where
-    F: FnMut(&mut KeyUpEvent) + 'static,
+    F: for<'a> FnMut(&'a mut KeyUpEvent) + 'static,
 {
     KeyUpHandlerProp::new(handler)
 }
 
 pub fn on_focus<F>(handler: F) -> FocusHandlerProp
 where
-    F: FnMut(&mut FocusEvent) + 'static,
+    F: for<'a> FnMut(&'a mut FocusEvent) + 'static,
 {
     FocusHandlerProp::new(handler)
 }
 
 pub fn on_blur<F>(handler: F) -> BlurHandlerProp
 where
-    F: FnMut(&mut BlurEvent) + 'static,
+    F: for<'a> FnMut(&'a mut BlurEvent) + 'static,
 {
     BlurHandlerProp::new(handler)
 }

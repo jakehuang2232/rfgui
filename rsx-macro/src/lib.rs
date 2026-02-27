@@ -521,9 +521,9 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
                 builder_setters.push(quote! {
                     pub fn #field_ident<V>(&mut self, value: V)
                     where
-                        V: ::core::convert::Into<::core::option::Option<#inner_ty>>,
+                        V: ::rfgui::ui::IntoOptionalProp<#inner_ty>,
                     {
-                        self.#field_ident = ::core::option::Option::Some(value.into());
+                        self.#field_ident = ::core::option::Option::Some(value.into_optional_prop());
                     }
                 });
             }
@@ -673,9 +673,36 @@ fn expand_direct_prop_assignment(prop: &Prop) -> proc_macro2::TokenStream {
 
 fn expand_builder_assignment(prop: &Prop) -> proc_macro2::TokenStream {
     let key_ident = &prop.key;
-    let value = expand_prop_value_expr(&prop.value);
+    let value = expand_builder_value_expr(prop);
     quote! {
         __rsx_props_builder.#key_ident(#value);
+    }
+}
+
+fn expand_builder_value_expr(prop: &Prop) -> proc_macro2::TokenStream {
+    let value = expand_prop_value_expr(&prop.value);
+    let is_closure = matches!(&prop.value, PropValueExpr::Expr(Expr::Closure(_)));
+    if !is_closure {
+        return value;
+    }
+    let wrapper = event_closure_wrapper(&prop.key.to_string());
+    match wrapper {
+        Some(wrapper_fn) => quote! { #wrapper_fn(#value) },
+        None => value,
+    }
+}
+
+fn event_closure_wrapper(prop_key: &str) -> Option<proc_macro2::TokenStream> {
+    match prop_key {
+        "on_mouse_down" => Some(quote! { ::rfgui::ui::on_mouse_down }),
+        "on_mouse_up" => Some(quote! { ::rfgui::ui::on_mouse_up }),
+        "on_mouse_move" => Some(quote! { ::rfgui::ui::on_mouse_move }),
+        "on_click" => Some(quote! { ::rfgui::ui::on_click }),
+        "on_key_down" => Some(quote! { ::rfgui::ui::on_key_down }),
+        "on_key_up" => Some(quote! { ::rfgui::ui::on_key_up }),
+        "on_focus" => Some(quote! { ::rfgui::ui::on_focus }),
+        "on_blur" => Some(quote! { ::rfgui::ui::on_blur }),
+        _ => None,
     }
 }
 
@@ -1098,9 +1125,9 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
                 builder_setters.push(quote! {
                     pub fn #field_ident<V>(&mut self, value: V)
                     where
-                        V: ::core::convert::Into<::core::option::Option<#inner_ty>>,
+                        V: ::rfgui::ui::IntoOptionalProp<#inner_ty>,
                     {
-                        self.#field_ident = ::core::option::Option::Some(value.into());
+                        self.#field_ident = ::core::option::Option::Some(value.into_optional_prop());
                     }
                 });
             }
