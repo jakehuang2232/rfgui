@@ -892,9 +892,7 @@ fn as_font_size_px(
             viewport_width,
             viewport_height,
         )),
-        _ => Err(format!(
-            "prop `{key}` expects numeric or FontSize value"
-        )),
+        _ => Err(format!("prop `{key}` expects numeric or FontSize value")),
     }
 }
 

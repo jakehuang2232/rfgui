@@ -747,10 +747,9 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             },
         },
         "background" | "background_color" => match &entry.value {
-            StyleValueExpr::Expr(value) => expand_color_style_value(
-                value,
-                quote!(::rfgui::PropertyId::BackgroundColor),
-            ),
+            StyleValueExpr::Expr(value) => {
+                expand_color_style_value(value, quote!(::rfgui::PropertyId::BackgroundColor))
+            }
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.background requires an expression value");
             },

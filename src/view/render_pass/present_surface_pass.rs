@@ -145,7 +145,9 @@ impl PresentSurfaceResources {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Present Surface Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/present_surface.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../../shader/present_surface.wgsl").into(),
+            ),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

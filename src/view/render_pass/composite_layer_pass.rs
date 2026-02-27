@@ -262,11 +262,12 @@ impl RenderPass for CompositeLayerPass {
                         contents: bytemuck::cast_slice(&debug_vertices),
                         usage: wgpu::BufferUsages::VERTEX,
                     });
-                let debug_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Composite Debug Index Buffer"),
-                    contents: bytemuck::cast_slice(&debug_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+                let debug_index_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Composite Debug Index Buffer"),
+                        contents: bytemuck::cast_slice(&debug_indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
                 pass.set_pipeline(&resources.debug_pipeline);
                 pass.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
                 pass.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -799,7 +800,10 @@ fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
 }
 
 fn ndc_to_pixel(pos: [f32; 2], screen_w: f32, screen_h: f32) -> [f32; 2] {
-    [((pos[0] + 1.0) * 0.5) * screen_w, ((1.0 - pos[1]) * 0.5) * screen_h]
+    [
+        ((pos[0] + 1.0) * 0.5) * screen_w,
+        ((1.0 - pos[1]) * 0.5) * screen_h,
+    ]
 }
 
 fn pixel_to_uv(x: f32, y: f32, layer_w: f32, layer_h: f32) -> [f32; 2] {

@@ -1,9 +1,7 @@
 use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
-use rfgui::{
-    AlignItems, BorderRadius, Display, Length, Padding, Transition, TransitionProperty,
-};
+use rfgui::{AlignItems, BorderRadius, Display, Length, Padding, Transition, TransitionProperty};
 
 pub struct Switch;
 

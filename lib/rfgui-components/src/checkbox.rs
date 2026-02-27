@@ -3,7 +3,10 @@ use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
     Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
-use rfgui::{AlignItems, Border, BorderRadius, Color, Display, Length, Padding, Transition, TransitionProperty};
+use rfgui::{
+    AlignItems, Border, BorderRadius, Color, Display, Length, Padding, Transition,
+    TransitionProperty,
+};
 
 pub struct Checkbox;
 
@@ -85,7 +88,7 @@ fn CheckboxView(
                 transition: [Transition::new(TransitionProperty::BackgroundColor, 180).timing(theme.motion.easing.standard)]
             }} >
                 <Element
-                    style={{ 
+                    style={{
                         color: if checked {
                             if disabled { theme.color.text.disabled.clone() } else { theme.color.surface.on.clone() }
                         }else {

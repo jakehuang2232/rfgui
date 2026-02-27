@@ -1,16 +1,15 @@
 use rfgui::{ColorLike, JustifyContent, Transition, TransitionProperty};
 use rfgui_components::{
-    Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme, Window,
-    WindowProps, on_move,
-    init_theme, set_theme, use_theme,
+    init_theme, on_move, set_theme, use_theme, Button, ButtonVariant, Checkbox, NumberField,
+    Select, Slider, Switch, Theme, Window, WindowProps,
 };
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use rfgui::ui::host::{Element, Text, TextArea};
 use rfgui::ui::{
-    Binding, FocusHandlerProp, RsxNode, component, globalState, on_click, on_focus, rsx,
-    take_state_dirty, use_state,
+    component, globalState, on_click, on_focus, rsx, take_state_dirty, use_state, Binding,
+    FocusHandlerProp, RsxNode,
 };
 use rfgui::{
     Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Cursor, Display,
@@ -58,11 +57,7 @@ impl WindowManager {
                 positions.push((offset, offset));
             }
         });
-        let position = positions_state
-            .get()
-            .get(id)
-            .copied()
-            .unwrap_or((0.0, 0.0));
+        let position = positions_state.get().get(id).copied().unwrap_or((0.0, 0.0));
         let on_move_handler = {
             let positions_state = self.positions.clone();
             on_move(move |x, y| {
@@ -164,7 +159,9 @@ fn with_focus_handler(mut node: RsxNode, handler: FocusHandlerProp) -> RsxNode {
 fn with_stable_key(mut node: RsxNode, id: usize) -> RsxNode {
     if let RsxNode::Element(element) = &mut node {
         element.props.retain(|(key, _)| key != "key");
-        element.props.push(("key".to_string(), format!("wm-window-{id}").into()));
+        element
+            .props
+            .push(("key".to_string(), format!("wm-window-{id}").into()));
     }
     node
 }
@@ -184,6 +181,12 @@ fn MainScene() -> RsxNode {
     let slider_value = use_state(|| 42.0_f64);
     let switch_on = use_state(|| THEME_DARK_MODE.load(Ordering::Relaxed));
     let debug_geometry_overlay = use_state(|| false);
+    let style_transition_enabled = use_state(|| true);
+    let style_target_alt = use_state(|| false);
+    let layout_transition_enabled = use_state(|| true);
+    let layout_expanded = use_state(|| false);
+    let visual_transition_enabled = use_state(|| true);
+    let visual_at_end = use_state(|| false);
     let panel_size = globalState(|| String::from("360 x 240"));
     let window_z_order = use_state(Vec::<usize>::new);
     let window_positions = use_state(Vec::<(f32, f32)>::new);
@@ -196,6 +199,12 @@ fn MainScene() -> RsxNode {
     let slider_value_value = slider_value.get();
     let switch_on_value = switch_on.get();
     let debug_geometry_overlay_value = debug_geometry_overlay.get();
+    let style_transition_enabled_value = style_transition_enabled.get();
+    let style_target_alt_value = style_target_alt.get();
+    let layout_transition_enabled_value = layout_transition_enabled.get();
+    let layout_expanded_value = layout_expanded.get();
+    let visual_transition_enabled_value = visual_transition_enabled.get();
+    let visual_at_end_value = visual_at_end.get();
     let previous_theme_dark = THEME_DARK_MODE.swap(switch_on_value, Ordering::Relaxed);
     if previous_theme_dark != switch_on_value {
         if switch_on_value {
@@ -245,7 +254,7 @@ fn MainScene() -> RsxNode {
     let justify_content_space_between = justify_content.clone();
     let justify_content_space_around = justify_content.clone();
     let justify_content_space_evenly = justify_content.clone();
-    
+
     window_manager.push(
         "Render test",
         vec![rsx! {
@@ -453,7 +462,7 @@ fn MainScene() -> RsxNode {
                     <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 11</Text>
                     <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 12</Text>
                     <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 13</Text>
-    
+
                 </Element>
                 <Element style={{
                     width: Length::px(320.0),
@@ -679,6 +688,187 @@ fn MainScene() -> RsxNode {
             </Element>
         }],
         (640.0, 420.0),
+    );
+    let style_start = style_transition_enabled.clone();
+    let style_toggle_target = style_target_alt.clone();
+    let style_remove = style_transition_enabled.clone();
+    let style_reset_enable = style_transition_enabled.clone();
+    let style_reset_target = style_target_alt.clone();
+    let layout_start_enable = layout_transition_enabled.clone();
+    let layout_toggle_size = layout_expanded.clone();
+    let layout_remove = layout_transition_enabled.clone();
+    let layout_reset_enable = layout_transition_enabled.clone();
+    let layout_reset_size = layout_expanded.clone();
+    let visual_start_enable = visual_transition_enabled.clone();
+    let visual_toggle_pos = visual_at_end.clone();
+    let visual_remove = visual_transition_enabled.clone();
+    let visual_reset_enable = visual_transition_enabled.clone();
+    let visual_reset_pos = visual_at_end.clone();
+    window_manager.push(
+        "Transition Plugin Lab",
+        vec![rsx! {
+            <Element style={{
+                width: Length::percent(100.0),
+                height: Length::percent(100.0),
+                background: "#0f172a",
+                display: Display::flow().column().no_wrap(),
+                gap: Length::px(10.0),
+                padding: Padding::uniform(Length::px(12.0)),
+            }}>
+                <Text font_size=16 style={{ color: "#e2e8f0" }}>Transition Plugins Test</Text>
+                <Text font_size=11 style={{ color: "#93c5fd" }}>
+                    {"How to verify: click Start Animation first, then click Remove Transition during playback. Expected: jump to the end value immediately."}
+                </Text>
+                <Element style={{
+                    display: Display::flow().row().wrap(),
+                    gap: Length::px(10.0),
+                    width: Length::percent(100.0),
+                }}>
+                    <Element style={{
+                        width: Length::px(220.0),
+                        background: "#111827",
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
+                        border_radius: 10,
+                        padding: Padding::uniform(Length::px(8.0)),
+                        display: Display::flow().column().no_wrap(),
+                        gap: Length::px(6.0),
+                    }}>
+                        <Text font_size=12 style={{ color: "#e5e7eb" }}>StyleTransitionPlugin</Text>
+                        <Text font_size=10 style={{ color: "#94a3b8" }}>
+                            {format!("transition={} target={}", style_transition_enabled_value, style_target_alt_value)}
+                        </Text>
+                        <Element style={{
+                            width: Length::px(180.0),
+                            height: Length::px(56.0),
+                            background: if style_target_alt_value { Color::hex("#f97316") } else { Color::hex("#22c55e") },
+                            border_radius: 8,
+                            transition: if style_transition_enabled_value {
+                                vec![Transition::new(TransitionProperty::BackgroundColor, 1400).ease_in_out()]
+                            } else {
+                                Vec::<Transition>::new()
+                            },
+                        }} />
+                        <Element style={{ display: Display::flow().row().wrap(), gap: Length::px(6.0) }}>
+                            <Button label="Start Animation" on_click={move |_| { style_start.set(true); style_toggle_target.update(|v| *v = !*v); }} />
+                            <Button label="Remove Transition" on_click={move |_| { style_remove.set(false); }} />
+                            <Button label="Reset" on_click={move |_| { style_reset_enable.set(true); style_reset_target.set(false); }} />
+                        </Element>
+                    </Element>
+                    <Element style={{
+                        width: Length::px(220.0),
+                        background: "#111827",
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
+                        border_radius: 10,
+                        padding: Padding::uniform(Length::px(8.0)),
+                        display: Display::flow().column().no_wrap(),
+                        gap: Length::px(6.0),
+                    }}>
+                        <Text font_size=12 style={{ color: "#e5e7eb" }}>LayoutTransitionPlugin</Text>
+                        <Text font_size=10 style={{ color: "#94a3b8" }}>
+                            {format!("transition={} expanded={}", layout_transition_enabled_value, layout_expanded_value)}
+                        </Text>
+                        <Element style={{
+                            width: if layout_expanded_value { Length::px(180.0) } else { Length::px(92.0) },
+                            height: if layout_expanded_value { Length::px(58.0) } else { Length::px(34.0) },
+                            background: "#38bdf8",
+                            border_radius: 8,
+                            transition: if layout_transition_enabled_value {
+                                vec![
+                                    Transition::new(TransitionProperty::Width, 1400).ease_in_out(),
+                                    Transition::new(TransitionProperty::Height, 1400).ease_in_out(),
+                                ]
+                            } else {
+                                Vec::<Transition>::new()
+                            },
+                        }} />
+                        <Element style={{ display: Display::flow().row().wrap(), gap: Length::px(6.0) }}>
+                            <Button label="Start Animation" on_click={move |_| { layout_start_enable.set(true); layout_toggle_size.update(|v| *v = !*v); }} />
+                            <Button label="Remove Transition" on_click={move |_| { layout_remove.set(false); }} />
+                            <Button label="Reset" on_click={move |_| { layout_reset_enable.set(true); layout_reset_size.set(false); }} />
+                        </Element>
+                    </Element>
+                    <Element style={{
+                        width: Length::px(220.0),
+                        background: "#111827",
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
+                        border_radius: 10,
+                        padding: Padding::uniform(Length::px(8.0)),
+                        display: Display::flow().column().no_wrap(),
+                        gap: Length::px(6.0),
+                    }}>
+                        <Text font_size=12 style={{ color: "#e5e7eb" }}>VisualTransitionPlugin</Text>
+                        <Text font_size=10 style={{ color: "#94a3b8" }}>
+                            {format!("transition={} at_end={}", visual_transition_enabled_value, visual_at_end_value)}
+                        </Text>
+                        <Element style={{
+                            width: Length::px(180.0),
+                            height: Length::px(58.0),
+                            background: "#1f2937",
+                            border_radius: 8,
+                            display: Display::flow().row().no_wrap().justify_content(if visual_at_end_value { JustifyContent::End } else { JustifyContent::Start }),
+                            padding: Padding::uniform(Length::px(6.0)),
+                        }}>
+                            <Element style={{
+                                width: Length::px(42.0),
+                                height: Length::px(42.0),
+                                background: "#f43f5e",
+                                border_radius: 8,
+                                transition: if visual_transition_enabled_value {
+                                    vec![Transition::new(TransitionProperty::Position, 1400).ease_in_out()]
+                                } else {
+                                    Vec::<Transition>::new()
+                                },
+                            }} />
+                        </Element>
+                        <Element style={{ display: Display::flow().row().wrap(), gap: Length::px(6.0) }}>
+                            <Button label="Start Animation" on_click={move |_| { visual_start_enable.set(true); visual_toggle_pos.update(|v| *v = !*v); }} />
+                            <Button label="Remove Transition" on_click={move |_| { visual_remove.set(false); }} />
+                            <Button label="Reset" on_click={move |_| { visual_reset_enable.set(true); visual_reset_pos.set(false); }} />
+                        </Element>
+                    </Element>
+                </Element>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    height: Length::px(176.0),
+                    background: "#111827",
+                    border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
+                    border_radius: 10,
+                    padding: Padding::uniform(Length::px(8.0)),
+                    display: Display::flow().column().no_wrap(),
+                    gap: Length::px(6.0),
+                }}>
+                    <Text font_size=12 style={{ color: "#e5e7eb" }}>ScrollTransitionPlugin</Text>
+                    <Text font_size=10 style={{ color: "#94a3b8" }}>
+                        {"Use the mouse wheel to scroll this area and observe inertia/interpolation. This plugin is not controlled by style.transition."}
+                    </Text>
+                    <Element style={{
+                        width: Length::percent(100.0),
+                        height: Length::px(120.0),
+                        background: "#0b1220",
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#1e293b")),
+                        border_radius: 8,
+                        scroll_direction: ScrollDirection::Vertical,
+                        display: Display::flow().column().no_wrap(),
+                        gap: Length::px(4.0),
+                        padding: Padding::uniform(Length::px(8.0)),
+                    }}>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 01</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 02</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 03</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 04</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 05</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 06</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 07</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 08</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 09</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 10</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 11</Text>
+                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 12</Text>
+                    </Element>
+                </Element>
+            </Element>
+        }],
+        (760.0, 520.0),
     );
     let managed_windows = window_manager.into_nodes(window_z_order.binding());
 

@@ -16,7 +16,7 @@ pub struct DrawRectPass {
     border_side_colors: [[f32; 4]; 4], // [left, right, top, bottom]
     use_border_side_colors: bool,
     border_widths: [f32; 4], // [left, right, top, bottom]
-    border_radii: [f32; 4], // [top_left, top_right, bottom_right, bottom_left]
+    border_radii: [f32; 4],  // [top_left, top_right, bottom_right, bottom_left]
     opacity: f32,
     scissor_rect: Option<[u32; 4]>,
     color_target: Option<TextureHandle>,
@@ -87,12 +87,7 @@ impl DrawRectPass {
     }
 
     pub fn set_border_widths(&mut self, left: f32, right: f32, top: f32, bottom: f32) {
-        self.border_widths = [
-            left.max(0.0),
-            right.max(0.0),
-            top.max(0.0),
-            bottom.max(0.0),
-        ];
+        self.border_widths = [left.max(0.0), right.max(0.0), top.max(0.0), bottom.max(0.0)];
     }
 
     pub fn set_border_radius(&mut self, radius: f32) {
@@ -311,11 +306,12 @@ impl RenderPass for DrawRectPass {
                         contents: bytemuck::cast_slice(&debug_vertices),
                         usage: wgpu::BufferUsages::VERTEX,
                     });
-                let debug_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("DrawRect Debug Index Buffer"),
-                    contents: bytemuck::cast_slice(&debug_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+                let debug_index_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("DrawRect Debug Index Buffer"),
+                        contents: bytemuck::cast_slice(&debug_indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
                 pass.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
                 pass.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
@@ -627,7 +623,12 @@ fn tessellate_rounded_rect(
         &mut indices,
         &outer_aa,
         &outer,
-        [silhouette_rgba[0], silhouette_rgba[1], silhouette_rgba[2], 0.0],
+        [
+            silhouette_rgba[0],
+            silhouette_rgba[1],
+            silhouette_rgba[2],
+            0.0,
+        ],
         silhouette_rgba,
         screen_w,
         screen_h,
@@ -950,7 +951,10 @@ fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
 }
 
 fn ndc_to_pixel(pos: [f32; 2], screen_w: f32, screen_h: f32) -> [f32; 2] {
-    [((pos[0] + 1.0) * 0.5) * screen_w, ((1.0 - pos[1]) * 0.5) * screen_h]
+    [
+        ((pos[0] + 1.0) * 0.5) * screen_w,
+        ((1.0 - pos[1]) * 0.5) * screen_h,
+    ]
 }
 
 fn build_debug_overlay_geometry(

@@ -10,7 +10,10 @@ use rfgui::ui::{
     BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp, RsxComponent, RsxNode,
     ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
 };
-use rfgui::{AlignItems, Border, BorderRadius, Color, ColorLike, Cursor, Display, FontWeight, JustifyContent, Length, Padding, Position, ScrollDirection};
+use rfgui::{
+    AlignItems, Border, BorderRadius, Color, ColorLike, Cursor, Display, FontWeight,
+    JustifyContent, Length, Padding, Position, ScrollDirection,
+};
 
 const MIN_WIDTH: f32 = 220.0;
 const MIN_HEIGHT: f32 = 140.0;
@@ -289,12 +292,13 @@ fn WindowView(
         root_border_radius = root_style.border_radius;
     }
 
-    let root_background = root_background
-        .unwrap_or_else(|| color_like_to_color(theme.color.layer.raised.as_ref()));
-    let root_border =
-        root_border.unwrap_or(Border::uniform(Length::px(1.0), theme.color.border.as_ref()));
-    let root_border_radius =
-        root_border_radius.unwrap_or(theme.component.card.radius);
+    let root_background =
+        root_background.unwrap_or_else(|| color_like_to_color(theme.color.layer.raised.as_ref()));
+    let root_border = root_border.unwrap_or(Border::uniform(
+        Length::px(1.0),
+        theme.color.border.as_ref(),
+    ));
+    let root_border_radius = root_border_radius.unwrap_or(theme.component.card.radius);
 
     let title_bar_height_length = title_bar_style_slot
         .and_then(|style| style.height)
@@ -335,7 +339,9 @@ fn WindowView(
             if !draggable || event.mouse.button != Some(MouseButton::Left) {
                 return;
             }
-            event.viewport.set_focus(Some(event.meta.current_target_id()));
+            event
+                .viewport
+                .set_focus(Some(event.meta.current_target_id()));
             let (start_x, start_y) = current_position;
             interaction.set(WindowInteraction::Dragging {
                 start_mouse_x: event.mouse.viewport_x,
@@ -409,7 +415,9 @@ fn WindowView(
             if event.mouse.button != Some(MouseButton::Left) {
                 return;
             }
-            event.viewport.set_focus(Some(event.meta.current_target_id()));
+            event
+                .viewport
+                .set_focus(Some(event.meta.current_target_id()));
             event.viewport.set_cursor(Some(edge.cursor()));
             let (start_x, start_y) = current_position;
             let (start_width, start_height) = size.get();

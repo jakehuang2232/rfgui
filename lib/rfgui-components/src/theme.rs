@@ -1,7 +1,6 @@
 use rfgui::ui::{GlobalState, global_state};
 use rfgui::{
-    Border, BorderRadius, BoxShadow, Color, ColorLike, FontSize, Length, Padding,
-    TransitionTiming,
+    Border, BorderRadius, BoxShadow, Color, ColorLike, FontSize, Length, Padding, TransitionTiming,
 };
 
 #[derive(Clone)]
