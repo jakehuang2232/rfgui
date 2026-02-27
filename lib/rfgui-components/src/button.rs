@@ -1,5 +1,5 @@
-use rfgui::TextAlign::Center;
 use crate::use_theme;
+use rfgui::TextAlign::Center;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, props, rsx};
 use rfgui::{

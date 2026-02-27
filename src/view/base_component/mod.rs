@@ -2,12 +2,14 @@ use crate::transition::{
     LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue, VisualField,
     VisualTrackRequest,
 };
+use crate::transition::{TrackKey, TrackTarget};
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyUpEvent, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, TextInputEvent,
 };
 use crate::view::viewport::ViewportControl;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod core;
@@ -467,6 +469,34 @@ pub fn take_visual_transition_requests(
         }
     }
     out.extend(root.take_visual_transition_requests());
+}
+
+pub fn collect_transition_track_allowlist(
+    roots: &[Box<dyn ElementTrait>],
+) -> HashSet<TrackKey<TrackTarget>> {
+    let mut out = HashSet::new();
+
+    fn walk(node: &dyn ElementTrait, out: &mut HashSet<TrackKey<TrackTarget>>) {
+        if let Some(element) = node.as_any().downcast_ref::<Element>() {
+            for channel in element.active_transition_channels() {
+                out.insert(TrackKey {
+                    target: node.id(),
+                    channel,
+                });
+            }
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child.as_ref(), out);
+            }
+        }
+    }
+
+    for root in roots {
+        walk(root.as_ref(), &mut out);
+    }
+
+    out
 }
 
 pub fn set_style_field_by_id(
@@ -1141,11 +1171,7 @@ pub fn get_cursor_by_id(root: &dyn ElementTrait, node_id: u64) -> Option<crate::
     None
 }
 
-pub fn subtree_contains_node(
-    root: &dyn ElementTrait,
-    ancestor_id: u64,
-    node_id: u64,
-) -> bool {
+pub fn subtree_contains_node(root: &dyn ElementTrait, ancestor_id: u64, node_id: u64) -> bool {
     fn find_node<'a>(node: &'a dyn ElementTrait, target_id: u64) -> Option<&'a dyn ElementTrait> {
         if node.id() == target_id {
             return Some(node);
@@ -1174,8 +1200,7 @@ pub fn subtree_contains_node(
         false
     }
 
-    find_node(root, ancestor_id)
-        .is_some_and(|ancestor| contains_node_id(ancestor, node_id))
+    find_node(root, ancestor_id).is_some_and(|ancestor| contains_node_id(ancestor, node_id))
 }
 
 pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
@@ -1195,7 +1220,6 @@ pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{dispatch_click_from_hit_test, dispatch_mouse_down_from_hit_test, hit_test};
-    use crate::AnchorName;
     use crate::style::{
         ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
     };
@@ -1207,6 +1231,7 @@ mod tests {
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::{Viewport, ViewportControl};
+    use crate::AnchorName;
     use std::cell::Cell;
     use std::rc::Rc;
 

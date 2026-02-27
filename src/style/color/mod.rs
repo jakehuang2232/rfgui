@@ -57,7 +57,7 @@ pub trait ColorLike {
             a: rgba[3] as f64,
         }
     }
-    
+
     fn is_transparent(&self) -> bool {
         self.to_rgba_u8()[3] != 255
     }

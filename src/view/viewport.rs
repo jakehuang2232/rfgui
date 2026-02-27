@@ -4,25 +4,25 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wgpu::{
-    Instance, Queue, TextureUsages,
     rwh::{HasDisplayHandle, HasWindowHandle},
+    Instance, Queue, TextureUsages,
 };
 
 use crate::transition::{
+    ChannelId, ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition,
+    ScrollTransitionPlugin, StyleTransitionPlugin, TrackKey, TrackTarget, Transition,
+    TransitionFrame, TransitionHost, TransitionPluginId, VisualTransitionPlugin,
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y,
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
     CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
-    ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin,
-    StyleTransitionPlugin, TrackKey, TrackTarget, Transition, TransitionFrame, TransitionHost,
-    TransitionPluginId, VisualTransitionPlugin,
+    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
 };
 use crate::ui::{
-    BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyEventData,
-    KeyModifiers, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent, MouseEventData,
-    MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
-    ViewportListenerAction, ViewportListenerHandle, take_state_dirty,
+    take_state_dirty, BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent,
+    KeyEventData, KeyModifiers, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent,
+    MouseEventData, MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
+    ViewportListenerAction, ViewportListenerHandle,
 };
 use crate::{ColorLike, Cursor, HexColor, Style};
 
@@ -282,6 +282,73 @@ pub struct Viewport {
 }
 
 impl Viewport {
+    fn is_style_driven_transition_channel(channel: ChannelId) -> bool {
+        matches!(
+            channel,
+            CHANNEL_VISUAL_X
+                | CHANNEL_VISUAL_Y
+                | CHANNEL_LAYOUT_X
+                | CHANNEL_LAYOUT_Y
+                | CHANNEL_LAYOUT_WIDTH
+                | CHANNEL_LAYOUT_HEIGHT
+                | CHANNEL_STYLE_OPACITY
+                | CHANNEL_STYLE_BORDER_RADIUS
+                | CHANNEL_STYLE_BACKGROUND_COLOR
+                | CHANNEL_STYLE_COLOR
+                | CHANNEL_STYLE_BORDER_TOP_COLOR
+                | CHANNEL_STYLE_BORDER_RIGHT_COLOR
+                | CHANNEL_STYLE_BORDER_BOTTOM_COLOR
+                | CHANNEL_STYLE_BORDER_LEFT_COLOR
+        )
+    }
+
+    fn cancel_track_by_owner(&mut self, key: TrackKey<TrackTarget>) -> bool {
+        let Some(owner) = self.transition_claims.get(&key).copied() else {
+            return false;
+        };
+        let mut host = TransitionHostAdapter {
+            registered_channels: &self.transition_channels,
+            claims: &mut self.transition_claims,
+        };
+        if owner == ScrollTransitionPlugin::BUILTIN_PLUGIN_ID {
+            self.scroll_transition_plugin.cancel_track(key, &mut host);
+            return true;
+        }
+        if owner == LayoutTransitionPlugin::BUILTIN_PLUGIN_ID {
+            self.layout_transition_plugin.cancel_track(key, &mut host);
+            return true;
+        }
+        if owner == StyleTransitionPlugin::BUILTIN_PLUGIN_ID {
+            self.style_transition_plugin.cancel_track(key, &mut host);
+            return true;
+        }
+        if owner == VisualTransitionPlugin::BUILTIN_PLUGIN_ID {
+            self.visual_transition_plugin.cancel_track(key, &mut host);
+            return true;
+        }
+        self.transition_claims.remove(&key);
+        false
+    }
+
+    fn cancel_disallowed_transition_tracks(
+        &mut self,
+        roots: &[Box<dyn super::base_component::ElementTrait>],
+    ) -> bool {
+        let allowlist = super::base_component::collect_transition_track_allowlist(roots);
+        let active_keys = self.transition_claims.keys().copied().collect::<Vec<_>>();
+        let mut canceled = false;
+        for key in active_keys {
+            if !Self::is_style_driven_transition_channel(key.channel) {
+                continue;
+            }
+            if allowlist.contains(&key) {
+                continue;
+            }
+            canceled |= self.cancel_track_by_owner(key);
+        }
+        canceled
+    }
+
     fn present_mode_from_env() -> wgpu::PresentMode {
         let Ok(raw) = std::env::var("RFGUI_PRESENT_MODE") else {
             return if cfg!(debug_assertions) {
@@ -1260,10 +1327,9 @@ impl Viewport {
                 let mut present_pass =
                     super::render_pass::present_surface_pass::PresentSurfacePass::new();
                 present_pass.set_source_color_target(Some(source_handle));
-                present_pass
-                    .set_input(super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
-                        dep_handle,
-                    ));
+                present_pass.set_input(
+                    super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(dep_handle),
+                );
                 graph.add_pass(present_pass);
             }
         }
@@ -1360,9 +1426,10 @@ impl Viewport {
                 &layout_snapshots,
             );
             let mut rebuilt_roots = std::mem::take(&mut self.ui_roots);
+            let canceled_tracks = self.cancel_disallowed_transition_tracks(&rebuilt_roots);
             let has_inflight_transition = self.sync_inflight_transition_state(&mut rebuilt_roots);
             self.ui_roots = rebuilt_roots;
-            if has_inflight_transition {
+            if canceled_tracks || has_inflight_transition {
                 self.request_redraw();
             }
             self.input_state.hovered_node_id = self.mouse_position_viewport().and_then(|(x, y)| {
@@ -1375,9 +1442,10 @@ impl Viewport {
         self.sync_focus_dispatch();
         let mut roots = std::mem::take(&mut self.ui_roots);
         Self::apply_hover_target(&mut roots, self.input_state.hovered_node_id);
+        let canceled_tracks = self.cancel_disallowed_transition_tracks(&roots);
         let (dt, now_seconds) = self.transition_timing();
         let transition_changed_before_render =
-            self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
+            canceled_tracks || self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
         let mut transition_changed_after_layout = false;
         if !roots.is_empty() {
             transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);
@@ -2429,7 +2497,7 @@ impl<'a> FrameParts<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MouseButton, PendingClick, is_valid_click_candidate};
+    use super::{is_valid_click_candidate, MouseButton, PendingClick};
 
     #[test]
     fn click_requires_same_button_and_target() {

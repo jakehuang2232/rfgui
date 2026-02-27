@@ -6,8 +6,7 @@ use crate::ui::{
 };
 use crate::{
     AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Display, FontFamily, FontSize,
-    FontWeight, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign,
-    Transitions,
+    FontWeight, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign, Transitions,
 };
 
 pub struct Element;

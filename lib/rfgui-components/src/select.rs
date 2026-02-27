@@ -5,12 +5,11 @@ use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
-    MouseDownHandlerProp,
-    RsxComponent, RsxNode, component, props, rsx, use_state,
+    MouseDownHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
 use rfgui::{
-    AlignItems, ClipMode, Collision, CollisionBoundary, Color, Display, ColorLike,
-    JustifyContent, Length, Operator, Position, ScrollDirection,
+    AlignItems, ClipMode, Collision, CollisionBoundary, Color, ColorLike, Display, JustifyContent,
+    Length, Operator, Position, ScrollDirection,
 };
 
 pub struct Select;
@@ -176,9 +175,11 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     };
 
     if is_open && let RsxNode::Element(root_node) = &mut root {
-        root_node
-            .children
-            .push(build_menu_node(&menu_items, open_binding, SELECT_TRIGGER_ANCHOR));
+        root_node.children.push(build_menu_node(
+            &menu_items,
+            open_binding,
+            SELECT_TRIGGER_ANCHOR,
+        ));
     }
 
     root

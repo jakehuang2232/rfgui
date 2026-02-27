@@ -67,12 +67,10 @@ fn NumberFieldView(
 
     let button_size = (height - 2.0).max(0.0);
     let value_width = (width - button_size * 2.0).max(0.0);
-    let left_border =
-        Border::uniform(Length::px(1.0), theme.color.border.as_ref())
-            .right(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
-    let right_border =
-        Border::uniform(Length::px(1.0), theme.color.border.as_ref())
-            .left(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
+    let left_border = Border::uniform(Length::px(1.0), theme.color.border.as_ref())
+        .right(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
+    let right_border = Border::uniform(Length::px(1.0), theme.color.border.as_ref())
+        .left(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
 
     let minus_click = if disabled {
         None

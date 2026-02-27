@@ -50,7 +50,7 @@ fn SliderView(
 ) -> RsxNode {
     let theme = use_theme().get();
     let width = 240.0_f32;
-    let height = 32.0_f32;
+    let height = 18.0_f32;
 
     let fallback_value = use_state(|| value);
     let value_binding = if has_binding {
@@ -102,10 +102,10 @@ fn SliderView(
         }}>
             <Element style={{
                 position: Position::absolute()
-                    .top(Length::px(track_y))
+                    .top(Length::px(0.0))
                     .left(Length::px(0.0)),
                 width: Length::px(width),
-                height: Length::px(4.0),
+                height: Length::px(height),
                 border_radius: BorderRadius::uniform(Length::px(2.0)),
                 background: if disabled {
                     theme.color.state.disabled.clone()
@@ -115,10 +115,10 @@ fn SliderView(
             }} />
             <Element style={{
                 position: Position::absolute()
-                    .top(Length::px(track_y))
+                    .top(Length::px(0.0))
                     .left(Length::px(0.0)),
                 width: Length::px(thumb_x),
-                height: Length::px(4.0),
+                height: Length::px(height),
                 border_radius: BorderRadius::uniform(Length::px(2.0)),
                 background: if disabled {
                     theme.color.border.clone()

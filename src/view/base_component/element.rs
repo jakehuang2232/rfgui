@@ -1,15 +1,19 @@
 use super::{ElementCore, Position, Size};
-use crate::ColorLike;
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::style::{
-    AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-    ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
-    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
+    compute_style, AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary,
+    Color, ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length,
+    PositionMode, ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming,
 };
 use crate::transition::{
-    LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
-    StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue,
-    TimeFunction, VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
+    ChannelId, LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition,
+    ScrollAxis, StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition,
+    StyleValue, TimeFunction, VisualField, VisualTrackRequest,
+    VisualTransition as RuntimeVisualTransition, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH,
+    CHANNEL_STYLE_BACKGROUND_COLOR, CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
+    CHANNEL_STYLE_BORDER_LEFT_COLOR, CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR,
+    CHANNEL_STYLE_BORDER_TOP_COLOR, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X,
+    CHANNEL_VISUAL_Y,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
@@ -23,6 +27,7 @@ use crate::view::render_pass::{
     ShadowPass,
 };
 use crate::view::viewport::ViewportControl;
+use crate::ColorLike;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -1349,6 +1354,16 @@ impl Element {
         el
     }
 
+    pub(crate) fn active_transition_channels(&self) -> Vec<ChannelId> {
+        let mut channels = Vec::new();
+        for transition in self.computed_style.transition.as_slice() {
+            push_transition_channels(transition.property, &mut channels);
+        }
+        channels.sort_unstable_by_key(|channel| channel.0);
+        channels.dedup();
+        channels
+    }
+
     pub fn set_position(&mut self, x: f32, y: f32) {
         self.core.set_position(x, y);
     }
@@ -2528,7 +2543,10 @@ impl Element {
             proposal.viewport_width,
             proposal.viewport_height,
         );
-        let is_row = matches!(self.computed_style.display_flow_direction(), FlowDirection::Row);
+        let is_row = matches!(
+            self.computed_style.display_flow_direction(),
+            FlowDirection::Row
+        );
 
         if self.computed_style.width == SizeValue::Auto {
             let auto_width = if is_row {
@@ -2569,7 +2587,10 @@ impl Element {
         viewport_width: f32,
         viewport_height: f32,
     ) -> FlexLayoutInfo {
-        let is_row = matches!(self.computed_style.display_flow_direction(), FlowDirection::Row);
+        let is_row = matches!(
+            self.computed_style.display_flow_direction(),
+            FlowDirection::Row
+        );
         let wrap = matches!(self.computed_style.display_flow_wrap(), FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
         let gap_base = if is_row { inner_w } else { inner_h };
@@ -4080,7 +4101,10 @@ impl Element {
             )
         };
 
-        let is_row = matches!(self.computed_style.display_flow_direction(), FlowDirection::Row);
+        let is_row = matches!(
+            self.computed_style.display_flow_direction(),
+            FlowDirection::Row
+        );
         let main_limit = if is_row {
             self.layout_inner_size.width
         } else {
@@ -4457,17 +4481,57 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
     }
 }
 
+fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelId>) {
+    match property {
+        TransitionProperty::All => {
+            out.extend([
+                CHANNEL_VISUAL_X,
+                CHANNEL_VISUAL_Y,
+                CHANNEL_LAYOUT_WIDTH,
+                CHANNEL_LAYOUT_HEIGHT,
+                CHANNEL_STYLE_OPACITY,
+                CHANNEL_STYLE_BORDER_RADIUS,
+                CHANNEL_STYLE_BACKGROUND_COLOR,
+                CHANNEL_STYLE_COLOR,
+                CHANNEL_STYLE_BORDER_TOP_COLOR,
+                CHANNEL_STYLE_BORDER_RIGHT_COLOR,
+                CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
+                CHANNEL_STYLE_BORDER_LEFT_COLOR,
+            ]);
+        }
+        TransitionProperty::Position => {
+            out.extend([CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y]);
+        }
+        TransitionProperty::PositionX | TransitionProperty::X => out.push(CHANNEL_VISUAL_X),
+        TransitionProperty::PositionY | TransitionProperty::Y => out.push(CHANNEL_VISUAL_Y),
+        TransitionProperty::Width => out.push(CHANNEL_LAYOUT_WIDTH),
+        TransitionProperty::Height => out.push(CHANNEL_LAYOUT_HEIGHT),
+        TransitionProperty::Opacity => out.push(CHANNEL_STYLE_OPACITY),
+        TransitionProperty::BorderRadius => out.push(CHANNEL_STYLE_BORDER_RADIUS),
+        TransitionProperty::BackgroundColor => out.push(CHANNEL_STYLE_BACKGROUND_COLOR),
+        TransitionProperty::Color => out.push(CHANNEL_STYLE_COLOR),
+        TransitionProperty::BorderColor => out.extend([
+            CHANNEL_STYLE_BORDER_TOP_COLOR,
+            CHANNEL_STYLE_BORDER_RIGHT_COLOR,
+            CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
+            CHANNEL_STYLE_BORDER_LEFT_COLOR,
+        ]),
+        TransitionProperty::Gap | TransitionProperty::Padding | TransitionProperty::BorderWidth => {
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
-        Renderable, UiBuildContext, main_axis_start_and_gap, resolve_px_with_base,
-        resolve_signed_px_with_base,
+        main_axis_start_and_gap, resolve_px_with_base, resolve_signed_px_with_base, Element,
+        ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
+        UiBuildContext,
     };
-    use crate::Display;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
     use crate::view::frame_graph::FrameGraph;
+    use crate::Display;
     use crate::{
         AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
         JustifyContent, Length, Operator, Position, Style,
@@ -4475,7 +4539,8 @@ mod tests {
 
     #[test]
     fn justify_content_space_evenly_distributes_free_space() {
-        let (start, gap) = main_axis_start_and_gap(100.0, 40.0, 0.0, 3, JustifyContent::SpaceEvenly);
+        let (start, gap) =
+            main_axis_start_and_gap(100.0, 40.0, 0.0, 3, JustifyContent::SpaceEvenly);
         assert!((start - 15.0).abs() < 0.001);
         assert!((gap - 15.0).abs() < 0.001);
     }
@@ -5707,7 +5772,10 @@ mod tests {
         let ok = restored.restore_state(snapshot.as_ref());
         assert!(ok);
         assert!(restored.is_hovered);
-        assert_eq!(restored.background_color.as_ref().to_rgba_u8(), [170, 187, 204, 255]);
+        assert_eq!(
+            restored.background_color.as_ref().to_rgba_u8(),
+            [170, 187, 204, 255]
+        );
     }
 
     #[test]
