@@ -1,14 +1,16 @@
 use std::any::Any;
 use std::rc::Rc;
 
+use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
-    Binding, BlurHandlerProp, ClickHandlerProp, KeyDownHandlerProp, MouseDownHandlerProp,
+    Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
+    MouseDownHandlerProp,
     RsxComponent, RsxNode, component, props, rsx, use_state,
 };
 use rfgui::{
-    AlignItems, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Display,
-    JustifyContent, Length, Padding, Position, ScrollDirection,
+    AlignItems, ClipMode, Collision, CollisionBoundary, Color, Display, ColorLike,
+    JustifyContent, Length, Operator, Position, ScrollDirection,
 };
 
 pub struct Select;
@@ -84,40 +86,31 @@ where
 fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNode {
     const SELECT_TRIGGER_ANCHOR: &str = "__rfgui_select_trigger_anchor";
 
-    let width = 220.0_f32;
-    let height = 40.0_f32;
-
     let fallback_open = use_state(|| false);
     let open_binding = fallback_open.binding();
-    let menu_pointer_down = use_state(|| false).binding();
     let is_open = open_binding.get();
+    let theme = use_theme().get();
 
-    let trigger_click = {
+    let pseudo_focus = {
         let open_binding = open_binding.clone();
-        ClickHandlerProp::new(move |event| {
-            open_binding.set(!open_binding.get());
+        FocusHandlerProp::new(move |event| {
+            open_binding.set(true);
             event.meta.stop_propagation();
         })
     };
-    let trigger_blur = {
+    let pseudo_blur = {
         let open_binding = open_binding.clone();
-        let menu_pointer_down = menu_pointer_down.clone();
         BlurHandlerProp::new(move |_| {
-            // Keep menu alive during option press so click can complete selection.
-            if menu_pointer_down.get() {
-                menu_pointer_down.set(false);
-                return;
-            }
             open_binding.set(false);
         })
     };
-    let trigger_key_down = {
+    let pseudo_key_down = {
         let open_binding = open_binding.clone();
         KeyDownHandlerProp::new(move |event| {
             let key = event.key.key.as_str();
             let code = event.key.code.as_str();
             if key_matches(key, code, "Escape") {
-                open_binding.set(false);
+                event.meta.viewport().set_focus(None);
                 event.meta.stop_propagation();
                 return;
             }
@@ -131,53 +124,61 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
             }
         })
     };
+    let pseudo_mouse_down = MouseDownHandlerProp::new(move |event| {
+        if event.meta.keep_focus_requested() {
+            return;
+        }
+        event
+            .viewport
+            .set_focus(Some(event.meta.current_target_id()));
+    });
 
     let mut root = rsx! {
         <Element
             style={{
-                width: Length::px(width),
-                display: Display::flow().column().no_wrap(),
+                max_width: Length::percent(100.0),
+                font_size: theme.typography.size.sm,
             }}
+            on_mouse_down={pseudo_mouse_down}
+            on_focus={pseudo_focus}
+            on_blur={pseudo_blur}
+            on_key_down={pseudo_key_down}
         >
             <Element
                 style={{
-                    display: Display::flow().row().no_wrap(),
+                    color: theme.color.background.on,
+                    max_width: Length::percent(100.0),
+                    display: Display::flow()
+                        .row()
+                        .no_wrap()
+                        .justify_content(JustifyContent::SpaceBetween),
                     align_items: AlignItems::Center,
-                    justify_content: JustifyContent::SpaceBetween,
-                    width: Length::px(width),
-                    height: Length::px(height),
-                    border_radius: BorderRadius::uniform(Length::px(8.0)),
-                    border: Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")),
-                    background: Color::hex("#FFFFFF"),
-                    padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+                    border_radius: theme.component.input.radius,
+                    border: theme.component.input.border.clone(),
+                    background: theme.color.background.base,
+                    padding: theme.component.input.padding,
                     hover: {
-                        background: Color::hex("#FAFAFA"),
+                        background: theme.component.select.trigger_hover_background.clone(),
                     }
                 }}
                 anchor={SELECT_TRIGGER_ANCHOR}
-                on_click={trigger_click}
-                on_blur={trigger_blur}
-                on_key_down={trigger_key_down}
             >
-                <Text style={{ color: Color::hex("#111827") }}>
+                <Element style={{
+                    width: Length::calc(Length::percent(100.0), Operator::subtract, Length::px(24.0)),
+                }}>
                     {selected_label}
-                </Text>
-                <Text style={{ color: Color::hex("#6B7280") }}>
+                </Element>
+                <Element>
                     {if is_open { "▴" } else { "▾" }}
-                </Text>
+                </Element>
             </Element>
         </Element>
     };
 
     if is_open && let RsxNode::Element(root_node) = &mut root {
-        root_node.children.push(build_menu_node(
-            &menu_items,
-            width,
-            open_binding,
-            menu_pointer_down,
-            height,
-            SELECT_TRIGGER_ANCHOR,
-        ));
+        root_node
+            .children
+            .push(build_menu_node(&menu_items, open_binding, SELECT_TRIGGER_ANCHOR));
     }
 
     root
@@ -185,26 +186,18 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
 
 fn build_menu_node(
     menu_items: &[SelectMenuItem],
-    width: f32,
     menu_open: Binding<bool>,
-    menu_pointer_down: Binding<bool>,
-    trigger_height: f32,
     anchor_name: &str,
 ) -> RsxNode {
+    let theme = use_theme().get();
     let option_nodes: Vec<RsxNode> = menu_items
         .iter()
         .map(|item| {
             let menu_open = menu_open.clone();
-            let menu_pointer_down_for_mouse_down = menu_pointer_down.clone();
-            let option_disabled = item.disabled;
             let mouse_down = MouseDownHandlerProp::new(move |event| {
-                if option_disabled {
-                    return;
-                }
-                menu_pointer_down_for_mouse_down.set(true);
+                event.meta.request_keep_focus();
                 event.meta.stop_propagation();
             });
-            let menu_pointer_down_for_click = menu_pointer_down.clone();
             let option_disabled = item.disabled;
             let on_select = item.on_select.clone();
             let click = ClickHandlerProp::new(move |event| {
@@ -213,37 +206,39 @@ fn build_menu_node(
                 }
                 on_select.call(event);
                 menu_open.set(false);
-                menu_pointer_down_for_click.set(false);
                 event.meta.stop_propagation();
             });
 
             rsx! {
                 <Element
                     style={{
-                        width: Length::px(width),
-                        height: Length::px(32.0),
                         display: Display::flow().row().no_wrap(),
                         align_items: AlignItems::Center,
-                        padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+                        padding: theme.component.input.padding,
                         background: if item.disabled {
-                            Color::hex("#F9FAFB9E")
+                            theme.component.select.option_disabled_background.clone()
                         } else if item.selected {
-                            Color::hex("#EEF3FE9E")
+                            theme.component.select.option_selected_background.clone()
                         } else {
-                            Color::hex("#00000000")
+                            Box::new(Color::transparent()) as Box<dyn ColorLike>
                         },
                         hover: {
-                            background: Color::hex("#F5F7FA"),
+                            background: theme.component.select.option_hover_background.clone(),
                         }
                     }}
                     on_mouse_down={mouse_down}
                     on_click={click}
                 >
                     <Text
-                        font_size=13
-                        line_height=1.0
-                        font="Heiti TC, Noto Sans CJK TC, Roboto"
-                        style={{ color: if item.disabled { Color::hex("#9CA3AF") } else if item.selected { Color::hex("#1D4ED8") } else { Color::hex("#111827") } }}
+                        style={{
+                            color: if item.disabled {
+                                theme.component.select.option_disabled_text.clone()
+                            } else if item.selected {
+                                theme.component.select.option_selected_text.clone()
+                            } else {
+                                theme.color.background.on.clone()
+                            }
+                        }}
                     >
                         {item.label.clone()}
                     </Text>
@@ -257,16 +252,15 @@ fn build_menu_node(
             style={{
                 position: Position::absolute()
                     .anchor(anchor_name)
-                    .top(Length::px(trigger_height + 4.0))
+                    .top(Length::calc(Length::percent(100.0), Operator::subtract, Length::px(1.0)))
                     .left(Length::px(0.0))
                     .collision(Collision::FlipFit, CollisionBoundary::Viewport)
                     .clip(ClipMode::Viewport),
-                width: Length::px(width),
                 max_height: Length::vh(50.0),
                 display: Display::flow().column().no_wrap(),
-                border_radius: BorderRadius::uniform(Length::px(8.0)),
-                border: Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")),
-                background: Color::hex("#FFFFFF"),
+                border_radius: theme.component.input.radius,
+                border: theme.component.input.border.clone(),
+                background: theme.color.background.base,
                 scroll_direction: ScrollDirection::Vertical,
             }}
         >

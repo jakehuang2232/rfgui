@@ -1141,6 +1141,43 @@ pub fn get_cursor_by_id(root: &dyn ElementTrait, node_id: u64) -> Option<crate::
     None
 }
 
+pub fn subtree_contains_node(
+    root: &dyn ElementTrait,
+    ancestor_id: u64,
+    node_id: u64,
+) -> bool {
+    fn find_node<'a>(node: &'a dyn ElementTrait, target_id: u64) -> Option<&'a dyn ElementTrait> {
+        if node.id() == target_id {
+            return Some(node);
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                if let Some(found) = find_node(child.as_ref(), target_id) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    fn contains_node_id(node: &dyn ElementTrait, target_id: u64) -> bool {
+        if node.id() == target_id {
+            return true;
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                if contains_node_id(child.as_ref(), target_id) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    find_node(root, ancestor_id)
+        .is_some_and(|ancestor| contains_node_id(ancestor, node_id))
+}
+
 pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
     if root.wants_animation_frame() {
         return true;
@@ -1158,6 +1195,7 @@ pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{dispatch_click_from_hit_test, dispatch_mouse_down_from_hit_test, hit_test};
+    use crate::AnchorName;
     use crate::style::{
         ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
     };
@@ -1169,7 +1207,6 @@ mod tests {
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::{Viewport, ViewportControl};
-    use crate::AnchorName;
     use std::cell::Cell;
     use std::rc::Rc;
 

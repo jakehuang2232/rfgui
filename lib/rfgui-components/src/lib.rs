@@ -4,6 +4,7 @@ mod number_field;
 mod select;
 mod slider;
 mod switch;
+mod theme;
 mod window;
 
 pub use button::*;
@@ -12,6 +13,7 @@ pub use number_field::*;
 pub use select::*;
 pub use slider::*;
 pub use switch::*;
+pub use theme::*;
 pub use window::*;
 
 #[cfg(test)]
@@ -42,6 +44,7 @@ mod tests {
             max_width: 320.0,
             max_height: 120.0,
             viewport_width: 320.0,
+            viewport_height: 120.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(120.0),
         });
@@ -53,6 +56,7 @@ mod tests {
             available_width: 320.0,
             available_height: 120.0,
             viewport_width: 320.0,
+            viewport_height: 120.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(120.0),
         });
@@ -113,6 +117,7 @@ mod tests {
             max_width: 320.0,
             max_height: 240.0,
             viewport_width: 320.0,
+            viewport_height: 240.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(240.0),
         });
@@ -124,6 +129,7 @@ mod tests {
             available_width: 320.0,
             available_height: 240.0,
             viewport_width: 320.0,
+            viewport_height: 240.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(240.0),
         });

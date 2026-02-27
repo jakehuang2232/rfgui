@@ -1,9 +1,10 @@
 use super::{ElementCore, Position, Size};
+use crate::ColorLike;
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::style::{
-    compute_style, AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary,
-    Color, ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length,
-    PositionMode, ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming,
+    AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
+    ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
+    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
     LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
@@ -22,7 +23,6 @@ use crate::view::render_pass::{
     ShadowPass,
 };
 use crate::view::viewport::ViewportControl;
-use crate::ColorLike;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -198,6 +198,10 @@ impl UiBuildContext {
         self.last_target = Some(target);
     }
 
+    pub(crate) fn last_target(&self) -> Option<&RenderTargetOut> {
+        self.last_target.as_ref()
+    }
+
     fn next_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
         graph.declare_texture::<RenderTargetTag>(TextureDesc::new(
             self.target_width,
@@ -220,7 +224,7 @@ impl UiBuildContext {
         self.color_target
     }
 
-    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
+    pub(crate) fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
         self.color_target = color_target;
     }
 
@@ -470,6 +474,7 @@ struct FlexLayoutInfo {
 struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
+    is_hovered: bool,
     background_color: Color,
     foreground_color: Color,
     border_top_color: Color,
@@ -606,6 +611,7 @@ impl ElementTrait for Element {
         Some(Box::new(ElementStyleSnapshot {
             opacity: self.opacity,
             border_radius: self.border_radius,
+            is_hovered: self.is_hovered,
             background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
             foreground_color: self.foreground_color,
             border_top_color: Color::rgba(bt_r, bt_g, bt_b, bt_a),
@@ -635,6 +641,7 @@ impl ElementTrait for Element {
 
         self.opacity = snapshot.opacity;
         self.border_radius = snapshot.border_radius;
+        self.is_hovered = snapshot.is_hovered;
         self.background_color = Box::new(snapshot.background_color);
         self.foreground_color = snapshot.foreground_color;
         self.border_colors.top = Box::new(snapshot.border_top_color);
@@ -922,8 +929,22 @@ impl Layoutable for Element {
             );
 
             let (layout_w, layout_h) = self.current_layout_transition_size();
-            let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
-            let inner_h = (layout_h - bw_t - bw_b - p_t - p_b).max(0.0);
+            let measure_w = if self.computed_style.width == SizeValue::Auto
+                && proposal.percent_base_width.is_some()
+            {
+                proposal.width.max(0.0)
+            } else {
+                layout_w
+            };
+            let measure_h = if self.computed_style.height == SizeValue::Auto
+                && proposal.percent_base_height.is_some()
+            {
+                proposal.height.max(0.0)
+            } else {
+                layout_h
+            };
+            let inner_w = (measure_w - bw_l - bw_r - p_l - p_r).max(0.0);
+            let inner_h = (measure_h - bw_t - bw_b - p_t - p_b).max(0.0);
 
             let (child_available_width, child_available_height) = match self.scroll_direction {
                 ScrollDirection::None => (inner_w, inner_h),
@@ -932,15 +953,15 @@ impl Layoutable for Element {
                 ScrollDirection::Both => (1_000_000.0, 1_000_000.0),
             };
 
-            let child_percent_base_width = if self.computed_style.width == SizeValue::Auto {
-                None
-            } else {
+            let child_percent_base_width = if self.width_is_known(proposal) {
                 Some(inner_w)
-            };
-            let child_percent_base_height = if self.computed_style.height == SizeValue::Auto {
-                None
             } else {
+                None
+            };
+            let child_percent_base_height = if self.height_is_known(proposal) {
                 Some(inner_h)
+            } else {
+                None
             };
 
             for child in &mut self.children {
@@ -2456,8 +2477,22 @@ impl Element {
         );
 
         let (layout_w, layout_h) = self.current_layout_transition_size();
-        let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
-        let inner_h = (layout_h - bw_t - bw_b - p_t - p_b).max(0.0);
+        let measure_w = if self.computed_style.width == SizeValue::Auto
+            && proposal.percent_base_width.is_some()
+        {
+            proposal.width.max(0.0)
+        } else {
+            layout_w
+        };
+        let measure_h = if self.computed_style.height == SizeValue::Auto
+            && proposal.percent_base_height.is_some()
+        {
+            proposal.height.max(0.0)
+        } else {
+            layout_h
+        };
+        let inner_w = (measure_w - bw_l - bw_r - p_l - p_r).max(0.0);
+        let inner_h = (measure_h - bw_t - bw_b - p_t - p_b).max(0.0);
 
         let (child_available_width, child_available_height) = match self.scroll_direction {
             ScrollDirection::None => (inner_w, inner_h),
@@ -2466,15 +2501,15 @@ impl Element {
             ScrollDirection::Both => (1_000_000.0, 1_000_000.0),
         };
 
-        let child_percent_base_width = if self.computed_style.width == SizeValue::Auto {
-            None
-        } else {
+        let child_percent_base_width = if self.width_is_known(proposal) {
             Some(inner_w)
-        };
-        let child_percent_base_height = if self.computed_style.height == SizeValue::Auto {
-            None
         } else {
+            None
+        };
+        let child_percent_base_height = if self.height_is_known(proposal) {
             Some(inner_h)
+        } else {
+            None
         };
 
         for child in &mut self.children {
@@ -2493,7 +2528,7 @@ impl Element {
             proposal.viewport_width,
             proposal.viewport_height,
         );
-        let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
+        let is_row = matches!(self.computed_style.display_flow_direction(), FlowDirection::Row);
 
         if self.computed_style.width == SizeValue::Auto {
             let auto_width = if is_row {
@@ -2534,8 +2569,8 @@ impl Element {
         viewport_width: f32,
         viewport_height: f32,
     ) -> FlexLayoutInfo {
-        let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
-        let wrap = matches!(self.computed_style.flow_wrap, FlowWrap::Wrap);
+        let is_row = matches!(self.computed_style.display_flow_direction(), FlowDirection::Row);
+        let wrap = matches!(self.computed_style.display_flow_wrap(), FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
         let gap_base = if is_row { inner_w } else { inner_h };
         let gap = resolve_px(
@@ -2626,10 +2661,10 @@ impl Element {
         let right = self.border_widths.right.clamp(0.0, max_bw);
         let top = self.border_widths.top.clamp(0.0, max_bw);
         let bottom = self.border_widths.bottom.clamp(0.0, max_bw);
-        let bw = left.max(right).max(top).max(bottom);
-        let border_width = if bw > 0.0 && !same_color { bw } else { 0.0 };
-        let uniform_width =
-            approx_eq(left, right) && approx_eq(left, top) && approx_eq(left, bottom);
+        let draw_left = if same_color { 0.0 } else { left };
+        let draw_right = if same_color { 0.0 } else { right };
+        let draw_top = if same_color { 0.0 } else { top };
+        let draw_bottom = if same_color { 0.0 } else { bottom };
         let uniform_color = colors_like_eq(
             self.border_colors.left.as_ref(),
             self.border_colors.right.as_ref(),
@@ -2652,35 +2687,23 @@ impl Element {
             fill_color,
             opacity,
         );
-        if uniform_width && uniform_color {
+        if uniform_color {
             pass.set_border_color(border_color);
-            pass.set_border_width(border_width);
+            pass.set_border_widths(draw_left, draw_right, draw_top, draw_bottom);
             pass.set_border_radii(outer_radii.to_array());
             self.push_pass(graph, ctx, pass);
             return;
         }
         if outer_radii.has_any_rounding() {
-            let previous_color_target = ctx.color_target();
-            let layer = ctx.allocate_layer(graph);
-            let Some(layer_handle) = layer.handle() else {
-                return;
-            };
-            ctx.set_color_target(Some(layer_handle));
-
-            let clear = ClearPass::new([0.0, 0.0, 0.0, 0.0]);
-            self.push_pass(graph, ctx, clear);
-            self.push_edge_border_passes(graph, ctx, left, right, top, bottom, opacity);
-            self.push_inner_fill_pass(graph, ctx, left, right, top, bottom, outer_radii, opacity);
-
-            ctx.set_color_target(previous_color_target);
-            let composite = CompositeLayerPass::new(
-                [self.core.layout_position.x, self.core.layout_position.y],
-                [self.core.layout_size.width, self.core.layout_size.height],
-                outer_radii.to_array(),
-                1.0,
-                layer,
+            pass.set_border_side_colors(
+                self.border_colors.left.as_ref().to_rgba_f32(),
+                self.border_colors.right.as_ref().to_rgba_f32(),
+                self.border_colors.top.as_ref().to_rgba_f32(),
+                self.border_colors.bottom.as_ref().to_rgba_f32(),
             );
-            ctx.push_pass(graph, composite);
+            pass.set_border_widths(draw_left, draw_right, draw_top, draw_bottom);
+            pass.set_border_radii(outer_radii.to_array());
+            self.push_pass(graph, ctx, pass);
             return;
         }
 
@@ -3022,21 +3045,25 @@ impl Element {
 
     fn width_is_known(&self, proposal: LayoutProposal) -> bool {
         match self.computed_style.width {
-            SizeValue::Length(Length::Percent(_)) => proposal.percent_base_width.is_some(),
+            SizeValue::Length(length) if length.needs_percent_base() => {
+                proposal.percent_base_width.is_some()
+            }
             SizeValue::Length(Length::Vw(_)) => true,
             SizeValue::Length(Length::Vh(_)) => true,
             SizeValue::Length(_) => true,
-            SizeValue::Auto => false,
+            SizeValue::Auto => proposal.percent_base_width.is_some(),
         }
     }
 
     fn height_is_known(&self, proposal: LayoutProposal) -> bool {
         match self.computed_style.height {
-            SizeValue::Length(Length::Percent(_)) => proposal.percent_base_height.is_some(),
+            SizeValue::Length(length) if length.needs_percent_base() => {
+                proposal.percent_base_height.is_some()
+            }
             SizeValue::Length(Length::Vw(_)) => true,
             SizeValue::Length(Length::Vh(_)) => true,
             SizeValue::Length(_) => true,
-            SizeValue::Auto => false,
+            SizeValue::Auto => proposal.percent_base_height.is_some(),
         }
     }
 
@@ -4053,7 +4080,7 @@ impl Element {
             )
         };
 
-        let is_row = matches!(self.computed_style.flow_direction, FlowDirection::Row);
+        let is_row = matches!(self.computed_style.display_flow_direction(), FlowDirection::Row);
         let main_limit = if is_row {
             self.layout_inner_size.width
         } else {
@@ -4092,7 +4119,7 @@ impl Element {
                 line_main,
                 gap,
                 line.len(),
-                self.computed_style.justify_content,
+                self.computed_style.display_flow_justify_content(),
             );
 
             for &child_idx in line {
@@ -4351,6 +4378,14 @@ fn main_axis_start_and_gap(
                 (0.0, base_gap)
             }
         }
+        JustifyContent::SpaceEvenly => {
+            if item_count > 0 {
+                let space = free / ((item_count + 1) as f32);
+                (space, base_gap + space)
+            } else {
+                (0.0, base_gap)
+            }
+        }
     }
 }
 
@@ -4378,13 +4413,10 @@ fn trace_layout_enabled() -> bool {
 }
 
 fn resolve_px(length: Length, base: f32, viewport_width: f32, viewport_height: f32) -> f32 {
-    match length {
-        Length::Px(v) => v.max(0.0),
-        Length::Percent(v) => (base.max(0.0) * v * 0.01).max(0.0),
-        Length::Vw(v) => (viewport_width.max(0.0) * v * 0.01).max(0.0),
-        Length::Vh(v) => (viewport_height.max(0.0) * v * 0.01).max(0.0),
-        Length::Zero => 0.0,
-    }
+    length
+        .resolve_with_base(Some(base), viewport_width, viewport_height)
+        .unwrap_or(0.0)
+        .max(0.0)
 }
 
 fn resolve_px_with_base(
@@ -4393,13 +4425,9 @@ fn resolve_px_with_base(
     viewport_width: f32,
     viewport_height: f32,
 ) -> Option<f32> {
-    match length {
-        Length::Px(v) => Some(v.max(0.0)),
-        Length::Percent(v) => base.map(|b| (b.max(0.0) * v * 0.01).max(0.0)),
-        Length::Vw(v) => Some((viewport_width.max(0.0) * v * 0.01).max(0.0)),
-        Length::Vh(v) => Some((viewport_height.max(0.0) * v * 0.01).max(0.0)),
-        Length::Zero => Some(0.0),
-    }
+    length
+        .resolve_with_base(base, viewport_width, viewport_height)
+        .map(|v| v.max(0.0))
 }
 
 fn resolve_signed_px_with_base(
@@ -4408,13 +4436,7 @@ fn resolve_signed_px_with_base(
     viewport_width: f32,
     viewport_height: f32,
 ) -> Option<f32> {
-    match length {
-        Length::Px(v) => Some(v),
-        Length::Percent(v) => base.map(|b| b.max(0.0) * v * 0.01),
-        Length::Vw(v) => Some(viewport_width.max(0.0) * v * 0.01),
-        Length::Vh(v) => Some(viewport_height.max(0.0) * v * 0.01),
-        Length::Zero => Some(0.0),
-    }
+    length.resolve_with_base(base, viewport_width, viewport_height)
 }
 
 fn resolve_px_or_zero(
@@ -4438,17 +4460,25 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_px_with_base, resolve_signed_px_with_base, Element, ElementTrait, EventTarget,
-        LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+        Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+        Renderable, UiBuildContext, main_axis_start_and_gap, resolve_px_with_base,
+        resolve_signed_px_with_base,
     };
+    use crate::Display;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
     use crate::view::frame_graph::FrameGraph;
-    use crate::Display;
     use crate::{
-        AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, Length,
-        Position, Style,
+        AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
+        JustifyContent, Length, Operator, Position, Style,
     };
+
+    #[test]
+    fn justify_content_space_evenly_distributes_free_space() {
+        let (start, gap) = main_axis_start_and_gap(100.0, 40.0, 0.0, 3, JustifyContent::SpaceEvenly);
+        assert!((start - 15.0).abs() < 0.001);
+        assert!((gap - 15.0).abs() < 0.001);
+    }
 
     #[test]
     fn child_layout_uses_parent_inner_box_with_padding() {
@@ -4534,7 +4564,7 @@ mod tests {
     }
 
     #[test]
-    fn percent_child_size_works_only_with_known_parent_content_size() {
+    fn percent_child_size_works_with_definite_containing_size() {
         let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Auto);
@@ -4575,8 +4605,8 @@ mod tests {
             viewport_height: 600.0,
         });
         let snapshot_unknown = parent.children().expect("child")[0].box_model_snapshot();
-        assert_eq!(snapshot_unknown.width, 123.0);
-        assert_eq!(snapshot_unknown.height, 77.0);
+        assert_eq!(snapshot_unknown.width, 400.0);
+        assert_eq!(snapshot_unknown.height, 300.0);
 
         let mut known_parent = Element::new(0.0, 0.0, 240.0, 120.0);
         let mut known_parent_style = Style::new();
@@ -4620,6 +4650,182 @@ mod tests {
         let snapshot_known = known_parent.children().expect("child")[0].box_model_snapshot();
         assert_eq!(snapshot_known.width, 120.0);
         assert_eq!(snapshot_known.height, 60.0);
+    }
+
+    #[test]
+    fn calc_percent_and_px_resolves_against_parent_content_size() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 50.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::calc(
+                Length::percent(100.0),
+                Operator::subtract,
+                Length::px(20.0),
+            )),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(snapshot.width, 220.0);
+    }
+
+    #[test]
+    fn calc_with_percent_resolves_when_containing_size_is_definite() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 77.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::calc(
+                Length::percent(100.0),
+                Operator::subtract,
+                Length::px(20.0),
+            )),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(snapshot.width, 780.0);
+    }
+
+    #[test]
+    fn calc_with_percent_falls_back_to_auto_when_containing_size_is_indefinite() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 77.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::calc(
+                Length::percent(100.0),
+                Operator::subtract,
+                Length::px(20.0),
+            )),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: None,
+            percent_base_height: None,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: None,
+            percent_base_height: None,
+        });
+
+        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(snapshot.width, 77.0);
+    }
+
+    #[test]
+    fn calc_nested_with_multiply_and_add_is_supported() {
+        let mut el = Element::new(0.0, 0.0, 10.0, 10.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::calc(
+                Length::percent(100.0),
+                Operator::plus,
+                Length::calc(Length::px(10.0), Operator::multiply, 5),
+            )),
+        );
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        assert_eq!(el.box_model_snapshot().width, 850.0);
     }
 
     #[test]
@@ -5463,6 +5669,45 @@ mod tests {
         assert_eq!(restored.layout_transition_target_height, Some(80.0));
         assert!((restored.last_parent_layout_x - 21.0).abs() < 0.001);
         assert!((restored.last_parent_layout_y - 34.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_hover_style_state() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#112233")),
+        );
+        let mut hover_style = Style::new();
+        hover_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#aabbcc")),
+        );
+        style.set_hover(hover_style);
+        el.apply_style(style);
+        let _ = el.set_hovered(true);
+
+        let snapshot = el.snapshot_state().expect("snapshot should exist");
+
+        let mut restored = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut restored_style = Style::new();
+        restored_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#112233")),
+        );
+        let mut restored_hover_style = Style::new();
+        restored_hover_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#aabbcc")),
+        );
+        restored_style.set_hover(restored_hover_style);
+        restored.apply_style(restored_style);
+
+        let ok = restored.restore_state(snapshot.as_ref());
+        assert!(ok);
+        assert!(restored.is_hovered);
+        assert_eq!(restored.background_color.as_ref().to_rgba_u8(), [170, 187, 204, 255]);
     }
 
     #[test]

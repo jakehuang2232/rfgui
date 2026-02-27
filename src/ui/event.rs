@@ -79,6 +79,7 @@ pub enum ViewportListenerAction {
     AddMouseMoveListener(MouseMoveHandlerProp),
     AddMouseUpListener(MouseUpHandlerProp),
     AddMouseUpListenerUntil(MouseUpUntilHandler),
+    SetFocus(Option<u64>),
     SetCursor(Option<Cursor>),
     RemoveListener(ViewportListenerHandle),
 }
@@ -239,6 +240,13 @@ impl EventViewport {
             .borrow_mut()
             .viewport_listener_actions
             .push(ViewportListenerAction::SetCursor(cursor));
+    }
+
+    pub fn set_focus(&mut self, node_id: Option<u64>) {
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(ViewportListenerAction::SetFocus(node_id));
     }
 }
 

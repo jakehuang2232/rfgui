@@ -5,9 +5,6 @@ use std::ops::Add;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropertyId {
     Display,
-    FlowDirection,
-    FlowWrap,
-    JustifyContent,
     AlignItems,
     Position,
     Width,
@@ -172,6 +169,7 @@ pub enum Display {
     Flow {
         direction: FlowDirection,
         wrap: FlowWrap,
+        justify_content: JustifyContent,
     },
     InlineFlex,
     Grid,
@@ -183,6 +181,7 @@ impl Display {
         Self::Flow {
             direction: FlowDirection::Row,
             wrap: FlowWrap::NoWrap,
+            justify_content: JustifyContent::Start,
         }
     }
 
@@ -213,6 +212,17 @@ impl Display {
         }
         self
     }
+
+    pub const fn justify_content(mut self, justify_content: JustifyContent) -> Self {
+        if let Self::Flow {
+            justify_content: value,
+            ..
+        } = &mut self
+        {
+            *value = justify_content;
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +244,7 @@ pub enum JustifyContent {
     End,
     SpaceBetween,
     SpaceAround,
+    SpaceEvenly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,7 +493,139 @@ pub enum Length {
     Percent(f32),
     Vw(f32),
     Vh(f32),
+    Calc(LengthCalc),
     Zero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Operator;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlusOp;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubtractOp;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiplyOp;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DivideOp;
+
+impl Operator {
+    #[allow(non_upper_case_globals)]
+    pub const plus: PlusOp = PlusOp;
+    #[allow(non_upper_case_globals)]
+    pub const subtract: SubtractOp = SubtractOp;
+    #[allow(non_upper_case_globals)]
+    pub const multiply: MultiplyOp = MultiplyOp;
+    #[allow(non_upper_case_globals)]
+    pub const divide: DivideOp = DivideOp;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LengthCalc {
+    px: f32,
+    percent: f32,
+    vw: f32,
+    vh: f32,
+}
+
+impl LengthCalc {
+    pub const fn zero() -> Self {
+        Self {
+            px: 0.0,
+            percent: 0.0,
+            vw: 0.0,
+            vh: 0.0,
+        }
+    }
+
+    const fn from_length(length: Length) -> Self {
+        match length {
+            Length::Px(v) => Self {
+                px: v,
+                ..Self::zero()
+            },
+            Length::Percent(v) => Self {
+                percent: v,
+                ..Self::zero()
+            },
+            Length::Vw(v) => Self {
+                vw: v,
+                ..Self::zero()
+            },
+            Length::Vh(v) => Self {
+                vh: v,
+                ..Self::zero()
+            },
+            Length::Calc(v) => v,
+            Length::Zero => Self::zero(),
+        }
+    }
+
+    fn resolve(
+        self,
+        percent_base: Option<f32>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Option<f32> {
+        if self.percent != 0.0 && percent_base.is_none() {
+            return None;
+        }
+        let percent = percent_base.unwrap_or(0.0).max(0.0) * self.percent * 0.01;
+        let vw = viewport_width.max(0.0) * self.vw * 0.01;
+        let vh = viewport_height.max(0.0) * self.vh * 0.01;
+        Some(self.px + percent + vw + vh)
+    }
+
+    const fn resolve_without_percent_base(self, viewport_width: f32, viewport_height: f32) -> f32 {
+        let vw = if viewport_width < 0.0 {
+            0.0
+        } else {
+            viewport_width
+        } * self.vw
+            * 0.01;
+        let vh = if viewport_height < 0.0 {
+            0.0
+        } else {
+            viewport_height
+        } * self.vh
+            * 0.01;
+        self.px + vw + vh
+    }
+
+    pub const fn has_percent(self) -> bool {
+        self.percent != 0.0
+    }
+}
+
+#[doc(hidden)]
+pub trait CalcNumber {
+    fn into_calc_number(self) -> f32;
+}
+
+impl CalcNumber for f32 {
+    fn into_calc_number(self) -> f32 {
+        self
+    }
+}
+
+impl CalcNumber for f64 {
+    fn into_calc_number(self) -> f32 {
+        self as f32
+    }
+}
+
+impl CalcNumber for i32 {
+    fn into_calc_number(self) -> f32 {
+        self as f32
+    }
+}
+
+#[doc(hidden)]
+pub trait CalcRule<Op, Rhs> {
+    fn calc(lhs: Length, op: Op, rhs: Rhs) -> Length;
 }
 
 impl Length {
@@ -500,6 +643,127 @@ impl Length {
 
     pub const fn vh(value: f32) -> Self {
         Self::Vh(value)
+    }
+
+    pub fn calc<Op, Rhs>(lhs: Length, operator: Op, rhs: Rhs) -> Self
+    where
+        Self: CalcRule<Op, Rhs>,
+    {
+        <Self as CalcRule<Op, Rhs>>::calc(lhs, operator, rhs)
+    }
+
+    pub fn resolve_with_base(
+        self,
+        percent_base: Option<f32>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Option<f32> {
+        match self {
+            Self::Px(v) => Some(v),
+            Self::Percent(v) => percent_base.map(|base| base.max(0.0) * v * 0.01),
+            Self::Vw(v) => Some(viewport_width.max(0.0) * v * 0.01),
+            Self::Vh(v) => Some(viewport_height.max(0.0) * v * 0.01),
+            Self::Calc(calc) => calc.resolve(percent_base, viewport_width, viewport_height),
+            Self::Zero => Some(0.0),
+        }
+    }
+
+    pub fn resolve_without_percent_base(self, viewport_width: f32, viewport_height: f32) -> f32 {
+        match self {
+            Self::Px(v) => v,
+            Self::Percent(_) => 0.0,
+            Self::Vw(v) => viewport_width.max(0.0) * v * 0.01,
+            Self::Vh(v) => viewport_height.max(0.0) * v * 0.01,
+            Self::Calc(calc) => calc.resolve_without_percent_base(viewport_width, viewport_height),
+            Self::Zero => 0.0,
+        }
+    }
+
+    pub const fn needs_percent_base(self) -> bool {
+        match self {
+            Self::Percent(_) => true,
+            Self::Calc(calc) => calc.has_percent(),
+            _ => false,
+        }
+    }
+}
+
+impl CalcRule<PlusOp, Length> for Length {
+    fn calc(lhs: Length, _op: PlusOp, rhs: Length) -> Length {
+        let left = LengthCalc::from_length(lhs);
+        let right = LengthCalc::from_length(rhs);
+        Length::Calc(LengthCalc {
+            px: left.px + right.px,
+            percent: left.percent + right.percent,
+            vw: left.vw + right.vw,
+            vh: left.vh + right.vh,
+        })
+    }
+}
+
+impl<N: CalcNumber> CalcRule<PlusOp, N> for Length {
+    fn calc(lhs: Length, _op: PlusOp, rhs: N) -> Length {
+        let left = LengthCalc::from_length(lhs);
+        Length::Calc(LengthCalc {
+            px: left.px + rhs.into_calc_number(),
+            percent: left.percent,
+            vw: left.vw,
+            vh: left.vh,
+        })
+    }
+}
+
+impl CalcRule<SubtractOp, Length> for Length {
+    fn calc(lhs: Length, _op: SubtractOp, rhs: Length) -> Length {
+        let left = LengthCalc::from_length(lhs);
+        let right = LengthCalc::from_length(rhs);
+        Length::Calc(LengthCalc {
+            px: left.px - right.px,
+            percent: left.percent - right.percent,
+            vw: left.vw - right.vw,
+            vh: left.vh - right.vh,
+        })
+    }
+}
+
+impl<N: CalcNumber> CalcRule<SubtractOp, N> for Length {
+    fn calc(lhs: Length, _op: SubtractOp, rhs: N) -> Length {
+        let left = LengthCalc::from_length(lhs);
+        Length::Calc(LengthCalc {
+            px: left.px - rhs.into_calc_number(),
+            percent: left.percent,
+            vw: left.vw,
+            vh: left.vh,
+        })
+    }
+}
+
+impl<N: CalcNumber> CalcRule<MultiplyOp, N> for Length {
+    fn calc(lhs: Length, _op: MultiplyOp, rhs: N) -> Length {
+        let left = LengthCalc::from_length(lhs);
+        let factor = rhs.into_calc_number();
+        Length::Calc(LengthCalc {
+            px: left.px * factor,
+            percent: left.percent * factor,
+            vw: left.vw * factor,
+            vh: left.vh * factor,
+        })
+    }
+}
+
+impl<N: CalcNumber> CalcRule<DivideOp, N> for Length {
+    fn calc(lhs: Length, _op: DivideOp, rhs: N) -> Length {
+        let divisor = rhs.into_calc_number();
+        if divisor == 0.0 {
+            return Length::Zero;
+        }
+        let left = LengthCalc::from_length(lhs);
+        Length::Calc(LengthCalc {
+            px: left.px / divisor,
+            percent: left.percent / divisor,
+            vw: left.vw / divisor,
+            vh: left.vh / divisor,
+        })
     }
 }
 
@@ -766,6 +1030,7 @@ impl IntoBorderRadius for i64 {
     }
 }
 
+#[derive(Clone)]
 pub struct Border {
     pub uniform_width: Length,
     pub uniform_color: Box<dyn ColorLike>,
@@ -1085,6 +1350,145 @@ impl IntoFontWeight for i64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FontSize {
+    Px(f32),
+    Em(f32),
+    Rem(f32),
+    Percent(f32),
+    Vw(f32),
+    Vh(f32),
+}
+
+impl FontSize {
+    pub const fn px(value: f32) -> Self {
+        Self::Px(value)
+    }
+
+    pub const fn em(value: f32) -> Self {
+        Self::Em(value)
+    }
+
+    pub const fn rem(value: f32) -> Self {
+        Self::Rem(value)
+    }
+
+    pub const fn percent(value: f32) -> Self {
+        Self::Percent(value)
+    }
+
+    pub const fn vw(value: f32) -> Self {
+        Self::Vw(value)
+    }
+
+    pub const fn vh(value: f32) -> Self {
+        Self::Vh(value)
+    }
+
+    pub fn resolve_px(
+        self,
+        parent_font_size_px: f32,
+        root_font_size_px: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> f32 {
+        let parent = parent_font_size_px.max(0.0);
+        let root = root_font_size_px.max(0.0);
+        let vw = viewport_width.max(0.0);
+        let vh = viewport_height.max(0.0);
+        match self {
+            Self::Px(value) => value.max(0.0),
+            Self::Em(value) => (parent * value).max(0.0),
+            Self::Rem(value) => (root * value).max(0.0),
+            Self::Percent(value) => (parent * value * 0.01).max(0.0),
+            Self::Vw(value) => (vw * value * 0.01).max(0.0),
+            Self::Vh(value) => (vh * value * 0.01).max(0.0),
+        }
+    }
+}
+
+pub trait IntoFontSize {
+    fn into_font_size(self) -> FontSize;
+}
+
+impl IntoFontSize for FontSize {
+    fn into_font_size(self) -> FontSize {
+        self
+    }
+}
+
+impl IntoFontSize for f32 {
+    fn into_font_size(self) -> FontSize {
+        FontSize::px(self)
+    }
+}
+
+impl IntoFontSize for f64 {
+    fn into_font_size(self) -> FontSize {
+        FontSize::px(self as f32)
+    }
+}
+
+impl IntoFontSize for i32 {
+    fn into_font_size(self) -> FontSize {
+        FontSize::px(self as f32)
+    }
+}
+
+impl IntoFontSize for i64 {
+    fn into_font_size(self) -> FontSize {
+        FontSize::px(self as f32)
+    }
+}
+
+impl IntoFontSize for u32 {
+    fn into_font_size(self) -> FontSize {
+        FontSize::px(self as f32)
+    }
+}
+
+impl IntoFontSize for usize {
+    fn into_font_size(self) -> FontSize {
+        FontSize::px(self as f32)
+    }
+}
+
+impl From<f32> for FontSize {
+    fn from(value: f32) -> Self {
+        FontSize::px(value)
+    }
+}
+
+impl From<f64> for FontSize {
+    fn from(value: f64) -> Self {
+        FontSize::px(value as f32)
+    }
+}
+
+impl From<i32> for FontSize {
+    fn from(value: i32) -> Self {
+        FontSize::px(value as f32)
+    }
+}
+
+impl From<i64> for FontSize {
+    fn from(value: i64) -> Self {
+        FontSize::px(value as f32)
+    }
+}
+
+impl From<u32> for FontSize {
+    fn from(value: u32) -> Self {
+        FontSize::px(value as f32)
+    }
+}
+
+impl From<usize> for FontSize {
+    fn from(value: usize) -> Self {
+        FontSize::px(value as f32)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineHeight(f32);
 
 impl LineHeight {
@@ -1113,15 +1517,13 @@ impl Opacity {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedValue {
     Display(Display),
-    FlowDirection(FlowDirection),
-    FlowWrap(FlowWrap),
-    JustifyContent(JustifyContent),
     AlignItems(AlignItems),
     ScrollDirection(ScrollDirection),
     Cursor(Cursor),
     Position(Position),
     Auto,
     Length(Length),
+    FontSize(FontSize),
     FontFamily(FontFamily),
     FontWeight(FontWeight),
     LineHeight(LineHeight),

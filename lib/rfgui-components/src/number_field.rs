@@ -1,11 +1,9 @@
+use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
     Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
-use rfgui::{
-    AlignItems, Border, BorderRadius, Color, Display, JustifyContent, Length, ParsedValue,
-    PropertyId, Style,
-};
+use rfgui::{AlignItems, Border, Display, JustifyContent, Length};
 
 pub struct NumberField;
 
@@ -53,8 +51,9 @@ fn NumberFieldView(
     step: f64,
     disabled: bool,
 ) -> RsxNode {
-    let width = 140.0_f32;
-    let height = 40.0_f32;
+    let theme = use_theme().get();
+    let width = 120.0_f32;
+    let height = 18.0_f32;
 
     let fallback_value = use_state(|| value);
     let value_binding = if has_binding {
@@ -68,6 +67,12 @@ fn NumberFieldView(
 
     let button_size = (height - 2.0).max(0.0);
     let value_width = (width - button_size * 2.0).max(0.0);
+    let left_border =
+        Border::uniform(Length::px(1.0), theme.color.border.as_ref())
+            .right(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
+    let right_border =
+        Border::uniform(Length::px(1.0), theme.color.border.as_ref())
+            .left(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
 
     let minus_click = if disabled {
         None
@@ -82,33 +87,81 @@ fn NumberFieldView(
     };
 
     let mut root = rsx! {
-        <Element style={number_field_style(width, height, disabled)}>
-            <Element style={stepper_style(button_size, disabled, true)}>
+        <Element style={{
+            display: Display::flow().row().no_wrap(),
+            align_items: AlignItems::Center,
+            width: Length::px(width),
+            height: Length::px(height),
+            border_radius: theme.component.input.radius,
+            border: theme.component.input.border.clone(),
+            background: if disabled {
+                theme.color.state.disabled.clone()
+            } else {
+                theme.color.layer.surface.clone()
+            },
+        }}>
+            <Element style={{
+                display: Display::flow()
+                    .row()
+                    .no_wrap()
+                    .justify_content(JustifyContent::Center),
+                align_items: AlignItems::Center,
+                width: Length::px(button_size),
+                height: Length::px(button_size),
+                background: if disabled {
+                    theme.color.state.disabled.clone()
+                } else {
+                    theme.color.layer.raised.clone()
+                },
+                border: left_border,
+            }}>
                 <Text
-                    font_size=18
+                    font_size={theme.typography.size.lg}
                     line_height=1.0
-                    font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    style={{ color: if disabled { "#BDBDBD" } else { "#374151" } }}
+                    font={theme.typography.font_family.clone()}
+                    style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.secondary.clone() } }}
                 >
                     {"−"}
                 </Text>
             </Element>
-            <Element style={value_style(value_width, button_size)}>
+            <Element style={{
+                display: Display::flow()
+                    .row()
+                    .no_wrap()
+                    .justify_content(JustifyContent::Center),
+                align_items: AlignItems::Center,
+                width: Length::px(value_width),
+                height: Length::px(button_size),
+            }}>
                 <Text
-                    font_size=14
+                    font_size={theme.typography.size.sm}
                     line_height=1.0
-                    font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    style={{ color: if disabled { "#9E9E9E" } else { "#111827" } }}
+                    font={theme.typography.font_family.clone()}
+                    style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.primary.clone() } }}
                 >
                     {format_number(current)}
                 </Text>
             </Element>
-            <Element style={stepper_style(button_size, disabled, false)}>
+            <Element style={{
+                display: Display::flow()
+                    .row()
+                    .no_wrap()
+                    .justify_content(JustifyContent::Center),
+                align_items: AlignItems::Center,
+                width: Length::px(button_size),
+                height: Length::px(button_size),
+                background: if disabled {
+                    theme.color.state.disabled.clone()
+                } else {
+                    theme.color.layer.raised.clone()
+                },
+                border: right_border,
+            }}>
                 <Text
-                    font_size=16
+                    font_size={theme.typography.size.md}
                     line_height=1.0
-                    font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    style={{ color: if disabled { "#BDBDBD" } else { "#374151" } }}
+                    font={theme.typography.font_family.clone()}
+                    style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.secondary.clone() } }}
                 >
                     {"+"}
                 </Text>
@@ -152,84 +205,6 @@ fn step_handler(
         }
         binding.set(next);
     })
-}
-
-fn number_field_style(width: f32, height: f32, disabled: bool) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().row().no_wrap()),
-    );
-    style.insert(
-        PropertyId::AlignItems,
-        ParsedValue::AlignItems(AlignItems::Center),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-    style.set_border_radius(BorderRadius::uniform(Length::px(8.0)));
-    style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#B0BEC5")));
-    style.insert_color_like(
-        PropertyId::BackgroundColor,
-        if disabled {
-            Color::hex("#F5F5F5")
-        } else {
-            Color::hex("#FFFFFF")
-        },
-    );
-    style
-}
-
-fn stepper_style(size: f32, disabled: bool, is_left: bool) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().row().no_wrap()),
-    );
-    style.insert(
-        PropertyId::AlignItems,
-        ParsedValue::AlignItems(AlignItems::Center),
-    );
-    style.insert(
-        PropertyId::JustifyContent,
-        ParsedValue::JustifyContent(JustifyContent::Center),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(size)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(size)));
-    style.insert_color_like(
-        PropertyId::BackgroundColor,
-        if disabled {
-            Color::hex("#F5F5F5")
-        } else {
-            Color::hex("#F8FAFC")
-        },
-    );
-    let mut border = Border::uniform(Length::px(1.0), &Color::hex("#CFD8DC"));
-    border = if is_left {
-        border.right(Some(Length::px(1.0)), Some(&Color::hex("#CFD8DC")))
-    } else {
-        border.left(Some(Length::px(1.0)), Some(&Color::hex("#CFD8DC")))
-    };
-    style.set_border(border);
-    style
-}
-
-fn value_style(width: f32, height: f32) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Display,
-        ParsedValue::Display(Display::flow().row().no_wrap()),
-    );
-    style.insert(
-        PropertyId::AlignItems,
-        ParsedValue::AlignItems(AlignItems::Center),
-    );
-    style.insert(
-        PropertyId::JustifyContent,
-        ParsedValue::JustifyContent(JustifyContent::Center),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-    style
 }
 
 fn format_number(value: f64) -> String {

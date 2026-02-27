@@ -1,7 +1,7 @@
 use crate::style::color::Color;
 use crate::style::parsed_style::{
-    AlignItems, BoxShadow, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length,
-    ParsedValue, Position, PropertyId, ScrollDirection, Style, Transitions,
+    AlignItems, BoxShadow, Cursor, Display, FontSize, Length, ParsedValue, Position, PropertyId,
+    ScrollDirection, Style, Transitions,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,9 +29,6 @@ pub struct CornerRadii<T> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
     pub display: Display,
-    pub flow_direction: FlowDirection,
-    pub flow_wrap: FlowWrap,
-    pub justify_content: JustifyContent,
     pub align_items: AlignItems,
     pub position: Position,
     pub width: SizeValue,
@@ -66,9 +63,6 @@ impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             display: Display::Block,
-            flow_direction: FlowDirection::Row,
-            flow_wrap: FlowWrap::NoWrap,
-            justify_content: JustifyContent::Start,
             align_items: AlignItems::Start,
             position: Position::static_(),
             width: SizeValue::Auto,
@@ -126,6 +120,31 @@ impl Default for ComputedStyle {
     }
 }
 
+impl ComputedStyle {
+    pub const fn display_flow_direction(&self) -> crate::FlowDirection {
+        match self.display {
+            Display::Flow { direction, .. } => direction,
+            _ => crate::FlowDirection::Row,
+        }
+    }
+
+    pub const fn display_flow_wrap(&self) -> crate::FlowWrap {
+        match self.display {
+            Display::Flow { wrap, .. } => wrap,
+            _ => crate::FlowWrap::NoWrap,
+        }
+    }
+
+    pub const fn display_flow_justify_content(&self) -> crate::JustifyContent {
+        match self.display {
+            Display::Flow {
+                justify_content, ..
+            } => justify_content,
+            _ => crate::JustifyContent::Start,
+        }
+    }
+}
+
 pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> ComputedStyle {
     let mut computed = ComputedStyle::default();
 
@@ -142,25 +161,6 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             PropertyId::Display => {
                 if let ParsedValue::Display(value) = &declaration.value {
                     computed.display = *value;
-                    if let Display::Flow { direction, wrap } = value {
-                        computed.flow_direction = *direction;
-                        computed.flow_wrap = *wrap;
-                    }
-                }
-            }
-            PropertyId::FlowDirection => {
-                if let ParsedValue::FlowDirection(value) = &declaration.value {
-                    computed.flow_direction = *value;
-                }
-            }
-            PropertyId::FlowWrap => {
-                if let ParsedValue::FlowWrap(value) = &declaration.value {
-                    computed.flow_wrap = *value;
-                }
-            }
-            PropertyId::JustifyContent => {
-                if let ParsedValue::JustifyContent(value) = &declaration.value {
-                    computed.justify_content = *value;
                 }
             }
             PropertyId::AlignItems => {
@@ -251,8 +251,8 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                 }
             }
             PropertyId::FontSize => {
-                if let ParsedValue::Length(Length::Px(px)) = &declaration.value {
-                    computed.font_size = px.max(0.0);
+                if let ParsedValue::FontSize(value) = &declaration.value {
+                    computed.font_size = resolve_font_size_px(*value, computed.font_size);
                 }
             }
             PropertyId::FontWeight => {
@@ -397,13 +397,11 @@ fn parse_color(input: &ParsedValue) -> Option<Color> {
 }
 
 fn resolve_length_px(length: Length) -> f32 {
-    match length {
-        Length::Px(v) => v,
-        Length::Percent(v) => v,
-        Length::Vw(v) => v,
-        Length::Vh(v) => v,
-        Length::Zero => 0.0,
-    }
+    length.resolve_without_percent_base(0.0, 0.0)
+}
+
+fn resolve_font_size_px(font_size: FontSize, parent_font_size: f32) -> f32 {
+    font_size.resolve_px(parent_font_size, 16.0, 0.0, 0.0)
 }
 
 fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
@@ -413,7 +411,8 @@ fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::compute_style;
-    use crate::style::{BoxShadow, Color, Style};
+    use crate::style::{BoxShadow, Color, FontSize, ParsedValue, PropertyId, Style};
+    use crate::{Display, FlowDirection, FlowWrap, JustifyContent};
 
     #[test]
     fn compute_style_applies_box_shadow_list() {
@@ -436,5 +435,47 @@ mod tests {
         assert_eq!(computed.box_shadow[0].spread, 5.0);
         assert_eq!(computed.box_shadow[1].offset_x, -1.5);
         assert_eq!(computed.box_shadow[1].offset_y, -1.5);
+    }
+
+    #[test]
+    fn compute_style_resolves_font_size_relative_to_parent() {
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(20.0)),
+        );
+        let parent = compute_style(&parent_style, None);
+
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::em(1.5)),
+        );
+        let child = compute_style(&child_style, Some(&parent));
+        assert_eq!(child.font_size, 30.0);
+    }
+
+    #[test]
+    fn compute_style_reads_justify_content_from_display_flow() {
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Display,
+            ParsedValue::Display(
+                Display::flow()
+                    .column()
+                    .wrap()
+                    .justify_content(JustifyContent::SpaceEvenly),
+            ),
+        );
+
+        let computed = compute_style(&style, None);
+        assert_eq!(
+            computed.display,
+            Display::Flow {
+                direction: FlowDirection::Column,
+                wrap: FlowWrap::Wrap,
+                justify_content: JustifyContent::SpaceEvenly,
+            }
+        );
     }
 }

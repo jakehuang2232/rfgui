@@ -24,7 +24,7 @@ use crate::ui::{
     MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
     ViewportListenerAction, ViewportListenerHandle, take_state_dirty,
 };
-use crate::{ColorLike, Cursor, HexColor};
+use crate::{ColorLike, Cursor, HexColor, Style};
 
 pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
 impl<T: HasWindowHandle + HasDisplayHandle> WindowHandle for T {}
@@ -68,6 +68,21 @@ pub enum MouseButton {
     Other(u16),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewportDebugOptions {
+    pub trace_fps: bool,
+    pub geometry_overlay: bool,
+}
+
+impl ViewportDebugOptions {
+    fn from_env() -> Self {
+        Self {
+            trace_fps: std::env::var("RFGUI_TRACE_FPS").is_ok(),
+            geometry_overlay: std::env::var("RFGUI_DEBUG_GEOMETRY_OVERLAY").is_ok(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct InputState {
     focused_node_id: Option<u64>,
@@ -102,8 +117,12 @@ fn is_valid_click_candidate(
         return false;
     }
     const CLICK_MAX_TRAVEL_SQ: f32 = 25.0;
-    distance_sq(up_x, up_y, pending_click.viewport_x, pending_click.viewport_y)
-        <= CLICK_MAX_TRAVEL_SQ
+    distance_sq(
+        up_x,
+        up_y,
+        pending_click.viewport_x,
+        pending_click.viewport_y,
+    ) <= CLICK_MAX_TRAVEL_SQ
 }
 
 pub struct ViewportControl<'a> {
@@ -162,6 +181,18 @@ impl<'a> ViewportControl<'a> {
     pub fn clipboard_text(&mut self) -> Option<String> {
         self.viewport.clipboard_text()
     }
+
+    pub fn set_debug_trace_fps(&mut self, enabled: bool) {
+        self.viewport.set_debug_trace_fps(enabled);
+    }
+
+    pub fn set_debug_options(&mut self, options: ViewportDebugOptions) {
+        self.viewport.set_debug_options(options);
+    }
+
+    pub fn set_debug_geometry_overlay(&mut self, enabled: bool) {
+        self.viewport.set_debug_geometry_overlay(enabled);
+    }
 }
 
 struct TransitionHostAdapter<'a> {
@@ -206,6 +237,7 @@ impl TransitionHost<TrackTarget> for TransitionHostAdapter<'_> {
 }
 
 pub struct Viewport {
+    style: Style,
     clear_color: Box<dyn ColorLike>,
     scale_factor: f32,
     logical_width: f32,
@@ -222,6 +254,7 @@ pub struct Viewport {
     pending_size: Option<(u32, u32)>,
     needs_reconfigure: bool,
     redraw_requested: bool,
+    debug_options: ViewportDebugOptions,
     frame_stats: FrameStats,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
     input_state: InputState,
@@ -266,6 +299,23 @@ impl Viewport {
             "immediate" => wgpu::PresentMode::Immediate,
             _ => wgpu::PresentMode::AutoVsync,
         }
+    }
+
+    fn alpha_mode_from_capabilities(
+        alpha_modes: &[wgpu::CompositeAlphaMode],
+    ) -> wgpu::CompositeAlphaMode {
+        for preferred in [
+            wgpu::CompositeAlphaMode::PostMultiplied,
+            wgpu::CompositeAlphaMode::PreMultiplied,
+            wgpu::CompositeAlphaMode::Inherit,
+            wgpu::CompositeAlphaMode::Auto,
+            wgpu::CompositeAlphaMode::Opaque,
+        ] {
+            if alpha_modes.contains(&preferred) {
+                return preferred;
+            }
+        }
+        wgpu::CompositeAlphaMode::Auto
     }
 
     fn cancel_pointer_interactions(
@@ -728,7 +778,9 @@ impl Viewport {
     }
 
     pub fn new() -> Self {
+        let debug_options = ViewportDebugOptions::from_env();
         Viewport {
+            style: Style::new(),
             clear_color: Box::new(HexColor::new("#000000")),
             scale_factor: 1.0,
             logical_width: 1.0,
@@ -756,7 +808,8 @@ impl Viewport {
             pending_size: None,
             needs_reconfigure: false,
             redraw_requested: false,
-            frame_stats: FrameStats::new_from_env(),
+            debug_options,
+            frame_stats: FrameStats::new(debug_options.trace_fps),
             frame_box_models: Vec::new(),
             input_state: InputState::default(),
             clipboard: Clipboard::new().ok(),
@@ -800,6 +853,32 @@ impl Viewport {
         }
     }
 
+    pub fn debug_options(&self) -> ViewportDebugOptions {
+        self.debug_options
+    }
+
+    pub fn set_debug_options(&mut self, options: ViewportDebugOptions) {
+        self.debug_options = options;
+        self.frame_stats.set_enabled(options.trace_fps);
+    }
+
+    pub fn debug_trace_fps(&self) -> bool {
+        self.debug_options.trace_fps
+    }
+
+    pub fn set_debug_trace_fps(&mut self, enabled: bool) {
+        self.debug_options.trace_fps = enabled;
+        self.frame_stats.set_enabled(enabled);
+    }
+
+    pub fn debug_geometry_overlay(&self) -> bool {
+        self.debug_options.geometry_overlay
+    }
+
+    pub fn set_debug_geometry_overlay(&mut self, enabled: bool) {
+        self.debug_options.geometry_overlay = enabled;
+    }
+
     pub async fn set_window(&mut self, window: Window) {
         self.window = Some(window);
         if self.device.is_some() {
@@ -823,6 +902,16 @@ impl Viewport {
         }
         self.pending_size = Some((width, height));
         self.needs_reconfigure = true;
+    }
+
+    pub fn set_style(&mut self, style: Style) {
+        self.style = style;
+        self.last_rsx_root = None;
+        self.request_redraw();
+    }
+
+    pub fn style(&self) -> &Style {
+        &self.style
     }
 
     pub fn set_clear_color(&mut self, clear_color: Box<dyn ColorLike>) {
@@ -945,6 +1034,7 @@ impl Viewport {
                 .find(|f| f.is_srgb())
                 .unwrap_or(caps.formats[0]);
             self.surface_config.format = format;
+            self.surface_config.alpha_mode = Self::alpha_mode_from_capabilities(&caps.alpha_modes);
             self.surface_config.view_formats = vec![self.surface_config.format];
             if let Some((width, height)) = self.pending_size.take() {
                 self.surface_config.width = width;
@@ -1119,9 +1209,26 @@ impl Viewport {
             self.surface_config.height,
             self.surface_config.format,
         );
-        let mut clear_pass = super::frame_graph::ClearPass::new(self.clear_color.to_rgba_f32());
+        let use_surface_present_pass =
+            self.surface_config.alpha_mode == wgpu::CompositeAlphaMode::PostMultiplied;
+        let mut clear_rgba = self.clear_color.to_rgba_f32();
+        if use_surface_present_pass {
+            let a = clear_rgba[3].clamp(0.0, 1.0);
+            clear_rgba[0] *= a;
+            clear_rgba[1] *= a;
+            clear_rgba[2] *= a;
+            clear_rgba[3] = a;
+        }
+        let mut clear_pass = super::frame_graph::ClearPass::new(clear_rgba);
         let output = ctx.allocate_target(&mut graph);
-        clear_pass.set_output(output);
+        let output_handle = output.handle();
+        clear_pass.set_output(output.clone());
+        if use_surface_present_pass {
+            if let Some(handle) = output_handle {
+                clear_pass.set_color_target(Some(handle));
+                ctx.set_color_target(Some(handle));
+            }
+        }
         graph.add_pass(clear_pass);
         ctx.set_last_target(output);
         for root in roots.iter_mut() {
@@ -1145,6 +1252,19 @@ impl Viewport {
             let newly_deferred = ctx.take_deferred_node_ids();
             if !newly_deferred.is_empty() {
                 deferred_node_ids.extend(newly_deferred);
+            }
+        }
+        if use_surface_present_pass {
+            let dependency_handle = ctx.last_target().and_then(|target| target.handle());
+            if let (Some(source_handle), Some(dep_handle)) = (output_handle, dependency_handle) {
+                let mut present_pass =
+                    super::render_pass::present_surface_pass::PresentSurfacePass::new();
+                present_pass.set_source_color_target(Some(source_handle));
+                present_pass
+                    .set_input(super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
+                        dep_handle,
+                    ));
+                graph.add_pass(present_pass);
             }
         }
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1176,25 +1296,25 @@ impl Viewport {
         let end_frame_elapsed_ms = end_frame_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let total_elapsed_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
-        println!(
-            "\x1b[1;36mrender_tree\x1b[0m: total={} begin_frame={} layout={}(measure={} place={} collect={}) post_layout_transition={} relayout_after_transition={}(place={} collect={}) build_graph={} compile={} execute={}(passes={}, top=[{}]) end_frame={}",
-            highlight_ms(total_elapsed_ms),
-            highlight_ms(begin_frame_elapsed_ms),
-            highlight_ms(layout_elapsed_ms),
-            highlight_ms(layout_measure_elapsed_ms),
-            highlight_ms(layout_place_elapsed_ms),
-            highlight_ms(layout_collect_box_models_elapsed_ms),
-            highlight_ms(post_layout_transition_elapsed_ms),
-            highlight_ms(relayout_after_transition_elapsed_ms),
-            highlight_ms(relayout_place_elapsed_ms),
-            highlight_ms(relayout_collect_box_models_elapsed_ms),
-            highlight_ms(build_graph_elapsed_ms),
-            highlight_ms(compile_elapsed_ms),
-            highlight_ms(execute_elapsed_ms),
-            execute_pass_count,
-            execute_top_passes,
-            highlight_ms(end_frame_elapsed_ms)
-        );
+        // println!(
+        //     "\x1b[1;36mrender_tree\x1b[0m: total={} begin_frame={} layout={}(measure={} place={} collect={}) post_layout_transition={} relayout_after_transition={}(place={} collect={}) build_graph={} compile={} execute={}(passes={}, top=[{}]) end_frame={}",
+        //     highlight_ms(total_elapsed_ms),
+        //     highlight_ms(begin_frame_elapsed_ms),
+        //     highlight_ms(layout_elapsed_ms),
+        //     highlight_ms(layout_measure_elapsed_ms),
+        //     highlight_ms(layout_place_elapsed_ms),
+        //     highlight_ms(layout_collect_box_models_elapsed_ms),
+        //     highlight_ms(post_layout_transition_elapsed_ms),
+        //     highlight_ms(relayout_after_transition_elapsed_ms),
+        //     highlight_ms(relayout_place_elapsed_ms),
+        //     highlight_ms(relayout_collect_box_models_elapsed_ms),
+        //     highlight_ms(build_graph_elapsed_ms),
+        //     highlight_ms(compile_elapsed_ms),
+        //     highlight_ms(execute_elapsed_ms),
+        //     execute_pass_count,
+        //     execute_top_passes,
+        //     highlight_ms(end_frame_elapsed_ms)
+        // );
         self.frame_stats.record_frame(frame_start.elapsed());
         transition_changed_after_layout
     }
@@ -1211,7 +1331,12 @@ impl Viewport {
             let layout_snapshots =
                 super::base_component::collect_layout_transition_snapshots(&self.ui_roots);
             let (converted_roots, conversion_errors) =
-                super::renderer_adapter::rsx_to_elements_lossy(root);
+                super::renderer_adapter::rsx_to_elements_lossy_with_context(
+                    root,
+                    &self.style,
+                    self.logical_width,
+                    self.logical_height,
+                );
             if !conversion_errors.is_empty() {
                 eprintln!(
                     "[render_rsx] skipped {} invalid node(s):\n{}",
@@ -1348,6 +1473,9 @@ impl Viewport {
                 ViewportListenerAction::AddMouseUpListenerUntil(handler) => {
                     self.viewport_mouse_up_listeners
                         .push(ViewportMouseUpListener::Until(handler));
+                }
+                ViewportListenerAction::SetFocus(node_id) => {
+                    self.set_focused_node_id(node_id);
                 }
                 ViewportListenerAction::SetCursor(cursor) => {
                     self.set_cursor(cursor);
@@ -1557,13 +1685,22 @@ impl Viewport {
             let keep_focus_requested = event.meta.keep_focus_requested();
             let focus_after = self.focused_node_id();
             let focus_changed_by_handler = focus_after != focus_before;
-            if !keep_focus_requested
-                && !focus_changed_by_handler
-                && focus_before.is_some()
-                && Some(clicked_target) != focus_before
-            {
-                self.set_focused_node_id(None);
-                self.sync_focus_dispatch();
+            let clicked_within_focused_subtree = focus_before.is_some_and(|focus_id| {
+                self.ui_roots.iter().rev().any(|root| {
+                    super::base_component::subtree_contains_node(
+                        root.as_ref(),
+                        focus_id,
+                        clicked_target,
+                    )
+                })
+            });
+            if !focus_changed_by_handler {
+                if keep_focus_requested || clicked_within_focused_subtree {
+                    // Keep existing focus during controlled interactions or subtree clicks.
+                } else if Some(clicked_target) != focus_before {
+                    self.set_focused_node_id(Some(clicked_target));
+                    self.sync_focus_dispatch();
+                }
             }
             self.request_redraw();
         } else if self.focused_node_id().is_some() {
@@ -1721,8 +1858,7 @@ impl Viewport {
             .iter()
             .rev()
             .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y));
-        let is_valid_click =
-            is_valid_click_candidate(pending_click, button, hit_target, x, y);
+        let is_valid_click = is_valid_click_candidate(pending_click, button, hit_target, x, y);
         if !is_valid_click {
             self.ui_roots = roots;
             return false;
@@ -1862,6 +1998,8 @@ impl Viewport {
                 }
             }
         }
+        self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
+        self.sync_focus_dispatch();
         self.ui_roots = roots;
         if handled {
             self.request_redraw();
@@ -2204,13 +2342,23 @@ struct FrameStats {
 }
 
 impl FrameStats {
-    fn new_from_env() -> Self {
+    fn new(enabled: bool) -> Self {
         Self {
-            enabled: std::env::var("RFGUI_TRACE_FPS").is_ok(),
+            enabled,
             last_report_at: Instant::now(),
             frames: 0,
             total_frame_time: Duration::ZERO,
         }
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled == enabled {
+            return;
+        }
+        self.enabled = enabled;
+        self.last_report_at = Instant::now();
+        self.frames = 0;
+        self.total_frame_time = Duration::ZERO;
     }
 
     fn record_frame(&mut self, frame_time: Duration) {

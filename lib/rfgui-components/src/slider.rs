@@ -1,3 +1,4 @@
+use crate::use_theme;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -6,10 +7,7 @@ use rfgui::ui::{
     Binding, RsxComponent, RsxNode, component, on_mouse_down, on_mouse_move, on_mouse_up, props,
     rsx, use_state,
 };
-use rfgui::{
-    BorderRadius, Color, Length, ParsedValue, Position, PropertyId, Style, Transition,
-    TransitionProperty, Transitions,
-};
+use rfgui::{BorderRadius, Length, Position, Transition, TransitionProperty};
 
 pub struct Slider;
 
@@ -50,6 +48,7 @@ fn SliderView(
     max: f64,
     disabled: bool,
 ) -> RsxNode {
+    let theme = use_theme().get();
     let width = 240.0_f32;
     let height = 32.0_f32;
 
@@ -97,16 +96,69 @@ fn SliderView(
     }
 
     let mut root = rsx! {
-        <Element style={slider_root_style(width, height)}>
-            <Element style={slider_rail_style(track_y, width, disabled)} />
-            <Element style={slider_active_style(track_y, thumb_x, disabled)} />
-            <Element style={slider_thumb_style(thumb_x, height, disabled)} />
-            <Element style={slider_value_container_style(width, height)}>
+        <Element style={{
+            width: Length::px(width),
+            height: Length::px(height),
+        }}>
+            <Element style={{
+                position: Position::absolute()
+                    .top(Length::px(track_y))
+                    .left(Length::px(0.0)),
+                width: Length::px(width),
+                height: Length::px(4.0),
+                border_radius: BorderRadius::uniform(Length::px(2.0)),
+                background: if disabled {
+                    theme.color.state.disabled.clone()
+                } else {
+                    theme.color.divider.clone()
+                },
+            }} />
+            <Element style={{
+                position: Position::absolute()
+                    .top(Length::px(track_y))
+                    .left(Length::px(0.0)),
+                width: Length::px(thumb_x),
+                height: Length::px(4.0),
+                border_radius: BorderRadius::uniform(Length::px(2.0)),
+                background: if disabled {
+                    theme.color.border.clone()
+                } else {
+                    theme.color.primary.base.clone()
+                },
+                transition: [
+                    Transition::new(TransitionProperty::Width, theme.motion.duration.fast)
+                        .ease_out(),
+                ],
+            }} />
+            <Element style={{
+                position: Position::absolute()
+                    .top(Length::px(height * 0.5 - 8.0))
+                    .left(Length::px((thumb_x - 8.0).max(0.0))),
+                width: Length::px(16.0),
+                height: Length::px(16.0),
+                border_radius: BorderRadius::uniform(Length::px(8.0)),
+                background: if disabled {
+                    theme.color.border.clone()
+                } else {
+                    theme.color.primary.base.clone()
+                },
+                transition: [
+                    Transition::new(TransitionProperty::Position, theme.motion.duration.fast)
+                        .ease_out(),
+                ],
+            }} />
+            <Element style={{
+                position: Position::absolute()
+                    .top(Length::px(height * 0.5 - 8.0))
+                    .left(Length::px((width + 10.0).max(0.0))),
+                width: Length::px(28.0),
+                height: Length::px(16.0),
+            }}>
                 <Text
-                    font_size=12
+                    font_size={theme.typography.size.xs}
                     line_height=1.0
-                    font="Heiti TC, Noto Sans CJK TC, Roboto"
-                    style={{ color: if disabled { "#9E9E9E" } else { "#374151" } }}
+                    font={theme.typography.font_family.clone()}
+                    style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.secondary.clone() } }}
                 >
                     {format!("{value:.0}")}
                 </Text>
@@ -129,112 +181,6 @@ fn SliderView(
     }
 
     root
-}
-
-fn slider_root_style(width: f32, height: f32) -> Style {
-    let mut style = Style::new();
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-    style
-}
-
-fn slider_rail_style(track_y: f32, width: f32, disabled: bool) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(
-            Position::absolute()
-                .top(Length::px(track_y))
-                .left(Length::px(0.0)),
-        ),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(4.0)));
-    style.set_border_radius(BorderRadius::uniform(Length::px(2.0)));
-    style.insert_color_like(
-        PropertyId::BackgroundColor,
-        if disabled {
-            Color::hex("#E5E7EB")
-        } else {
-            Color::hex("#CFD8DC")
-        },
-    );
-    style
-}
-
-fn slider_active_style(track_y: f32, width: f32, disabled: bool) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(
-            Position::absolute()
-                .top(Length::px(track_y))
-                .left(Length::px(0.0)),
-        ),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(4.0)));
-    style.set_border_radius(BorderRadius::uniform(Length::px(2.0)));
-    style.insert_color_like(
-        PropertyId::BackgroundColor,
-        if disabled {
-            Color::hex("#B0BEC5")
-        } else {
-            Color::hex("#1976D2")
-        },
-    );
-    style.insert(
-        PropertyId::Transition,
-        ParsedValue::Transition(Transitions::single(
-            Transition::new(TransitionProperty::Width, 60).ease_out(),
-        )),
-    );
-    style
-}
-
-fn slider_thumb_style(thumb_x: f32, height: f32, disabled: bool) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(
-            Position::absolute()
-                .top(Length::px(height * 0.5 - 8.0))
-                .left(Length::px((thumb_x - 8.0).max(0.0))),
-        ),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(16.0)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(16.0)));
-    style.set_border_radius(BorderRadius::uniform(Length::px(8.0)));
-    style.insert_color_like(
-        PropertyId::BackgroundColor,
-        if disabled {
-            Color::hex("#B0BEC5")
-        } else {
-            Color::hex("#1976D2")
-        },
-    );
-    style.insert(
-        PropertyId::Transition,
-        ParsedValue::Transition(Transitions::single(
-            Transition::new(TransitionProperty::Position, 60).ease_out(),
-        )),
-    );
-    style
-}
-
-fn slider_value_container_style(width: f32, height: f32) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(
-            Position::absolute()
-                .top(Length::px(height * 0.5 - 8.0))
-                .left(Length::px((width + 10.0).max(0.0))),
-        ),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(28.0)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(16.0)));
-    style
 }
 
 fn normalize_ratio(value: f64, min: f64, max: f64) -> f64 {

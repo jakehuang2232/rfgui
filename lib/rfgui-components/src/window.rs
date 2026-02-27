@@ -3,16 +3,14 @@ use std::fmt;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::use_theme;
 use rfgui::ClipMode::Viewport;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
-    MouseButton, MouseDownHandlerProp, RsxComponent, RsxNode, ViewportListenerHandle,
-    on_mouse_down, props, rsx, use_state,
+    BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp, RsxComponent, RsxNode,
+    ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
 };
-use rfgui::{
-    AlignItems, Border, BorderRadius, BoxShadow, Color, Cursor, Display, FontWeight,
-    JustifyContent, Length, Padding, Position,
-};
+use rfgui::{AlignItems, Border, BorderRadius, Color, ColorLike, Cursor, Display, FontWeight, JustifyContent, Length, Padding, Position, ScrollDirection};
 
 const MIN_WIDTH: f32 = 220.0;
 const MIN_HEIGHT: f32 = 140.0;
@@ -128,6 +126,8 @@ pub struct WindowProps {
     pub width: Option<f64>,
     pub height: Option<f64>,
     pub on_resize: Option<ResizeHandlerProp>,
+    pub on_focus: Option<FocusHandlerProp>,
+    pub on_blur: Option<BlurHandlerProp>,
     pub window_slots: Option<WindowSlotsProp>,
     pub children: Vec<RsxNode>,
 }
@@ -181,6 +181,8 @@ impl RsxComponent<WindowProps> for Window {
                 initial_width={width}
                 initial_height={height}
                 on_resize={props.on_resize}
+                on_focus={props.on_focus}
+                on_blur={props.on_blur}
                 window_slots={props.window_slots}
                 children={props.children}
             />
@@ -195,9 +197,12 @@ fn WindowView(
     initial_width: f32,
     initial_height: f32,
     on_resize: Option<ResizeHandlerProp>,
+    on_focus: Option<FocusHandlerProp>,
+    on_blur: Option<BlurHandlerProp>,
     window_slots: Option<WindowSlotsProp>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
+    let theme = use_theme().get();
     let position = use_state(|| (24.0_f32, 24.0_f32));
     let size = use_state(|| (initial_width, initial_height));
     let interaction = use_state(|| WindowInteraction::Idle);
@@ -226,41 +231,40 @@ fn WindowView(
         root_border_radius = root_style.border_radius;
     }
 
-    let root_background = root_background.unwrap_or(Color::rgba(0, 0, 0, 0));
+    let root_background = root_background
+        .unwrap_or_else(|| color_like_to_color(theme.color.layer.raised.as_ref()));
     let root_border =
-        root_border.unwrap_or(Border::uniform(Length::px(1.0), &Color::hex("#94A3B8")));
-    let root_border_radius = root_border_radius.unwrap_or(BorderRadius::uniform(Length::px(10.0)));
+        root_border.unwrap_or(Border::uniform(Length::px(1.0), theme.color.border.as_ref()));
+    let root_border_radius =
+        root_border_radius.unwrap_or(theme.component.card.radius);
 
     let title_bar_height_length = title_bar_style_slot
         .and_then(|style| style.height)
         .unwrap_or(Length::px(TITLE_BAR_HEIGHT));
-    let title_bar_height_px = match title_bar_height_length {
-        Length::Px(value) => value,
-        Length::Percent(value) => height * (value / 100.0),
-        Length::Vw(value) => width * (value / 100.0),
-        Length::Vh(value) => height * (value / 100.0),
-        Length::Zero => 0.0,
-    };
+    let title_bar_height_px = title_bar_height_length
+        .resolve_with_base(Some(height), width, height)
+        .unwrap_or(0.0);
     let content_height = (height - title_bar_height_px).max(0.0);
 
     let title_bar_background = title_bar_style_slot
         .and_then(|style| style.background)
-        .unwrap_or(Color::rgb(226, 232, 240));
+        .unwrap_or_else(|| color_like_to_color(theme.color.layer.inverse.as_ref()));
     let title_bar_padding = title_bar_style_slot
         .and_then(|style| style.padding)
-        .unwrap_or(Padding::uniform(Length::px(0.0)).x(Length::px(8.0)));
+        .unwrap_or(Padding::uniform(Length::px(0.0)).x(theme.spacing.sm));
     let title_text_color = title_text_style_slot
         .and_then(|style| style.color)
-        .unwrap_or(Color::rgb(15, 23, 42));
+        .unwrap_or_else(|| color_like_to_color(theme.color.layer.on_inverse.as_ref()));
     let title_text_weight = title_text_style_slot
         .and_then(|style| style.font_weight)
         .unwrap_or(FontWeight::semi_bold());
     let content_padding = content_style_slot
         .and_then(|style| style.padding)
-        .unwrap_or(Padding::uniform(Length::px(0.0)));
+        .unwrap_or(theme.component.card.padding);
+    let content_text_color = theme.color.text.primary;
     let content_background = content_style_slot
         .and_then(|style| style.background)
-        .unwrap_or(Color::rgb(255, 255, 255));
+        .unwrap_or_else(|| color_like_to_color(theme.color.layer.surface.as_ref()));
 
     let title_down: MouseDownHandlerProp = {
         let interaction = interaction.binding();
@@ -270,6 +274,7 @@ fn WindowView(
             if !draggable || event.mouse.button != Some(MouseButton::Left) {
                 return;
             }
+            event.viewport.set_focus(Some(event.meta.current_target_id()));
             let (start_x, start_y) = position.get();
             interaction.set(WindowInteraction::Dragging {
                 start_mouse_x: event.mouse.viewport_x,
@@ -334,6 +339,7 @@ fn WindowView(
             if event.mouse.button != Some(MouseButton::Left) {
                 return;
             }
+            event.viewport.set_focus(Some(event.meta.current_target_id()));
             event.viewport.set_cursor(Some(edge.cursor()));
             let (start_x, start_y) = position.get();
             let (start_width, start_height) = size.get();
@@ -453,24 +459,24 @@ fn WindowView(
                 border: root_border,
                 border_radius: root_border_radius,
                 box_shadow: vec![
-                    BoxShadow::new()
-                        .color(Color::hex("#000000ff"))
-                        .offset_y(8.0)
-                        .blur(24.0)
-                        .spread(0.0),
+                    theme.shadow.level_3,
                 ],
             }}
+            on_focus={on_focus}
+            on_blur={on_blur}
         >
             <Element
                 style={{
                     height: title_bar_height_length,
                     width: Length::percent(100.0),
-                    display: Display::flow().row().no_wrap(),
+                    display: Display::flow()
+                        .row()
+                        .no_wrap()
+                        .justify_content(JustifyContent::SpaceBetween),
                     align_items: AlignItems::Center,
-                    justify_content: JustifyContent::SpaceBetween,
                     padding: title_bar_padding,
                     background: title_bar_background,
-                    border_radius: BorderRadius::uniform(Length::px(0.0)).top(Length::px(10.0)),
+                    border_radius: BorderRadius::uniform(Length::px(0.0)).top(theme.radius.lg),
                 }}
                 on_mouse_down={title_down}
             >
@@ -483,6 +489,8 @@ fn WindowView(
                     padding: content_padding,
                     display: Display::flow().column(),
                     background: content_background,
+                    color: content_text_color,
+                    scroll_direction: ScrollDirection::Both,
                 }}
             >
                 {children}
@@ -561,4 +569,9 @@ fn WindowView(
             />
         </Element>
     }
+}
+
+fn color_like_to_color(color: &dyn ColorLike) -> Color {
+    let [r, g, b, a] = color.to_rgba_u8();
+    Color::rgba(r, g, b, a)
 }

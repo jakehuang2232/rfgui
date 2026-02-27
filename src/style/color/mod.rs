@@ -30,7 +30,7 @@ impl Color {
     pub fn hex(raw: &str) -> HexColor<'_> {
         HexColor::new(raw)
     }
-    
+
     pub fn transparent() -> Self {
         Self::rgba(0, 0, 0, 0)
     }
@@ -57,11 +57,25 @@ pub trait ColorLike {
             a: rgba[3] as f64,
         }
     }
+    
+    fn is_transparent(&self) -> bool {
+        self.to_rgba_u8()[3] != 255
+    }
 }
 
 impl Clone for Box<dyn ColorLike> {
     fn clone(&self) -> Self {
         self.box_clone()
+    }
+}
+
+impl ColorLike for Box<dyn ColorLike> {
+    fn box_clone(&self) -> Box<dyn ColorLike> {
+        (**self).box_clone()
+    }
+
+    fn to_rgba_f32(&self) -> [f32; 4] {
+        (**self).to_rgba_f32()
     }
 }
 
@@ -77,6 +91,12 @@ impl ColorLike for Color {
             srgb_to_linear(self.b),
             self.a as f32 / 255.0,
         ]
+    }
+}
+
+impl Default for Box<dyn ColorLike> {
+    fn default() -> Self {
+        Box::new(Color::rgb(0, 0, 0))
     }
 }
 

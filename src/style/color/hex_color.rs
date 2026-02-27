@@ -6,6 +6,15 @@ pub struct HexColor<'a> {
     value: [f32; 4],
 }
 
+impl<'a> Clone for HexColor<'a> {
+    fn clone(&self) -> Self {
+        HexColor {
+            raw: self.raw.clone(),
+            value: self.value,
+        }
+    }
+}
+
 impl<'a> HexColor<'a> {
     pub fn new(hex: impl Into<Cow<'a, str>>) -> Self {
         let hex = hex.into();

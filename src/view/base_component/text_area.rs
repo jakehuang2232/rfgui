@@ -1666,11 +1666,16 @@ impl EventTarget for TextArea {
         event: &mut crate::ui::BlurEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
+        let had_selection = self.selection_range_chars().is_some();
         self.is_focused = false;
         self.mouse_selecting = false;
+        self.clear_selection();
         self.cached_ime_cursor_rect = None;
         self.glyph_layout_valid = false;
         self.clear_preedit();
+        if had_selection {
+            control.request_redraw();
+        }
         self.element.dispatch_blur(event, control);
     }
 
@@ -1902,7 +1907,9 @@ impl Renderable for TextArea {
 #[cfg(test)]
 mod tests {
     use super::TextArea;
-    use crate::view::base_component::{LayoutPlacement, Layoutable};
+    use crate::ui::{BlurEvent, EventMeta};
+    use crate::view::base_component::{EventTarget, LayoutPlacement, Layoutable};
+    use crate::view::{Viewport, ViewportControl};
 
     #[test]
     fn multiline_false_normalizes_newline() {
@@ -1970,5 +1977,23 @@ mod tests {
         area.cursor_char = 2;
         area.set_preedit("中文".to_string(), None);
         assert_eq!(area.ime_preedit_range_chars(), Some((2, 4)));
+    }
+
+    #[test]
+    fn blur_clears_text_selection() {
+        let mut area = TextArea::from_content("hello world");
+        area.selection_anchor_char = Some(0);
+        area.selection_focus_char = Some(5);
+        area.is_focused = true;
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut blur = BlurEvent {
+            meta: EventMeta::new(0),
+        };
+        EventTarget::dispatch_blur(&mut area, &mut blur, &mut control);
+
+        assert!(area.selection_range_chars().is_none());
+        assert!(!area.is_focused);
     }
 }
