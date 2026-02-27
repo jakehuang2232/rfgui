@@ -1,7 +1,7 @@
 use rfgui::{ColorLike, JustifyContent, Transition, TransitionProperty};
 use rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme, Window,
-    WindowProps,
+    WindowProps, on_move,
     init_theme, set_theme, use_theme,
 };
 use std::sync::Arc;
@@ -33,24 +33,55 @@ struct ManagedWindow {
 
 struct WindowManager {
     windows: Vec<ManagedWindow>,
+    positions: Binding<Vec<(f32, f32)>>,
 }
 
 impl WindowManager {
-    fn new() -> Self {
+    const WINDOW_DEFAULT_WIDTH: f64 = 360.0;
+    const WINDOW_DEFAULT_HEIGHT: f64 = 240.0;
+    const WINDOW_INIT_OFFSET: f32 = 48.0;
+
+    fn new(positions: Binding<Vec<(f32, f32)>>) -> Self {
         Self {
             windows: Vec::new(),
+            positions,
         }
     }
 
-    fn push(&mut self, title: impl Into<String>, children: Vec<RsxNode>) {
+    fn push(&mut self, title: impl Into<String>, children: Vec<RsxNode>, size: (f64, f64)) {
         let id = self.windows.len();
+        let positions_state = self.positions.clone();
+        positions_state.update(|positions| {
+            while positions.len() <= id {
+                let index = positions.len() as f32;
+                let offset = (index + 1.0) * Self::WINDOW_INIT_OFFSET;
+                positions.push((offset, offset));
+            }
+        });
+        let position = positions_state
+            .get()
+            .get(id)
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        let on_move_handler = {
+            let positions_state = self.positions.clone();
+            on_move(move |x, y| {
+                positions_state.update(|positions| {
+                    if let Some(slot) = positions.get_mut(id) {
+                        *slot = (x, y);
+                    }
+                });
+            })
+        };
         self.windows.push(ManagedWindow {
             id,
             props: WindowProps {
                 title: title.into(),
                 draggable: Some(true),
-                width: Some(360.0),
-                height: Some(240.0),
+                width: Some(size.0),
+                height: Some(size.1),
+                position: Some(position),
+                on_move: Some(on_move_handler),
                 on_resize: None,
                 on_focus: None,
                 on_blur: None,
@@ -85,6 +116,8 @@ impl WindowManager {
                         draggable={props.draggable}
                         width={props.width}
                         height={props.height}
+                        position={props.position}
+                        on_move={props.on_move.clone()}
                         on_resize={props.on_resize.clone()}
                         on_blur={props.on_blur.clone()}
                     >
@@ -153,6 +186,7 @@ fn MainScene() -> RsxNode {
     let debug_geometry_overlay = use_state(|| false);
     let panel_size = globalState(|| String::from("360 x 240"));
     let window_z_order = use_state(Vec::<usize>::new);
+    let window_positions = use_state(Vec::<(f32, f32)>::new);
 
     let click_count_value = click_count.get();
     let message_value = message.get();
@@ -179,7 +213,7 @@ fn MainScene() -> RsxNode {
     let themeState = use_theme();
     let theme = themeState.get();
 
-    let mut window_manager = WindowManager::new();
+    let mut window_manager = WindowManager::new(window_positions.binding());
     window_manager.push(
         "Inspector Panel",
         vec![rsx! {
@@ -188,18 +222,6 @@ fn MainScene() -> RsxNode {
                 display: Display::flow().column().no_wrap(),
                 width: Length::percent(100.0),
             }}>
-                <Text>Drag title bar to move</Text>
-                <Text>Drag bottom-right handle to resize</Text>
-                <Select
-                    data={(1..100).collect::<Vec<i32>>()}
-                    to_label={|item, index| format!("{} Hello, Very Long Item! Long Long Long Long\n newLine", item)}
-                    to_value={|item, index| format!("{}", item)}
-                    value={selected_value.binding()}
-                />
-                <Button
-                    label="Action"
-                    variant={Some(ButtonVariant::Outlined)}
-                />
                 <Switch
                     label="Dark mode"
                     binding={switch_on.binding()}
@@ -210,7 +232,20 @@ fn MainScene() -> RsxNode {
                 />
             </Element>
         }],
+        (
+            WindowManager::WINDOW_DEFAULT_WIDTH,
+            WindowManager::WINDOW_DEFAULT_HEIGHT,
+        ),
     );
+
+    let justify_content = use_state(|| JustifyContent::Start);
+    let justify_content_start = justify_content.clone();
+    let justify_content_center = justify_content.clone();
+    let justify_content_end = justify_content.clone();
+    let justify_content_space_between = justify_content.clone();
+    let justify_content_space_around = justify_content.clone();
+    let justify_content_space_evenly = justify_content.clone();
+    
     window_manager.push(
         "Render test",
         vec![rsx! {
@@ -218,12 +253,24 @@ fn MainScene() -> RsxNode {
                 width: Length::percent(100.0),
                 height: Length::percent(100.0),
                 background: Color::transparent(),
-                display: Display::flow().row().wrap().justify_content(JustifyContent::SpaceAround),
-                gap: Length::px(24.0),
+                display: Display::flow().row().wrap().justify_content(justify_content.get()),
+                gap: theme.spacing.md,
                 padding: Padding::uniform(Length::px(20.0)),
                 scroll_direction: ScrollDirection::Vertical,
                 font: FontFamily::new(["Noto Sans CJK TC", "PingFang TC"]),
             }} anchor="root">
+                <Element style={{
+                    width: Length::percent(100.0),
+                    display: Display::flow().row().wrap(),
+                    gap: theme.spacing.md,
+                }}>
+                    <Button label="Start" on_click={move |_| {justify_content_start.set(JustifyContent::Start);}} />
+                    <Button label="Center" on_click={move |_| {justify_content_center.set(JustifyContent::Center);}} />
+                    <Button label="End" on_click={move |_| {justify_content_end.set(JustifyContent::End);}} />
+                    <Button label="SpaceBetween" on_click={move |_| {justify_content_space_between.set(JustifyContent::SpaceBetween);}} />
+                    <Button label="SpaceAround" on_click={move |_| {justify_content_space_around.set(JustifyContent::SpaceAround);}} />
+                    <Button label="SpaceEvenly" on_click={move |_| {justify_content_space_evenly.set(JustifyContent::SpaceEvenly);}} />
+                </Element>
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
@@ -280,7 +327,7 @@ fn MainScene() -> RsxNode {
                     width: Length::px(170.0),
                     height: Length::px(170.0),
                     background: "#e06c75",
-                    border: Border::uniform(Length::px(20.0), &Color::hex("#21252b")),
+                    border: Border::uniform(Length::px(20.0), &Color::hex("#58622b")),
                     border_radius: 16,
                     hover: {
                         border: Border::uniform(Length::px(20.0), &Color::hex("#61afef")),
@@ -454,6 +501,12 @@ fn MainScene() -> RsxNode {
                             variant={Some(ButtonVariant::Text)}
                         />
                     </Element>
+                    <Select
+                        data={(1..100).collect::<Vec<i32>>()}
+                        to_label={|item, index| format!("{} Hello, Very Long Item! Long Long Long Long\n newLine", item)}
+                        to_value={|item, index| format!("{}", item)}
+                        value={selected_value.binding()}
+                    />
                     <Checkbox
                         label="Enable feature"
                         binding={checked.binding()}
@@ -485,30 +538,6 @@ fn MainScene() -> RsxNode {
                             debug_geometry_overlay_value
                         )}
                     </Text>
-                </Element>
-                <Element style={{
-                    width: Length::px(420.0),
-                    height: Length::px(340.0),
-                    background: "#0b1324",
-                    border: Border::uniform(Length::px(2.0), &Color::hex("#1e40af")),
-                    border_radius: 14,
-                    padding: Padding::uniform(Length::px(12.0)),
-                    display: Display::flow().column().no_wrap(),
-                    gap: Length::px(8.0),
-                }}>
-                    <Text font_size=14 style={{ color: "#dbeafe" }}>Window Component Demo</Text>
-                    <Text font_size=12 style={{ color: "#93c5fd" }}>
-                        {format!("size: {}", panel_size.get())}
-                    </Text>
-                    <Element style={{
-                        width: Length::percent(100.0),
-                        height: Length::px(270.0),
-                        background: "#0f172a",
-                        border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
-                        border_radius: 10,
-                    }}>
-    
-                    </Element>
                 </Element>
                 <Element style={{
                     width: Length::percent(100.0),
@@ -649,6 +678,7 @@ fn MainScene() -> RsxNode {
                 </Element>
             </Element>
         }],
+        (640.0, 420.0),
     );
     let managed_windows = window_manager.into_nodes(window_z_order.binding());
 

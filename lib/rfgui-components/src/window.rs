@@ -65,7 +65,59 @@ where
     ResizeHandlerProp::new(handler)
 }
 
+#[derive(Clone)]
+pub struct MoveHandlerProp {
+    id: u64,
+    handler: Rc<RefCell<dyn FnMut(f32, f32)>>,
+}
+
+impl MoveHandlerProp {
+    pub fn new<F>(handler: F) -> Self
+    where
+        F: FnMut(f32, f32) + 'static,
+    {
+        Self {
+            id: next_move_handler_id(),
+            handler: Rc::new(RefCell::new(handler)),
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn call(&self, x: f32, y: f32) {
+        (self.handler.borrow_mut())(x, y);
+    }
+}
+
+impl PartialEq for MoveHandlerProp {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl fmt::Debug for MoveHandlerProp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MoveHandlerProp")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
+pub fn on_move<F>(handler: F) -> MoveHandlerProp
+where
+    F: FnMut(f32, f32) + 'static,
+{
+    MoveHandlerProp::new(handler)
+}
+
 fn next_resize_handler_id() -> u64 {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn next_move_handler_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
@@ -125,6 +177,8 @@ pub struct WindowProps {
     pub draggable: Option<bool>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub position: Option<(f32, f32)>,
+    pub on_move: Option<MoveHandlerProp>,
     pub on_resize: Option<ResizeHandlerProp>,
     pub on_focus: Option<FocusHandlerProp>,
     pub on_blur: Option<BlurHandlerProp>,
@@ -180,6 +234,8 @@ impl RsxComponent<WindowProps> for Window {
                 draggable={props.draggable.unwrap_or(true)}
                 initial_width={width}
                 initial_height={height}
+                position={props.position}
+                on_move={props.on_move}
                 on_resize={props.on_resize}
                 on_focus={props.on_focus}
                 on_blur={props.on_blur}
@@ -196,6 +252,8 @@ fn WindowView(
     draggable: bool,
     initial_width: f32,
     initial_height: f32,
+    position: Option<(f32, f32)>,
+    on_move: Option<MoveHandlerProp>,
     on_resize: Option<ResizeHandlerProp>,
     on_focus: Option<FocusHandlerProp>,
     on_blur: Option<BlurHandlerProp>,
@@ -203,12 +261,12 @@ fn WindowView(
     children: Vec<RsxNode>,
 ) -> RsxNode {
     let theme = use_theme().get();
-    let position = use_state(|| (24.0_f32, 24.0_f32));
+    let position_state = use_state(|| position.unwrap_or((0.0, 0.0)));
     let size = use_state(|| (initial_width, initial_height));
     let interaction = use_state(|| WindowInteraction::Idle);
     let viewport_listeners = use_state(WindowViewportListenerState::default);
 
-    let (x, y) = position.get();
+    let (x, y) = position.unwrap_or_else(|| position_state.get());
     let (width, height) = size.get();
     let (root_style_slot, title_bar_style_slot, title_text_style_slot, content_style_slot) =
         if let Some(slots) = window_slots {
@@ -268,14 +326,17 @@ fn WindowView(
 
     let title_down: MouseDownHandlerProp = {
         let interaction = interaction.binding();
-        let position = position.binding();
+        let position_state = position_state.binding();
+        let current_position = (x, y);
+        let on_move = on_move.clone();
+        let controlled = position.is_some();
         let viewport_listeners = viewport_listeners.binding();
         on_mouse_down(move |event| {
             if !draggable || event.mouse.button != Some(MouseButton::Left) {
                 return;
             }
             event.viewport.set_focus(Some(event.meta.current_target_id()));
-            let (start_x, start_y) = position.get();
+            let (start_x, start_y) = current_position;
             interaction.set(WindowInteraction::Dragging {
                 start_mouse_x: event.mouse.viewport_x,
                 start_mouse_y: event.mouse.viewport_y,
@@ -290,7 +351,8 @@ fn WindowView(
                 event.viewport.remove_listener(handle);
             }
             let interaction_for_move = interaction.clone();
-            let position_for_move = position.clone();
+            let position_for_move = position_state.clone();
+            let on_move_for_move = on_move.clone();
             let move_listener =
                 event.viewport.add_mouse_move_listener(
                     move |move_event| match interaction_for_move.get() {
@@ -302,7 +364,12 @@ fn WindowView(
                         } => {
                             let next_x = start_x + (move_event.mouse.viewport_x - start_mouse_x);
                             let next_y = start_y + (move_event.mouse.viewport_y - start_mouse_y);
-                            position_for_move.set((next_x, next_y));
+                            if !controlled {
+                                position_for_move.set((next_x, next_y));
+                            }
+                            if let Some(handler) = &on_move_for_move {
+                                handler.call(next_x, next_y);
+                            }
                             move_event.meta.stop_propagation();
                         }
                         WindowInteraction::Resizing { .. } => {}
@@ -332,7 +399,10 @@ fn WindowView(
     let make_resize_down = |edge: ResizeEdge| {
         let interaction = interaction.binding();
         let size = size.binding();
-        let position = position.binding();
+        let position_state = position_state.binding();
+        let current_position = (x, y);
+        let on_move = on_move.clone();
+        let controlled = position.is_some();
         let on_resize = on_resize.clone();
         let viewport_listeners = viewport_listeners.binding();
         on_mouse_down(move |event| {
@@ -341,7 +411,7 @@ fn WindowView(
             }
             event.viewport.set_focus(Some(event.meta.current_target_id()));
             event.viewport.set_cursor(Some(edge.cursor()));
-            let (start_x, start_y) = position.get();
+            let (start_x, start_y) = current_position;
             let (start_width, start_height) = size.get();
             interaction.set(WindowInteraction::Resizing {
                 edge,
@@ -361,7 +431,8 @@ fn WindowView(
             }
             let interaction_for_move = interaction.clone();
             let size_for_move = size.clone();
-            let position_for_move = position.clone();
+            let position_for_move = position_state.clone();
+            let on_move_for_move = on_move.clone();
             let on_resize_for_move = on_resize.clone();
             let move_listener = event.viewport.add_mouse_move_listener(move |move_event| {
                 if let WindowInteraction::Resizing {
@@ -411,8 +482,13 @@ fn WindowView(
                         }
                     }
 
-                    position_for_move.set((next_x, next_y));
+                    if !controlled {
+                        position_for_move.set((next_x, next_y));
+                    }
                     size_for_move.set((next_width, next_height));
+                    if let Some(handler) = &on_move_for_move {
+                        handler.call(next_x, next_y);
+                    }
                     if let Some(handler) = &on_resize_for_move {
                         handler.call(next_width, next_height);
                     }
