@@ -23,6 +23,7 @@ use winit::keyboard::Key;
 use winit::window::{CursorIcon, Window as WinitWindow, WindowId};
 
 static DEBUG_GEOMETRY_OVERLAY: AtomicBool = AtomicBool::new(false);
+static DEBUG_RENDER_TIME: AtomicBool = AtomicBool::new(false);
 static THEME_DARK_MODE: AtomicBool = AtomicBool::new(true);
 
 struct ManagedWindow {
@@ -181,6 +182,7 @@ fn MainScene() -> RsxNode {
     let slider_value = use_state(|| 42.0_f64);
     let switch_on = use_state(|| THEME_DARK_MODE.load(Ordering::Relaxed));
     let debug_geometry_overlay = use_state(|| false);
+    let debug_render_time = use_state(|| false);
     let style_transition_enabled = use_state(|| true);
     let style_target_alt = use_state(|| false);
     let layout_transition_enabled = use_state(|| true);
@@ -199,6 +201,7 @@ fn MainScene() -> RsxNode {
     let slider_value_value = slider_value.get();
     let switch_on_value = switch_on.get();
     let debug_geometry_overlay_value = debug_geometry_overlay.get();
+    let debug_render_time_value = debug_render_time.get();
     let style_transition_enabled_value = style_transition_enabled.get();
     let style_target_alt_value = style_target_alt.get();
     let layout_transition_enabled_value = layout_transition_enabled.get();
@@ -214,6 +217,7 @@ fn MainScene() -> RsxNode {
         }
     }
     DEBUG_GEOMETRY_OVERLAY.store(debug_geometry_overlay_value, Ordering::Relaxed);
+    DEBUG_RENDER_TIME.store(debug_render_time_value, Ordering::Relaxed);
     let increment_state = click_count.clone();
     let increment = on_click(move |event| {
         increment_state.update(|v| *v += 1);
@@ -238,6 +242,10 @@ fn MainScene() -> RsxNode {
                 <Switch
                     label="Debug Geometry Overlay"
                     binding={debug_geometry_overlay.binding()}
+                />
+                <Switch
+                    label="Debug Render Time"
+                    binding={debug_render_time.binding()}
                 />
             </Element>
         }],
@@ -1023,6 +1031,7 @@ impl ApplicationHandler for App {
                 if let (Some(viewport), Some(app)) = (&mut self.viewport, &self.app) {
                     viewport
                         .set_debug_geometry_overlay(DEBUG_GEOMETRY_OVERLAY.load(Ordering::Relaxed));
+                    viewport.set_debug_trace_render_time(DEBUG_RENDER_TIME.load(Ordering::Relaxed));
                     let _ = viewport.render_rsx(&app);
                 }
                 self.mark_ime_dirty();
