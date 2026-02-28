@@ -141,6 +141,7 @@ pub struct ComponentTheme {
     pub input: InputTheme,
     pub card: CardTheme,
     pub select: SelectTheme,
+    pub slider: SliderTheme,
 }
 
 #[derive(Clone)]
@@ -172,6 +173,24 @@ pub struct SelectTheme {
     pub option_disabled_background: Box<dyn ColorLike>,
     pub option_selected_text: Box<dyn ColorLike>,
     pub option_disabled_text: Box<dyn ColorLike>,
+}
+
+#[derive(Clone)]
+pub struct SliderTheme {
+    pub width: f32,
+    pub height: f32,
+    pub frame_radius: BorderRadius,
+    pub frame_background: Box<dyn ColorLike>,
+    pub frame_hover_background: Box<dyn ColorLike>,
+    pub frame_active_background: Box<dyn ColorLike>,
+    pub frame_disabled_background: Box<dyn ColorLike>,
+    pub grab_padding: f32,
+    pub grab_width: f32,
+    pub grab_radius: BorderRadius,
+    pub grab_background: Box<dyn ColorLike>,
+    pub grab_hover_background: Box<dyn ColorLike>,
+    pub grab_active_background: Box<dyn ColorLike>,
+    pub grab_disabled_background: Box<dyn ColorLike>,
 }
 
 impl Theme {
@@ -303,6 +322,22 @@ impl Theme {
                     option_selected_text: rgb(64, 120, 242),
                     option_disabled_text: rgb(160, 161, 167),
                 },
+                slider: SliderTheme {
+                    width: 240.0,
+                    height: 18.0,
+                    frame_radius: BorderRadius::uniform(Length::px(4.0)),
+                    frame_background: rgb(229, 229, 230),
+                    frame_hover_background: rgb(220, 223, 230),
+                    frame_active_background: rgb(210, 214, 224),
+                    frame_disabled_background: rgba(160, 161, 167, 96),
+                    grab_padding: 2.0,
+                    grab_width: 14.0,
+                    grab_radius: BorderRadius::uniform(Length::px(3.0)),
+                    grab_background: rgb(64, 120, 242),
+                    grab_hover_background: rgb(77, 134, 247),
+                    grab_active_background: rgb(48, 103, 227),
+                    grab_disabled_background: rgba(160, 161, 167, 192),
+                },
             },
         }
     }
@@ -336,9 +371,9 @@ impl Theme {
                     on_inverse: rgb(40, 44, 52),
                 },
                 text: TextColorSet {
-                    primary: rgb(171, 178, 191),
+                    primary: hex("#b1b9c9"),
                     secondary: rgb(127, 132, 142),
-                    disabled: rgb(92, 99, 112),
+                    disabled: hex("#7c8189"),
                 },
                 border: Box::new(border_color),
                 divider: rgb(44, 49, 60),
@@ -435,6 +470,22 @@ impl Theme {
                     option_selected_text: rgb(97, 175, 239),
                     option_disabled_text: rgb(92, 99, 112),
                 },
+                slider: SliderTheme {
+                    width: 240.0,
+                    height: 18.0,
+                    frame_radius: BorderRadius::uniform(Length::px(4.0)),
+                    frame_background: rgb(44, 49, 60),
+                    frame_hover_background: rgb(56, 62, 74),
+                    frame_active_background: rgb(64, 70, 84),
+                    frame_disabled_background: rgba(92, 99, 112, 96),
+                    grab_padding: 2.0,
+                    grab_width: 14.0,
+                    grab_radius: BorderRadius::uniform(Length::px(3.0)),
+                    grab_background: rgb(77, 139, 189),
+                    grab_hover_background: rgb(78, 131, 174),
+                    grab_active_background: rgb(55, 121, 178),
+                    grab_disabled_background: rgba(92, 99, 112, 192),
+                },
             },
         }
     }
@@ -451,6 +502,11 @@ pub fn use_theme() -> GlobalState<Theme> {
 
 pub fn set_theme(theme: Theme) {
     init_theme(theme);
+}
+
+fn hex(hex_string: &str) -> Box<dyn ColorLike> {
+    let [r, g, b, a] = Color::hex(hex_string).to_rgba_u8();
+    Box::new(Color::rgba(r, g, b, a))
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> Box<dyn ColorLike> {
