@@ -403,7 +403,7 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
+                    background: theme.color.primary.base.clone(),
                     border: Border::uniform(Length::px(10.0), &Color::hex("#274f8b"))
                         .top(Some(Length::px(20.0)), Some(&Color::hex("#e06c75")))
                         .left(Some(Length::px(15.0)), Some(&Color::hex("#2db353"))),
