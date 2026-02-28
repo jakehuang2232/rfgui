@@ -176,11 +176,13 @@ fn MainScene() -> RsxNode {
     let click_count = globalState(|| 0_i32);
     let message =
         use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
-    let checked = use_state(|| true);
-    let number_value = use_state(|| 3.0_f64);
-    let selected_value = use_state(|| String::from("Option A"));
-    let slider_value = use_state(|| 42.0_f64);
     let switch_on = use_state(|| THEME_DARK_MODE.load(Ordering::Relaxed));
+    let component_test_count = use_state(|| 0_i32);
+    let component_test_checked = use_state(|| false);
+    let component_test_number = use_state(|| 5.0_f64);
+    let component_test_selected = use_state(|| String::from("Option A"));
+    let component_test_slider = use_state(|| 25.0_f64);
+    let component_test_switch = use_state(|| true);
     let debug_geometry_overlay = use_state(|| false);
     let debug_render_time = use_state(|| false);
     let style_transition_enabled = use_state(|| true);
@@ -189,17 +191,18 @@ fn MainScene() -> RsxNode {
     let layout_expanded = use_state(|| false);
     let visual_transition_enabled = use_state(|| true);
     let visual_at_end = use_state(|| false);
-    let panel_size = globalState(|| String::from("360 x 240"));
     let window_z_order = use_state(Vec::<usize>::new);
     let window_positions = use_state(Vec::<(f32, f32)>::new);
 
     let click_count_value = click_count.get();
     let message_value = message.get();
-    let checked_value = checked.get();
-    let number_value_value = number_value.get();
-    let selected_value_value = selected_value.get();
-    let slider_value_value = slider_value.get();
     let switch_on_value = switch_on.get();
+    let component_test_count_value = component_test_count.get();
+    let component_test_checked_value = component_test_checked.get();
+    let component_test_number_value = component_test_number.get();
+    let component_test_selected_value = component_test_selected.get();
+    let component_test_slider_value = component_test_slider.get();
+    let component_test_switch_value = component_test_switch.get();
     let debug_geometry_overlay_value = debug_geometry_overlay.get();
     let debug_render_time_value = debug_render_time.get();
     let style_transition_enabled_value = style_transition_enabled.get();
@@ -253,6 +256,76 @@ fn MainScene() -> RsxNode {
             WindowManager::WINDOW_DEFAULT_WIDTH,
             WindowManager::WINDOW_DEFAULT_HEIGHT,
         ),
+    );
+    let component_test_inc = component_test_count.clone();
+    let component_test_options = (1..=1000)
+        .map(|index| format!("Option {index}"))
+        .collect::<Vec<String>>();
+    window_manager.push(
+        "Component Test",
+        vec![rsx! {
+            <Element style={{
+                width: Length::percent(100.0),
+                height: Length::percent(100.0),
+                display: Display::flow().column().no_wrap(),
+                gap: Length::px(10.0),
+                padding: Padding::uniform(Length::px(12.0)),
+            }}>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    display: Display::flow().row().wrap(),
+                    gap: Length::px(8.0),
+                }}>
+                    <Button
+                        label="Count +1"
+                        variant={Some(ButtonVariant::Contained)}
+                        on_click={move |_| { component_test_inc.update(|v| *v += 1); }}
+                    />
+                    <Button
+                        label="Count Reset"
+                        variant={Some(ButtonVariant::Outlined)}
+                        on_click={move |_| { component_test_count.set(0); }}
+                    />
+                </Element>
+                <Checkbox
+                    label="Enable flag"
+                    binding={component_test_checked.binding()}
+                />
+                <Switch
+                    label="Switch state"
+                    binding={component_test_switch.binding()}
+                />
+                <NumberField
+                    binding={component_test_number.binding()}
+                    min=0.0
+                    max=100.0
+                    step=1.0
+                />
+                <Select
+                    data={component_test_options}
+                    to_label={select_label}
+                    to_value={|item, _| item.clone()}
+                    value={component_test_selected.binding()}
+                />
+                <Slider
+                    binding={component_test_slider.binding()}
+                    min=0.0
+                    max=100.0
+                />
+                <Text font_size=12 style={{ color: "#93c5fd" }}>
+                    {format!(
+                        "count={} checked={} number={:.0} selected={} slider={:.0} switch={}",
+                        component_test_count_value,
+                        component_test_checked_value,
+                        component_test_number_value,
+                        component_test_selected_value,
+                        component_test_slider_value,
+                        component_test_switch_value
+                    )}
+                </Text>
+            </Element>
+        }],
+        (460.0, 380.0),
     );
 
     let justify_content = use_state(|| JustifyContent::Start);
@@ -491,72 +564,6 @@ fn MainScene() -> RsxNode {
                     </TextArea>
                 </Element>
                 <Element style={{
-                    width: Length::px(390.0),
-                    height: Length::px(290.0),
-                    background: "#0f172a",
-                    border: Border::uniform(Length::px(2.0), &Color::hex("#1d4ed8")),
-                    border_radius: 14,
-                    display: Display::flow().column().no_wrap(),
-                    gap: Length::px(8.0),
-                    padding: Padding::uniform(Length::px(12.0)),
-                }}>
-                    <Text font_size=14 style={{ color: "#e2e8f0" }} >MUI Components Demo</Text>
-                    <Element style={{
-                        display: Display::flow().row().no_wrap(),
-                        gap: Length::px(8.0)
-                    }}>
-                        <Button
-                            label="Contained"
-                            variant={Some(ButtonVariant::Contained)}
-                        />
-                        <Button
-                            label="Outlined"
-                            variant={Some(ButtonVariant::Outlined)}
-                        />
-                        <Button
-                            label="Text"
-                            variant={Some(ButtonVariant::Text)}
-                        />
-                    </Element>
-                    <Select
-                        data={(1..100).collect::<Vec<i32>>()}
-                        to_label={|item, index| format!("{} Hello, Very Long Item! Long Long Long Long\n newLine", item)}
-                        to_value={|item, index| format!("{}", item)}
-                        value={selected_value.binding()}
-                    />
-                    <Checkbox
-                        label="Enable feature"
-                        binding={checked.binding()}
-                    />
-                    <Element style={{
-                        display: Display::flow().row().no_wrap(),
-                        gap: Length::px(8.0),
-                    }}>
-                        <NumberField
-                            binding={number_value.binding()}
-                            min=0.0
-                            max=10.0
-                            step=0.5
-                        />
-                    </Element>
-                    <Slider
-                        binding={slider_value.binding()}
-                        min=0.0
-                        max=100.0
-                    />
-                    <Text font_size=12 style={{ color: "#93c5fd" }} >
-                        {format!(
-                            "checked={} number={:.1} selected={} slider={:.0} switch={} debug_overlay={}",
-                            checked_value,
-                            number_value_value,
-                            selected_value_value,
-                            slider_value_value,
-                            switch_on_value,
-                            debug_geometry_overlay_value
-                        )}
-                    </Text>
-                </Element>
-                <Element style={{
                     width: Length::percent(100.0),
                     height: Length::px(300.0),
                     background: "#111827",
@@ -602,7 +609,7 @@ fn MainScene() -> RsxNode {
                                 background: "#ef4444",
                                 border_radius: 6,
                             }}>
-                                <Text font_size=10 style={{ color: "#fef2f2" }}>overflow</Text>
+                                <Text font_size=10 style={{ color: "#fef2f2" }}>overflow, </Text>
                             </Element>
                         </Element>
                         <Element style={{
@@ -617,7 +624,7 @@ fn MainScene() -> RsxNode {
                             <Element style={{
                                 position: Position::absolute()
                                     .top(Length::px(56.0))
-                                    .left(Length::px(84.0))
+                                    .left(Length::px(20.0))
                                     .clip(ClipMode::Viewport),
                                 width: Length::px(74.0),
                                 height: Length::px(24.0),
@@ -652,7 +659,7 @@ fn MainScene() -> RsxNode {
                                     .top(Length::px(0.0))
                                     .left(Length::px(38.0))
                                     .clip(ClipMode::AnchorParent),
-                                width: Length::px(82.0),
+                                width: Length::px(150.0),
                                 height: Length::px(22.0),
                                 background: "#22c55e",
                                 border_radius: 6,
@@ -664,8 +671,8 @@ fn MainScene() -> RsxNode {
                     <Element style={{
                         position: Position::absolute()
                             .anchor("menu_button")
-                            .top(Length::px(48.0))
-                            .left(Length::px(132.0))
+                            .top(Length::px(10.0))
+                            .left(Length::percent(50.0))
                             .collision(Collision::FlipFit, CollisionBoundary::Viewport),
                         width: Length::px(150.0),
                         height: Length::px(96.0),

@@ -132,6 +132,7 @@ struct AnchorSnapshot {
     y: f32,
     width: f32,
     height: f32,
+    parent_clip_rect: Rect,
 }
 
 #[derive(Default)]
@@ -556,6 +557,8 @@ pub struct Element {
     last_layout_proposal: Option<LayoutProposal>,
     flex_info: Option<FlexLayoutInfo>,
     has_absolute_descendant_for_hit_test: bool,
+    absolute_clip_rect: Option<Rect>,
+    anchor_parent_clip_rect: Option<Rect>,
     children: Vec<Box<dyn ElementTrait>>,
 }
 
@@ -1096,7 +1099,7 @@ impl Renderable for Element {
         }
 
         let previous_scissor_rect = self
-            .absolute_viewport_clip_scissor_rect()
+            .absolute_clip_scissor_rect()
             .map(|scissor| ctx.push_scissor_rect(Some(scissor)));
 
         let outer_radii = normalize_corner_radii(
@@ -1226,21 +1229,30 @@ impl Renderable for Element {
 impl Element {
     const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
 
-    fn absolute_viewport_clip_scissor_rect(&self) -> Option<[u32; 4]> {
+    fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         if self.computed_style.position.mode() != PositionMode::Absolute {
             return None;
         }
-        if self.computed_style.position.clip_mode() != ClipMode::Viewport {
-            return None;
+        match self.computed_style.position.clip_mode() {
+            ClipMode::Parent => None,
+            ClipMode::Viewport => {
+                if let Some(rect) = self.absolute_clip_rect {
+                    rect_to_scissor_rect(rect)
+                } else {
+                    let (viewport_w, viewport_h) = self.viewport_size_from_runtime(
+                        self.core.layout_size.width,
+                        self.core.layout_size.height,
+                    );
+                    rect_to_scissor_rect(Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: viewport_w.max(0.0),
+                        height: viewport_h.max(0.0),
+                    })
+                }
+            }
+            ClipMode::AnchorParent => self.absolute_clip_rect.and_then(rect_to_scissor_rect),
         }
-        let (viewport_w, viewport_h) = self
-            .viewport_size_from_runtime(self.core.layout_size.width, self.core.layout_size.height);
-        rect_to_scissor_rect(Rect {
-            x: 0.0,
-            y: 0.0,
-            width: viewport_w.max(0.0),
-            height: viewport_h.max(0.0),
-        })
     }
 
     fn current_layout_transition_size(&self) -> (f32, f32) {
@@ -1346,6 +1358,8 @@ impl Element {
             last_layout_proposal: None,
             flex_info: None,
             has_absolute_descendant_for_hit_test: false,
+            absolute_clip_rect: None,
+            anchor_parent_clip_rect: None,
             children: Vec::new(),
         };
         el.recompute_style();
@@ -3390,6 +3404,13 @@ impl Element {
         parent_visual_offset_x: f32,
         parent_visual_offset_y: f32,
     ) {
+        let parent_rect = Rect {
+            x: parent_x + parent_visual_offset_x,
+            y: parent_y + parent_visual_offset_y,
+            width: proposal.width.max(0.0),
+            height: proposal.height.max(0.0),
+        };
+        self.anchor_parent_clip_rect = Some(parent_rect);
         let mut target_width = self.core.size.width.max(0.0);
         let mut target_height = self.core.size.height.max(0.0);
         let mut target_rel_x = self.core.position.x;
@@ -3402,6 +3423,7 @@ impl Element {
                 y: parent_y,
                 width: proposal.width.max(0.0),
                 height: proposal.height.max(0.0),
+                parent_clip_rect: parent_rect,
             };
             let anchor = self.resolve_anchor_snapshot(fallback_anchor);
             let left = self.computed_style.position.left_inset().and_then(|v| {
@@ -3481,12 +3503,7 @@ impl Element {
             let clip_mode = self.computed_style.position.clip_mode();
             let has_anchor = self.computed_style.position.anchor_name().is_some();
             absolute_clip_rect = Some(match clip_mode {
-                ClipMode::Parent => Rect {
-                    x: parent_x + parent_visual_offset_x,
-                    y: parent_y + parent_visual_offset_y,
-                    width: proposal.width.max(0.0),
-                    height: proposal.height.max(0.0),
-                },
+                ClipMode::Parent => parent_rect,
                 ClipMode::Viewport => {
                     let (vw, vh) = self.viewport_size_from_runtime(proposal.width, proposal.height);
                     Rect {
@@ -3496,18 +3513,8 @@ impl Element {
                         height: vh.max(0.0),
                     }
                 }
-                ClipMode::AnchorParent if has_anchor => Rect {
-                    x: anchor.x,
-                    y: anchor.y,
-                    width: anchor.width.max(0.0),
-                    height: anchor.height.max(0.0),
-                },
-                ClipMode::AnchorParent => Rect {
-                    x: parent_x + parent_visual_offset_x,
-                    y: parent_y + parent_visual_offset_y,
-                    width: proposal.width.max(0.0),
-                    height: proposal.height.max(0.0),
-                },
+                ClipMode::AnchorParent if has_anchor => anchor.parent_clip_rect,
+                ClipMode::AnchorParent => parent_rect,
             });
             apply_collision(
                 self.computed_style.position.collision_mode(),
@@ -3671,12 +3678,7 @@ impl Element {
             height: frame.height,
         };
 
-        let parent_rect = Rect {
-            x: parent_x + parent_visual_offset_x,
-            y: parent_y + parent_visual_offset_y,
-            width: proposal.width.max(0.0),
-            height: proposal.height.max(0.0),
-        };
+        self.absolute_clip_rect = if is_absolute { absolute_clip_rect } else { None };
         let cull_rect = if is_absolute {
             absolute_clip_rect.unwrap_or(parent_rect)
         } else {
@@ -3921,11 +3923,18 @@ impl Element {
         let Some(anchor_name) = self.anchor_name.as_ref() else {
             return;
         };
+        let parent_clip_rect = self.anchor_parent_clip_rect.unwrap_or(Rect {
+            x: self.last_parent_layout_x,
+            y: self.last_parent_layout_y,
+            width: 0.0,
+            height: 0.0,
+        });
         let snapshot = AnchorSnapshot {
             x: self.core.layout_position.x,
             y: self.core.layout_position.y,
             width: self.core.layout_size.width.max(0.0),
             height: self.core.layout_size.height.max(0.0),
+            parent_clip_rect,
         };
         PLACEMENT_RUNTIME.with(|runtime| {
             runtime
@@ -5377,7 +5386,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_clip_anchor_parent_uses_anchor_bounds() {
+    fn absolute_clip_anchor_parent_uses_anchor_parent_bounds() {
         let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
         let mut anchor = Element::new(300.0, 20.0, 40.0, 40.0);
         anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
@@ -5426,7 +5435,107 @@ mod tests {
             .expect("downcast child")
             .core
             .should_render;
-        assert!(!rendered);
+        assert!(rendered);
+    }
+
+    #[test]
+    fn absolute_clip_anchor_parent_scissor_uses_anchor_parent_bounds() {
+        let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
+        let mut anchor = Element::new(300.0, 20.0, 40.0, 40.0);
+        anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
+
+        let mut child = Element::new(0.0, 0.0, 150.0, 22.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor("menu_button")
+                    .left(Length::px(38.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(anchor));
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 600.0,
+            max_height: 300.0,
+            viewport_width: 600.0,
+            percent_base_width: Some(600.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 600.0,
+            available_height: 300.0,
+            viewport_width: 600.0,
+            percent_base_width: Some(600.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+
+        let children = parent.children().expect("has children");
+        let child = children[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("downcast child");
+        assert_eq!(
+            child.absolute_clip_scissor_rect(),
+            Some([0, 0, 500, 200])
+        );
+    }
+
+    #[test]
+    fn absolute_clip_anchor_parent_scissor_falls_back_to_parent_without_anchor() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(130.0))
+                    .top(Length::px(10.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+
+        let children = parent.children().expect("has child");
+        let child = children[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("downcast child");
+        assert_eq!(child.absolute_clip_scissor_rect(), Some([0, 0, 100, 80]));
     }
 
     #[test]
