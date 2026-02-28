@@ -1,15 +1,15 @@
 use rfgui::{ColorLike, JustifyContent, Transition, TransitionProperty};
 use rfgui_components::{
-    init_theme, on_move, set_theme, use_theme, Button, ButtonVariant, Checkbox, NumberField,
-    Select, Slider, Switch, Theme, Window, WindowProps,
+    Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme, Window,
+    WindowProps, init_theme, on_move, set_theme, use_theme,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rfgui::ui::host::{Element, Text, TextArea};
 use rfgui::ui::{
-    component, globalState, on_click, on_focus, rsx, take_state_dirty, use_state, Binding,
-    FocusHandlerProp, RsxNode,
+    Binding, FocusHandlerProp, RsxNode, component, globalState, on_click, on_focus, rsx,
+    take_state_dirty, use_state,
 };
 use rfgui::{
     Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Cursor, Display,
@@ -268,13 +268,15 @@ fn MainScene() -> RsxNode {
                 width: Length::percent(100.0),
                 height: Length::percent(100.0),
                 display: Display::flow().column().no_wrap(),
-                gap: Length::px(10.0),
-                padding: Padding::uniform(Length::px(12.0)),
+                gap: theme.spacing.md,
+                padding: Padding::uniform(theme.spacing.md),
+                color: theme.color.text.secondary.clone(),
+                font_size: theme.typography.size.sm,
             }}>
                 <Element style={{
                     width: Length::percent(100.0),
                     display: Display::flow().row().wrap(),
-                    gap: Length::px(8.0),
+                    gap: theme.spacing.sm,
                 }}>
                     <Button
                         label="Count +1"
@@ -312,7 +314,7 @@ fn MainScene() -> RsxNode {
                     min=0.0
                     max=100.0
                 />
-                <Text font_size=12 style={{ color: "#93c5fd" }}>
+                <Text>
                     {format!(
                         "count={} checked={} number={:.0} selected={} slider={:.0} switch={}",
                         component_test_count_value,
@@ -345,9 +347,11 @@ fn MainScene() -> RsxNode {
                 background: Color::transparent(),
                 display: Display::flow().row().wrap().justify_content(justify_content.get()),
                 gap: theme.spacing.md,
-                padding: Padding::uniform(Length::px(20.0)),
+                padding: Padding::uniform(theme.spacing.xl),
                 scroll_direction: ScrollDirection::Vertical,
                 font: FontFamily::new(["Noto Sans CJK TC", "PingFang TC"]),
+                color: theme.color.text.primary.clone(),
+                font_size: theme.typography.size.sm,
             }} anchor="root">
                 <Element style={{
                     width: Length::percent(100.0),
@@ -364,24 +368,27 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
-                    padding: Padding::uniform(Length::px(10.0)),
+                    background: theme.color.primary.base.clone(),
+                    color: theme.color.primary.on.clone(),
+                    padding: Padding::uniform(theme.spacing.md),
                 }}>
                     Pure Object
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
-                    border: Border::uniform(Length::px(10.0), &Color::hex("#21252b")),
+                    background: theme.color.primary.base.clone(),
+                    color: theme.color.primary.on.clone(),
+                    border: Border::uniform(theme.spacing.md, theme.color.border.as_ref()),
                 }}>
                     Border
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
-                    border_radius: BorderRadius::uniform(Length::px(10.0))
+                    background: theme.color.primary.base.clone(),
+                    color: theme.color.primary.on.clone(),
+                    border_radius: BorderRadius::uniform(theme.radius.md)
                         .top_right(Length::px(32.0))
                         .bottom_left(Length::percent(90.0)),
                 }}>
@@ -390,12 +397,13 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::percent(50.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
-                    border_radius: BorderRadius::uniform(Length::px(10.0))
+                    background: theme.color.primary.base.clone(),
+                    color: theme.color.primary.on.clone(),
+                    border_radius: BorderRadius::uniform(theme.radius.md)
                         .top_right(Length::px(32.0))
                         .bottom_left(Length::percent(90.0)),
                     transition: [
-                        Transition::new(TransitionProperty::All, 1000),
+                        Transition::new(TransitionProperty::All, theme.motion.duration.slow),
                     ]
                 }}>
                     Percentage Width
@@ -410,70 +418,77 @@ fn MainScene() -> RsxNode {
                     border_radius: BorderRadius::uniform(Length::px(10.0))
                         .top_right(Length::px(10.0))
                         .bottom_left(Length::percent(90.0)),
+                    box_shadow: vec![
+                        theme.shadow.level_2,
+                    ],
                 }}>
-                    Border Radius + Border
+                    Border Radius + Border + Shadow
                 </Element>
                 <Element style={{
                     width: Length::px(170.0),
                     height: Length::px(170.0),
-                    background: "#e06c75",
-                    border: Border::uniform(Length::px(20.0), &Color::hex("#58622b")),
-                    border_radius: 16,
+                    background: theme.color.secondary.base.clone(),
+                    color: theme.color.secondary.on.clone(),
+                    border: Border::uniform(theme.spacing.xl, theme.color.divider.as_ref()),
+                    border_radius: theme.radius.lg,
                     hover: {
-                        border: Border::uniform(Length::px(20.0), &Color::hex("#61afef")),
+                        border: Border::uniform(theme.spacing.xl, theme.color.primary.base.as_ref()),
                     },
                     transition: [
-                        Transition::new(TransitionProperty::Position, 1000).ease_in_out(),
-                        Transition::new(TransitionProperty::BorderColor, 1000).ease_in_out()
+                        Transition::new(TransitionProperty::Position, theme.motion.duration.slow).ease_in_out(),
+                        Transition::new(TransitionProperty::BorderColor, theme.motion.duration.slow).ease_in_out()
                     ],
                 }}>
                     <Element style={{
                         width: Length::percent(100.0),
                         height: Length::percent(100.0),
-                        background: "#61afef",
-                        border: Border::uniform(Length::px(20.0), &Color::hex("#3e4451")),
-                        border_radius: 0,
+                        background: theme.color.primary.base.clone(),
+                        color: theme.color.primary.on.clone(),
+                        border: Border::uniform(theme.spacing.xl, theme.color.border.as_ref()),
+                        border_radius: Length::Zero,
                         hover: {
-                            background: "#7bc1ff",
-                            border: Border::uniform(Length::px(20.0), &Color::hex("#1f2937"))
+                            background: theme.color.primary.on.clone(),
+                            border: Border::uniform(theme.spacing.xl, theme.color.layer.inverse.as_ref())
                         },
                         transition: [
-                            Transition::new(TransitionProperty::All, 200),
+                            Transition::new(TransitionProperty::All, theme.motion.duration.fast),
                         ],
                     }}>
-                        Nested + Hover Test
+                        Nested + Hover Test + Position Transition
                     </Element>
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
-                    border: Border::uniform(Length::px(8.0), &Color::hex("#21252b")),
+                    background: theme.color.primary.base.clone(),
+                    color: theme.color.primary.on.clone(),
+                    border: Border::uniform(theme.spacing.sm, theme.color.border.as_ref()),
                     border_radius: 50,
                     display: Display::flow().row().wrap(),
-                    gap: Length::px(8.0),
-                    padding: Padding::uniform(Length::px(8.0)),
+                    gap: theme.spacing.sm,
+                    padding: Padding::uniform(theme.spacing.sm),
                 }}>
-                    <Element style={{ width: Length::px(72.0), height: Length::px(48.0), background: "#d19a66", border: Border::uniform(Length::px(3.0), &Color::hex("#e06c75")) }}>
+                    <Element style={{ width: Length::px(72.0), height: Length::px(48.0), background: "#d19a66", border: Border::uniform(Length::px(3.0), theme.color.state.active.as_ref()) }}>
                         Clip Test
                     </Element>
                     <Element style={{ width: Length::px(56.0), height: Length::px(56.0), background: "#61afef" }} />
-                    <Element style={{ width: Length::px(120.0), height: Length::px(64.0), background: "#c678dd", border: Border::uniform(Length::px(4.0), &Color::hex("#56b6c2")) }} />
+                    <Element style={{ width: Length::px(120.0), height: Length::px(64.0), background: "#c678dd", border: Border::uniform(Length::px(4.0), theme.color.state.focus.as_ref()) }} />
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#282c34",
-                    border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")),
-                    border_radius: 16,
+                    background: theme.color.layer.surface.clone(),
+                    border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
+                    border_radius: theme.radius.lg,
                     display: Display::flow().row().wrap(),
-                    gap: Length::px(8.0),
-                    padding: Padding::uniform(Length::px(8.0)),
+                    gap: theme.spacing.sm,
+                    padding: Padding::uniform(theme.spacing.sm),
+                    color: theme.color.text.primary.clone(),
                 }} >
-                    <Text font_size=22 style={{ color: "#abb2bf" }} >
+                    <Text>
                         Button Test
                     </Text>
-                    <Text font_size=14 style={{ color: "#abb2bf" }} >{format!("Click Count: {}", click_count_value)}</Text>
+                    <Text>{format!("Click Count: {}", click_count_value)}</Text>
                     <Button
                         label="Click\nMe"
                         variant={Some(ButtonVariant::Contained)}
@@ -483,19 +498,20 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
-                    border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
-                    border_radius: 16,
+                    background: theme.color.primary.base.clone(),
+                    border: Border::uniform(Length::px(3.0), theme.color.border.as_ref()),
+                    border_radius: theme.radius.lg,
                     opacity: 0.5,
                     display: Display::flow().column(),
+                    color: theme.color.primary.on.clone(),
                 }}>
-                    <Text font_size=16 style={{ color: "#21252b" }} >
+                    <Text>
                         Opacity Nesting
                     </Text>
-                    <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 0.6 }}>
+                    <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.lg, opacity: 0.6 }}>
                         <Element style={{
-                            width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                            <Text font_size=12 style={{ color: "#ffffff" }}  opacity=0.9>
+                            width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.md, opacity: 0.5 }}>
+                            <Text opacity=0.9>
                                 Alpha
                             </Text>
                         </Element>
@@ -504,18 +520,19 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef7f",
-                    border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
-                    border_radius: 16,
+                    background: theme.color.primary.base.clone(),
+                    border: Border::uniform(Length::px(3.0), theme.color.border.as_ref()),
+                    border_radius: theme.radius.lg,
                     display: Display::flow().column(),
+                    color: theme.color.primary.on.clone(),
                 }}>
-                    <Text font_size=16 style={{ color: "#21252b" }} >
+                    <Text>
                         Background Opacity Nesting
                     </Text>
-                    <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 12, opacity: 1 }}>
+                    <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.lg, opacity: 1 }}>
                         <Element style={{
-                            width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), &Color::hex("#21252b")), border_radius: 8, opacity: 0.5 }}>
-                            <Text font_size=12 style={{ color: "#ffffff" }}  opacity=0.9>
+                            width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.md, opacity: 0.5 }}>
+                            <Text opacity=0.9>
                                 Alpha
                             </Text>
                         </Element>
@@ -524,37 +541,40 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::px(150.0),
                     height: Length::px(150.0),
-                    background: "#61afef",
-                    border: Border::uniform(Length::px(3.0), &Color::hex("#21252b")),
-                    border_radius: 16,
+                    background: theme.color.primary.base.clone(),
+                    border: Border::uniform(Length::px(3.0), theme.color.border.as_ref()),
+                    border_radius: theme.radius.lg,
                     scroll_direction: ScrollDirection::Vertical,
                     display: Display::flow().column(),
+                    color: theme.color.primary.on.clone(),
                 }}>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 1</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 2</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 3</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 4</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 5</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 6</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 7</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 8</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 9</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 10</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 11</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 12</Text>
-                    <Text font_size=12 style={{ color: "#111111" }} >Scroll down to see more content 13</Text>
+                    <Text>Scroll down to see more content 1</Text>
+                    <Text>Scroll down to see more content 2</Text>
+                    <Text>Scroll down to see more content 3</Text>
+                    <Text>Scroll down to see more content 4</Text>
+                    <Text>Scroll down to see more content 5</Text>
+                    <Text>Scroll down to see more content 6</Text>
+                    <Text>Scroll down to see more content 7</Text>
+                    <Text>Scroll down to see more content 8</Text>
+                    <Text>Scroll down to see more content 9</Text>
+                    <Text>Scroll down to see more content 10</Text>
+                    <Text>Scroll down to see more content 11</Text>
+                    <Text>Scroll down to see more content 12</Text>
+                    <Text>Scroll down to see more content 13</Text>
 
                 </Element>
                 <Element style={{
                     width: Length::px(320.0),
                     height: Length::px(170.0),
-                    background: "#2c313c",
-                    border: Border::uniform(Length::px(3.0), &Color::hex("#61afef")),
-                    border_radius: 16,
+                    background: theme.color.layer.raised.clone(),
+                    border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
+                    border_radius: theme.radius.lg,
                     display: Display::flow().column().no_wrap(),
+                    color: theme.color.text.primary.clone(),
+                    font_size: theme.typography.size.sm,
                 }}>
-                    <Text font_size=14 style={{ color: "#e5e9f0" }} >TextArea Test</Text>
-                    <Text font_size=12 style={{ color: "#aab4c6" }} >
+                    <Text>TextArea Test</Text>
+                    <Text>
                         {format!("Bound chars: {}", message_value.chars().count())}
                     </Text>
                     <TextArea x=12 y=34 width=296 height=78 font_size=13 color="#c8d0e0"  multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
@@ -566,40 +586,44 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::percent(100.0),
                     height: Length::px(300.0),
-                    background: "#111827",
-                    border: Border::uniform(Length::px(2.0), &Color::hex("#334155")),
-                    border_radius: 14,
-                    padding: Padding::uniform(Length::px(12.0)),
+                    background: theme.color.layer.surface.clone(),
+                    border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()),
+                    border_radius: theme.radius.lg,
+                    padding: Padding::uniform(theme.spacing.md),
                     display: Display::flow().column().no_wrap(),
-                    gap: Length::px(8.0),
+                    gap: theme.spacing.sm,
+                    color: theme.color.text.primary.clone(),
+                    font_size: theme.typography.size.sm,
                 }} anchor="menu_button">
-                    <Text font_size=14 style={{ color: "#e2e8f0" }}>Absolute + Anchor + Collision</Text>
-                    <Text font_size=12 style={{ color: "#94a3b8" }}>
+                    <Text>Absolute + Anchor + Collision</Text>
+                    <Text>
                         parent anchor = "menu_button"
                     </Text>
                     <Element style={{
                         width: Length::px(120.0),
                         height: Length::px(36.0),
-                        background: "#1d4ed8",
-                        border_radius: 8,
+                        background: theme.color.primary.base.clone(),
+                        color: theme.color.primary.on.clone(),
+                        border_radius: theme.radius.md,
                     }}>
-                        <Text font_size=12 style={{ color: "#eff6ff" }}>Menu Button</Text>
+                        <Text>Menu Button</Text>
                     </Element>
                     <Element style={{
                         width: Length::percent(100.0),
                         height: Length::px(110.0),
                         display: Display::flow().row().no_wrap(),
-                        gap: Length::px(8.0),
+                        gap: theme.spacing.sm,
                     }}>
                         <Element style={{
                             width: Length::px(110.0),
                             height: Length::px(110.0),
-                            background: "#1f2937",
-                            border: Border::uniform(Length::px(1.0), &Color::hex("#475569")),
-                            border_radius: 8,
-                            padding: Padding::uniform(Length::px(8.0)),
+                            background: theme.color.layer.raised.clone(),
+                            border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                            border_radius: theme.radius.md,
+                            padding: Padding::uniform(theme.spacing.sm),
+                            color: theme.color.text.primary.clone(),
                         }}>
-                            <Text font_size=10 style={{ color: "#cbd5e1" }}>clip=Parent (default)</Text>
+                            <Text>clip=Parent (default)</Text>
                             <Element style={{
                                 position: Position::absolute()
                                     .top(Length::px(56.0))
@@ -607,20 +631,22 @@ fn MainScene() -> RsxNode {
                                 width: Length::px(74.0),
                                 height: Length::px(24.0),
                                 background: "#ef4444",
-                                border_radius: 6,
+                                color: theme.color.secondary.on.clone(),
+                                border_radius: theme.radius.sm,
                             }}>
-                                <Text font_size=10 style={{ color: "#fef2f2" }}>overflow, </Text>
+                                <Text>overflow, </Text>
                             </Element>
                         </Element>
                         <Element style={{
                             width: Length::px(110.0),
                             height: Length::px(110.0),
-                            background: "#1f2937",
-                            border: Border::uniform(Length::px(1.0), &Color::hex("#475569")),
-                            border_radius: 8,
-                            padding: Padding::uniform(Length::px(8.0)),
+                            background: theme.color.layer.raised.clone(),
+                            border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                            border_radius: theme.radius.md,
+                            padding: Padding::uniform(theme.spacing.sm),
+                            color: theme.color.text.primary.clone(),
                         }}>
-                            <Text font_size=10 style={{ color: "#cbd5e1" }}>clip=Viewport</Text>
+                            <Text>clip=Viewport</Text>
                             <Element style={{
                                 position: Position::absolute()
                                     .top(Length::px(56.0))
@@ -629,29 +655,32 @@ fn MainScene() -> RsxNode {
                                 width: Length::px(74.0),
                                 height: Length::px(24.0),
                                 background: "#f59e0b",
-                                border_radius: 6,
+                                color: theme.color.background.base.clone(),
+                                border_radius: theme.radius.sm,
                             }}>
-                                <Text font_size=10 style={{ color: "#fffbeb" }}>overflow</Text>
+                                <Text>overflow</Text>
                             </Element>
                         </Element>
                         <Element style={{
                             width: Length::px(140.0),
                             height: Length::px(110.0),
-                            background: "#1f2937",
-                            border: Border::uniform(Length::px(1.0), &Color::hex("#475569")),
-                            border_radius: 8,
-                            padding: Padding::uniform(Length::px(8.0)),
+                            background: theme.color.layer.raised.clone(),
+                            border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                            border_radius: theme.radius.md,
+                            padding: Padding::uniform(theme.spacing.sm),
                             display: Display::flow().column().no_wrap(),
-                            gap: Length::px(6.0),
+                            gap: theme.spacing.xs,
+                            color: theme.color.text.primary.clone(),
                         }}>
-                            <Text font_size=10 style={{ color: "#cbd5e1" }}>clip=AnchorParent</Text>
+                            <Text>clip=AnchorParent</Text>
                             <Element style={{
                                 width: Length::px(56.0),
                                 height: Length::px(26.0),
                                 background: "#1d4ed8",
-                                border_radius: 6,
+                                color: theme.color.primary.on.clone(),
+                                border_radius: theme.radius.sm,
                             }} anchor="abs_anchor_test">
-                                <Text font_size=9 style={{ color: "#dbeafe" }}>anchor</Text>
+                                <Text>anchor</Text>
                             </Element>
                             <Element style={{
                                 position: Position::absolute()
@@ -662,9 +691,10 @@ fn MainScene() -> RsxNode {
                                 width: Length::px(150.0),
                                 height: Length::px(22.0),
                                 background: "#22c55e",
-                                border_radius: 6,
+                                color: theme.color.background.base.clone(),
+                                border_radius: theme.radius.sm,
                             }}>
-                                <Text font_size=9 style={{ color: "#ecfdf5" }}>anchor clip</Text>
+                                <Text>anchor clip</Text>
                             </Element>
                         </Element>
                     </Element>
@@ -676,16 +706,17 @@ fn MainScene() -> RsxNode {
                             .collision(Collision::FlipFit, CollisionBoundary::Viewport),
                         width: Length::px(150.0),
                         height: Length::px(96.0),
-                        background: "#0b1220",
-                        border: Border::uniform(Length::px(1.0), &Color::hex("#3b82f6")),
-                        border_radius: 10,
-                        padding: Padding::uniform(Length::px(8.0)),
+                        background: theme.color.layer.inverse.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.primary.base.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
                         display: Display::flow().column(),
-                        gap: Length::px(6.0),
+                        gap: theme.spacing.xs,
+                        color: theme.color.layer.on_inverse.clone(),
                     }}>
-                        <Text font_size=12 style={{ color: "#bfdbfe" }}>Popover (anchor)</Text>
-                        <Text font_size=11 style={{ color: "#93c5fd" }}>collision: FlipFit + Viewport</Text>
-                        <Text font_size=11 style={{ color: "#93c5fd" }}>try resizing window edge</Text>
+                        <Text>Popover (anchor)</Text>
+                        <Text>collision: FlipFit + Viewport</Text>
+                        <Text>try resizing window edge</Text>
                     </Element>
                     <Element style={{
                         position: Position::absolute()
@@ -694,10 +725,11 @@ fn MainScene() -> RsxNode {
                             .right(Length::px(12.0)),
                         width: Length::px(120.0),
                         height: Length::px(30.0),
-                        background: "#166534",
-                        border_radius: 8,
+                        background: theme.color.state.focus.clone(),
+                        color: theme.color.background.base.clone(),
+                        border_radius: theme.radius.md,
                     }}>
-                        <Text font_size=11 style={{ color: "#dcfce7" }}>fallback parent anchor</Text>
+                        <Text>fallback parent anchor</Text>
                     </Element>
                 </Element>
             </Element>
@@ -725,45 +757,47 @@ fn MainScene() -> RsxNode {
             <Element style={{
                 width: Length::percent(100.0),
                 height: Length::percent(100.0),
-                background: "#0f172a",
                 display: Display::flow().column().no_wrap(),
-                gap: Length::px(10.0),
-                padding: Padding::uniform(Length::px(12.0)),
+                gap: theme.spacing.md,
+                padding: Padding::uniform(theme.spacing.md),
+                color: theme.color.text.primary.clone(),
+                font_size: theme.typography.size.sm,
+                scroll_direction: ScrollDirection::Vertical,
             }}>
-                <Text font_size=16 style={{ color: "#e2e8f0" }}>Transition Plugins Test</Text>
-                <Text font_size=11 style={{ color: "#93c5fd" }}>
+                <Text>Transition Plugins Test</Text>
+                <Text>
                     {"How to verify: click Start Animation first, then click Remove Transition during playback. Expected: jump to the end value immediately."}
                 </Text>
                 <Element style={{
                     display: Display::flow().row().wrap(),
-                    gap: Length::px(10.0),
+                    gap: theme.spacing.md,
                     width: Length::percent(100.0),
                 }}>
                     <Element style={{
                         width: Length::px(220.0),
-                        background: "#111827",
-                        border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
-                        border_radius: 10,
-                        padding: Padding::uniform(Length::px(8.0)),
+                        background: theme.color.layer.surface.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
                         display: Display::flow().column().no_wrap(),
-                        gap: Length::px(6.0),
+                        gap: theme.spacing.xs,
                     }}>
-                        <Text font_size=12 style={{ color: "#e5e7eb" }}>StyleTransitionPlugin</Text>
-                        <Text font_size=10 style={{ color: "#94a3b8" }}>
+                        <Text>StyleTransitionPlugin</Text>
+                        <Text>
                             {format!("transition={} target={}", style_transition_enabled_value, style_target_alt_value)}
                         </Text>
                         <Element style={{
                             width: Length::px(180.0),
                             height: Length::px(56.0),
                             background: if style_target_alt_value { Color::hex("#f97316") } else { Color::hex("#22c55e") },
-                            border_radius: 8,
+                            border_radius: theme.radius.md,
                             transition: if style_transition_enabled_value {
-                                vec![Transition::new(TransitionProperty::BackgroundColor, 1400).ease_in_out()]
+                                vec![Transition::new(TransitionProperty::BackgroundColor, theme.motion.duration.slow).ease_in_out()]
                             } else {
                                 Vec::<Transition>::new()
                             },
                         }} />
-                        <Element style={{ display: Display::flow().row().wrap(), gap: Length::px(6.0) }}>
+                        <Element style={{ display: Display::flow().row().wrap(), gap: theme.spacing.xs }}>
                             <Button label="Start Animation" on_click={move |_| { style_start.set(true); style_toggle_target.update(|v| *v = !*v); }} />
                             <Button label="Remove Transition" on_click={move |_| { style_remove.set(false); }} />
                             <Button label="Reset" on_click={move |_| { style_reset_enable.set(true); style_reset_target.set(false); }} />
@@ -771,32 +805,32 @@ fn MainScene() -> RsxNode {
                     </Element>
                     <Element style={{
                         width: Length::px(220.0),
-                        background: "#111827",
-                        border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
-                        border_radius: 10,
-                        padding: Padding::uniform(Length::px(8.0)),
+                        background: theme.color.layer.surface.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
                         display: Display::flow().column().no_wrap(),
-                        gap: Length::px(6.0),
+                        gap: theme.spacing.xs,
                     }}>
-                        <Text font_size=12 style={{ color: "#e5e7eb" }}>LayoutTransitionPlugin</Text>
-                        <Text font_size=10 style={{ color: "#94a3b8" }}>
+                        <Text>LayoutTransitionPlugin</Text>
+                        <Text>
                             {format!("transition={} expanded={}", layout_transition_enabled_value, layout_expanded_value)}
                         </Text>
                         <Element style={{
                             width: if layout_expanded_value { Length::px(180.0) } else { Length::px(92.0) },
                             height: if layout_expanded_value { Length::px(58.0) } else { Length::px(34.0) },
                             background: "#38bdf8",
-                            border_radius: 8,
+                            border_radius: theme.radius.md,
                             transition: if layout_transition_enabled_value {
                                 vec![
-                                    Transition::new(TransitionProperty::Width, 1400).ease_in_out(),
-                                    Transition::new(TransitionProperty::Height, 1400).ease_in_out(),
+                                    Transition::new(TransitionProperty::Width, theme.motion.duration.slow).ease_in_out(),
+                                    Transition::new(TransitionProperty::Height, theme.motion.duration.slow).ease_in_out(),
                                 ]
                             } else {
                                 Vec::<Transition>::new()
                             },
                         }} />
-                        <Element style={{ display: Display::flow().row().wrap(), gap: Length::px(6.0) }}>
+                        <Element style={{ display: Display::flow().row().wrap(), gap: theme.spacing.xs }}>
                             <Button label="Start Animation" on_click={move |_| { layout_start_enable.set(true); layout_toggle_size.update(|v| *v = !*v); }} />
                             <Button label="Remove Transition" on_click={move |_| { layout_remove.set(false); }} />
                             <Button label="Reset" on_click={move |_| { layout_reset_enable.set(true); layout_reset_size.set(false); }} />
@@ -804,38 +838,38 @@ fn MainScene() -> RsxNode {
                     </Element>
                     <Element style={{
                         width: Length::px(220.0),
-                        background: "#111827",
-                        border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
-                        border_radius: 10,
-                        padding: Padding::uniform(Length::px(8.0)),
+                        background: theme.color.layer.surface.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
                         display: Display::flow().column().no_wrap(),
-                        gap: Length::px(6.0),
+                        gap: theme.spacing.xs,
                     }}>
-                        <Text font_size=12 style={{ color: "#e5e7eb" }}>VisualTransitionPlugin</Text>
-                        <Text font_size=10 style={{ color: "#94a3b8" }}>
+                        <Text>VisualTransitionPlugin</Text>
+                        <Text>
                             {format!("transition={} at_end={}", visual_transition_enabled_value, visual_at_end_value)}
                         </Text>
                         <Element style={{
                             width: Length::px(180.0),
                             height: Length::px(58.0),
                             background: "#1f2937",
-                            border_radius: 8,
+                            border_radius: theme.radius.md,
                             display: Display::flow().row().no_wrap().justify_content(if visual_at_end_value { JustifyContent::End } else { JustifyContent::Start }),
-                            padding: Padding::uniform(Length::px(6.0)),
+                            padding: Padding::uniform(theme.spacing.xs),
                         }}>
                             <Element style={{
                                 width: Length::px(42.0),
                                 height: Length::px(42.0),
-                                background: "#f43f5e",
-                                border_radius: 8,
+                                background: theme.color.secondary.base.clone(),
+                                border_radius: theme.radius.md,
                                 transition: if visual_transition_enabled_value {
-                                    vec![Transition::new(TransitionProperty::Position, 1400).ease_in_out()]
+                                    vec![Transition::new(TransitionProperty::Position, theme.motion.duration.slow).ease_in_out()]
                                 } else {
                                     Vec::<Transition>::new()
                                 },
                             }} />
                         </Element>
-                        <Element style={{ display: Display::flow().row().wrap(), gap: Length::px(6.0) }}>
+                        <Element style={{ display: Display::flow().row().wrap(), gap: theme.spacing.xs }}>
                             <Button label="Start Animation" on_click={move |_| { visual_start_enable.set(true); visual_toggle_pos.update(|v| *v = !*v); }} />
                             <Button label="Remove Transition" on_click={move |_| { visual_remove.set(false); }} />
                             <Button label="Reset" on_click={move |_| { visual_reset_enable.set(true); visual_reset_pos.set(false); }} />
@@ -845,40 +879,41 @@ fn MainScene() -> RsxNode {
                 <Element style={{
                     width: Length::percent(100.0),
                     height: Length::px(176.0),
-                    background: "#111827",
-                    border: Border::uniform(Length::px(1.0), &Color::hex("#334155")),
-                    border_radius: 10,
-                    padding: Padding::uniform(Length::px(8.0)),
+                    background: theme.color.layer.surface.clone(),
+                    border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                    border_radius: theme.radius.md,
+                    padding: Padding::uniform(theme.spacing.sm),
                     display: Display::flow().column().no_wrap(),
-                    gap: Length::px(6.0),
+                    gap: theme.spacing.xs,
                 }}>
-                    <Text font_size=12 style={{ color: "#e5e7eb" }}>ScrollTransitionPlugin</Text>
-                    <Text font_size=10 style={{ color: "#94a3b8" }}>
+                    <Text>ScrollTransitionPlugin</Text>
+                    <Text>
                         {"Use the mouse wheel to scroll this area and observe inertia/interpolation. This plugin is not controlled by style.transition."}
                     </Text>
                     <Element style={{
                         width: Length::percent(100.0),
                         height: Length::px(120.0),
-                        background: "#0b1220",
-                        border: Border::uniform(Length::px(1.0), &Color::hex("#1e293b")),
-                        border_radius: 8,
+                        background: theme.color.layer.inverse.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
                         scroll_direction: ScrollDirection::Vertical,
                         display: Display::flow().column().no_wrap(),
-                        gap: Length::px(4.0),
-                        padding: Padding::uniform(Length::px(8.0)),
+                        gap: theme.spacing.xs,
+                        padding: Padding::uniform(theme.spacing.sm),
+                        color: theme.color.layer.on_inverse.clone(),
                     }}>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 01</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 02</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 03</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 04</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 05</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 06</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 07</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 08</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 09</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 10</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 11</Text>
-                        <Text font_size=11 style={{ color: "#cbd5e1" }}>Scroll row 12</Text>
+                        <Text>Scroll row 01</Text>
+                        <Text>Scroll row 02</Text>
+                        <Text>Scroll row 03</Text>
+                        <Text>Scroll row 04</Text>
+                        <Text>Scroll row 05</Text>
+                        <Text>Scroll row 06</Text>
+                        <Text>Scroll row 07</Text>
+                        <Text>Scroll row 08</Text>
+                        <Text>Scroll row 09</Text>
+                        <Text>Scroll row 10</Text>
+                        <Text>Scroll row 11</Text>
+                        <Text>Scroll row 12</Text>
                     </Element>
                 </Element>
             </Element>
@@ -1303,9 +1338,9 @@ fn main() {
 
 fn app_background_color(is_dark: bool) -> Box<dyn ColorLike> {
     if is_dark {
-        Box::new(Color::hex("#282c34"))
+        Theme::dark().color.background.base
     } else {
-        Box::new(Color::hex("#f8fafc"))
+        Theme::light().color.background.base
     }
 }
 
