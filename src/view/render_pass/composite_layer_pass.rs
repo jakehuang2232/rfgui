@@ -424,7 +424,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
 
     let debug_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Composite Debug Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/rect.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/debug_color.wgsl").into()),
     });
     let debug_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Composite Debug Pipeline Layout"),

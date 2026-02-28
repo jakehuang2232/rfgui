@@ -5,7 +5,6 @@ use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
-use std::collections::HashSet;
 use wgpu::util::DeviceExt;
 
 pub struct DrawRectPass {
@@ -16,7 +15,7 @@ pub struct DrawRectPass {
     border_side_colors: [[f32; 4]; 4], // [left, right, top, bottom]
     use_border_side_colors: bool,
     border_widths: [f32; 4], // [left, right, top, bottom]
-    border_radii: [f32; 4],  // [top_left, top_right, bottom_right, bottom_left]
+    border_radii: [[f32; 2]; 4], // [top_left, top_right, bottom_right, bottom_left] each is [rx, ry]
     opacity: f32,
     scissor_rect: Option<[u32; 4]>,
     color_target: Option<TextureHandle>,
@@ -44,7 +43,7 @@ impl DrawRectPass {
             border_side_colors: [[0.0, 0.0, 0.0, 0.0]; 4],
             use_border_side_colors: false,
             border_widths: [0.0; 4],
-            border_radii: [0.0; 4],
+            border_radii: [[0.0, 0.0]; 4],
             opacity,
             scissor_rect: None,
             color_target: None,
@@ -91,11 +90,19 @@ impl DrawRectPass {
     }
 
     pub fn set_border_radius(&mut self, radius: f32) {
-        self.border_radii = [radius.max(0.0); 4];
+        let r = radius.max(0.0);
+        self.border_radii = [[r, r]; 4];
     }
 
     pub fn set_border_radii(&mut self, radii: [f32; 4]) {
-        self.border_radii = radii.map(|v| v.max(0.0));
+        self.border_radii = radii.map(|v| {
+            let r = v.max(0.0);
+            [r, r]
+        });
+    }
+
+    pub fn set_border_radii_xy(&mut self, radii: [[f32; 2]; 4]) {
+        self.border_radii = radii.map(|v| [v[0].max(0.0), v[1].max(0.0)]);
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
@@ -226,40 +233,49 @@ impl RenderPass for DrawRectPass {
         let scaled_position = [self.position[0] * scale, self.position[1] * scale];
         let scaled_size = [self.size[0] * scale, self.size[1] * scale];
         let scaled_border_widths = self.border_widths.map(|v| v * scale);
-        let scaled_border_radii = self.border_radii.map(|radius| radius * scale);
+        let scaled_border_radii = self
+            .border_radii
+            .map(|r| [r[0].max(0.0) * scale, r[1].max(0.0) * scale]);
 
-        let (vertices, indices) = tessellate_rounded_rect(
+        let border_side_colors = if self.use_border_side_colors {
+            self.border_side_colors
+        } else {
+            [self.border_color; 4]
+        };
+
+        let params = build_rect_params(
             scaled_position,
             scaled_size,
-            self.fill_color,
-            self.border_color,
-            self.border_side_colors,
-            self.use_border_side_colors,
             scaled_border_widths,
             scaled_border_radii,
+            self.fill_color,
+            border_side_colors,
             self.opacity,
             target_w as f32,
             target_h as f32,
         );
-        if vertices.is_empty() || indices.is_empty() {
+        if params.outer_rect[2] <= params.outer_rect[0] || params.outer_rect[3] <= params.outer_rect[1] {
             return;
         }
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("DrawRect Vertex Buffer (Per Pass)"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("DrawRect Params Buffer"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
         });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("DrawRect Index Buffer (Per Pass)"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("DrawRect Bind Group"),
+            layout: &resources.bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
         });
+
         let scissor_rect_physical = self.scissor_rect.and_then(|scissor_rect| {
             viewport.logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
 
-        let debug_geometry_overlay = viewport.debug_geometry_overlay();
         let parts = match viewport.frame_parts() {
             Some(parts) => parts,
             None => return,
@@ -282,53 +298,55 @@ impl RenderPass for DrawRectPass {
                     .depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load),
                 ..Default::default()
             });
+
         pass.set_pipeline(&resources.pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
         if let Some([x, y, width, height]) = scissor_rect_physical {
             pass.set_scissor_rect(x, y, width, height);
         }
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
-
-        if debug_geometry_overlay {
-            let (debug_vertices, debug_indices) = build_debug_overlay_geometry(
-                &vertices,
-                &indices,
-                target_w as f32,
-                target_h as f32,
-                [1.0, 0.2, 0.95, 0.95],
-                [1.0, 0.95, 0.2, 0.95],
-            );
-            if !debug_vertices.is_empty() && !debug_indices.is_empty() {
-                let debug_vertex_buffer =
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("DrawRect Debug Vertex Buffer"),
-                        contents: bytemuck::cast_slice(&debug_vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
-                let debug_index_buffer =
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("DrawRect Debug Index Buffer"),
-                        contents: bytemuck::cast_slice(&debug_indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
-                pass.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
-                pass.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
-            }
-        }
+        pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
+        pass.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..resources.index_count, 0, 0..1);
     }
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
-struct RectVertex {
-    position: [f32; 2],
-    color: [f32; 4],
+struct QuadVertex {
+    uv: [f32; 2],
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct RectParams {
+    // [min_x, min_y, max_x, max_y] in physical pixels
+    outer_rect: [f32; 4],
+    inner_rect: [f32; 4],
+    // corner order: TL, TR, BR, BL
+    outer_rx: [f32; 4],
+    outer_ry: [f32; 4],
+    inner_rx: [f32; 4],
+    inner_ry: [f32; 4],
+    // [left, top, right, bottom]
+    border_widths: [f32; 4],
+    // flags.x: has_inner (0/1), flags.yzw reserved
+    flags: [f32; 4],
+    // linear-space, straight alpha (premultiply in shader)
+    fill_color: [f32; 4],
+    border_left: [f32; 4],
+    border_top: [f32; 4],
+    border_right: [f32; 4],
+    border_bottom: [f32; 4],
+    // [w, h, inv_w, inv_h]
+    screen_size: [f32; 4],
 }
 
 struct DrawRectResources {
     pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
     pipeline_format: wgpu::TextureFormat,
 }
 
@@ -341,9 +359,23 @@ fn create_draw_rect_resources(
         source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/rect.wgsl").into()),
     });
 
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("DrawRect Bind Group Layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("DrawRect Pipeline Layout"),
-        bind_group_layouts: &[],
+        bind_group_layouts: &[&bind_group_layout],
         immediate_size: 0,
     });
 
@@ -354,20 +386,13 @@ fn create_draw_rect_resources(
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<RectVertex>() as u64,
+                array_stride: std::mem::size_of::<QuadVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: 0,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: std::mem::size_of::<[f32; 2]>() as u64,
-                        shader_location: 1,
-                    },
-                ],
+                attributes: &[wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 0,
+                    shader_location: 0,
+                }],
             }],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
@@ -376,7 +401,18 @@ fn create_draw_rect_resources(
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -412,671 +448,189 @@ fn create_draw_rect_resources(
         cache: None,
     });
 
+    let quad_vertices = [
+        QuadVertex { uv: [0.0, 0.0] },
+        QuadVertex { uv: [1.0, 0.0] },
+        QuadVertex { uv: [1.0, 1.0] },
+        QuadVertex { uv: [0.0, 1.0] },
+    ];
+    let quad_indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("DrawRect Quad Vertex Buffer"),
+        contents: bytemuck::cast_slice(&quad_vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("DrawRect Quad Index Buffer"),
+        contents: bytemuck::cast_slice(&quad_indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
     DrawRectResources {
         pipeline,
+        bind_group_layout,
+        vertex_buffer,
+        index_buffer,
+        index_count: quad_indices.len() as u32,
         pipeline_format: format,
     }
 }
 
-fn tessellate_rounded_rect(
+type CornerRadii = [[f32; 2]; 4]; // TL, TR, BR, BL
+
+fn build_rect_params(
     position: [f32; 2],
     size: [f32; 2],
-    fill_color: [f32; 4],
-    border_color: [f32; 4],
-    border_side_colors: [[f32; 4]; 4],
-    use_border_side_colors: bool,
-    border_widths: [f32; 4],
-    border_radii: [f32; 4],
+    border_widths_lr_tb: [f32; 4], // [left,right,top,bottom]
+    mut outer_radii: CornerRadii,
+    mut fill_color: [f32; 4],
+    border_side_colors_lr_tb: [[f32; 4]; 4], // [left,right,top,bottom]
     opacity: f32,
     screen_w: f32,
     screen_h: f32,
-) -> (Vec<RectVertex>, Vec<u32>) {
+) -> RectParams {
     let width = size[0].max(0.0);
     let height = size[1].max(0.0);
-    if width <= 0.0 || height <= 0.0 || screen_w <= 0.0 || screen_h <= 0.0 {
-        return (Vec::new(), Vec::new());
-    }
 
-    let radii = normalize_corner_radii(border_radii, width, height);
-    let max_bw = (width.min(height)) * 0.5;
-    let bw_l = border_widths[0].clamp(0.0, max_bw);
-    let bw_r = border_widths[1].clamp(0.0, max_bw);
-    let bw_t = border_widths[2].clamp(0.0, max_bw);
-    let bw_b = border_widths[3].clamp(0.0, max_bw);
-    let border_enabled = bw_l > 0.0 || bw_r > 0.0 || bw_t > 0.0 || bw_b > 0.0;
-    let effective_opacity = opacity.clamp(0.0, 1.0);
-    if effective_opacity <= 0.0 {
-        return (Vec::new(), Vec::new());
-    }
+    let outer_min = [position[0], position[1]];
+    let outer_max = [position[0] + width, position[1] + height];
 
-    let max_outer_radius = radii.into_iter().fold(0.0f32, f32::max);
-    let segments = corner_segments(max_outer_radius);
-    let outer = rounded_rect_points(position[0], position[1], width, height, radii, segments);
-    if outer.len() < 3 {
-        return (Vec::new(), Vec::new());
-    }
+    let max_bw = width.min(height) * 0.5;
+    let b_left = border_widths_lr_tb[0].clamp(0.0, max_bw);
+    let b_right = border_widths_lr_tb[1].clamp(0.0, max_bw);
+    let b_top = border_widths_lr_tb[2].clamp(0.0, max_bw);
+    let b_bottom = border_widths_lr_tb[3].clamp(0.0, max_bw);
 
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    normalize_corner_radii_css_xy(&mut outer_radii, width, height);
 
-    let fill_rgba = [
-        fill_color[0],
-        fill_color[1],
-        fill_color[2],
-        fill_color[3] * effective_opacity,
-    ];
-    let border_rgba = [
-        border_color[0],
-        border_color[1],
-        border_color[2],
-        border_color[3] * effective_opacity,
-    ];
-    let side_rgba = border_side_colors.map(|c| [c[0], c[1], c[2], c[3] * effective_opacity]);
-    let silhouette_rgba = if border_enabled {
-        border_rgba
-    } else {
-        fill_rgba
-    };
-    let aa_width = 1.0_f32;
-    let outer_aa_radii = normalize_corner_radii(
-        radii.map(|r| r + aa_width),
-        width + aa_width * 2.0,
-        height + aa_width * 2.0,
-    );
-    let outer_aa = rounded_rect_points(
-        position[0] - aa_width,
-        position[1] - aa_width,
-        width + aa_width * 2.0,
-        height + aa_width * 2.0,
-        outer_aa_radii,
-        segments,
-    );
+    let inner_min = [outer_min[0] + b_left, outer_min[1] + b_top];
+    let inner_max = [outer_max[0] - b_right, outer_max[1] - b_bottom];
+    let inner_w = (inner_max[0] - inner_min[0]).max(0.0);
+    let inner_h = (inner_max[1] - inner_min[1]).max(0.0);
 
-    if border_enabled {
-        let inner_x = position[0] + bw_l;
-        let inner_y = position[1] + bw_t;
-        let inner_w = (width - bw_l - bw_r).max(0.0);
-        let inner_h = (height - bw_t - bw_b).max(0.0);
-
-        if inner_w > 0.0 && inner_h > 0.0 {
-            let inner_radii = normalize_corner_radii(
-                inset_corner_radii_array(radii, bw_l, bw_r, bw_t, bw_b),
-                inner_w,
-                inner_h,
-            );
-            let inner =
-                rounded_rect_points(inner_x, inner_y, inner_w, inner_h, inner_radii, segments);
-            append_convex_fan(
-                &mut vertices,
-                &mut indices,
-                &inner,
-                fill_rgba,
-                screen_w,
-                screen_h,
-            );
-            if use_border_side_colors {
-                append_ring_by_side(
-                    &mut vertices,
-                    &mut indices,
-                    &outer,
-                    &inner,
-                    side_rgba,
-                    segments as usize,
-                    1.0,
-                    1.0,
-                    screen_w,
-                    screen_h,
-                );
-            } else {
-                append_ring(
-                    &mut vertices,
-                    &mut indices,
-                    &outer,
-                    &inner,
-                    border_rgba,
-                    border_rgba,
-                    screen_w,
-                    screen_h,
-                );
-            }
-            // Inner-edge AA: center the feather around the seam so border thickness stays stable.
-            let bw_min = bw_l.min(bw_r).min(bw_t).min(bw_b);
-            let seam_half = if use_border_side_colors {
-                0.0
-            } else {
-                (aa_width * 0.5)
-                    .min(bw_min)
-                    .min(inner_w * 0.5)
-                    .min(inner_h * 0.5)
-            };
-            if seam_half > 0.0 {
-                let seam_outer_x = inner_x - seam_half;
-                let seam_outer_y = inner_y - seam_half;
-                let seam_outer_w = inner_w + seam_half * 2.0;
-                let seam_outer_h = inner_h + seam_half * 2.0;
-                let seam_outer_radii = normalize_corner_radii(
-                    inner_radii.map(|r| r + seam_half),
-                    seam_outer_w,
-                    seam_outer_h,
-                );
-                let seam_outer = rounded_rect_points(
-                    seam_outer_x,
-                    seam_outer_y,
-                    seam_outer_w,
-                    seam_outer_h,
-                    seam_outer_radii,
-                    segments,
-                );
-
-                let seam_inner_x = inner_x + seam_half;
-                let seam_inner_y = inner_y + seam_half;
-                let seam_inner_w = (inner_w - seam_half * 2.0).max(0.0);
-                let seam_inner_h = (inner_h - seam_half * 2.0).max(0.0);
-                if seam_inner_w > 0.0 && seam_inner_h > 0.0 {
-                    let seam_inner_radii = normalize_corner_radii(
-                        inner_radii.map(|r| (r - seam_half).max(0.0)),
-                        seam_inner_w,
-                        seam_inner_h,
-                    );
-                    let seam_inner = rounded_rect_points(
-                        seam_inner_x,
-                        seam_inner_y,
-                        seam_inner_w,
-                        seam_inner_h,
-                        seam_inner_radii,
-                        segments,
-                    );
-                    append_ring(
-                        &mut vertices,
-                        &mut indices,
-                        &seam_outer,
-                        &seam_inner,
-                        border_rgba,
-                        fill_rgba,
-                        screen_w,
-                        screen_h,
-                    );
-                }
-            }
-        } else {
-            append_convex_fan(
-                &mut vertices,
-                &mut indices,
-                &outer,
-                border_rgba,
-                screen_w,
-                screen_h,
-            );
-        }
-    } else {
-        append_convex_fan(
-            &mut vertices,
-            &mut indices,
-            &outer,
-            fill_rgba,
-            screen_w,
-            screen_h,
-        );
-    }
-    append_ring(
-        &mut vertices,
-        &mut indices,
-        &outer_aa,
-        &outer,
+    let mut inner_radii = [
         [
-            silhouette_rgba[0],
-            silhouette_rgba[1],
-            silhouette_rgba[2],
-            0.0,
+            (outer_radii[0][0] - b_left).max(0.0),
+            (outer_radii[0][1] - b_top).max(0.0),
         ],
-        silhouette_rgba,
-        screen_w,
-        screen_h,
-    );
-
-    (vertices, indices)
-}
-
-fn corner_segments(radius: f32) -> u32 {
-    // Keep chord length around ~2.5px per segment for smoother large radii.
-    ((std::f32::consts::FRAC_PI_2 * radius / 2.5).ceil() as u32).clamp(2, 64)
-}
-
-fn rounded_rect_points(
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    radii: [f32; 4],
-    segments: u32,
-) -> Vec<[f32; 2]> {
-    let segments = segments.max(2);
-    if radii.into_iter().all(|r| r <= 0.0) {
-        return rectangle_points(x, y, width, height, segments);
-    }
-    let mut points = Vec::with_capacity((segments as usize) * 4);
-    let corners = [
-        (
-            [x + radii[0], y + radii[0]],
-            std::f32::consts::PI,
-            std::f32::consts::PI * 1.5,
-            radii[0],
-        ),
-        (
-            [x + width - radii[1], y + radii[1]],
-            std::f32::consts::PI * 1.5,
-            std::f32::consts::PI * 2.0,
-            radii[1],
-        ),
-        (
-            [x + width - radii[2], y + height - radii[2]],
-            0.0,
-            std::f32::consts::PI * 0.5,
-            radii[2],
-        ),
-        (
-            [x + radii[3], y + height - radii[3]],
-            std::f32::consts::PI * 0.5,
-            std::f32::consts::PI,
-            radii[3],
-        ),
+        [
+            (outer_radii[1][0] - b_right).max(0.0),
+            (outer_radii[1][1] - b_top).max(0.0),
+        ],
+        [
+            (outer_radii[2][0] - b_right).max(0.0),
+            (outer_radii[2][1] - b_bottom).max(0.0),
+        ],
+        [
+            (outer_radii[3][0] - b_left).max(0.0),
+            (outer_radii[3][1] - b_bottom).max(0.0),
+        ],
     ];
 
-    for (center, start, end, radius) in corners.iter() {
-        if *radius <= 0.0 {
-            let anchor = if *start < std::f32::consts::PI * 0.5 {
-                [x + width, y + height]
-            } else if *start < std::f32::consts::PI {
-                [x, y + height]
-            } else if *start < std::f32::consts::PI * 1.5 {
-                [x, y]
-            } else {
-                [x + width, y]
-            };
-            for _ in 0..segments {
-                points.push(anchor);
-            }
-            continue;
-        }
-        for step in 0..segments {
-            let t = step as f32 / segments as f32;
-            let angle = start + (end - start) * t;
-            points.push([
-                center[0] + radius * angle.cos(),
-                center[1] + radius * angle.sin(),
-            ]);
-        }
+    let has_inner = inner_w > 0.0 && inner_h > 0.0;
+    if has_inner {
+        normalize_corner_radii_css_xy(&mut inner_radii, inner_w, inner_h);
+    } else {
+        inner_radii = [[0.0, 0.0]; 4];
     }
-    points
+
+    let opacity = opacity.clamp(0.0, 1.0);
+    fill_color[3] *= opacity;
+
+    let mut border_left = border_side_colors_lr_tb[0];
+    let mut border_right = border_side_colors_lr_tb[1];
+    let mut border_top = border_side_colors_lr_tb[2];
+    let mut border_bottom = border_side_colors_lr_tb[3];
+    border_left[3] *= opacity;
+    border_right[3] *= opacity;
+    border_top[3] *= opacity;
+    border_bottom[3] *= opacity;
+
+    RectParams {
+        outer_rect: [outer_min[0], outer_min[1], outer_max[0], outer_max[1]],
+        inner_rect: [inner_min[0], inner_min[1], inner_max[0], inner_max[1]],
+        outer_rx: [
+            outer_radii[0][0],
+            outer_radii[1][0],
+            outer_radii[2][0],
+            outer_radii[3][0],
+        ],
+        outer_ry: [
+            outer_radii[0][1],
+            outer_radii[1][1],
+            outer_radii[2][1],
+            outer_radii[3][1],
+        ],
+        inner_rx: [
+            inner_radii[0][0],
+            inner_radii[1][0],
+            inner_radii[2][0],
+            inner_radii[3][0],
+        ],
+        inner_ry: [
+            inner_radii[0][1],
+            inner_radii[1][1],
+            inner_radii[2][1],
+            inner_radii[3][1],
+        ],
+        border_widths: [b_left, b_top, b_right, b_bottom],
+        flags: [if has_inner { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        fill_color,
+        border_left,
+        border_top,
+        border_right,
+        border_bottom,
+        screen_size: [screen_w, screen_h, 1.0 / screen_w.max(1.0), 1.0 / screen_h.max(1.0)],
+    }
 }
 
-fn normalize_corner_radii(mut radii: [f32; 4], width: f32, height: f32) -> [f32; 4] {
-    for r in &mut radii {
-        *r = r.max(0.0);
-    }
+fn normalize_corner_radii_css_xy(radii: &mut CornerRadii, width: f32, height: f32) {
     let w = width.max(0.0);
     let h = height.max(0.0);
     if w <= 0.0 || h <= 0.0 {
-        return [0.0; 4];
-    }
-    let top = radii[0] + radii[1];
-    let bottom = radii[3] + radii[2];
-    let left = radii[0] + radii[3];
-    let right = radii[1] + radii[2];
-    let mut scale = 1.0_f32;
-    if top > w {
-        scale = scale.min(w / top);
-    }
-    if bottom > w {
-        scale = scale.min(w / bottom);
-    }
-    if left > h {
-        scale = scale.min(h / left);
-    }
-    if right > h {
-        scale = scale.min(h / right);
-    }
-    if scale < 1.0 {
-        for r in &mut radii {
-            *r *= scale;
-        }
+        *radii = [[0.0, 0.0]; 4];
+        return;
     }
 
-    radii
-}
+    for r in radii.iter_mut() {
+        r[0] = r[0].max(0.0);
+        r[1] = r[1].max(0.0);
+    }
 
-fn inset_corner_radii_array(
-    radii: [f32; 4],
-    left: f32,
-    right: f32,
-    top: f32,
-    bottom: f32,
-) -> [f32; 4] {
-    [
-        (radii[0] - left.min(top)).max(0.0),
-        (radii[1] - right.min(top)).max(0.0),
-        (radii[2] - right.min(bottom)).max(0.0),
-        (radii[3] - left.min(bottom)).max(0.0),
+    let sum_top_x = radii[0][0] + radii[1][0];
+    let sum_bottom_x = radii[3][0] + radii[2][0];
+    let sum_left_y = radii[0][1] + radii[3][1];
+    let sum_right_y = radii[1][1] + radii[2][1];
+
+    let sx = [
+        if sum_top_x > 0.0 { w / sum_top_x } else { 1.0 },
+        if sum_bottom_x > 0.0 {
+            w / sum_bottom_x
+        } else {
+            1.0
+        },
     ]
-}
+    .into_iter()
+    .fold(1.0_f32, f32::min)
+    .min(1.0);
 
-fn rectangle_points(x: f32, y: f32, width: f32, height: f32, segments: u32) -> Vec<[f32; 2]> {
-    let mut points = Vec::with_capacity((segments as usize) * 4);
-    for step in 0..segments {
-        let t = step as f32 / segments as f32;
-        points.push([x + width * t, y]);
-    }
-    for step in 0..segments {
-        let t = step as f32 / segments as f32;
-        points.push([x + width, y + height * t]);
-    }
-    for step in 0..segments {
-        let t = step as f32 / segments as f32;
-        points.push([x + width * (1.0 - t), y + height]);
-    }
-    for step in 0..segments {
-        let t = step as f32 / segments as f32;
-        points.push([x, y + height * (1.0 - t)]);
-    }
-    points
-}
-
-fn append_convex_fan(
-    vertices: &mut Vec<RectVertex>,
-    indices: &mut Vec<u32>,
-    polygon: &[[f32; 2]],
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let cleaned = sanitize_polygon(polygon);
-    if cleaned.len() < 3 {
-        return;
-    }
-    for point in &cleaned {
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(point[0], point[1], screen_w, screen_h),
-            color,
-        });
-    }
-
-    let base = (vertices.len() - cleaned.len()) as u32;
-    for i in 1..(cleaned.len() - 1) {
-        indices.extend_from_slice(&[base, base + i as u32, base + (i as u32 + 1)]);
-    }
-}
-
-fn sanitize_polygon(polygon: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    const EPS: f32 = 1e-4;
-    if polygon.len() < 3 {
-        return polygon.to_vec();
-    }
-
-    let mut out = Vec::with_capacity(polygon.len());
-    for &p in polygon {
-        if out.last().is_none_or(|last: &[f32; 2]| {
-            (last[0] - p[0]).abs() > EPS || (last[1] - p[1]).abs() > EPS
-        }) {
-            out.push(p);
-        }
-    }
-    if out.len() >= 2 {
-        let first = out[0];
-        let last = out[out.len() - 1];
-        if (first[0] - last[0]).abs() <= EPS && (first[1] - last[1]).abs() <= EPS {
-            out.pop();
-        }
-    }
-    out
-}
-
-fn append_ring(
-    vertices: &mut Vec<RectVertex>,
-    indices: &mut Vec<u32>,
-    outer: &[[f32; 2]],
-    inner: &[[f32; 2]],
-    outer_color: [f32; 4],
-    inner_color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let n = outer.len().min(inner.len());
-    if n < 3 {
-        return;
-    }
-    let base = vertices.len() as u32;
-    for i in 0..n {
-        let o = outer[i];
-        let ii = inner[i];
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(o[0], o[1], screen_w, screen_h),
-            color: outer_color,
-        });
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(ii[0], ii[1], screen_w, screen_h),
-            color: inner_color,
-        });
-    }
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let o0 = base + (i as u32) * 2;
-        let i0 = o0 + 1;
-        let o1 = base + (j as u32) * 2;
-        let i1 = o1 + 1;
-        indices.extend_from_slice(&[o0, i0, o1, i0, i1, o1]);
-    }
-}
-
-fn append_ring_by_side(
-    vertices: &mut Vec<RectVertex>,
-    indices: &mut Vec<u32>,
-    outer: &[[f32; 2]],
-    inner: &[[f32; 2]],
-    side_colors: [[f32; 4]; 4], // [left, right, top, bottom]
-    corner_segments: usize,
-    outer_alpha_scale: f32,
-    inner_alpha_scale: f32,
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let n = outer.len().min(inner.len());
-    if n < 3 {
-        return;
-    }
-    let base = vertices.len() as u32;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let o0 = outer[i];
-        let i0 = inner[i];
-        let o1 = outer[j];
-        let i1 = inner[j];
-        let side = classify_side_by_ring_index(i, n, corner_segments);
-        let mut outer_color = side_colors[side];
-        let mut inner_color = side_colors[side];
-        outer_color[3] *= outer_alpha_scale.clamp(0.0, 1.0);
-        inner_color[3] *= inner_alpha_scale.clamp(0.0, 1.0);
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(o0[0], o0[1], screen_w, screen_h),
-            color: outer_color,
-        });
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(i0[0], i0[1], screen_w, screen_h),
-            color: inner_color,
-        });
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(o1[0], o1[1], screen_w, screen_h),
-            color: outer_color,
-        });
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(i1[0], i1[1], screen_w, screen_h),
-            color: inner_color,
-        });
-    }
-
-    for i in 0..n {
-        let b = base + (i as u32) * 4;
-        // Same winding as append_ring: o0, i0, o1 and i0, i1, o1
-        indices.extend_from_slice(&[b, b + 1, b + 2, b + 1, b + 3, b + 2]);
-    }
-}
-
-fn classify_side_by_ring_index(index: usize, n: usize, corner_segments: usize) -> usize {
-    // rounded_rect_points uses 4 corners in order:
-    // 0: TL (left->top), 1: TR (top->right), 2: BR (right->bottom), 3: BL (bottom->left)
-    if corner_segments == 0 || n < corner_segments * 4 {
-        return 2; // top fallback
-    }
-    let corner = (index / corner_segments).min(3);
-    let step = index % corner_segments;
-    let half = corner_segments / 2;
-    match corner {
-        0 => {
-            if step < half { 0 } else { 2 } // left / top
-        }
-        1 => {
-            if step < half { 2 } else { 1 } // top / right
-        }
-        2 => {
-            if step < half { 1 } else { 3 } // right / bottom
-        }
-        _ => {
-            if step < half { 3 } else { 0 } // bottom / left
-        }
-    }
-}
-
-fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
-    [(x / screen_w) * 2.0 - 1.0, 1.0 - (y / screen_h) * 2.0]
-}
-
-fn ndc_to_pixel(pos: [f32; 2], screen_w: f32, screen_h: f32) -> [f32; 2] {
-    [
-        ((pos[0] + 1.0) * 0.5) * screen_w,
-        ((1.0 - pos[1]) * 0.5) * screen_h,
+    let sy = [
+        if sum_left_y > 0.0 { h / sum_left_y } else { 1.0 },
+        if sum_right_y > 0.0 {
+            h / sum_right_y
+        } else {
+            1.0
+        },
     ]
-}
+    .into_iter()
+    .fold(1.0_f32, f32::min)
+    .min(1.0);
 
-fn build_debug_overlay_geometry(
-    vertices: &[RectVertex],
-    indices: &[u32],
-    screen_w: f32,
-    screen_h: f32,
-    edge_color: [f32; 4],
-    point_color: [f32; 4],
-) -> (Vec<RectVertex>, Vec<u32>) {
-    let mut out_vertices = Vec::new();
-    let mut out_indices = Vec::new();
-    if vertices.is_empty() || indices.len() < 3 {
-        return (out_vertices, out_indices);
+    for r in radii.iter_mut() {
+        r[0] *= sx;
+        r[1] *= sy;
     }
-
-    let mut edges: HashSet<(u32, u32)> = HashSet::new();
-    for tri in indices.chunks_exact(3) {
-        let a = tri[0];
-        let b = tri[1];
-        let c = tri[2];
-        for (u, v) in [(a, b), (b, c), (c, a)] {
-            let key = if u < v { (u, v) } else { (v, u) };
-            edges.insert(key);
-        }
-    }
-
-    for (u, v) in edges {
-        let a = vertices[u as usize].position;
-        let b = vertices[v as usize].position;
-        append_debug_line_quad(
-            &mut out_vertices,
-            &mut out_indices,
-            ndc_to_pixel(a, screen_w, screen_h),
-            ndc_to_pixel(b, screen_w, screen_h),
-            1.5,
-            edge_color,
-            screen_w,
-            screen_h,
-        );
-    }
-
-    for v in vertices {
-        append_debug_point_quad(
-            &mut out_vertices,
-            &mut out_indices,
-            ndc_to_pixel(v.position, screen_w, screen_h),
-            0.5,
-            point_color,
-            screen_w,
-            screen_h,
-        );
-    }
-
-    (out_vertices, out_indices)
-}
-
-fn append_debug_line_quad(
-    vertices: &mut Vec<RectVertex>,
-    indices: &mut Vec<u32>,
-    p0: [f32; 2],
-    p1: [f32; 2],
-    thickness_px: f32,
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let len = (dx * dx + dy * dy).sqrt();
-    if len <= 1e-5 {
-        return;
-    }
-    let nx = -dy / len;
-    let ny = dx / len;
-    let hw = thickness_px * 0.5;
-    let o = [nx * hw, ny * hw];
-
-    let quad = [
-        [p0[0] + o[0], p0[1] + o[1]],
-        [p0[0] - o[0], p0[1] - o[1]],
-        [p1[0] - o[0], p1[1] - o[1]],
-        [p1[0] + o[0], p1[1] + o[1]],
-    ];
-    append_debug_quad(vertices, indices, quad, color, screen_w, screen_h);
-}
-
-fn append_debug_point_quad(
-    vertices: &mut Vec<RectVertex>,
-    indices: &mut Vec<u32>,
-    center: [f32; 2],
-    size_px: f32,
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let h = size_px * 0.5;
-    let quad = [
-        [center[0] - h, center[1] - h],
-        [center[0] + h, center[1] - h],
-        [center[0] + h, center[1] + h],
-        [center[0] - h, center[1] + h],
-    ];
-    append_debug_quad(vertices, indices, quad, color, screen_w, screen_h);
-}
-
-fn append_debug_quad(
-    vertices: &mut Vec<RectVertex>,
-    indices: &mut Vec<u32>,
-    quad: [[f32; 2]; 4],
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let base = vertices.len() as u32;
-    for p in quad {
-        vertices.push(RectVertex {
-            position: pixel_to_ndc(p[0], p[1], screen_w, screen_h),
-            color,
-        });
-    }
-    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 #[cfg(test)]
@@ -1084,49 +638,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rounded_points_zero_corner_keeps_fixed_topology() {
-        let segments = 16;
-        let pts = rounded_rect_points(0.0, 0.0, 100.0, 100.0, [0.0, 10.0, 10.0, 10.0], segments);
-        assert_eq!(pts.len(), (segments * 4) as usize);
-    }
-
-    #[test]
-    fn tessellate_asymmetric_radius_with_border_produces_geometry() {
-        let (vertices, indices) = tessellate_rounded_rect(
-            [0.0, 0.0],
-            [150.0, 150.0],
-            [0.38, 0.68, 0.94, 1.0],
-            [0.13, 0.15, 0.17, 1.0],
-            [[0.13, 0.15, 0.17, 1.0]; 4],
-            false,
-            [20.0, 20.0, 20.0, 20.0],
-            [10.0, 32.0, 10.0, 135.0],
+    fn radius_smaller_than_border_clamps_inner_radii_and_inner_rect_safely() {
+        let params = build_rect_params(
+            [10.0, 20.0],
+            [20.0, 16.0],
+            [12.0, 11.0, 13.0, 10.0], // left, right, top, bottom
+            [[6.0, 5.0], [4.0, 4.0], [7.0, 6.0], [5.0, 3.0]],
+            [0.2, 0.3, 0.4, 1.0],
+            [
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+                [1.0, 1.0, 0.0, 1.0],
+            ],
             1.0,
             800.0,
             600.0,
         );
-        assert!(!vertices.is_empty());
-        assert!(!indices.is_empty());
-        assert_eq!(indices.len() % 3, 0);
+
+        assert_eq!(params.flags[0], 0.0, "inner rect should be disabled when collapsed");
+        for &v in params.inner_rx.iter().chain(params.inner_ry.iter()) {
+            assert!(v >= 0.0);
+            assert_eq!(v, 0.0);
+        }
+        assert!(params.inner_rect[2] <= params.inner_rect[0] || params.inner_rect[3] <= params.inner_rect[1]);
     }
 
     #[test]
-    fn append_ring_tolerates_mismatched_topology() {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let outer = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
-        let inner = vec![[10.0, 10.0], [90.0, 10.0], [90.0, 90.0]];
-        append_ring(
-            &mut vertices,
-            &mut indices,
-            &outer,
-            &inner,
-            [1.0, 1.0, 1.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0],
+    fn css_radius_normalization_scales_xy_to_avoid_overlap() {
+        // width=100, height=60.
+        // x sums: top=140, bottom=140 => sx = 100/140 = 0.7142857...
+        // y sums: left=90, right=90 => sy = 60/90 = 0.6666666...
+        let params = build_rect_params(
+            [0.0, 0.0],
+            [100.0, 60.0],
+            [4.0, 4.0, 4.0, 4.0],
+            [[70.0, 45.0], [70.0, 45.0], [70.0, 45.0], [70.0, 45.0]],
+            [0.1, 0.2, 0.3, 1.0],
+            [[0.4, 0.4, 0.4, 1.0]; 4],
+            1.0,
+            1000.0,
             800.0,
-            600.0,
         );
-        assert!(!vertices.is_empty());
-        assert!(!indices.is_empty());
+
+        let sx = 100.0 / 140.0;
+        let sy = 60.0 / 90.0;
+        let expected_rx = 70.0 * sx;
+        let expected_ry = 45.0 * sy;
+
+        for i in 0..4 {
+            assert!((params.outer_rx[i] - expected_rx).abs() < 1e-4);
+            assert!((params.outer_ry[i] - expected_ry).abs() < 1e-4);
+        }
+
+        // Ensure adjacent sums are clamped to bounds after normalization.
+        let top_sum = params.outer_rx[0] + params.outer_rx[1];
+        let bottom_sum = params.outer_rx[3] + params.outer_rx[2];
+        let left_sum = params.outer_ry[0] + params.outer_ry[3];
+        let right_sum = params.outer_ry[1] + params.outer_ry[2];
+        assert!(top_sum <= 100.0 + 1e-4);
+        assert!(bottom_sum <= 100.0 + 1e-4);
+        assert!(left_sum <= 60.0 + 1e-4);
+        assert!(right_sum <= 60.0 + 1e-4);
     }
 }
