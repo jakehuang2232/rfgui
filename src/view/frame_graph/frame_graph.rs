@@ -39,6 +39,7 @@ pub struct ExecuteProfile {
     pub total_ms: f64,
     pub pass_count: usize,
     pub top_passes: Vec<(String, f64)>,
+    pub ordered_passes: Vec<(String, f64, usize)>,
 }
 
 impl FrameGraph {
@@ -168,6 +169,8 @@ impl FrameGraph {
         }
         let execute_started_at = Instant::now();
         let mut pass_timings: HashMap<String, f64> = HashMap::new();
+        let mut pass_counts: HashMap<String, usize> = HashMap::new();
+        let mut pass_first_seen_order: Vec<String> = Vec::new();
         let mut ctx = PassContext::new(viewport, &self.textures, &self.buffers, &mut self.cache);
         let mut cursor = 0usize;
         while cursor < self.order.len() {
@@ -209,9 +212,14 @@ impl FrameGraph {
                     execute_text_pass_batch(batch, &mut ctx);
                 }));
                 let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
-                *pass_timings
+                let text_pass_name = std::any::type_name::<TextPass>().to_string();
+                if !pass_timings.contains_key(&text_pass_name) {
+                    pass_first_seen_order.push(text_pass_name.clone());
+                }
+                *pass_timings.entry(text_pass_name).or_insert(0.0) += elapsed_ms;
+                *pass_counts
                     .entry(std::any::type_name::<TextPass>().to_string())
-                    .or_insert(0.0) += elapsed_ms;
+                    .or_insert(0) += end - cursor;
                 if let Err(payload) = result {
                     let detail = if let Some(message) = payload.downcast_ref::<&str>() {
                         *message
@@ -236,7 +244,11 @@ impl FrameGraph {
                 self.passes[index].pass.execute(&mut ctx);
             }));
             let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
+            if !pass_timings.contains_key(pass_name) {
+                pass_first_seen_order.push(pass_name.to_string());
+            }
             *pass_timings.entry(pass_name.to_string()).or_insert(0.0) += elapsed_ms;
+            *pass_counts.entry(pass_name.to_string()).or_insert(0) += 1;
             if let Err(payload) = result {
                 let detail = if let Some(message) = payload.downcast_ref::<&str>() {
                     *message
@@ -252,15 +264,25 @@ impl FrameGraph {
             }
             cursor += 1;
         }
-        let mut top_passes: Vec<(String, f64)> = pass_timings.into_iter().collect();
+        let mut top_passes: Vec<(String, f64)> =
+            pass_timings.iter().map(|(name, ms)| (name.clone(), *ms)).collect();
         top_passes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         if top_passes.len() > 6 {
             top_passes.truncate(6);
         }
+        let ordered_passes = pass_first_seen_order
+            .into_iter()
+            .filter_map(|name| {
+                let elapsed_ms = pass_timings.get(&name).copied()?;
+                let count = pass_counts.get(&name).copied().unwrap_or(0);
+                Some((name, elapsed_ms, count))
+            })
+            .collect();
         Ok(ExecuteProfile {
             total_ms: execute_started_at.elapsed().as_secs_f64() * 1000.0,
             pass_count: self.order.len(),
             top_passes,
+            ordered_passes,
         })
     }
 }

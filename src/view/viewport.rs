@@ -58,6 +58,93 @@ fn highlight_ms(ms: f64) -> String {
     format!("{color}{ms:.3}ms\x1b[0m")
 }
 
+#[derive(Debug, Clone)]
+struct TraceRenderNode {
+    name: String,
+    elapsed_ms: f64,
+    children: Vec<TraceRenderNode>,
+}
+
+impl TraceRenderNode {
+    fn new(name: impl Into<String>, elapsed_ms: f64) -> Self {
+        Self {
+            name: name.into(),
+            elapsed_ms,
+            children: Vec::new(),
+        }
+    }
+
+    fn with_children(
+        name: impl Into<String>,
+        elapsed_ms: f64,
+        children: Vec<TraceRenderNode>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            elapsed_ms,
+            children,
+        }
+    }
+}
+
+fn trace_render_percentage(parent_ms: f64, child_ms: f64) -> String {
+    let pct = if parent_ms > f64::EPSILON {
+        (child_ms / parent_ms) * 100.0
+    } else {
+        0.0
+    };
+    format!("{pct:.1}%")
+}
+
+fn format_trace_render_tree(root: &TraceRenderNode) -> String {
+    fn append_node(
+        out: &mut String,
+        node: &TraceRenderNode,
+        parent_ms: Option<f64>,
+        prefix: &str,
+        is_last: bool,
+    ) {
+        if parent_ms.is_none() {
+            out.push_str(&format!(
+                "\x1b[1;36m{}\x1b[0m {} (100.0%)\n",
+                node.name,
+                highlight_ms(node.elapsed_ms)
+            ));
+        } else {
+            let branch = if is_last { "└─ " } else { "├─ " };
+            let parent_elapsed_ms = parent_ms.unwrap_or(node.elapsed_ms);
+            out.push_str(&format!(
+                "{prefix}{branch}{} {} ({})\n",
+                node.name,
+                highlight_ms(node.elapsed_ms),
+                trace_render_percentage(parent_elapsed_ms, node.elapsed_ms)
+            ));
+        }
+
+        let next_prefix = if parent_ms.is_none() {
+            String::new()
+        } else if is_last {
+            format!("{prefix}   ")
+        } else {
+            format!("{prefix}│  ")
+        };
+        let child_count = node.children.len();
+        for (idx, child) in node.children.iter().enumerate() {
+            append_node(
+                out,
+                child,
+                Some(node.elapsed_ms),
+                &next_prefix,
+                idx + 1 == child_count,
+            );
+        }
+    }
+
+    let mut output = String::new();
+    append_node(&mut output, root, None, "", true);
+    output.trim_end().to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
@@ -1355,19 +1442,12 @@ impl Viewport {
 
         let mut execute_elapsed_ms = 0.0_f64;
         let mut execute_pass_count = 0_usize;
-        let mut execute_top_passes = String::from("none");
+        let mut execute_ordered_passes: Vec<(String, f64, usize)> = Vec::new();
         if compiled {
             if let Ok(profile) = graph.execute_profiled(self) {
                 execute_elapsed_ms = profile.total_ms;
                 execute_pass_count = profile.pass_count;
-                if !profile.top_passes.is_empty() {
-                    execute_top_passes = profile
-                        .top_passes
-                        .iter()
-                        .map(|(name, ms)| format!("{name}={}", highlight_ms(*ms)))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                }
+                execute_ordered_passes = profile.ordered_passes;
             }
         }
 
@@ -1377,25 +1457,62 @@ impl Viewport {
 
         let total_elapsed_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
         if self.debug_options.trace_render_time {
-            println!(
-                "\x1b[1;36mrender_tree\x1b[0m: total={} begin_frame={} layout={}(measure={} place={} collect={}) post_layout_transition={} relayout_after_transition={}(place={} collect={}) build_graph={} compile={} execute={}(passes={}, top=[{}]) end_frame={}",
-                highlight_ms(total_elapsed_ms),
-                highlight_ms(begin_frame_elapsed_ms),
-                highlight_ms(layout_elapsed_ms),
-                highlight_ms(layout_measure_elapsed_ms),
-                highlight_ms(layout_place_elapsed_ms),
-                highlight_ms(layout_collect_box_models_elapsed_ms),
-                highlight_ms(post_layout_transition_elapsed_ms),
-                highlight_ms(relayout_after_transition_elapsed_ms),
-                highlight_ms(relayout_place_elapsed_ms),
-                highlight_ms(relayout_collect_box_models_elapsed_ms),
-                highlight_ms(build_graph_elapsed_ms),
-                highlight_ms(compile_elapsed_ms),
-                highlight_ms(execute_elapsed_ms),
-                execute_pass_count,
-                execute_top_passes,
-                highlight_ms(end_frame_elapsed_ms)
+            let layout_with_transition_elapsed_ms = layout_elapsed_ms
+                + post_layout_transition_elapsed_ms
+                + relayout_after_transition_elapsed_ms;
+            let execute_children = if execute_ordered_passes.is_empty() {
+                vec![TraceRenderNode::new(format!("passes ({execute_pass_count})"), 0.0)]
+            } else {
+                execute_ordered_passes
+                    .into_iter()
+                    .map(|(name, elapsed_ms, count)| {
+                        TraceRenderNode::new(format!("{name} (count={count})"), elapsed_ms)
+                    })
+                    .collect()
+            };
+            let trace_root = TraceRenderNode::with_children(
+                "render_tree",
+                total_elapsed_ms,
+                vec![
+                    TraceRenderNode::new("begin_frame", begin_frame_elapsed_ms),
+                    TraceRenderNode::with_children(
+                        "layout",
+                        layout_with_transition_elapsed_ms,
+                        vec![
+                            TraceRenderNode::new("measure", layout_measure_elapsed_ms),
+                            TraceRenderNode::new("place", layout_place_elapsed_ms),
+                            TraceRenderNode::new(
+                                "collect_box_models",
+                                layout_collect_box_models_elapsed_ms,
+                            ),
+                            TraceRenderNode::new(
+                                "post_layout_transition",
+                                post_layout_transition_elapsed_ms,
+                            ),
+                            TraceRenderNode::with_children(
+                                "relayout_after_transition",
+                                relayout_after_transition_elapsed_ms,
+                                vec![
+                                    TraceRenderNode::new("place", relayout_place_elapsed_ms),
+                                    TraceRenderNode::new(
+                                        "collect_box_models",
+                                        relayout_collect_box_models_elapsed_ms,
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                    TraceRenderNode::new("build_graph", build_graph_elapsed_ms),
+                    TraceRenderNode::new("compile", compile_elapsed_ms),
+                    TraceRenderNode::with_children(
+                        format!("execute (passes={execute_pass_count})"),
+                        execute_elapsed_ms,
+                        execute_children,
+                    ),
+                    TraceRenderNode::new("end_frame", end_frame_elapsed_ms),
+                ],
             );
+            println!("{}", format_trace_render_tree(&trace_root));
         }
         self.frame_stats.record_frame(frame_start.elapsed());
         transition_changed_after_layout
