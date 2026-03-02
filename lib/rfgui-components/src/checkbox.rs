@@ -4,7 +4,7 @@ use rfgui::ui::{
     Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
 use rfgui::{
-    AlignItems, Border, BorderRadius, Color, Display, Length, Padding, Transition,
+    AlignItems, Border, BorderRadius, Color, Display, Length, Transition,
     TransitionProperty,
 };
 

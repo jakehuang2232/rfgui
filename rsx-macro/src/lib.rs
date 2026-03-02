@@ -338,43 +338,6 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         }
     });
 
-    if should_fill_default_props(tag) {
-        let Some(direct_props_type) = direct_props_type_tokens(tag) else {
-            return syn::Error::new(tag.span(), "unsupported default-props host component tag")
-                .to_compile_error();
-        };
-        let prop_schema_checks = element
-            .props
-            .iter()
-            .filter(|p| p.key != "key")
-            .map(expand_direct_prop_schema_check);
-        let prop_assignments = element
-            .props
-            .iter()
-            .filter(|p| p.key != "key")
-            .map(expand_direct_prop_assignment);
-        let children_assignment = if has_children {
-            quote! { children: __rsx_children, }
-        } else {
-            quote! {}
-        };
-        return quote! {
-            {
-                let _ = ::core::marker::PhantomData::<#close_tag>;
-                let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
-                #(#child_statements)*
-                type __RsxComponentProps = #direct_props_type;
-                #(#prop_schema_checks)*
-                let __rsx_props: __RsxComponentProps = __RsxComponentProps {
-                    #(#prop_assignments)*
-                    #children_assignment
-                    ..<__RsxComponentProps as ::rfgui::ui::OptionalDefault>::optional_default()
-                };
-                <#tag as ::rfgui::ui::RsxComponent<__RsxComponentProps>>::render(__rsx_props)
-            }
-        };
-    }
-
     let prop_schema_checks = element
         .props
         .iter()
@@ -452,22 +415,6 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
         PropValueExpr::StyleObject(_) => quote_spanned! {prop.key.span()=>
             compile_error!("`key` must be a Rust expression, not a style object")
         },
-    }
-}
-
-fn should_fill_default_props(path: &Path) -> bool {
-    matches!(
-        tag_name(path).as_deref(),
-        Some("Element" | "Text" | "TextArea")
-    )
-}
-
-fn direct_props_type_tokens(path: &Path) -> Option<proc_macro2::TokenStream> {
-    match tag_name(path).as_deref() {
-        Some("Element") => Some(quote! { ::rfgui::ui::host::ElementPropSchema }),
-        Some("Text") => Some(quote! { ::rfgui::ui::host::TextPropSchema }),
-        Some("TextArea") => Some(quote! { ::rfgui::ui::host::TextAreaPropSchema }),
-        _ => None,
     }
 }
 
@@ -663,14 +610,6 @@ fn is_fn_pointer_type(ty: &Type) -> bool {
     matches!(ty, Type::BareFn(_))
 }
 
-fn expand_direct_prop_assignment(prop: &Prop) -> proc_macro2::TokenStream {
-    let key_ident = &prop.key;
-    let value = expand_prop_value_expr(&prop.value);
-    quote! {
-        #key_ident: (#value).into(),
-    }
-}
-
 fn expand_builder_assignment(prop: &Prop) -> proc_macro2::TokenStream {
     let key_ident = &prop.key;
     let value = expand_builder_value_expr(prop);
@@ -706,15 +645,6 @@ fn event_closure_wrapper(prop_key: &str) -> Option<proc_macro2::TokenStream> {
     }
 }
 
-fn expand_direct_prop_schema_check(prop: &Prop) -> proc_macro2::TokenStream {
-    let key_ident = &prop.key;
-    quote! {
-        let _ = |__schema: &__RsxComponentProps| {
-            let _ = &__schema.#key_ident;
-        };
-    }
-}
-
 fn expand_builder_prop_schema_check(prop: &Prop) -> proc_macro2::TokenStream {
     let key_ident = &prop.key;
     quote! {
@@ -739,6 +669,14 @@ fn expand_prop_value_expr(value: &PropValueExpr) -> proc_macro2::TokenStream {
 fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
     let key_ident = &entry.key;
     let key = entry.key.to_string();
+    if let StyleValueExpr::Expr(expr) = &entry.value
+        && is_string_literal_expr(expr)
+        && !is_color_style_key(&key)
+    {
+        return quote_spanned! {entry.key.span()=>
+            compile_error!("string style values are unsupported for this key; use typed values (colors are the only string exception)");
+        };
+    }
     let style_value_tokens = match key.as_str() {
         "border" => match &entry.value {
             StyleValueExpr::Expr(value) => quote! { __rsx_style.set_border(#value); },
@@ -1007,6 +945,14 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
     }
 }
 
+fn is_color_style_key(key: &str) -> bool {
+    matches!(key, "background" | "background_color" | "color")
+}
+
+fn is_string_literal_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Lit(expr_lit) if matches!(&expr_lit.lit, Lit::Str(_)))
+}
+
 fn expand_color_style_value(
     value: &Expr,
     property: proc_macro2::TokenStream,
@@ -1041,10 +987,6 @@ fn expand_node(child: &Child) -> proc_macro2::TokenStream {
             }
         }
     }
-}
-
-fn tag_name(path: &Path) -> Option<String> {
-    path.segments.last().map(|seg| seg.ident.to_string())
 }
 
 fn path_key(path: &Path) -> String {
