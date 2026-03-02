@@ -13,7 +13,7 @@ pub(crate) trait RenderTargetPass {
 }
 
 struct RenderTargetEntry {
-    texture: wgpu::Texture,
+    _texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
 
@@ -68,7 +68,10 @@ impl RenderTargetStore {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            RenderTargetEntry { texture, view }
+            RenderTargetEntry {
+                _texture: texture,
+                view,
+            }
         };
 
         self.entries.insert(handle.0, entry);

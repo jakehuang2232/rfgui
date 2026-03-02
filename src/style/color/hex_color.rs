@@ -104,22 +104,6 @@ impl<'a> ColorLike for HexColor<'a> {
     }
 }
 
-struct ColorNone {}
-
-impl ColorLike for ColorNone {
-    fn box_clone(&self) -> Box<dyn ColorLike> {
-        Box::new(ColorNone {})
-    }
-
-    fn to_rgba_f32(&self) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
-    }
-
-    fn to_rgba_u8(&self) -> [u8; 4] {
-        [0, 0, 0, 0]
-    }
-}
-
 fn hex_1_to_u8(c: u8) -> u8 {
     match c {
         b'0'..=b'9' => c - b'0',

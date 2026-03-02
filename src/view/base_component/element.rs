@@ -2909,44 +2909,6 @@ impl Element {
         }
     }
 
-    fn push_inner_fill_pass(
-        &mut self,
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        left: f32,
-        right: f32,
-        top: f32,
-        bottom: f32,
-        outer_radii: CornerRadii,
-        opacity: f32,
-    ) {
-        let x = self.core.layout_position.x;
-        let y = self.core.layout_position.y;
-        let w = self.core.layout_size.width.max(0.0);
-        let h = self.core.layout_size.height.max(0.0);
-        let inner_x = x + left;
-        let inner_y = y + top;
-        let inner_w = (w - left - right).max(0.0);
-        let inner_h = (h - top - bottom).max(0.0);
-        if inner_w <= 0.0 || inner_h <= 0.0 {
-            return;
-        }
-        let inner_radii = normalize_corner_radii(
-            inset_corner_radii(outer_radii, left, right, top, bottom),
-            inner_w,
-            inner_h,
-        );
-        let mut pass = DrawRectPass::new(
-            [inner_x, inner_y],
-            [inner_w, inner_h],
-            self.background_color.as_ref().to_rgba_f32(),
-            opacity,
-        );
-        pass.set_border_width(0.0);
-        pass.set_border_radii(inner_radii.to_array());
-        self.push_pass(graph, ctx, pass);
-    }
-
     fn render_box_shadows(
         &mut self,
         graph: &mut FrameGraph,
@@ -3250,71 +3212,6 @@ impl Element {
         let max_y = (self.content_size.height - self.layout_inner_size.height).max(0.0);
         self.scroll_offset.x = self.scroll_offset.x.clamp(0.0, max_x);
         self.scroll_offset.y = self.scroll_offset.y.clamp(0.0, max_y);
-    }
-
-    fn child_layout_limits_for_proposal(&self, proposal: LayoutProposal) -> (f32, f32) {
-        const SCROLL_EXPANDED_LIMIT: f32 = 1_000_000.0;
-
-        let bw_l = resolve_px_or_zero(
-            self.computed_style.border_widths.left,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_r = resolve_px_or_zero(
-            self.computed_style.border_widths.right,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_t = resolve_px_or_zero(
-            self.computed_style.border_widths.top,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_b = resolve_px_or_zero(
-            self.computed_style.border_widths.bottom,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-
-        let p_l = resolve_px_or_zero(
-            self.computed_style.padding.left,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_r = resolve_px_or_zero(
-            self.computed_style.padding.right,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_t = resolve_px_or_zero(
-            self.computed_style.padding.top,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_b = resolve_px_or_zero(
-            self.computed_style.padding.bottom,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-
-        let (layout_w, layout_h) = self.current_layout_transition_size();
-        let inner_w = (layout_w - bw_l - bw_r - p_l - p_r).max(0.0);
-        let inner_h = (layout_h - bw_t - bw_b - p_t - p_b).max(0.0);
-
-        match self.scroll_direction {
-            ScrollDirection::None => (inner_w, inner_h),
-            ScrollDirection::Vertical => (inner_w, SCROLL_EXPANDED_LIMIT),
-            ScrollDirection::Horizontal => (SCROLL_EXPANDED_LIMIT, inner_h),
-            ScrollDirection::Both => (SCROLL_EXPANDED_LIMIT, SCROLL_EXPANDED_LIMIT),
-        }
     }
 
     fn update_size_from_measured_children(&mut self) {

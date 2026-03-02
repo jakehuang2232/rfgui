@@ -801,23 +801,6 @@ fn stable_node_id(path: &[u64], kind: &str) -> u64 {
     if hash == 0 { 1 } else { hash }
 }
 
-fn component_boundary_path(path: &[u64], component_tag: &str) -> Vec<u64> {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut hash = FNV_OFFSET_BASIS;
-    hash ^= 0x43;
-    hash = hash.wrapping_mul(FNV_PRIME);
-    for &byte in component_tag.as_bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash &= !(1_u64 << 63);
-
-    let mut scoped = path.to_vec();
-    scoped.push(hash);
-    scoped
-}
-
 fn child_identity_token(node: &RsxNode, fallback_index: usize) -> u64 {
     const KEYED_BIT: u64 = 1_u64 << 63;
     let keyed = match node {
@@ -896,14 +879,6 @@ fn as_font_size_px(
     }
 }
 
-fn as_f64(value: &PropValue, key: &str) -> Result<f64, String> {
-    match value {
-        PropValue::I64(v) => Ok(*v as f64),
-        PropValue::F64(v) => Ok(*v),
-        _ => Err(format!("prop `{key}` expects numeric value")),
-    }
-}
-
 fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
     match value {
         PropValue::String(v) => Ok(v.as_str()),
@@ -925,21 +900,6 @@ fn as_text_align(value: &PropValue, key: &str) -> Result<crate::TextAlign, Strin
 fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
     Binding::<String>::from_prop_value(value.clone())
         .map_err(|_| format!("prop `{key}` expects Binding<String> value"))
-}
-
-fn as_binding_bool(value: &PropValue, key: &str) -> Result<Binding<bool>, String> {
-    Binding::<bool>::from_prop_value(value.clone())
-        .map_err(|_| format!("prop `{key}` expects Binding<bool> value"))
-}
-
-fn as_binding_f64(value: &PropValue, key: &str) -> Result<Binding<f64>, String> {
-    Binding::<f64>::from_prop_value(value.clone())
-        .map_err(|_| format!("prop `{key}` expects Binding<f64> value"))
-}
-
-fn as_binding_usize(value: &PropValue, key: &str) -> Result<Binding<usize>, String> {
-    Binding::<usize>::from_prop_value(value.clone())
-        .map_err(|_| format!("prop `{key}` expects Binding<usize> value"))
 }
 
 fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {
@@ -967,31 +927,6 @@ fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
         }
         _ => Err(format!("prop `{key}` expects numeric value")),
     }
-}
-
-fn as_usize_raw(value: &PropValue, key: &str) -> Result<usize, String> {
-    match value {
-        PropValue::I64(v) => {
-            if *v < 0 {
-                Err(format!("prop `{key}` expects non-negative integer value"))
-            } else {
-                Ok(*v as usize)
-            }
-        }
-        PropValue::F64(v) => {
-            if *v < 0.0 {
-                Err(format!("prop `{key}` expects non-negative numeric value"))
-            } else {
-                Ok(*v as usize)
-            }
-        }
-        _ => Err(format!("prop `{key}` expects numeric value")),
-    }
-}
-
-fn as_vec_string(value: &PropValue, key: &str) -> Result<Vec<String>, String> {
-    Vec::<String>::from_prop_value(value.clone())
-        .map_err(|_| format!("prop `{key}` expects Vec<String> value"))
 }
 
 fn as_style(value: &PropValue, key: &str) -> Result<Style, String> {

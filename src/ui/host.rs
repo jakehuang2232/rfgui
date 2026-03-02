@@ -2,7 +2,7 @@ use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxChildrenPolicy,
-    RsxComponent,
+    RsxComponent, props,
 };
 use crate::{
     AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Display, FontFamily, FontSize,
@@ -13,16 +13,9 @@ pub struct Element;
 pub struct Text;
 pub struct TextArea;
 
+#[props]
 pub struct ElementPropSchema {
-    pub anchor: String,
-    pub padding: f64,
-    pub padding_x: f64,
-    pub padding_y: f64,
-    pub padding_left: f64,
-    pub padding_right: f64,
-    pub padding_top: f64,
-    pub padding_bottom: f64,
-    pub opacity: f64,
+    pub anchor: Option<String>,
     pub style: Option<Style>,
     pub on_mouse_down: Option<MouseDownHandlerProp>,
     pub on_mouse_up: Option<MouseUpHandlerProp>,
@@ -68,119 +61,41 @@ pub struct BorderStylePropSchema {
     pub color: Box<dyn ColorLike>,
 }
 
+#[props]
 pub struct TextPropSchema {
     pub style: Option<Style>,
-    pub align: TextAlign,
-    pub font_size: FontSize,
-    pub line_height: f64,
-    pub font: String,
-    pub opacity: f64,
+    pub align: Option<TextAlign>,
+    pub font_size: Option<FontSize>,
+    pub line_height: Option<f64>,
+    pub font: Option<String>,
+    pub opacity: Option<f64>,
     pub children: Vec<RsxNode>,
 }
 
+#[props]
 pub struct TextAreaPropSchema {
-    pub content: String,
+    pub content: Option<String>,
     pub binding: Option<crate::ui::Binding<String>>,
-    pub placeholder: String,
-    pub color: String,
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-    pub font_size: FontSize,
-    pub font: String,
-    pub opacity: f64,
-    pub multiline: bool,
-    pub read_only: bool,
-    pub max_length: i64,
+    pub placeholder: Option<String>,
+    pub color: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub font_size: Option<FontSize>,
+    pub font: Option<String>,
+    pub opacity: Option<f64>,
+    pub multiline: Option<bool>,
+    pub read_only: Option<bool>,
+    pub max_length: Option<i64>,
     pub children: Vec<RsxNode>,
-}
-
-impl Default for ElementPropSchema {
-    fn default() -> Self {
-        Self {
-            anchor: String::new(),
-            padding: 0.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            padding_left: 0.0,
-            padding_right: 0.0,
-            padding_top: 0.0,
-            padding_bottom: 0.0,
-            opacity: 0.0,
-            style: None,
-            on_mouse_down: None,
-            on_mouse_up: None,
-            on_mouse_move: None,
-            on_click: None,
-            on_key_down: None,
-            on_key_up: None,
-            on_focus: None,
-            on_blur: None,
-            children: Vec::new(),
-        }
-    }
-}
-
-impl crate::ui::OptionalDefault for ElementPropSchema {
-    fn optional_default() -> Self {
-        Self::default()
-    }
-}
-
-impl Default for TextPropSchema {
-    fn default() -> Self {
-        Self {
-            style: None,
-            align: TextAlign::Left,
-            font_size: FontSize::px(0.0),
-            line_height: 0.0,
-            font: String::new(),
-            opacity: 0.0,
-            children: Vec::new(),
-        }
-    }
-}
-
-impl crate::ui::OptionalDefault for TextPropSchema {
-    fn optional_default() -> Self {
-        Self::default()
-    }
-}
-
-impl Default for TextAreaPropSchema {
-    fn default() -> Self {
-        Self {
-            content: String::new(),
-            binding: None,
-            placeholder: String::new(),
-            color: String::new(),
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-            font_size: FontSize::px(0.0),
-            font: String::new(),
-            opacity: 0.0,
-            multiline: false,
-            read_only: false,
-            max_length: 0,
-            children: Vec::new(),
-        }
-    }
-}
-
-impl crate::ui::OptionalDefault for TextAreaPropSchema {
-    fn optional_default() -> Self {
-        Self::default()
-    }
 }
 
 impl RsxComponent<ElementPropSchema> for Element {
     fn render(props: ElementPropSchema) -> RsxNode {
         let mut node = RsxNode::element("Element");
-        if !props.anchor.is_empty() {
-            node = node.with_prop("anchor", props.anchor);
+        if let Some(anchor) = props.anchor {
+            node = node.with_prop("anchor", anchor);
         }
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
@@ -222,18 +137,28 @@ impl RsxComponent<TextPropSchema> for Text {
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
         }
-        node = node.with_prop("align", props.align);
-        if !is_unset_font_size(props.font_size) {
-            node = node.with_prop("font_size", props.font_size);
+        if let Some(align) = props.align {
+            node = node.with_prop("align", align);
         }
-        if props.line_height != 0.0 {
-            node = node.with_prop("line_height", props.line_height);
+        if let Some(font_size) = props.font_size
+            && !is_unset_font_size(font_size)
+        {
+            node = node.with_prop("font_size", font_size);
         }
-        if !props.font.is_empty() {
-            node = node.with_prop("font", props.font);
+        if let Some(line_height) = props.line_height
+            && line_height != 0.0
+        {
+            node = node.with_prop("line_height", line_height);
         }
-        if props.opacity != 0.0 {
-            node = node.with_prop("opacity", props.opacity);
+        if let Some(font) = props.font
+            && !font.is_empty()
+        {
+            node = node.with_prop("font", font);
+        }
+        if let Some(opacity) = props.opacity
+            && opacity != 0.0
+        {
+            node = node.with_prop("opacity", opacity);
         }
         for child in props.children {
             node = node.with_child(child);
@@ -245,8 +170,10 @@ impl RsxComponent<TextPropSchema> for Text {
 impl RsxComponent<TextAreaPropSchema> for TextArea {
     fn render(props: TextAreaPropSchema) -> RsxNode {
         let mut node = RsxNode::element("TextArea");
-        if !props.content.is_empty() {
-            node = node.with_prop("content", props.content);
+        if let Some(content) = props.content
+            && !content.is_empty()
+        {
+            node = node.with_prop("content", content);
         }
         if let Some(binding) = props.binding {
             node = node.with_prop(
@@ -254,37 +181,61 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
                 crate::ui::IntoPropValue::into_prop_value(binding),
             );
         }
-        if !props.placeholder.is_empty() {
-            node = node.with_prop("placeholder", props.placeholder);
+        if let Some(placeholder) = props.placeholder
+            && !placeholder.is_empty()
+        {
+            node = node.with_prop("placeholder", placeholder);
         }
-        if !props.color.is_empty() {
-            node = node.with_prop("color", props.color);
+        if let Some(color) = props.color
+            && !color.is_empty()
+        {
+            node = node.with_prop("color", color);
         }
-        if props.x != 0.0 {
-            node = node.with_prop("x", props.x);
+        if let Some(x) = props.x
+            && x != 0.0
+        {
+            node = node.with_prop("x", x);
         }
-        if props.y != 0.0 {
-            node = node.with_prop("y", props.y);
+        if let Some(y) = props.y
+            && y != 0.0
+        {
+            node = node.with_prop("y", y);
         }
-        if props.width != 0.0 {
-            node = node.with_prop("width", props.width);
+        if let Some(width) = props.width
+            && width != 0.0
+        {
+            node = node.with_prop("width", width);
         }
-        if props.height != 0.0 {
-            node = node.with_prop("height", props.height);
+        if let Some(height) = props.height
+            && height != 0.0
+        {
+            node = node.with_prop("height", height);
         }
-        if !is_unset_font_size(props.font_size) {
-            node = node.with_prop("font_size", props.font_size);
+        if let Some(font_size) = props.font_size
+            && !is_unset_font_size(font_size)
+        {
+            node = node.with_prop("font_size", font_size);
         }
-        if !props.font.is_empty() {
-            node = node.with_prop("font", props.font);
+        if let Some(font) = props.font
+            && !font.is_empty()
+        {
+            node = node.with_prop("font", font);
         }
-        if props.opacity != 0.0 {
-            node = node.with_prop("opacity", props.opacity);
+        if let Some(opacity) = props.opacity
+            && opacity != 0.0
+        {
+            node = node.with_prop("opacity", opacity);
         }
-        node = node.with_prop("multiline", props.multiline);
-        node = node.with_prop("read_only", props.read_only);
-        if props.max_length != 0 {
-            node = node.with_prop("max_length", props.max_length);
+        if let Some(multiline) = props.multiline {
+            node = node.with_prop("multiline", multiline);
+        }
+        if let Some(read_only) = props.read_only {
+            node = node.with_prop("read_only", read_only);
+        }
+        if let Some(max_length) = props.max_length
+            && max_length != 0
+        {
+            node = node.with_prop("max_length", max_length);
         }
         for child in props.children {
             node = node.with_child(child);
