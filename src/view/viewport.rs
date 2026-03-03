@@ -4,26 +4,28 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wgpu::{
-    rwh::{HasDisplayHandle, HasWindowHandle},
     Instance, Queue, TextureUsages,
+    rwh::{HasDisplayHandle, HasWindowHandle},
 };
 
 use crate::transition::{
-    ChannelId, ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition,
-    ScrollTransitionPlugin, StyleTransitionPlugin, TrackKey, TrackTarget, Transition,
-    TransitionFrame, TransitionHost, TransitionPluginId, VisualTransitionPlugin,
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y,
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
     CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
+    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
+    ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin,
+    StyleTransitionPlugin, TrackKey, TrackTarget, Transition, TransitionFrame, TransitionHost,
+    TransitionPluginId, VisualTransitionPlugin,
 };
 use crate::ui::{
-    take_state_dirty, BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent,
-    KeyEventData, KeyModifiers, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent,
-    MouseEventData, MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
-    ViewportListenerAction, ViewportListenerHandle,
+    BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyEventData,
+    KeyModifiers, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent, MouseEventData,
+    MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
+    ViewportListenerAction, ViewportListenerHandle, take_state_dirty,
 };
+use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
+use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 use crate::{ColorLike, Cursor, HexColor, Style};
 
 pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
@@ -286,6 +288,14 @@ impl<'a> ViewportControl<'a> {
     pub fn set_debug_geometry_overlay(&mut self, enabled: bool) {
         self.viewport.set_debug_geometry_overlay(enabled);
     }
+
+    pub fn set_msaa_sample_count(&mut self, sample_count: u32) {
+        self.viewport.set_msaa_sample_count(sample_count);
+    }
+
+    pub fn release_render_resource_caches(&mut self) {
+        self.viewport.release_render_resource_caches();
+    }
 }
 
 struct TransitionHostAdapter<'a> {
@@ -341,9 +351,13 @@ pub struct Viewport {
     instance: Option<Instance>,
     window: Option<Window>,
     queue: Option<Queue>,
+    msaa_sample_count: u32,
+    surface_msaa_texture: Option<wgpu::Texture>,
+    surface_msaa_view: Option<wgpu::TextureView>,
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
     frame_state: Option<FrameState>,
+    offscreen_render_target_pool: OffscreenRenderTargetPool,
     pending_size: Option<(u32, u32)>,
     needs_reconfigure: bool,
     redraw_requested: bool,
@@ -375,6 +389,16 @@ pub struct Viewport {
 }
 
 impl Viewport {
+    const DEFAULT_MSAA_SAMPLE_COUNT: u32 = 4;
+
+    fn normalize_msaa_sample_count(sample_count: u32) -> u32 {
+        match sample_count {
+            1 | 2 | 4 | 8 | 16 => sample_count,
+            0 => 1,
+            _ => Self::DEFAULT_MSAA_SAMPLE_COUNT,
+        }
+    }
+
     fn is_style_driven_transition_channel(channel: ChannelId) -> bool {
         matches!(
             channel,
@@ -954,7 +978,7 @@ impl Viewport {
                 width: 1,
                 height: 1,
                 present_mode: Self::present_mode_from_env(),
-                desired_maximum_frame_latency: 2,
+                desired_maximum_frame_latency: 3,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
                 view_formats: vec![],
             },
@@ -962,9 +986,13 @@ impl Viewport {
             instance: None,
             window: None,
             queue: None,
+            msaa_sample_count: Self::DEFAULT_MSAA_SAMPLE_COUNT,
+            surface_msaa_texture: None,
+            surface_msaa_view: None,
             depth_texture: None,
             depth_view: None,
             frame_state: None,
+            offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
             pending_size: None,
             needs_reconfigure: false,
             redraw_requested: false,
@@ -1015,6 +1043,23 @@ impl Viewport {
 
     pub fn debug_options(&self) -> ViewportDebugOptions {
         self.debug_options
+    }
+
+    pub fn msaa_sample_count(&self) -> u32 {
+        self.msaa_sample_count
+    }
+
+    pub fn set_msaa_sample_count(&mut self, sample_count: u32) {
+        let normalized = Self::normalize_msaa_sample_count(sample_count);
+        if self.msaa_sample_count == normalized {
+            return;
+        }
+        self.msaa_sample_count = normalized;
+        self.needs_reconfigure = true;
+        if self.surface.is_some() && self.device.is_some() {
+            self.create_frame_attachments();
+        }
+        self.request_redraw();
     }
 
     pub fn set_debug_options(&mut self, options: ViewportDebugOptions) {
@@ -1215,7 +1260,8 @@ impl Viewport {
             self.surface = Some(surface);
             self.device = Some(device);
             self.queue = Some(queue);
-            self.create_depth_texture();
+            self.release_render_resource_caches();
+            self.create_frame_attachments();
             self.needs_reconfigure = false;
             if let Some(device) = self.device.as_ref() {
                 if let Some(queue) = self.queue.as_ref() {
@@ -1246,9 +1292,46 @@ impl Viewport {
             None => return false,
         };
         surface.configure(device, &self.surface_config);
-        self.create_depth_texture();
+        self.release_render_resource_caches();
+        self.create_frame_attachments();
         self.needs_reconfigure = false;
         true
+    }
+
+    fn create_frame_attachments(&mut self) {
+        self.create_surface_msaa_texture();
+        self.create_depth_texture();
+    }
+
+    fn create_surface_msaa_texture(&mut self) {
+        if self.msaa_sample_count <= 1 {
+            self.surface_msaa_texture = None;
+            self.surface_msaa_view = None;
+            return;
+        }
+        let device = match &self.device {
+            Some(d) => d,
+            None => return,
+        };
+        let size = wgpu::Extent3d {
+            width: self.surface_config.width.max(1),
+            height: self.surface_config.height.max(1),
+            depth_or_array_layers: 1,
+        };
+        let desc = wgpu::TextureDescriptor {
+            label: Some("Surface MSAA Texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: self.msaa_sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        };
+        let texture = device.create_texture(&desc);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.surface_msaa_texture = Some(texture);
+        self.surface_msaa_view = Some(view);
     }
 
     fn create_depth_texture(&mut self) {
@@ -1266,7 +1349,7 @@ impl Viewport {
             label: Some("Depth Texture"),
             size,
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: self.msaa_sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth24PlusStencil8,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
@@ -1286,12 +1369,21 @@ impl Viewport {
         now_seconds: f64,
     ) -> bool {
         let frame_start = Instant::now();
-        let begin_frame_started_at = Instant::now();
-        if !self.begin_frame() {
-            return false;
-        }
-        let begin_frame_elapsed_ms = begin_frame_started_at.elapsed().as_secs_f64() * 1000.0;
-
+        let begin_frame_profile = match self.begin_frame() {
+            Some(profile) => profile,
+            None => {
+                return false;
+            }
+        };
+        let begin_frame_elapsed_ms = begin_frame_profile.total_ms;
+        let begin_frame_children = vec![
+            TraceRenderNode::new("acquire_surface_texture", begin_frame_profile.acquire_ms),
+            TraceRenderNode::new("create_surface_view", begin_frame_profile.create_view_ms),
+            TraceRenderNode::new(
+                "create_command_encoder",
+                begin_frame_profile.create_encoder_ms,
+            ),
+        ];
         let layout_started_at = Instant::now();
         self.frame_box_models.clear();
         let measure_started_at = Instant::now();
@@ -1434,6 +1526,7 @@ impl Viewport {
                 graph.add_pass(present_pass);
             }
         }
+        graph.normalize_opaque_rect_depths();
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let compile_started_at = Instant::now();
@@ -1443,25 +1536,33 @@ impl Viewport {
         let mut execute_elapsed_ms = 0.0_f64;
         let mut execute_pass_count = 0_usize;
         let mut execute_ordered_passes: Vec<(String, f64, usize)> = Vec::new();
+        let mut execute_detail_ordered_passes: Vec<(String, f64, usize)> = Vec::new();
         if compiled {
             if let Ok(profile) = graph.execute_profiled(self) {
                 execute_elapsed_ms = profile.total_ms;
                 execute_pass_count = profile.pass_count;
                 execute_ordered_passes = profile.ordered_passes;
+                execute_detail_ordered_passes = profile.detail_ordered;
             }
         }
 
-        let end_frame_started_at = Instant::now();
-        self.end_frame();
-        let end_frame_elapsed_ms = end_frame_started_at.elapsed().as_secs_f64() * 1000.0;
+        let end_frame_profile = self.end_frame();
+        let end_frame_elapsed_ms = end_frame_profile.total_ms;
+        let end_frame_children = vec![
+            TraceRenderNode::new("queue_submit", end_frame_profile.submit_ms),
+            TraceRenderNode::new("present", end_frame_profile.present_ms),
+        ];
 
         let total_elapsed_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
         if self.debug_options.trace_render_time {
             let layout_with_transition_elapsed_ms = layout_elapsed_ms
                 + post_layout_transition_elapsed_ms
                 + relayout_after_transition_elapsed_ms;
-            let execute_children = if execute_ordered_passes.is_empty() {
-                vec![TraceRenderNode::new(format!("passes ({execute_pass_count})"), 0.0)]
+            let mut execute_children = if execute_ordered_passes.is_empty() {
+                vec![TraceRenderNode::new(
+                    format!("passes ({execute_pass_count})"),
+                    0.0,
+                )]
             } else {
                 execute_ordered_passes
                     .into_iter()
@@ -1470,11 +1571,32 @@ impl Viewport {
                     })
                     .collect()
             };
+            if !execute_detail_ordered_passes.is_empty() {
+                let detail_total_ms: f64 = execute_detail_ordered_passes
+                    .iter()
+                    .map(|(_, elapsed_ms, _)| *elapsed_ms)
+                    .sum();
+                let detail_children = execute_detail_ordered_passes
+                    .into_iter()
+                    .map(|(name, elapsed_ms, count)| {
+                        TraceRenderNode::new(format!("{name} (count={count})"), elapsed_ms)
+                    })
+                    .collect();
+                execute_children.push(TraceRenderNode::with_children(
+                    "execute_detail",
+                    detail_total_ms,
+                    detail_children,
+                ));
+            }
             let trace_root = TraceRenderNode::with_children(
                 "render_tree",
                 total_elapsed_ms,
                 vec![
-                    TraceRenderNode::new("begin_frame", begin_frame_elapsed_ms),
+                    TraceRenderNode::with_children(
+                        "begin_frame",
+                        begin_frame_elapsed_ms,
+                        begin_frame_children,
+                    ),
                     TraceRenderNode::with_children(
                         "layout",
                         layout_with_transition_elapsed_ms,
@@ -1509,7 +1631,11 @@ impl Viewport {
                         execute_elapsed_ms,
                         execute_children,
                     ),
-                    TraceRenderNode::new("end_frame", end_frame_elapsed_ms),
+                    TraceRenderNode::with_children(
+                        "end_frame",
+                        end_frame_elapsed_ms,
+                        end_frame_children,
+                    ),
                 ],
             );
             println!("{}", format_trace_render_tree(&trace_root));
@@ -1604,6 +1730,7 @@ impl Viewport {
         Some(FrameParts {
             encoder: &mut frame.encoder,
             view: &frame.view,
+            resolve_view: frame.resolve_view.as_ref(),
             depth_view: frame.depth_view.as_ref(),
         })
     }
@@ -1614,6 +1741,26 @@ impl Viewport {
 
     pub fn queue(&self) -> Option<&Queue> {
         self.queue.as_ref()
+    }
+
+    pub(crate) fn acquire_offscreen_render_target(
+        &mut self,
+        handle: TextureHandle,
+        desc: TextureDesc,
+    ) -> Option<RenderTargetBundle> {
+        let device = self.device.as_ref()?;
+        self.offscreen_render_target_pool
+            .acquire(device, handle, desc, self.msaa_sample_count)
+    }
+
+    pub fn release_render_resource_caches(&mut self) {
+        crate::view::render_pass::draw_rect_pass::clear_draw_rect_resources_cache();
+        crate::view::render_pass::shadow_pass::clear_shadow_resources_cache();
+        crate::view::render_pass::text_pass::clear_text_resources_cache();
+        crate::view::render_pass::blur_pass::clear_blur_resources_cache();
+        crate::view::render_pass::composite_layer_pass::clear_composite_layer_resources_cache();
+        crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
+        self.offscreen_render_target_pool.clear();
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
@@ -2455,23 +2602,33 @@ impl Viewport {
         }
     }
 
-    fn begin_frame(&mut self) -> bool {
+    fn begin_frame(&mut self) -> Option<BeginFrameProfile> {
+        let total_started_at = Instant::now();
         if self.frame_state.is_some() {
-            return true;
+            return Some(BeginFrameProfile {
+                total_ms: 0.0,
+                acquire_ms: 0.0,
+                create_view_ms: 0.0,
+                create_encoder_ms: 0.0,
+            });
         }
         if !self.apply_pending_reconfigure() {
-            return false;
+            return None;
         }
+        self.offscreen_render_target_pool.begin_frame();
+        crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
+        crate::view::render_pass::shadow_pass::begin_shadow_resources_frame();
 
         let surface = match &self.surface {
             Some(s) => s,
-            None => return false,
+            None => return None,
         };
         let device = match &self.device {
             Some(d) => d,
-            None => return false,
+            None => return None,
         };
 
+        let acquire_started_at = Instant::now();
         let render_texture = match surface.get_current_texture() {
             Ok(texture) => texture,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -2479,42 +2636,76 @@ impl Viewport {
                 surface.configure(device, &self.surface_config);
                 match surface.get_current_texture() {
                     Ok(texture) => texture,
-                    Err(_) => return false,
+                    Err(_) => return None,
                 }
             }
-            Err(wgpu::SurfaceError::Timeout) => return false,
-            Err(wgpu::SurfaceError::OutOfMemory) => return false,
-            Err(wgpu::SurfaceError::Other) => return false,
+            Err(wgpu::SurfaceError::Timeout) => return None,
+            Err(wgpu::SurfaceError::OutOfMemory) => return None,
+            Err(wgpu::SurfaceError::Other) => return None,
         };
+        let acquire_ms = acquire_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        let view = render_texture
+        let create_view_started_at = Instant::now();
+        let surface_view = render_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let (view, resolve_view) = if self.msaa_sample_count > 1 {
+            let Some(msaa_view) = self.surface_msaa_view.as_ref() else {
+                return None;
+            };
+            (msaa_view.clone(), Some(surface_view))
+        } else {
+            (surface_view, None)
+        };
+        let create_view_ms = create_view_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        let create_encoder_started_at = Instant::now();
         let encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let create_encoder_ms = create_encoder_started_at.elapsed().as_secs_f64() * 1000.0;
 
         self.frame_state = Some(FrameState {
             render_texture,
             view,
+            resolve_view,
             encoder,
             depth_view: self.depth_view.clone(),
         });
-        true
+        Some(BeginFrameProfile {
+            total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
+            acquire_ms,
+            create_view_ms,
+            create_encoder_ms,
+        })
     }
 
-    fn end_frame(&mut self) {
+    fn end_frame(&mut self) -> EndFrameProfile {
+        let total_started_at = Instant::now();
         let frame = match self.frame_state.take() {
             Some(frame) => frame,
-            None => return,
+            None => {
+                return EndFrameProfile {
+                    total_ms: 0.0,
+                    submit_ms: 0.0,
+                    present_ms: 0.0,
+                };
+            }
         };
 
-        self.queue
-            .as_ref()
-            .unwrap()
-            .submit(Some(frame.encoder.finish()));
+        let submit_started_at = Instant::now();
+        let queue = self.queue.as_ref().unwrap();
+        queue.submit(Some(frame.encoder.finish()));
+        let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let present_started_at = Instant::now();
         frame.render_texture.present();
+        let present_ms = present_started_at.elapsed().as_secs_f64() * 1000.0;
         self.frame_presented = true;
+        EndFrameProfile {
+            total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
+            submit_ms,
+            present_ms,
+        }
     }
 }
 
@@ -2533,6 +2724,19 @@ fn distance_sq(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
     let dx = x1 - x2;
     let dy = y1 - y2;
     dx * dx + dy * dy
+}
+
+struct BeginFrameProfile {
+    total_ms: f64,
+    acquire_ms: f64,
+    create_view_ms: f64,
+    create_encoder_ms: f64,
+}
+
+struct EndFrameProfile {
+    total_ms: f64,
+    submit_ms: f64,
+    present_ms: f64,
 }
 
 struct FrameStats {
@@ -2597,6 +2801,7 @@ impl FrameStats {
 struct FrameState {
     render_texture: wgpu::SurfaceTexture,
     view: wgpu::TextureView,
+    resolve_view: Option<wgpu::TextureView>,
     encoder: wgpu::CommandEncoder,
     depth_view: Option<wgpu::TextureView>,
 }
@@ -2604,6 +2809,7 @@ struct FrameState {
 pub struct FrameParts<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub view: &'a wgpu::TextureView,
+    pub resolve_view: Option<&'a wgpu::TextureView>,
     pub depth_view: Option<&'a wgpu::TextureView>,
 }
 
@@ -2630,7 +2836,7 @@ impl<'a> FrameParts<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_click_candidate, MouseButton, PendingClick};
+    use super::{MouseButton, PendingClick, is_valid_click_candidate};
 
     #[test]
     fn click_requires_same_button_and_target() {

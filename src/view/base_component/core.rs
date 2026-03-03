@@ -65,5 +65,4 @@ impl ElementCore {
     pub fn set_height(&mut self, height: f32) {
         self.size.height = height;
     }
-
 }

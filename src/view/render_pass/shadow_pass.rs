@@ -5,10 +5,19 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
-use crate::view::render_pass::render_target::{render_target_size, render_target_view};
+use crate::view::render_pass::render_target::{
+    render_target_msaa_view, render_target_size, render_target_view,
+};
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 use wgpu::util::DeviceExt;
 
 const SHADOW_RESOURCES: u64 = 203;
+const SHADOW_TEMP_POOL: u64 = 204;
+const SHADOW_INTERMEDIATE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 #[derive(Clone, Debug, Default)]
 pub struct ShadowMesh {
@@ -177,14 +186,59 @@ struct CompositeParamsUniform {
     _pad: [f32; 3],
 }
 
-struct ShadowResources {
+pub(crate) struct ShadowResources {
     fill_pipeline: wgpu::RenderPipeline,
     blur_pipeline: wgpu::RenderPipeline,
     composite_pipeline: wgpu::RenderPipeline,
     blur_bind_group_layout: wgpu::BindGroupLayout,
     composite_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    pipeline_format: wgpu::TextureFormat,
+    quad_vertex_buffer: wgpu::Buffer,
+    quad_index_buffer: wgpu::Buffer,
+    quad_index_count: u32,
+    composite_format: wgpu::TextureFormat,
+    composite_sample_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ShadowTempKey {
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    slot: u8,
+}
+
+struct ShadowTempEntry {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[derive(Clone)]
+struct ShadowSurface {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ShadowFinalKey {
+    digest: u64,
+}
+
+struct ShadowFinalEntry {
+    shadow: ShadowSurface,
+    mask: Option<ShadowSurface>,
+    last_used_epoch: u64,
+}
+
+struct ShadowFinalCache {
+    entries: HashMap<ShadowFinalKey, ShadowFinalEntry>,
+    epoch: u64,
+}
+
+pub(crate) struct ShadowTempPool {
+    entries: HashMap<ShadowTempKey, ShadowTempEntry>,
 }
 
 impl ShadowPass {
@@ -247,13 +301,17 @@ impl RenderPass for ShadowPass {
     }
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+        let geometry_started_at = Instant::now();
         if self.mesh.vertices.len() < 3 || self.mesh.indices.len() < 3 {
             return;
         }
 
-        let offscreen_view = match self.color_target {
-            Some(handle) => render_target_view(ctx, handle),
-            None => None,
+        let (offscreen_view, offscreen_msaa_view) = match self.color_target {
+            Some(handle) => (
+                render_target_view(ctx, handle),
+                render_target_msaa_view(ctx, handle),
+            ),
+            None => (None, None),
         };
         let surface_size = ctx.viewport.surface_size();
         let (target_w, target_h) = match self.color_target {
@@ -295,12 +353,19 @@ impl RenderPass for ShadowPass {
         if bw == 0 || bh == 0 {
             return;
         }
+        ctx.record_detail_timing(
+            "execute/shadow/geometry",
+            geometry_started_at.elapsed().as_secs_f64() * 1000.0,
+        );
 
+        let resources_started_at = Instant::now();
         let device = match ctx.viewport.device() {
-            Some(device) => device,
+            Some(device) => device.clone(),
             None => return,
         };
-        let format = ctx.viewport.surface_format();
+        let composite_format = ctx.viewport.surface_format();
+        let intermediate_format = SHADOW_INTERMEDIATE_FORMAT;
+        let sample_count = ctx.viewport.msaa_sample_count();
         let (
             fill_pipeline,
             blur_pipeline,
@@ -308,14 +373,20 @@ impl RenderPass for ShadowPass {
             blur_bind_group_layout,
             composite_bind_group_layout,
             sampler,
+            quad_vertex_buffer,
+            quad_index_buffer,
+            quad_index_count,
         ) = {
-            let resources = ctx
-                .cache
-                .get_or_insert_with::<ShadowResources, _>(SHADOW_RESOURCES, || {
-                    create_resources(device, format)
-                });
-            if resources.pipeline_format != format {
-                *resources = create_resources(device, format);
+            let cache = shadow_resources_cache();
+            let mut cache = cache.lock().unwrap();
+            let resources = cache.get_or_insert_with(SHADOW_RESOURCES, || {
+                create_resources(&device, intermediate_format, composite_format, sample_count)
+            });
+            if resources.composite_format != composite_format
+                || resources.composite_sample_count != sample_count
+            {
+                *resources =
+                    create_resources(&device, intermediate_format, composite_format, sample_count);
             }
             (
                 resources.fill_pipeline.clone(),
@@ -324,15 +395,31 @@ impl RenderPass for ShadowPass {
                 resources.blur_bind_group_layout.clone(),
                 resources.composite_bind_group_layout.clone(),
                 resources.sampler.clone(),
+                resources.quad_vertex_buffer.clone(),
+                resources.quad_index_buffer.clone(),
+                resources.quad_index_count,
             )
         };
-
-        let shadow_tex_a = create_temp_texture(device, bw, bh, format, "Shadow A");
-        let shadow_tex_a_view = shadow_tex_a.create_view(&wgpu::TextureViewDescriptor::default());
-        let shadow_tex_b = create_temp_texture(device, bw, bh, format, "Shadow B");
-        let shadow_tex_b_view = shadow_tex_b.create_view(&wgpu::TextureViewDescriptor::default());
-        let mask_tex = create_temp_texture(device, bw, bh, format, "Shadow Mask");
-        let mask_tex_view = mask_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let shadow_tex_a_view =
+            acquire_temp_texture_view(ctx, &device, bw, bh, intermediate_format, 0);
+        let shadow_tex_b_view =
+            acquire_temp_texture_view(ctx, &device, bw, bh, intermediate_format, 1);
+        let mask_tex_view = if self.params.clip_to_geometry {
+            Some(acquire_temp_texture_view(
+                ctx,
+                &device,
+                bw,
+                bh,
+                intermediate_format,
+                2,
+            ))
+        } else {
+            None
+        };
+        ctx.record_detail_timing(
+            "execute/shadow/resources",
+            resources_started_at.elapsed().as_secs_f64() * 1000.0,
+        );
 
         let fill_color = {
             let a = (self.params.color[3] * self.params.opacity).clamp(0.0, 1.0);
@@ -343,85 +430,190 @@ impl RenderPass for ShadowPass {
                 a,
             ]
         };
-        draw_mesh_fill(
-            ctx,
-            &fill_pipeline,
-            &shadow_tex_a_view,
-            bx as f32,
-            by as f32,
-            bw as f32,
-            bh as f32,
-            &shadow_vertices,
-            &self.mesh.indices,
-            fill_color,
-            [0.0, 0.0, 0.0, 0.0],
+        let cache_key = shadow_final_cache_key(
+            &self.mesh,
+            &self.params,
+            target_w,
+            target_h,
+            scale,
+            [bx as i32, by as i32, bw as i32, bh as i32],
         );
+        let (shadow_output_surface, mask_output_surface) = {
+            let cache = shadow_final_cache();
+            let mut cache = cache.lock().unwrap();
+            if let Some(hit) = cache.get(cache_key) {
+                (hit.shadow.clone(), hit.mask.clone())
+            } else {
+                drop(cache);
+                let fill_and_blur_started_at = Instant::now();
+                draw_mesh_fill(
+                    ctx,
+                    &fill_pipeline,
+                    &shadow_tex_a_view.view,
+                    bx as f32,
+                    by as f32,
+                    bw as f32,
+                    bh as f32,
+                    &shadow_vertices,
+                    &self.mesh.indices,
+                    fill_color,
+                    [0.0, 0.0, 0.0, 0.0],
+                );
 
-        if self.params.clip_to_geometry {
-            draw_mesh_fill(
-                ctx,
-                &fill_pipeline,
-                &mask_tex_view,
-                bx as f32,
-                by as f32,
-                bw as f32,
-                bh as f32,
-                &base_vertices,
-                &self.mesh.indices,
-                [1.0, 1.0, 1.0, 1.0],
-                [0.0, 0.0, 0.0, 0.0],
-            );
-        } else {
-            clear_target(ctx, &mask_tex_view, [1.0, 1.0, 1.0, 1.0]);
-        }
+                if self.params.clip_to_geometry {
+                    draw_mesh_fill(
+                        ctx,
+                        &fill_pipeline,
+                        &mask_tex_view.as_ref().unwrap().view,
+                        bx as f32,
+                        by as f32,
+                        bw as f32,
+                        bh as f32,
+                        &base_vertices,
+                        &self.mesh.indices,
+                        [1.0, 1.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                    );
+                }
 
-        let blur_radius_px = (self.params.blur_radius.max(0.0) * scale).max(0.0);
-        let shadow_output_view = if blur_radius_px > 0.001 {
-            blur_texture(
-                ctx,
-                &blur_pipeline,
-                &blur_bind_group_layout,
-                &sampler,
-                &shadow_tex_a_view,
-                &shadow_tex_b_view,
-                bw,
-                bh,
-                blur_radius_px,
-                [1.0, 0.0],
-            );
-            blur_texture(
-                ctx,
-                &blur_pipeline,
-                &blur_bind_group_layout,
-                &sampler,
-                &shadow_tex_b_view,
-                &shadow_tex_a_view,
-                bw,
-                bh,
-                blur_radius_px,
-                [0.0, 1.0],
-            );
-            &shadow_tex_a_view
-        } else {
-            &shadow_tex_a_view
+                let blur_radius_px = (self.params.blur_radius.max(0.0) * scale).max(0.0);
+                let mut shadow_output_surface = shadow_tex_a_view.clone();
+                if blur_radius_px > 0.001 {
+                    let downsample = if blur_radius_px >= 28.0 {
+                        4_u32
+                    } else if blur_radius_px >= 12.0 {
+                        2_u32
+                    } else {
+                        1_u32
+                    };
+                    let ds_w = (bw / downsample).max(1);
+                    let ds_h = (bh / downsample).max(1);
+                    let effective_radius = blur_radius_px / downsample as f32;
+                    let (src, tmp, out, blur_w, blur_h) = if downsample > 1 {
+                        let ds_a = acquire_temp_texture_view(
+                            ctx,
+                            &device,
+                            ds_w,
+                            ds_h,
+                            intermediate_format,
+                            3,
+                        );
+                        let ds_b = acquire_temp_texture_view(
+                            ctx,
+                            &device,
+                            ds_w,
+                            ds_h,
+                            intermediate_format,
+                            4,
+                        );
+                        blur_texture(
+                            ctx,
+                            &blur_pipeline,
+                            &blur_bind_group_layout,
+                            &sampler,
+                            &quad_vertex_buffer,
+                            &quad_index_buffer,
+                            quad_index_count,
+                            &shadow_tex_a_view.view,
+                            &ds_a.view,
+                            ds_w,
+                            ds_h,
+                            0.0,
+                            [1.0, 0.0],
+                        );
+                        (ds_a.clone(), ds_b.clone(), ds_a, ds_w, ds_h)
+                    } else {
+                        (
+                            shadow_tex_a_view.clone(),
+                            shadow_tex_b_view.clone(),
+                            shadow_tex_a_view.clone(),
+                            bw,
+                            bh,
+                        )
+                    };
+                    blur_texture(
+                        ctx,
+                        &blur_pipeline,
+                        &blur_bind_group_layout,
+                        &sampler,
+                        &quad_vertex_buffer,
+                        &quad_index_buffer,
+                        quad_index_count,
+                        &src.view,
+                        &tmp.view,
+                        blur_w,
+                        blur_h,
+                        effective_radius,
+                        [1.0, 0.0],
+                    );
+                    blur_texture(
+                        ctx,
+                        &blur_pipeline,
+                        &blur_bind_group_layout,
+                        &sampler,
+                        &quad_vertex_buffer,
+                        &quad_index_buffer,
+                        quad_index_count,
+                        &tmp.view,
+                        &out.view,
+                        blur_w,
+                        blur_h,
+                        effective_radius,
+                        [0.0, 1.0],
+                    );
+                    shadow_output_surface = out;
+                }
+                ctx.record_detail_timing(
+                    "execute/shadow/fill_and_blur",
+                    fill_and_blur_started_at.elapsed().as_secs_f64() * 1000.0,
+                );
+
+                let cached_shadow = create_shadow_cache_surface(
+                    ctx,
+                    &device,
+                    &shadow_output_surface,
+                    intermediate_format,
+                    10,
+                );
+                let cached_mask = if self.params.clip_to_geometry {
+                    mask_tex_view.as_ref().map(|mask| {
+                        create_shadow_cache_surface(ctx, &device, mask, intermediate_format, 11)
+                    })
+                } else {
+                    None
+                };
+                let cache = shadow_final_cache();
+                let mut cache = cache.lock().unwrap();
+                cache.insert(cache_key, cached_shadow.clone(), cached_mask.clone());
+                (cached_shadow, cached_mask)
+            }
         };
 
         let scissor_rect_physical = self.scissor_rect.and_then(|scissor_rect| {
             ctx.viewport
                 .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
+        let composite_started_at = Instant::now();
         composite_shadow(
             ctx,
             &composite_pipeline,
             &composite_bind_group_layout,
             &sampler,
-            shadow_output_view,
-            &mask_tex_view,
+            &shadow_output_surface.view,
+            mask_output_surface
+                .as_ref()
+                .map(|s| &s.view)
+                .unwrap_or(&shadow_output_surface.view),
             offscreen_view.as_ref(),
+            offscreen_msaa_view.as_ref(),
             (target_w, target_h),
             [bx as f32, by as f32, bw as f32, bh as f32],
             scissor_rect_physical,
             self.params.clip_to_geometry,
+        );
+        ctx.record_detail_timing(
+            "execute/shadow/composite",
+            composite_started_at.elapsed().as_secs_f64() * 1000.0,
         );
     }
 }
@@ -444,7 +636,12 @@ impl RenderTargetPass for ShadowPass {
     }
 }
 
-fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> ShadowResources {
+fn create_resources(
+    device: &wgpu::Device,
+    intermediate_format: wgpu::TextureFormat,
+    composite_format: wgpu::TextureFormat,
+    composite_sample_count: u32,
+) -> ShadowResources {
     let fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Shadow Fill Shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/shadow_fill.wgsl").into()),
@@ -491,7 +688,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
             module: &fill_shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format,
+                format: intermediate_format,
                 blend: Some(wgpu::BlendState {
                     color: wgpu::BlendComponent {
                         src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -510,7 +707,11 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     });
@@ -599,6 +800,17 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
+    let (quad_vertices, quad_indices) = fullscreen_quad();
+    let quad_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Shadow Quad Vertex"),
+        contents: bytemuck::cast_slice(&quad_vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let quad_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Shadow Quad Index"),
+        contents: bytemuck::cast_slice(&quad_indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
     let blur_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Shadow Blur Pipeline Layout"),
         bind_group_layouts: &[&blur_bind_group_layout],
@@ -632,7 +844,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
             module: &blur_shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format,
+                format: intermediate_format,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -640,7 +852,11 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     });
@@ -677,7 +893,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
             module: &composite_shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format,
+                format: composite_format,
                 blend: Some(wgpu::BlendState {
                     color: wgpu::BlendComponent {
                         src_factor: wgpu::BlendFactor::One,
@@ -696,7 +912,11 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: composite_sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     });
@@ -708,58 +928,12 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shado
         blur_bind_group_layout,
         composite_bind_group_layout,
         sampler,
-        pipeline_format: format,
+        quad_vertex_buffer,
+        quad_index_buffer,
+        quad_index_count: quad_indices.len() as u32,
+        composite_format,
+        composite_sample_count,
     }
-}
-
-fn create_temp_texture(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-    label: &str,
-) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    })
-}
-
-fn clear_target(ctx: &mut PassContext<'_, '_>, view: &wgpu::TextureView, color: [f32; 4]) {
-    let Some(parts) = ctx.viewport.frame_parts() else {
-        return;
-    };
-    let _ = parts
-        .encoder
-        .begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Shadow Clear Temp"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: color[0] as f64,
-                        g: color[1] as f64,
-                        b: color[2] as f64,
-                        a: color[3] as f64,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target: None,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -832,11 +1006,303 @@ fn draw_mesh_fill(
     pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
 }
 
+impl ShadowTempPool {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+}
+
+impl ShadowFinalCache {
+    const MAX_ENTRIES: usize = 256;
+    const EVICT_UNUSED_AFTER_EPOCHS: u64 = 240;
+
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            epoch: 0,
+        }
+    }
+
+    fn begin_frame(&mut self) {
+        self.epoch = self.epoch.saturating_add(1);
+        self.evict();
+    }
+
+    fn get(&mut self, key: ShadowFinalKey) -> Option<&ShadowFinalEntry> {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.last_used_epoch = self.epoch;
+        }
+        self.entries.get(&key)
+    }
+
+    fn insert(&mut self, key: ShadowFinalKey, shadow: ShadowSurface, mask: Option<ShadowSurface>) {
+        self.entries.insert(
+            key,
+            ShadowFinalEntry {
+                shadow,
+                mask,
+                last_used_epoch: self.epoch,
+            },
+        );
+        self.evict();
+    }
+
+    fn evict(&mut self) {
+        let epoch = self.epoch;
+        self.entries.retain(|_, entry| {
+            epoch.saturating_sub(entry.last_used_epoch) <= Self::EVICT_UNUSED_AFTER_EPOCHS
+        });
+        if self.entries.len() <= Self::MAX_ENTRIES {
+            return;
+        }
+        let mut keys = self
+            .entries
+            .iter()
+            .map(|(k, v)| (*k, v.last_used_epoch))
+            .collect::<Vec<_>>();
+        keys.sort_by_key(|(_, last)| *last);
+        let remove_count = self.entries.len().saturating_sub(Self::MAX_ENTRIES);
+        for (key, _) in keys.into_iter().take(remove_count) {
+            self.entries.remove(&key);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.epoch = 0;
+    }
+}
+
+fn acquire_temp_texture_view(
+    _ctx: &mut PassContext<'_, '_>,
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    slot: u8,
+) -> ShadowSurface {
+    let cache = shadow_temp_pool_cache();
+    let mut cache = cache.lock().unwrap();
+    let pool = cache.get_or_insert_with(SHADOW_TEMP_POOL, ShadowTempPool::new);
+    let key = ShadowTempKey {
+        width: width.max(1),
+        height: height.max(1),
+        format,
+        slot,
+    };
+    let entry = pool.entries.entry(key).or_insert_with(|| {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Shadow Temp Texture"),
+            size: wgpu::Extent3d {
+                width: key.width,
+                height: key.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        ShadowTempEntry { texture, view }
+    });
+    ShadowSurface {
+        texture: entry.texture.clone(),
+        view: entry.view.clone(),
+        width: key.width,
+        height: key.height,
+    }
+}
+
+struct ShadowResourcesCache {
+    entries: HashMap<u64, ShadowResources>,
+}
+
+impl ShadowResourcesCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get_or_insert_with<F: FnOnce() -> ShadowResources>(
+        &mut self,
+        key: u64,
+        create: F,
+    ) -> &mut ShadowResources {
+        self.entries.entry(key).or_insert_with(create)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+struct ShadowTempPoolCache {
+    entries: HashMap<u64, ShadowTempPool>,
+}
+
+impl ShadowTempPoolCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get_or_insert_with<F: FnOnce() -> ShadowTempPool>(
+        &mut self,
+        key: u64,
+        create: F,
+    ) -> &mut ShadowTempPool {
+        self.entries.entry(key).or_insert_with(create)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+fn shadow_resources_cache() -> &'static Mutex<ShadowResourcesCache> {
+    static CACHE: OnceLock<Mutex<ShadowResourcesCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ShadowResourcesCache::new()))
+}
+
+fn shadow_temp_pool_cache() -> &'static Mutex<ShadowTempPoolCache> {
+    static CACHE: OnceLock<Mutex<ShadowTempPoolCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ShadowTempPoolCache::new()))
+}
+
+fn shadow_final_cache() -> &'static Mutex<ShadowFinalCache> {
+    static CACHE: OnceLock<Mutex<ShadowFinalCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ShadowFinalCache::new()))
+}
+
+pub fn clear_shadow_resources_cache() {
+    let resources = shadow_resources_cache();
+    let mut resources = resources.lock().unwrap();
+    resources.clear();
+    let temp_pool = shadow_temp_pool_cache();
+    let mut temp_pool = temp_pool.lock().unwrap();
+    temp_pool.clear();
+    let final_cache = shadow_final_cache();
+    let mut final_cache = final_cache.lock().unwrap();
+    final_cache.clear();
+}
+
+pub fn begin_shadow_resources_frame() {
+    let cache = shadow_final_cache();
+    let mut cache = cache.lock().unwrap();
+    cache.begin_frame();
+}
+
+fn create_shadow_cache_surface(
+    ctx: &mut PassContext<'_, '_>,
+    device: &wgpu::Device,
+    source: &ShadowSurface,
+    format: wgpu::TextureFormat,
+    slot: u8,
+) -> ShadowSurface {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(match slot {
+            10 => "Shadow Final Cache Texture",
+            11 => "Shadow Final Mask Cache Texture",
+            _ => "Shadow Final Cache Texture",
+        }),
+        size: wgpu::Extent3d {
+            width: source.width.max(1),
+            height: source.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let Some(parts) = ctx.viewport.frame_parts() else {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        return ShadowSurface {
+            texture,
+            view,
+            width: source.width,
+            height: source.height,
+        };
+    };
+    parts.encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &source.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::Extent3d {
+            width: source.width.max(1),
+            height: source.height.max(1),
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    ShadowSurface {
+        texture,
+        view,
+        width: source.width,
+        height: source.height,
+    }
+}
+
+fn shadow_final_cache_key(
+    mesh: &ShadowMesh,
+    params: &ShadowParams,
+    target_w: u32,
+    target_h: u32,
+    scale: f32,
+    shadow_bounds: [i32; 4],
+) -> ShadowFinalKey {
+    let mut hasher = DefaultHasher::new();
+    target_w.hash(&mut hasher);
+    target_h.hash(&mut hasher);
+    scale.to_bits().hash(&mut hasher);
+    shadow_bounds.hash(&mut hasher);
+    for [x, y] in &mesh.vertices {
+        x.to_bits().hash(&mut hasher);
+        y.to_bits().hash(&mut hasher);
+    }
+    mesh.indices.hash(&mut hasher);
+    params.offset_x.to_bits().hash(&mut hasher);
+    params.offset_y.to_bits().hash(&mut hasher);
+    params.blur_radius.to_bits().hash(&mut hasher);
+    params.opacity.to_bits().hash(&mut hasher);
+    params.spread.to_bits().hash(&mut hasher);
+    params.clip_to_geometry.hash(&mut hasher);
+    for c in params.color {
+        c.to_bits().hash(&mut hasher);
+    }
+    ShadowFinalKey {
+        digest: hasher.finish(),
+    }
+}
+
 fn blur_texture(
     ctx: &mut PassContext<'_, '_>,
     blur_pipeline: &wgpu::RenderPipeline,
     blur_bind_group_layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
+    quad_vertex_buffer: &wgpu::Buffer,
+    quad_index_buffer: &wgpu::Buffer,
+    quad_index_count: u32,
     input_view: &wgpu::TextureView,
     output_view: &wgpu::TextureView,
     width: u32,
@@ -878,17 +1344,6 @@ fn blur_texture(
             },
         ],
     });
-    let (vertices, indices) = fullscreen_quad();
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Blur Vertex"),
-        contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Blur Index"),
-        contents: bytemuck::cast_slice(&indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
     let Some(parts) = ctx.viewport.frame_parts() else {
         return;
     };
@@ -910,9 +1365,9 @@ fn blur_texture(
         });
     pass.set_pipeline(blur_pipeline);
     pass.set_bind_group(0, &bind_group, &[]);
-    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-    pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+    pass.set_vertex_buffer(0, quad_vertex_buffer.slice(..));
+    pass.set_index_buffer(quad_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+    pass.draw_indexed(0..quad_index_count, 0, 0..1);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -924,6 +1379,7 @@ fn composite_shadow(
     shadow_view: &wgpu::TextureView,
     mask_view: &wgpu::TextureView,
     offscreen_view: Option<&wgpu::TextureView>,
+    offscreen_msaa_view: Option<&wgpu::TextureView>,
     target_size: (u32, u32),
     bounds: [f32; 4],
     scissor_rect_physical: Option<[u32; 4]>,
@@ -975,10 +1431,20 @@ fn composite_shadow(
         contents: bytemuck::cast_slice(&quad_indices),
         usage: wgpu::BufferUsages::INDEX,
     });
+    let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
     let Some(parts) = ctx.viewport.frame_parts() else {
         return;
     };
-    let target_view = offscreen_view.unwrap_or(parts.view);
+    let surface_resolve = if msaa_enabled {
+        parts.resolve_view
+    } else {
+        None
+    };
+    let (target_view, resolve_target) = match (offscreen_view, offscreen_msaa_view) {
+        (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+        (Some(resolve_view), None) => (resolve_view, None),
+        (None, _) => (parts.view, surface_resolve),
+    };
     let mut pass = parts
         .encoder
         .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -990,7 +1456,7 @@ fn composite_shadow(
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target,
             })],
             depth_stencil_attachment: None,
             ..Default::default()

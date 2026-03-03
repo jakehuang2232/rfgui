@@ -5,7 +5,7 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
-use crate::view::render_pass::render_target::render_target_view;
+use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
 
 pub struct ClearPass {
     color: [f32; 4],
@@ -89,15 +89,29 @@ impl RenderPass for ClearPass {
             a: self.color[3] as f64,
         };
 
-        let offscreen_view = match self.color_target {
-            Some(handle) => render_target_view(ctx, handle),
-            None => None,
+        let (offscreen_view, offscreen_msaa_view) = match self.color_target {
+            Some(handle) => (
+                render_target_view(ctx, handle),
+                render_target_msaa_view(ctx, handle),
+            ),
+            None => (None, None),
         };
+        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
         let parts = match ctx.viewport.frame_parts() {
             Some(parts) => parts,
             None => return,
         };
-        let color_view = offscreen_view.as_ref().unwrap_or(parts.view);
+        let surface_resolve = if msaa_enabled {
+            parts.resolve_view
+        } else {
+            None
+        };
+        let (color_view, resolve_target) =
+            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
+                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+                (Some(resolve_view), None) => (resolve_view, None),
+                (None, _) => (parts.view, surface_resolve),
+            };
         let _pass = parts
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -109,7 +123,7 @@ impl RenderPass for ClearPass {
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target,
                 })],
                 depth_stencil_attachment: parts
                     .depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), wgpu::LoadOp::Clear(0)),

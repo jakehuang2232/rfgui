@@ -1,4 +1,8 @@
 use std::sync::{Mutex, OnceLock};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::PassContext;
@@ -7,7 +11,7 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
-use crate::view::render_pass::render_target::render_target_view;
+use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
@@ -29,16 +33,18 @@ pub struct TextPass {
     align: Align,
     allow_wrap: bool,
     scissor_rect: Option<[u32; 4]>,
+    stencil_clip_id: Option<u8>,
     color_target: Option<TextureHandle>,
     input: TextInput,
     output: TextOutput,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextPassBatchKey {
     input_target: Option<TextureHandle>,
     output_target: Option<TextureHandle>,
     color_target: Option<TextureHandle>,
+    stencil_clip_id: Option<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +63,7 @@ pub struct TextPassDraw {
     pub align: Align,
     pub allow_wrap: bool,
     pub scissor_rect: Option<[u32; 4]>,
+    pub stencil_clip_id: Option<u8>,
     pub color_target: Option<TextureHandle>,
 }
 
@@ -102,6 +109,7 @@ impl TextPass {
             align,
             allow_wrap,
             scissor_rect: None,
+            stencil_clip_id: None,
             color_target: None,
             input: TextInput::default(),
             output: TextOutput::default(),
@@ -129,6 +137,7 @@ impl TextPass {
             input_target: self.input.render_target.handle(),
             output_target: self.output.render_target.handle(),
             color_target: self.color_target,
+            stencil_clip_id: self.stencil_clip_id,
         }
     }
 
@@ -148,6 +157,7 @@ impl TextPass {
             align: self.align,
             allow_wrap: self.allow_wrap,
             scissor_rect: self.scissor_rect,
+            stencil_clip_id: self.stencil_clip_id,
             color_target: self.color_target,
         }
     }
@@ -187,6 +197,16 @@ impl RenderPass for TextPass {
         let draw = self.snapshot_draw();
         execute_text_pass_batch(vec![draw], ctx);
     }
+
+    fn batchable(&self) -> bool {
+        true
+    }
+
+    fn get_batch_key(&self) -> Option<u64> {
+        let mut hasher = DefaultHasher::new();
+        self.batch_key().hash(&mut hasher);
+        Some(hasher.finish())
+    }
 }
 
 pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'_, '_>) {
@@ -195,9 +215,13 @@ pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'
     }
 
     let color_target = draws[0].color_target;
-    let offscreen_view = match color_target {
-        Some(handle) => render_target_view(ctx, handle),
-        None => None,
+    let stencil_clip_id = draws[0].stencil_clip_id;
+    let (offscreen_view, offscreen_msaa_view) = match color_target {
+        Some(handle) => (
+            render_target_view(ctx, handle),
+            render_target_msaa_view(ctx, handle),
+        ),
+        None => (None, None),
     };
 
     let viewport = &mut ctx.viewport;
@@ -219,8 +243,33 @@ pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'
     let mut renderer = TextRenderer::new(
         &mut resources.atlas,
         device,
-        wgpu::MultisampleState::default(),
-        None,
+        wgpu::MultisampleState {
+            count: viewport.msaa_sample_count(),
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        stencil_clip_id.map(|_| wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState {
+                front: wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::Equal,
+                    fail_op: wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op: wgpu::StencilOperation::Keep,
+                },
+                back: wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::Equal,
+                    fail_op: wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op: wgpu::StencilOperation::Keep,
+                },
+                read_mask: 0xFF,
+                write_mask: 0xFF,
+            },
+            bias: wgpu::DepthBiasState::default(),
+        }),
     );
     resources.viewport.update(
         queue,
@@ -317,12 +366,22 @@ pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'
         return;
     }
 
+    let msaa_enabled = viewport.msaa_sample_count() > 1;
     let parts = match viewport.frame_parts() {
         Some(parts) => parts,
         None => return,
     };
-
-    let color_view = offscreen_view.as_ref().unwrap_or(parts.view);
+    let surface_resolve = if msaa_enabled {
+        parts.resolve_view
+    } else {
+        None
+    };
+    let (color_view, resolve_target) = match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref())
+    {
+        (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+        (Some(resolve_view), None) => (resolve_view, None),
+        (None, _) => (parts.view, surface_resolve),
+    };
     let mut pass = parts
         .encoder
         .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -334,12 +393,19 @@ pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target,
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: if stencil_clip_id.is_some() {
+                parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+            } else {
+                None
+            },
             ..Default::default()
         });
 
+    if let Some(stencil_clip_id) = stencil_clip_id {
+        pass.set_stencil_reference(stencil_clip_id as u32);
+    }
     let _ = renderer.render(&resources.atlas, &resources.viewport, &mut pass);
 }
 
@@ -354,6 +420,10 @@ impl RenderTargetPass for TextPass {
 
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
         self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
+    }
+
+    fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
+        self.stencil_clip_id = clip_id;
     }
 
     fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
@@ -565,4 +635,10 @@ pub fn prewarm_text_pipeline(
     format: wgpu::TextureFormat,
 ) {
     drop(text_resources(device, queue, format));
+}
+
+pub fn clear_text_resources_cache() {
+    let cache = text_global_cache();
+    let mut guard = cache.lock().unwrap();
+    guard.resources = None;
 }

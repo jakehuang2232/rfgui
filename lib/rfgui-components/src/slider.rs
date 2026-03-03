@@ -187,10 +187,12 @@ fn SliderView(
 
     if let RsxNode::Element(node) = &mut root {
         if let Some(handler) = down {
-            node.props.push(("on_mouse_down".to_string(), handler.into()));
+            node.props
+                .push(("on_mouse_down".to_string(), handler.into()));
         }
         if let Some(handler) = mv {
-            node.props.push(("on_mouse_move".to_string(), handler.into()));
+            node.props
+                .push(("on_mouse_move".to_string(), handler.into()));
         }
         if let Some(handler) = up {
             node.props.push(("on_mouse_up".to_string(), handler.into()));

@@ -1220,6 +1220,7 @@ pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{dispatch_click_from_hit_test, dispatch_mouse_down_from_hit_test, hit_test};
+    use crate::AnchorName;
     use crate::style::{
         ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
     };
@@ -1231,7 +1232,6 @@ mod tests {
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::{Viewport, ViewportControl};
-    use crate::AnchorName;
     use std::cell::Cell;
     use std::rc::Rc;
 
