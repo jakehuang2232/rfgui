@@ -1,19 +1,19 @@
 use super::{ElementCore, Position, Size};
+use crate::ColorLike;
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::style::{
-    compute_style, AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary,
-    Color, ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length,
-    PositionMode, ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming,
+    AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
+    ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
+    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
-    ChannelId, LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition,
-    ScrollAxis, StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition,
-    StyleValue, TimeFunction, VisualField, VisualTrackRequest,
-    VisualTransition as RuntimeVisualTransition, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH,
-    CHANNEL_STYLE_BACKGROUND_COLOR, CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
-    CHANNEL_STYLE_BORDER_LEFT_COLOR, CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR,
-    CHANNEL_STYLE_BORDER_TOP_COLOR, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X,
-    CHANNEL_VISUAL_Y,
+    CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
+    CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
+    CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
+    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
+    LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
+    StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue,
+    TimeFunction, VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
@@ -23,11 +23,9 @@ use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{FrameGraph, InSlot, RenderPass, TextureDesc};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::{
-    ClearPass, CompositeLayerPass, DrawRectPass, LayerOut, LayerTag, ShadowMesh, ShadowParams,
-    ShadowPass,
+    DrawRectPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowParams, ShadowPass,
 };
 use crate::view::viewport::ViewportControl;
-use crate::ColorLike;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -169,6 +167,13 @@ struct ScrollbarGeometry {
     horizontal_thumb: Option<Rect>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ChildClipScope {
+    previous_scissor: Option<[u32; 4]>,
+    parent_clip_id: u8,
+    child_clip_id: u8,
+}
+
 pub struct UiBuildContext {
     last_target: Option<RenderTargetOut>,
     color_target: Option<TextureHandle>,
@@ -176,7 +181,9 @@ pub struct UiBuildContext {
     target_height: u32,
     target_format: wgpu::TextureFormat,
     scissor_rect: Option<[u32; 4]>,
+    clip_id_stack: Vec<u8>,
     deferred_node_ids: Vec<u64>,
+    dfs_opaque_rect_order: u32,
 }
 
 impl UiBuildContext {
@@ -192,7 +199,9 @@ impl UiBuildContext {
             target_height: viewport_height.max(1),
             target_format: viewport_format,
             scissor_rect: None,
+            clip_id_stack: Vec::new(),
             deferred_node_ids: Vec::new(),
+            dfs_opaque_rect_order: 0,
         }
     }
 
@@ -217,15 +226,6 @@ impl UiBuildContext {
         ))
     }
 
-    fn allocate_layer(&mut self, graph: &mut FrameGraph) -> LayerOut {
-        graph.declare_texture::<LayerTag>(TextureDesc::new(
-            self.target_width,
-            self.target_height,
-            self.target_format,
-            wgpu::TextureDimension::D2,
-        ))
-    }
-
     fn color_target(&self) -> Option<TextureHandle> {
         self.color_target
     }
@@ -236,6 +236,28 @@ impl UiBuildContext {
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {
         self.scissor_rect
+    }
+
+    fn current_clip_id(&self) -> u8 {
+        self.clip_id_stack.last().copied().unwrap_or(0)
+    }
+
+    fn active_clip_id(&self) -> Option<u8> {
+        self.clip_id_stack.last().copied()
+    }
+
+    pub(crate) fn push_clip_id(&mut self) -> Option<u8> {
+        let current = self.current_clip_id();
+        if current == u8::MAX {
+            return None;
+        }
+        let next = current.saturating_add(1);
+        self.clip_id_stack.push(next);
+        Some(next)
+    }
+
+    pub(crate) fn pop_clip_id(&mut self) {
+        let _ = self.clip_id_stack.pop();
     }
 
     pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
@@ -258,12 +280,19 @@ impl UiBuildContext {
         std::mem::take(&mut self.deferred_node_ids)
     }
 
+    pub(crate) fn next_opaque_rect_order(&mut self) -> u32 {
+        let order = self.dfs_opaque_rect_order;
+        self.dfs_opaque_rect_order = self.dfs_opaque_rect_order.saturating_add(1);
+        order
+    }
+
     pub(crate) fn push_pass<P: RenderTargetPass + RenderPass + 'static>(
         &mut self,
         graph: &mut FrameGraph,
         mut pass: P,
     ) {
         pass.apply_clip(self.scissor_rect());
+        pass.apply_stencil_clip(self.active_clip_id());
         pass.set_color_target(self.color_target());
 
         if let Some(prev) = self.last_target.as_ref() {
@@ -1107,90 +1136,33 @@ impl Renderable for Element {
             self.core.layout_size.width.max(0.0),
             self.core.layout_size.height.max(0.0),
         );
+        let inner_radii = self.inner_clip_radii(outer_radii);
         self.border_radius = outer_radii.max();
-        let max_bw = (self
-            .core
-            .layout_size
-            .width
-            .min(self.core.layout_size.height))
-            * 0.5;
-        // Rounded corners are already handled by DrawRectPass. Keep a layer only when
-        // element-level opacity is needed, otherwise we can avoid an extra composite mask.
-        let use_layer = self.opacity < 1.0;
+        self.build_self(graph, ctx, false);
 
-        let previous_color_target = ctx.color_target();
-        let layer = if use_layer {
-            let layer = ctx.allocate_layer(graph);
-            let Some(layer_handle) = layer.handle() else {
-                if let Some(previous) = previous_scissor_rect {
-                    ctx.restore_scissor_rect(previous);
-                }
-                return;
-            };
-            ctx.set_color_target(Some(layer_handle));
-            let clear = ClearPass::new([0.0, 0.0, 0.0, 0.0]);
-            self.push_pass(graph, ctx, clear);
-            self.build_self(graph, ctx, true);
-            Some(layer)
+        let overflow_child_indices: Vec<bool> = (0..self.children.len())
+            .map(|idx| self.child_renders_outside_inner_clip(idx))
+            .collect();
+
+        let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii) {
+            self.begin_child_clip_scope(graph, ctx, inner_radii)
         } else {
-            self.build_self(graph, ctx, false);
             None
         };
 
-        let inset_left = self.border_widths.left.clamp(0.0, max_bw) + self.padding.left.max(0.0);
-        let inset_right = self.border_widths.right.clamp(0.0, max_bw) + self.padding.right.max(0.0);
-        let inset_top = self.border_widths.top.clamp(0.0, max_bw) + self.padding.top.max(0.0);
-        let inset_bottom =
-            self.border_widths.bottom.clamp(0.0, max_bw) + self.padding.bottom.max(0.0);
-        let inner_clip_radii = normalize_corner_radii(
-            inset_corner_radii(
-                outer_radii,
-                inset_left,
-                inset_right,
-                inset_top,
-                inset_bottom,
-            ),
-            self.layout_inner_size.width.max(0.0),
-            self.layout_inner_size.height.max(0.0),
-        );
-
-        let overflow_child_indices: Vec<usize> = (0..self.children.len())
-            .filter(|&idx| self.child_renders_outside_inner_clip(idx))
-            .collect();
-
         if self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0 {
-            let previous_color_target = ctx.color_target();
-            let layer = ctx.allocate_layer(graph);
-            let Some(layer_handle) = layer.handle() else {
-                if let Some(previous) = previous_scissor_rect {
-                    ctx.restore_scissor_rect(previous);
-                }
-                return;
-            };
-            ctx.set_color_target(Some(layer_handle));
-
-            let clear = ClearPass::new([0.0, 0.0, 0.0, 0.0]);
-            self.push_pass(graph, ctx, clear);
-
             for (idx, child) in self.children.iter_mut().enumerate() {
-                if overflow_child_indices.contains(&idx) {
+                if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
                 child.build(graph, ctx);
             }
-
-            ctx.set_color_target(previous_color_target);
-            let composite = CompositeLayerPass::new(
-                [self.layout_inner_position.x, self.layout_inner_position.y],
-                [self.layout_inner_size.width, self.layout_inner_size.height],
-                inner_clip_radii.to_array(),
-                1.0,
-                layer,
-            );
-            ctx.push_pass(graph, composite);
         }
 
-        for idx in overflow_child_indices {
+        for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
+            if !is_overflow {
+                continue;
+            }
             if let Some(child) = self.children.get_mut(idx) {
                 if child
                     .as_any()
@@ -1203,22 +1175,8 @@ impl Renderable for Element {
                 child.build(graph, ctx);
             }
         }
+        self.end_child_clip_scope(graph, ctx, child_clip_scope);
         self.render_scrollbars(graph, ctx);
-
-        if let Some(layer) = layer {
-            ctx.set_color_target(previous_color_target);
-            // build_self() already rasterizes the element silhouette (including rounded corners).
-            // Applying another rounded mask here can introduce visible edge artifacts under
-            // nested opacity compositing, so keep this composite pass unmasked.
-            let composite = CompositeLayerPass::new(
-                [self.core.layout_position.x, self.core.layout_position.y],
-                [self.core.layout_size.width, self.core.layout_size.height],
-                [0.0; 4],
-                self.opacity.clamp(0.0, 1.0),
-                layer,
-            );
-            ctx.push_pass(graph, composite);
-        }
 
         if let Some(previous) = previous_scissor_rect {
             ctx.restore_scissor_rect(previous);
@@ -1253,6 +1211,229 @@ impl Element {
             }
             ClipMode::AnchorParent => self.absolute_clip_rect.and_then(rect_to_scissor_rect),
         }
+    }
+
+    fn inner_clip_rect(&self) -> Rect {
+        Rect {
+            x: self.layout_inner_position.x,
+            y: self.layout_inner_position.y,
+            width: self.layout_inner_size.width.max(0.0),
+            height: self.layout_inner_size.height.max(0.0),
+        }
+    }
+
+    fn inner_clip_scissor_rect(&self) -> Option<[u32; 4]> {
+        rect_to_scissor_rect(self.inner_clip_rect())
+    }
+
+    fn inner_clip_radii(&self, outer_radii: CornerRadii) -> CornerRadii {
+        let outer_x = self.core.layout_position.x;
+        let outer_y = self.core.layout_position.y;
+        let outer_w = self.core.layout_size.width.max(0.0);
+        let outer_h = self.core.layout_size.height.max(0.0);
+        let inner = self.inner_clip_rect();
+        let inset_left = (inner.x - outer_x).max(0.0);
+        let inset_top = (inner.y - outer_y).max(0.0);
+        let inset_right = (outer_x + outer_w - (inner.x + inner.width)).max(0.0);
+        let inset_bottom = (outer_y + outer_h - (inner.y + inner.height)).max(0.0);
+        normalize_corner_radii(
+            CornerRadii {
+                top_left: (outer_radii.top_left - inset_left.max(inset_top)).max(0.0),
+                top_right: (outer_radii.top_right - inset_right.max(inset_top)).max(0.0),
+                bottom_right: (outer_radii.bottom_right - inset_right.max(inset_bottom)).max(0.0),
+                bottom_left: (outer_radii.bottom_left - inset_left.max(inset_bottom)).max(0.0),
+            },
+            inner.width,
+            inner.height,
+        )
+    }
+
+    fn intersects_rect(a: Rect, b: Rect) -> bool {
+        let a_right = a.x + a.width;
+        let a_bottom = a.y + a.height;
+        let b_right = b.x + b.width;
+        let b_bottom = b.y + b.height;
+        a.x < b_right && b.x < a_right && a.y < b_bottom && b.y < a_bottom
+    }
+
+    fn child_touches_inner_corner_clip(
+        &self,
+        child_rect: Rect,
+        inner: Rect,
+        inner_radii: CornerRadii,
+    ) -> bool {
+        let tl = inner_radii.top_left.max(0.0);
+        if tl > 0.0
+            && Self::intersects_rect(
+                child_rect,
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: tl,
+                    height: tl,
+                },
+            )
+        {
+            return true;
+        }
+        let tr = inner_radii.top_right.max(0.0);
+        if tr > 0.0
+            && Self::intersects_rect(
+                child_rect,
+                Rect {
+                    x: inner.x + inner.width - tr,
+                    y: inner.y,
+                    width: tr,
+                    height: tr,
+                },
+            )
+        {
+            return true;
+        }
+        let br = inner_radii.bottom_right.max(0.0);
+        if br > 0.0
+            && Self::intersects_rect(
+                child_rect,
+                Rect {
+                    x: inner.x + inner.width - br,
+                    y: inner.y + inner.height - br,
+                    width: br,
+                    height: br,
+                },
+            )
+        {
+            return true;
+        }
+        let bl = inner_radii.bottom_left.max(0.0);
+        bl > 0.0
+            && Self::intersects_rect(
+                child_rect,
+                Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height - bl,
+                    width: bl,
+                    height: bl,
+                },
+            )
+    }
+
+    fn should_clip_children(
+        &self,
+        overflow_child_indices: &[bool],
+        inner_radii: CornerRadii,
+    ) -> bool {
+        if self.children.is_empty()
+            || self.layout_inner_size.width <= 0.0
+            || self.layout_inner_size.height <= 0.0
+        {
+            return false;
+        }
+        let (max_scroll_x, max_scroll_y) = self.max_scroll();
+        if max_scroll_x > 0.0 || max_scroll_y > 0.0 {
+            return true;
+        }
+        let inner = self.inner_clip_rect();
+        for (idx, child) in self.children.iter().enumerate() {
+            if overflow_child_indices.get(idx).copied().unwrap_or(false) {
+                continue;
+            }
+            if child
+                .as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(Element::should_append_to_root_viewport_render)
+            {
+                continue;
+            }
+            let snapshot = child.box_model_snapshot();
+            if !snapshot.should_render {
+                continue;
+            }
+            let child_rect = Rect {
+                x: snapshot.x,
+                y: snapshot.y,
+                width: snapshot.width.max(0.0),
+                height: snapshot.height.max(0.0),
+            };
+            let child_right = child_rect.x + child_rect.width;
+            let child_bottom = child_rect.y + child_rect.height;
+            let inner_right = inner.x + inner.width;
+            let inner_bottom = inner.y + inner.height;
+            if child_rect.x < inner.x
+                || child_rect.y < inner.y
+                || child_right > inner_right
+                || child_bottom > inner_bottom
+            {
+                return true;
+            }
+            if inner_radii.has_any_rounding()
+                && self.child_touches_inner_corner_clip(child_rect, inner, inner_radii)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn begin_child_clip_scope(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        inner_radii: CornerRadii,
+    ) -> Option<ChildClipScope> {
+        let parent_clip_id = ctx.current_clip_id();
+        let Some(child_clip_id) = ctx.push_clip_id() else {
+            return None;
+        };
+        let previous_scissor = ctx.push_scissor_rect(self.inner_clip_scissor_rect());
+
+        let mut increment = DrawRectPass::new(
+            [self.layout_inner_position.x, self.layout_inner_position.y],
+            [self.layout_inner_size.width, self.layout_inner_size.height],
+            [0.0, 0.0, 0.0, 0.0],
+            1.0,
+        );
+        increment.set_border_width(0.0);
+        increment.set_border_radii(inner_radii.to_array());
+        increment.set_stencil_increment(parent_clip_id);
+        increment.set_color_write_enabled(false);
+        self.push_pass(graph, ctx, increment);
+
+        Some(ChildClipScope {
+            previous_scissor,
+            parent_clip_id,
+            child_clip_id,
+        })
+    }
+
+    fn end_child_clip_scope(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        scope: Option<ChildClipScope>,
+    ) {
+        let Some(scope) = scope else {
+            return;
+        };
+        let inner_radii = self.inner_clip_radii(normalize_corner_radii(
+            self.border_radii,
+            self.core.layout_size.width.max(0.0),
+            self.core.layout_size.height.max(0.0),
+        ));
+        let mut decrement = DrawRectPass::new(
+            [self.layout_inner_position.x, self.layout_inner_position.y],
+            [self.layout_inner_size.width, self.layout_inner_size.height],
+            [0.0, 0.0, 0.0, 0.0],
+            1.0,
+        );
+        decrement.set_border_width(0.0);
+        decrement.set_border_radii(inner_radii.to_array());
+        decrement.set_stencil_decrement(scope.child_clip_id);
+        decrement.set_color_write_enabled(false);
+        self.push_pass(graph, ctx, decrement);
+
+        ctx.pop_clip_id();
+        ctx.restore_scissor_rect(scope.previous_scissor);
+        debug_assert_eq!(ctx.current_clip_id(), scope.parent_clip_id);
     }
 
     fn current_layout_transition_size(&self) -> (f32, f32) {
@@ -2275,7 +2456,7 @@ impl Element {
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((track.width * 0.5).max(0.0));
-            self.push_pass(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, ctx, pass);
         }
         if let Some(track) = geometry.horizontal_track {
             self.render_scrollbar_shadow(
@@ -2294,7 +2475,7 @@ impl Element {
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((track.height * 0.5).max(0.0));
-            self.push_pass(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, ctx, pass);
         }
         if let Some(thumb) = geometry.vertical_thumb {
             self.render_scrollbar_shadow(
@@ -2313,7 +2494,7 @@ impl Element {
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((thumb.width * 0.5).max(0.0));
-            self.push_pass(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, ctx, pass);
         }
         if let Some(thumb) = geometry.horizontal_thumb {
             self.render_scrollbar_shadow(
@@ -2332,7 +2513,7 @@ impl Element {
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((thumb.height * 0.5).max(0.0));
-            self.push_pass(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, ctx, pass);
         }
     }
 
@@ -2681,8 +2862,6 @@ impl Element {
 
     fn build_self(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext, force_opaque: bool) {
         let fill_color = self.background_color.as_ref().to_rgba_f32();
-        let border_color = self.border_colors.top.as_ref().to_rgba_f32();
-        let same_color = colors_close(fill_color, border_color);
         let opacity = if force_opaque { 1.0 } else { self.opacity };
         self.render_box_shadows(graph, ctx, opacity);
 
@@ -2696,56 +2875,43 @@ impl Element {
         let right = self.border_widths.right.clamp(0.0, max_bw);
         let top = self.border_widths.top.clamp(0.0, max_bw);
         let bottom = self.border_widths.bottom.clamp(0.0, max_bw);
-        let draw_left = if same_color { 0.0 } else { left };
-        let draw_right = if same_color { 0.0 } else { right };
-        let draw_top = if same_color { 0.0 } else { top };
-        let draw_bottom = if same_color { 0.0 } else { bottom };
-        let uniform_color = colors_like_eq(
-            self.border_colors.left.as_ref(),
-            self.border_colors.right.as_ref(),
-        ) && colors_like_eq(
-            self.border_colors.left.as_ref(),
-            self.border_colors.top.as_ref(),
-        ) && colors_like_eq(
-            self.border_colors.left.as_ref(),
-            self.border_colors.bottom.as_ref(),
-        );
 
         let outer_radii = normalize_corner_radii(
             self.border_radii,
             self.core.layout_size.width.max(0.0),
             self.core.layout_size.height.max(0.0),
         );
-        let mut pass = DrawRectPass::new(
+        let mut fill_pass = DrawRectPass::new(
             [self.core.layout_position.x, self.core.layout_position.y],
             [self.core.layout_size.width, self.core.layout_size.height],
             fill_color,
             opacity,
         );
-        if uniform_color {
-            pass.set_border_color(border_color);
-            pass.set_border_widths(draw_left, draw_right, draw_top, draw_bottom);
-            pass.set_border_radii(outer_radii.to_array());
-            self.push_pass(graph, ctx, pass);
-            return;
-        }
-        if outer_radii.has_any_rounding() {
-            pass.set_border_side_colors(
-                self.border_colors.left.as_ref().to_rgba_f32(),
-                self.border_colors.right.as_ref().to_rgba_f32(),
-                self.border_colors.top.as_ref().to_rgba_f32(),
-                self.border_colors.bottom.as_ref().to_rgba_f32(),
-            );
-            pass.set_border_widths(draw_left, draw_right, draw_top, draw_bottom);
-            pass.set_border_radii(outer_radii.to_array());
-            self.push_pass(graph, ctx, pass);
+        fill_pass.set_render_mode(RectRenderMode::FillOnly);
+        fill_pass.set_border_widths(left, right, top, bottom);
+        fill_pass.set_border_radii(outer_radii.to_array());
+        self.push_rect_pass_auto(graph, ctx, fill_pass);
+
+        if left <= 0.0 && right <= 0.0 && top <= 0.0 && bottom <= 0.0 {
             return;
         }
 
-        pass.set_border_width(0.0);
-        pass.set_border_radii([0.0; 4]);
-        self.push_pass(graph, ctx, pass);
-        self.push_edge_border_passes(graph, ctx, left, right, top, bottom, opacity);
+        let mut border_pass = DrawRectPass::new(
+            [self.core.layout_position.x, self.core.layout_position.y],
+            [self.core.layout_size.width, self.core.layout_size.height],
+            [0.0, 0.0, 0.0, 0.0],
+            opacity,
+        );
+        border_pass.set_render_mode(RectRenderMode::BorderOnly);
+        border_pass.set_border_side_colors(
+            self.border_colors.left.as_ref().to_rgba_f32(),
+            self.border_colors.right.as_ref().to_rgba_f32(),
+            self.border_colors.top.as_ref().to_rgba_f32(),
+            self.border_colors.bottom.as_ref().to_rgba_f32(),
+        );
+        border_pass.set_border_widths(left, right, top, bottom);
+        border_pass.set_border_radii(outer_radii.to_array());
+        self.push_rect_pass_auto(graph, ctx, border_pass);
     }
 
     fn push_pass<P: RenderTargetPass + RenderPass + 'static>(
@@ -2755,6 +2921,21 @@ impl Element {
         pass: P,
     ) {
         ctx.push_pass(graph, pass);
+    }
+
+    fn push_rect_pass_auto(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        pass: DrawRectPass,
+    ) {
+        if pass.is_opaque_candidate() {
+            let mut opaque: OpaqueRectPass = pass.into_opaque();
+            opaque.set_depth_order(ctx.next_opaque_rect_order());
+            self.push_pass(graph, ctx, opaque);
+            return;
+        }
+        self.push_pass(graph, ctx, pass);
     }
 
     fn sync_props_from_computed_style(&mut self) {
@@ -2843,70 +3024,6 @@ impl Element {
             0.0,
             0.0,
         );
-    }
-
-    fn push_edge_border_passes(
-        &mut self,
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        left: f32,
-        right: f32,
-        top: f32,
-        bottom: f32,
-        opacity: f32,
-    ) {
-        let x = self.core.layout_position.x;
-        let y = self.core.layout_position.y;
-        let w = self.core.layout_size.width.max(0.0);
-        let h = self.core.layout_size.height.max(0.0);
-        if top > 0.0 {
-            let mut pass = DrawRectPass::new(
-                [x, y],
-                [w, top.min(h)],
-                self.border_colors.top.as_ref().to_rgba_f32(),
-                opacity,
-            );
-            pass.set_border_width(0.0);
-            pass.set_border_radius(0.0);
-            self.push_pass(graph, ctx, pass);
-        }
-        if bottom > 0.0 {
-            let bh = bottom.min(h);
-            let mut pass = DrawRectPass::new(
-                [x, y + (h - bh).max(0.0)],
-                [w, bh],
-                self.border_colors.bottom.as_ref().to_rgba_f32(),
-                opacity,
-            );
-            pass.set_border_width(0.0);
-            pass.set_border_radius(0.0);
-            self.push_pass(graph, ctx, pass);
-        }
-        let middle_y = y + top.min(h);
-        let middle_h = (h - top - bottom).max(0.0);
-        if left > 0.0 && middle_h > 0.0 {
-            let mut pass = DrawRectPass::new(
-                [x, middle_y],
-                [left.min(w), middle_h],
-                self.border_colors.left.as_ref().to_rgba_f32(),
-                opacity,
-            );
-            pass.set_border_width(0.0);
-            pass.set_border_radius(0.0);
-            self.push_pass(graph, ctx, pass);
-        }
-        if right > 0.0 && middle_h > 0.0 {
-            let rw = right.min(w);
-            let mut pass = DrawRectPass::new(
-                [x + (w - rw).max(0.0), middle_y],
-                [rw, middle_h],
-                self.border_colors.right.as_ref().to_rgba_f32(),
-                opacity,
-            );
-            pass.set_border_width(0.0);
-            pass.set_border_radius(0.0);
-            self.push_pass(graph, ctx, pass);
-        }
     }
 
     fn render_box_shadows(
@@ -3575,7 +3692,11 @@ impl Element {
             height: frame.height,
         };
 
-        self.absolute_clip_rect = if is_absolute { absolute_clip_rect } else { None };
+        self.absolute_clip_rect = if is_absolute {
+            absolute_clip_rect
+        } else {
+            None
+        };
         let cull_rect = if is_absolute {
             absolute_clip_rect.unwrap_or(parent_rect)
         } else {
@@ -4157,33 +4278,6 @@ fn normalize_corner_radii(mut radii: CornerRadii, width: f32, height: f32) -> Co
     radii
 }
 
-fn inset_corner_radii(
-    radii: CornerRadii,
-    left: f32,
-    right: f32,
-    top: f32,
-    bottom: f32,
-) -> CornerRadii {
-    CornerRadii {
-        top_left: (radii.top_left - left.min(top)).max(0.0),
-        top_right: (radii.top_right - right.min(top)).max(0.0),
-        bottom_right: (radii.bottom_right - right.min(bottom)).max(0.0),
-        bottom_left: (radii.bottom_left - left.min(bottom)).max(0.0),
-    }
-}
-
-fn colors_close(a: [f32; 4], b: [f32; 4]) -> bool {
-    let eps = 0.0001;
-    (a[0] - b[0]).abs() < eps
-        && (a[1] - b[1]).abs() < eps
-        && (a[2] - b[2]).abs() < eps
-        && (a[3] - b[3]).abs() < eps
-}
-
-fn colors_like_eq(a: &dyn ColorLike, b: &dyn ColorLike) -> bool {
-    a.to_rgba_u8() == b.to_rgba_u8()
-}
-
 fn rect_to_scissor_rect(rect: Rect) -> Option<[u32; 4]> {
     let left = rect.x.floor().max(0.0) as i64;
     let top = rect.y.floor().max(0.0) as i64;
@@ -4430,14 +4524,14 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
 #[cfg(test)]
 mod tests {
     use super::{
-        main_axis_start_and_gap, resolve_px_with_base, resolve_signed_px_with_base, Element,
-        ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
-        UiBuildContext,
+        Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+        Renderable, UiBuildContext, main_axis_start_and_gap, normalize_corner_radii,
+        resolve_px_with_base, resolve_signed_px_with_base,
     };
+    use crate::Display;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
     use crate::view::frame_graph::FrameGraph;
-    use crate::Display;
     use crate::{
         AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
         JustifyContent, Length, Operator, Position, Style,
@@ -5383,10 +5477,7 @@ mod tests {
             .as_any()
             .downcast_ref::<Element>()
             .expect("downcast child");
-        assert_eq!(
-            child.absolute_clip_scissor_rect(),
-            Some([0, 0, 500, 200])
-        );
+        assert_eq!(child.absolute_clip_scissor_rect(), Some([0, 0, 500, 200]));
     }
 
     #[test]
@@ -5992,5 +6083,84 @@ mod tests {
         assert_eq!(el.box_shadows[0].spread, 2.0);
         assert_eq!(el.box_shadows[1].offset_x, -1.0);
         assert_eq!(el.box_shadows[1].offset_y, -1.0);
+    }
+
+    #[test]
+    fn child_clip_scope_is_skipped_when_children_are_fully_inside_inner_rect() {
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let child = Element::new(20.0, 20.0, 40.0, 40.0);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let inner_radii = parent.inner_clip_radii(normalize_corner_radii(
+            parent.border_radii,
+            parent.core.layout_size.width.max(0.0),
+            parent.core.layout_size.height.max(0.0),
+        ));
+        let overflow_child_indices: Vec<bool> = (0..parent.children.len())
+            .map(|idx| parent.child_renders_outside_inner_clip(idx))
+            .collect();
+        assert!(!parent.should_clip_children(&overflow_child_indices, inner_radii));
+    }
+
+    #[test]
+    fn child_clip_scope_is_required_when_child_overflows_inner_rect() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let mut child = Element::new(0.0, 0.0, 140.0, 40.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(140.0)));
+        child.apply_style(style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let inner_radii = parent.inner_clip_radii(normalize_corner_radii(
+            parent.border_radii,
+            parent.core.layout_size.width.max(0.0),
+            parent.core.layout_size.height.max(0.0),
+        ));
+        let overflow_child_indices: Vec<bool> = (0..parent.children.len())
+            .map(|idx| parent.child_renders_outside_inner_clip(idx))
+            .collect();
+        assert!(parent.should_clip_children(&overflow_child_indices, inner_radii));
     }
 }

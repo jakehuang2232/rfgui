@@ -1,10 +1,12 @@
 use crate::view::frame_graph::PassContext;
+use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::render_target_view;
+use std::sync::{Mutex, OnceLock};
 
 const PRESENT_SURFACE_RESOURCES: u64 = 401;
 
@@ -86,11 +88,11 @@ impl RenderPass for PresentSurfacePass {
             return;
         };
         let format = ctx.viewport.surface_format();
-        let resources = ctx
-            .cache
-            .get_or_insert_with::<PresentSurfaceResources, _>(PRESENT_SURFACE_RESOURCES, || {
-                PresentSurfaceResources::new(device, format)
-            });
+        let cache = present_surface_resources_cache();
+        let mut cache = cache.lock().unwrap();
+        let resources = cache.get_or_insert_with(PRESENT_SURFACE_RESOURCES, || {
+            PresentSurfaceResources::new(device, format)
+        });
         if resources.pipeline_format != format {
             *resources = PresentSurfaceResources::new(device, format);
         }
@@ -109,15 +111,21 @@ impl RenderPass for PresentSurfacePass {
                 },
             ],
         });
+        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
         let Some(parts) = ctx.viewport.frame_parts() else {
             return;
+        };
+        let present_target = if msaa_enabled {
+            parts.resolve_view.unwrap_or(parts.view)
+        } else {
+            parts.view
         };
         let mut pass = parts
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Present Surface"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: parts.view,
+                    view: present_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -200,7 +208,11 @@ impl PresentSurfaceResources {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -221,4 +233,15 @@ impl PresentSurfaceResources {
             pipeline_format: format,
         }
     }
+}
+
+fn present_surface_resources_cache() -> &'static Mutex<ResourceCache<PresentSurfaceResources>> {
+    static CACHE: OnceLock<Mutex<ResourceCache<PresentSurfaceResources>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+}
+
+pub fn clear_present_surface_resources_cache() {
+    let cache = present_surface_resources_cache();
+    let mut cache = cache.lock().unwrap();
+    cache.clear();
 }

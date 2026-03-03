@@ -1,5 +1,6 @@
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::PassContext;
+use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
@@ -7,6 +8,7 @@ use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
 use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
 const COMPOSITE_LAYER_RESOURCES: u64 = 201;
@@ -157,11 +159,11 @@ impl RenderPass for CompositeLayerPass {
             None => return,
         };
         let format = ctx.viewport.surface_format();
-        let resources = ctx
-            .cache
-            .get_or_insert_with::<CompositeLayerResources, _>(COMPOSITE_LAYER_RESOURCES, || {
-                create_resources(&device, format)
-            });
+        let cache = composite_layer_resources_cache();
+        let mut cache = cache.lock().unwrap();
+        let resources = cache.get_or_insert_with(COMPOSITE_LAYER_RESOURCES, || {
+            create_resources(&device, format)
+        });
         if resources.pipeline_format != format {
             *resources = create_resources(&device, format);
         }
@@ -215,11 +217,17 @@ impl RenderPass for CompositeLayerPass {
         });
 
         let debug_geometry_overlay = ctx.viewport.debug_geometry_overlay();
+        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
         let parts = match ctx.viewport.frame_parts() {
             Some(parts) => parts,
             None => return,
         };
-        let color_view = offscreen_view.as_ref().unwrap_or(parts.view);
+        let surface_color_view = if msaa_enabled {
+            parts.resolve_view.unwrap_or(parts.view)
+        } else {
+            parts.view
+        };
+        let color_view = offscreen_view.as_ref().unwrap_or(surface_color_view);
 
         let mut pass = parts
             .encoder
@@ -417,7 +425,11 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
             ..Default::default()
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     });
@@ -470,7 +482,11 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
             ..Default::default()
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     });
@@ -482,6 +498,17 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
         sampler,
         pipeline_format: format,
     }
+}
+
+fn composite_layer_resources_cache() -> &'static Mutex<ResourceCache<CompositeLayerResources>> {
+    static CACHE: OnceLock<Mutex<ResourceCache<CompositeLayerResources>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+}
+
+pub fn clear_composite_layer_resources_cache() {
+    let cache = composite_layer_resources_cache();
+    let mut cache = cache.lock().unwrap();
+    cache.clear();
 }
 
 fn tessellate_composite_layer(

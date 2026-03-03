@@ -471,7 +471,7 @@ fn MainScene() -> RsxNode {
                     <Element style={{ width: Length::px(72.0), height: Length::px(48.0), background: "#d19a66", border: Border::uniform(Length::px(3.0), theme.color.state.active.as_ref()) }}>
                         Clip Test
                     </Element>
-                    <Element style={{ width: Length::px(56.0), height: Length::px(56.0), background: "#61afef" }} />
+                    <Element style={{ width: Length::px(56.0), height: Length::px(56.0), background: "#61ef9c" }} />
                     <Element style={{ width: Length::px(120.0), height: Length::px(64.0), background: "#c678dd", border: Border::uniform(Length::px(4.0), theme.color.state.focus.as_ref()) }} />
                 </Element>
                 <Element style={{

@@ -14,7 +14,7 @@ pub mod text_pass;
 pub use blur_pass::BlurPass;
 pub use clear_pass::ClearPass;
 pub use composite_layer_pass::{CompositeLayerPass, LayerOut, LayerTag};
-pub use draw_rect_pass::DrawRectPass;
+pub use draw_rect_pass::{AlphaRectPass, DrawRectPass, OpaqueRectPass, RectRenderMode};
 pub use shadow_pass::{ShadowMesh, ShadowParams, ShadowPass};
 pub use text_pass::{TextPass, prewarm_text_pipeline};
 
@@ -30,11 +30,19 @@ pub trait RenderPass {
 
     fn build(&mut self, builder: &mut BuildContext);
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
+    fn batchable(&self) -> bool {
+        false
+    }
+    fn get_batch_key(&self) -> Option<u64> {
+        None
+    }
 }
 
 pub trait RenderPassDyn {
     fn build(&mut self, builder: &mut BuildContext);
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
+    fn batchable(&self) -> bool;
+    fn get_batch_key(&self) -> Option<u64>;
     fn name(&self) -> &'static str;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -50,6 +58,14 @@ impl<P: RenderPass + 'static> RenderPassDyn for PassWrapper<P> {
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
         self.pass.execute(ctx);
+    }
+
+    fn batchable(&self) -> bool {
+        self.pass.batchable()
+    }
+
+    fn get_batch_key(&self) -> Option<u64> {
+        self.pass.get_batch_key()
     }
 
     fn name(&self) -> &'static str {

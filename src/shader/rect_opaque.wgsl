@@ -13,6 +13,8 @@ struct RectParams {
     border_right: vec4<f32>,
     border_bottom: vec4<f32>,
     screen_size: vec4<f32>,
+    depth: f32,
+    _pad2: vec3<f32>,
 }
 
 @group(0) @binding(0)
@@ -171,7 +173,7 @@ fn vs_main(@location(0) uv: vec2<f32>) -> VertexOut {
         (p.x / u.screen_size.x) * 2.0 - 1.0,
         1.0 - (p.y / u.screen_size.y) * 2.0,
     );
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.position = vec4<f32>(ndc, u.depth, 1.0);
     out.pixel_pos = p;
     return out;
 }
@@ -193,12 +195,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
     let border_mask = clamp(cov_outer - cov_inner, 0.0, 1.0);
     let fill_mask = cov_inner;
+    let shape_mask = max(border_mask, fill_mask);
+    if shape_mask <= 1e-5 {
+        discard;
+    }
 
     var border_pm = vec4<f32>(0.0);
     if border_mask > 1e-5 {
         border_pm = premul(pickBorderColor(p)) * border_mask;
     }
     let fill_pm = premul(u.fill_color) * fill_mask;
-
     return border_pm + fill_pm;
 }

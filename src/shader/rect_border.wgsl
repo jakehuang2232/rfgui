@@ -192,13 +192,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     }
 
     let border_mask = clamp(cov_outer - cov_inner, 0.0, 1.0);
-    let fill_mask = cov_inner;
-
-    var border_pm = vec4<f32>(0.0);
-    if border_mask > 1e-5 {
-        border_pm = premul(pickBorderColor(p)) * border_mask;
+    if border_mask <= 1e-5 {
+        discard;
     }
-    let fill_pm = premul(u.fill_color) * fill_mask;
-
-    return border_pm + fill_pm;
+    return premul(pickBorderColor(p)) * border_mask;
 }
