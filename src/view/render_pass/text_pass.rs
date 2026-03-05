@@ -5,15 +5,16 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
-use crate::view::render_pass::{RenderPass, RenderPassBatchKey};
+use crate::view::render_pass::render_target::{
+    render_target_msaa_view, render_target_size, render_target_view,
+};
+use crate::view::render_pass::RenderPass;
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport as GlyphonViewport,
 };
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::sync::{Mutex, OnceLock};
 
 pub struct TextPass {
@@ -109,14 +110,6 @@ impl TextPass {
         }
         hasher.finish()
     }
-
-    fn batch_key(&self) -> RenderPassBatchKey {
-        RenderPassBatchKey {
-            color_target: self.output.render_target.handle(),
-            uses_depth_stencil: true,
-        }
-    }
-
 }
 
 impl RenderPass for TextPass {
@@ -233,7 +226,7 @@ impl RenderPass for TextPass {
         );
         let renderer_key = TextRendererKey {
             sample_count: viewport.msaa_sample_count(),
-            stencil_enabled: true,
+            stencil_enabled: self.params.stencil_clip_id.is_some(),
         };
         if let Some(prepared) = self.prepared.as_mut() {
             if prepared.renderer_key == renderer_key
@@ -303,6 +296,19 @@ impl RenderPass for TextPass {
         let resources = global.resources.as_mut().unwrap();
 
         if let Some(pass) = render_pass.as_mut() {
+            let target_size = match self.output.render_target.handle() {
+                Some(handle) => render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size()),
+                None => ctx.viewport.surface_size(),
+            };
+            let scissor_rect = self.params.scissor_rect.and_then(|scissor| {
+                ctx.viewport
+                    .logical_scissor_to_physical(scissor, target_size)
+            });
+            if let Some([x, y, width, height]) = scissor_rect {
+                pass.set_scissor_rect(x, y, width, height);
+            } else {
+                pass.set_scissor_rect(0, 0, target_size.0, target_size.1);
+            }
             if let Some(stencil_clip_id) = prepared.stencil_clip_id {
                 pass.set_stencil_reference(stencil_clip_id as u32);
             } else {
@@ -373,8 +379,11 @@ impl RenderPass for TextPass {
         true
     }
 
-    fn batch_key(&self) -> Option<RenderPassBatchKey> {
-        Some(TextPass::batch_key(self))
+    fn batch_key(&self) -> Option<crate::view::render_pass::RenderPassBatchKey> {
+        Some(crate::view::render_pass::RenderPassBatchKey {
+            color_target: self.output.render_target.handle(),
+            uses_depth_stencil: true,
+        })
     }
 
     fn shared_render_pass_capable(&self) -> bool {
