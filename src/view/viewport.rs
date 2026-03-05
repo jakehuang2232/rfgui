@@ -1499,10 +1499,12 @@ impl Viewport {
             self.surface_config.format,
             initial_dep,
         );
-        let use_surface_present_pass =
-            self.surface_config.alpha_mode == wgpu::CompositeAlphaMode::PostMultiplied;
+        let clear_uses_premultiplied_alpha = matches!(
+            self.surface_config.alpha_mode,
+            wgpu::CompositeAlphaMode::PostMultiplied | wgpu::CompositeAlphaMode::PreMultiplied
+        );
         let mut clear_rgba = self.clear_color.to_rgba_f32();
-        if use_surface_present_pass {
+        if clear_uses_premultiplied_alpha {
             let a = clear_rgba[3].clamp(0.0, 1.0);
             clear_rgba[0] *= a;
             clear_rgba[1] *= a;
@@ -1520,10 +1522,8 @@ impl Viewport {
                 dep: super::frame_graph::DepOut::with_handle(initial_dep),
             },
         );
-        if use_surface_present_pass {
-            if let Some(handle) = output_handle {
-                ctx.set_color_target(Some(handle));
-            }
+        if let Some(handle) = output_handle {
+            ctx.set_color_target(Some(handle));
         }
         graph.add_pass(clear_pass);
         ctx.set_current_dep_token(initial_dep);
@@ -1558,26 +1558,23 @@ impl Viewport {
                 deferred_node_ids.extend(newly_deferred);
             }
         }
-        if use_surface_present_pass {
-            let dependency_handle = ctx.current_target().and_then(|target| target.handle());
-            if let Some(dep_handle) = dependency_handle {
-                let present_dep_out = graph.declare_dep_token();
-                let present_pass =
-                    super::render_pass::present_surface_pass::PresentSurfacePass::new(
-                        super::render_pass::present_surface_pass::PresentSurfaceParams,
-                        super::render_pass::present_surface_pass::PresentSurfaceInput {
-                            source: super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
-                                dep_handle,
-                            ),
-                            dep: super::frame_graph::DepIn::with_handle(ctx.current_dep_token()),
-                        },
-                        super::render_pass::present_surface_pass::PresentSurfaceOutput {
-                            dep: super::frame_graph::DepOut::with_handle(present_dep_out),
-                        },
-                    );
-                graph.add_pass(present_pass);
-                ctx.set_current_dep_token(present_dep_out);
-            }
+        let dependency_handle = ctx.current_target().and_then(|target| target.handle());
+        if let Some(dep_handle) = dependency_handle {
+            let present_dep_out = graph.declare_dep_token();
+            let present_pass = super::render_pass::present_surface_pass::PresentSurfacePass::new(
+                super::render_pass::present_surface_pass::PresentSurfaceParams,
+                super::render_pass::present_surface_pass::PresentSurfaceInput {
+                    source: super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
+                        dep_handle,
+                    ),
+                    dep: super::frame_graph::DepIn::with_handle(ctx.current_dep_token()),
+                },
+                super::render_pass::present_surface_pass::PresentSurfaceOutput {
+                    dep: super::frame_graph::DepOut::with_handle(present_dep_out),
+                },
+            );
+            graph.add_pass(present_pass);
+            ctx.set_current_dep_token(present_dep_out);
         }
         graph.normalize_opaque_rect_depths();
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;

@@ -76,7 +76,11 @@ impl RenderPass for ClearPass {
         }
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
         let color = wgpu::Color {
             r: self.params.color[0] as f64,
             g: self.params.color[1] as f64,

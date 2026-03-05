@@ -4,15 +4,16 @@ use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{DepIn, DepOut};
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
+use crate::view::render_pass::{RenderPass, RenderPassBatchKey};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport as GlyphonViewport,
 };
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::{Mutex, OnceLock};
 
 pub struct TextPass {
@@ -108,6 +109,14 @@ impl TextPass {
         }
         hasher.finish()
     }
+
+    fn batch_key(&self) -> RenderPassBatchKey {
+        RenderPassBatchKey {
+            color_target: self.output.render_target.handle(),
+            uses_depth_stencil: true,
+        }
+    }
+
 }
 
 impl RenderPass for TextPass {
@@ -224,7 +233,7 @@ impl RenderPass for TextPass {
         );
         let renderer_key = TextRendererKey {
             sample_count: viewport.msaa_sample_count(),
-            stencil_enabled: self.params.stencil_clip_id.is_some(),
+            stencil_enabled: true,
         };
         if let Some(prepared) = self.prepared.as_mut() {
             if prepared.renderer_key == renderer_key
@@ -273,10 +282,39 @@ impl RenderPass for TextPass {
         });
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        mut render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
         let Some(prepared) = self.prepared.as_mut() else {
             return;
         };
+        let device = match ctx.viewport.device().cloned() {
+            Some(device) => device,
+            None => return,
+        };
+        let queue = match ctx.viewport.queue().cloned() {
+            Some(queue) => queue,
+            None => return,
+        };
+        let format = ctx.viewport.surface_format();
+        let mut global = text_resources(&device, &queue, format);
+        let resources = global.resources.as_mut().unwrap();
+
+        if let Some(pass) = render_pass.as_mut() {
+            if let Some(stencil_clip_id) = prepared.stencil_clip_id {
+                pass.set_stencil_reference(stencil_clip_id as u32);
+            } else {
+                pass.set_stencil_reference(0);
+            }
+            let Some(renderer) = prepared.renderer.as_mut() else {
+                return;
+            };
+            let _ = renderer.render(&resources.atlas, &resources.viewport, pass);
+            return;
+        }
+
         let (offscreen_view, offscreen_msaa_view) = match self.output.render_target.handle() {
             Some(handle) => (
                 render_target_view(ctx, handle),
@@ -284,19 +322,8 @@ impl RenderPass for TextPass {
             ),
             None => (None, None),
         };
-        let viewport = &mut ctx.viewport;
-        let device = match viewport.device().cloned() {
-            Some(device) => device,
-            None => return,
-        };
-        let queue = match viewport.queue().cloned() {
-            Some(queue) => queue,
-            None => return,
-        };
-        let format = viewport.surface_format();
-        let mut global = text_resources(&device, &queue, format);
-        let resources = global.resources.as_mut().unwrap();
 
+        let viewport = &mut ctx.viewport;
         let msaa_enabled = viewport.msaa_sample_count() > 1;
         let parts = match viewport.frame_parts() {
             Some(parts) => parts,
@@ -343,7 +370,15 @@ impl RenderPass for TextPass {
     }
 
     fn batchable(&self) -> bool {
-        false
+        true
+    }
+
+    fn batch_key(&self) -> Option<RenderPassBatchKey> {
+        Some(TextPass::batch_key(self))
+    }
+
+    fn shared_render_pass_capable(&self) -> bool {
+        true
     }
 }
 

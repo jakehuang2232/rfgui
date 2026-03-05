@@ -2,6 +2,7 @@ use std::any::Any;
 
 use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::texture_resource::TextureHandle;
 
 pub mod blur_pass;
 pub mod clear_pass;
@@ -18,6 +19,12 @@ pub use draw_rect_pass::{AlphaRectPass, DrawRectPass, OpaqueRectPass, RectRender
 pub use shadow_pass::{ShadowMesh, ShadowParams, ShadowPass};
 pub use text_pass::{TextPass, prewarm_text_pipeline};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderPassBatchKey {
+    pub color_target: Option<TextureHandle>,
+    pub uses_depth_stencil: bool,
+}
+
 pub trait RenderPass {
     type Input: Default;
     type Output: Default;
@@ -30,21 +37,33 @@ pub trait RenderPass {
 
     fn build(&mut self, builder: &mut BuildContext);
     fn compile_upload(&mut self, _ctx: &mut PassContext<'_, '_>) {}
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    );
     fn batchable(&self) -> bool {
         false
     }
-    fn get_batch_key(&self) -> Option<u64> {
+    fn batch_key(&self) -> Option<RenderPassBatchKey> {
         None
+    }
+    fn shared_render_pass_capable(&self) -> bool {
+        false
     }
 }
 
 pub trait RenderPassDyn {
     fn build(&mut self, builder: &mut BuildContext);
     fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>);
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    );
     fn batchable(&self) -> bool;
-    fn get_batch_key(&self) -> Option<u64>;
+    fn batch_key(&self) -> Option<RenderPassBatchKey>;
+    fn shared_render_pass_capable(&self) -> bool;
     fn name(&self) -> &'static str;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -58,8 +77,12 @@ impl<P: RenderPass + 'static> RenderPassDyn for PassWrapper<P> {
         self.pass.build(builder);
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
-        self.pass.execute(ctx);
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
+        self.pass.execute(ctx, render_pass);
     }
 
     fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
@@ -70,8 +93,12 @@ impl<P: RenderPass + 'static> RenderPassDyn for PassWrapper<P> {
         self.pass.batchable()
     }
 
-    fn get_batch_key(&self) -> Option<u64> {
-        self.pass.get_batch_key()
+    fn batch_key(&self) -> Option<RenderPassBatchKey> {
+        self.pass.batch_key()
+    }
+
+    fn shared_render_pass_capable(&self) -> bool {
+        self.pass.shared_render_pass_capable()
     }
 
     fn name(&self) -> &'static str {

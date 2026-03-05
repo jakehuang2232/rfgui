@@ -2,9 +2,7 @@ use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{
-    BufferDesc, BufferResource, DepIn, DepOut,
-};
+use crate::view::frame_graph::{BufferDesc, BufferResource, DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -155,7 +153,7 @@ pub struct ShadowPass {
 #[derive(Clone, Copy)]
 pub struct ShadowBlurDownsampleParamsBufferTag;
 pub type ShadowBlurDownsampleParamsBufferOut =
-OutSlot<BufferResource, ShadowBlurDownsampleParamsBufferTag>;
+    OutSlot<BufferResource, ShadowBlurDownsampleParamsBufferTag>;
 #[derive(Clone, Copy)]
 pub struct ShadowBlurHParamsBufferTag;
 pub type ShadowBlurHParamsBufferOut = OutSlot<BufferResource, ShadowBlurHParamsBufferTag>;
@@ -290,7 +288,6 @@ impl ShadowPass {
             output,
         }
     }
-
 }
 
 impl RenderPass for ShadowPass {
@@ -478,7 +475,11 @@ impl RenderPass for ShadowPass {
         }
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
         let target_handle = self.output.render_target.handle();
         let geometry_started_at = Instant::now();
         if self.mesh.vertices.len() < 3 || self.mesh.indices.len() < 3 {

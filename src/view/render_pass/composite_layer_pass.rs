@@ -4,9 +4,7 @@ use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
-use crate::view::frame_graph::{
-    BufferDesc, BufferResource, DepIn, DepOut,
-};
+use crate::view::frame_graph::{BufferDesc, BufferResource, DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
@@ -98,7 +96,6 @@ impl CompositeLayerPass {
             output,
         }
     }
-
 }
 
 impl RenderPass for CompositeLayerPass {
@@ -155,8 +152,14 @@ impl RenderPass for CompositeLayerPass {
         };
         let (layer_w, layer_h) = render_target_size(ctx, layer_handle).unwrap_or(surface_size);
         let scale = ctx.viewport.scale_factor();
-        let scaled_rect_pos = [self.params.rect_pos[0] * scale, self.params.rect_pos[1] * scale];
-        let scaled_rect_size = [self.params.rect_size[0] * scale, self.params.rect_size[1] * scale];
+        let scaled_rect_pos = [
+            self.params.rect_pos[0] * scale,
+            self.params.rect_pos[1] * scale,
+        ];
+        let scaled_rect_size = [
+            self.params.rect_size[0] * scale,
+            self.params.rect_size[1] * scale,
+        ];
         let scaled_corner_radii = self.params.corner_radii.map(|radius| radius * scale);
         let (vertices, indices) = tessellate_composite_layer(
             scaled_rect_pos,
@@ -178,7 +181,11 @@ impl RenderPass for CompositeLayerPass {
         }
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };
@@ -317,8 +324,7 @@ impl RenderPass for CompositeLayerPass {
 
 impl RenderTargetPass for CompositeLayerPass {
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.params.scissor_rect =
-            intersect_scissor_rects(self.params.scissor_rect, scissor_rect);
+        self.params.scissor_rect = intersect_scissor_rects(self.params.scissor_rect, scissor_rect);
     }
 }
 
