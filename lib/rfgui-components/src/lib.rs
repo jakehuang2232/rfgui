@@ -18,7 +18,7 @@ pub use window::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::{Button, ButtonVariant, Checkbox, Select, Window};
+    use crate::{Button, ButtonVariant, Checkbox, Select, Switch, Window};
     use rfgui::ui::{
         EventMeta, MouseButton, MouseEventData, RsxNode, global_state, rsx, take_state_dirty,
     };
@@ -174,6 +174,106 @@ mod tests {
             panic!("text should carry string child");
         };
         assert_eq!(content, "Click Me");
+    }
+
+    fn collect_text_nodes(node: &RsxNode, out: &mut Vec<String>) {
+        match node {
+            RsxNode::Text(content) => out.push(content.clone()),
+            RsxNode::Element(element) => {
+                for child in &element.children {
+                    collect_text_nodes(child, out);
+                }
+            }
+            RsxNode::Fragment(children) => {
+                for child in children {
+                    collect_text_nodes(child, out);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_renders_label_text_node() {
+        let tree = rsx! {
+            <Checkbox
+                label="Enable"
+            />
+        };
+        let mut texts = Vec::new();
+        collect_text_nodes(&tree, &mut texts);
+        assert!(
+            texts.iter().any(|text| text == "Enable"),
+            "checkbox text nodes: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn switch_renders_label_text_node() {
+        let tree = rsx! {
+            <Switch
+                label="Switch state"
+            />
+        };
+        let mut texts = Vec::new();
+        collect_text_nodes(&tree, &mut texts);
+        assert!(
+            texts.iter().any(|text| text == "Switch state"),
+            "switch text nodes: {texts:?}"
+        );
+    }
+
+    fn collect_text_boxes(
+        node: &dyn rfgui::view::base_component::ElementTrait,
+        out: &mut Vec<(f32, f32)>,
+    ) {
+        if node.as_any().is::<rfgui::view::base_component::Text>() {
+            let snapshot = node.box_model_snapshot();
+            out.push((snapshot.width, snapshot.height));
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                collect_text_boxes(child.as_ref(), out);
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_label_has_non_zero_text_layout() {
+        let tree = rsx! {
+            <Checkbox
+                label="Enable"
+            />
+        };
+        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert checkbox");
+        let root = roots.get_mut(0).expect("has root");
+        root.measure(rfgui::view::base_component::LayoutConstraints {
+            max_width: 320.0,
+            max_height: 120.0,
+            viewport_width: 320.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(320.0),
+            percent_base_height: Some(120.0),
+        });
+        root.place(rfgui::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 320.0,
+            available_height: 120.0,
+            viewport_width: 320.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(320.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let mut boxes = Vec::new();
+        collect_text_boxes(root.as_ref(), &mut boxes);
+        let max_width = boxes
+            .iter()
+            .map(|(width, _)| *width)
+            .fold(0.0_f32, f32::max);
+        assert!(max_width > 20.0, "text boxes: {boxes:?}");
     }
 
     #[test]

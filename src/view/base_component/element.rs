@@ -25,8 +25,11 @@ use crate::ui::{
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{DepHandle, FrameGraph, RenderPass, TextureDesc};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::{
-    DrawRectPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowParams, ShadowPass,
+    ClearPass, DrawRectPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowParams, ShadowPass,
+    TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput,
+    TextureCompositeParams, TextureCompositePass, TextureCompositeSourceIn,
 };
 use crate::view::viewport::ViewportControl;
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
@@ -184,6 +187,7 @@ pub struct ViewportContext {
     target_width: u32,
     target_height: u32,
     target_format: wgpu::TextureFormat,
+    scale_factor: f32,
 }
 
 #[derive(Clone)]
@@ -206,6 +210,7 @@ impl UiBuildContext {
         viewport_width: u32,
         viewport_height: u32,
         viewport_format: wgpu::TextureFormat,
+        scale_factor: f32,
         dep_handle: DepHandle,
     ) -> Self {
         Self {
@@ -214,6 +219,7 @@ impl UiBuildContext {
                 target_width: viewport_width.max(1),
                 target_height: viewport_height.max(1),
                 target_format: viewport_format,
+                scale_factor: scale_factor.max(0.0001),
             },
             state: BuildState {
                 target: None,
@@ -3226,28 +3232,132 @@ impl Element {
         graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
     ) -> BuildState {
-        let dep_out = graph.declare_dep_token();
         self.ensure_current_render_target(graph, &mut ctx);
         let output = ctx
             .current_target()
             .unwrap_or_else(|| ctx.allocate_target(graph));
-        let mut pass = ShadowPass::new(
-            mesh,
-            params,
-            ShadowInput {
-                dep: DepIn::with_handle(ctx.current_dep_token()),
-                ..Default::default()
+        let clip_to_geometry = params.clip_to_geometry;
+
+        let scale = ctx.viewport.scale_factor.max(0.0001);
+        let mut shadow_vertices = mesh
+            .vertices
+            .iter()
+            .map(|[x, y]| [x * scale, y * scale])
+            .collect::<Vec<_>>();
+        for v in &mut shadow_vertices {
+            v[0] += params.offset_x * scale;
+            v[1] += params.offset_y * scale;
+        }
+        let Some(first) = shadow_vertices.first().copied() else {
+            return ctx.into_state();
+        };
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (first[0], first[1], first[0], first[1]);
+        for [x, y] in shadow_vertices.iter().copied().skip(1) {
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        let blur_padding = ((params.blur_radius.max(0.0) * scale) * 1.5).ceil();
+        min_x -= blur_padding;
+        min_y -= blur_padding;
+        max_x += blur_padding;
+        max_y += blur_padding;
+        let target_w = ctx.viewport.target_width as f32;
+        let target_h = ctx.viewport.target_height as f32;
+        let bx = min_x.floor().max(0.0).min(target_w);
+        let by = min_y.floor().max(0.0).min(target_h);
+        let br = max_x.ceil().max(0.0).min(target_w);
+        let bb = max_y.ceil().max(0.0).min(target_h);
+        if br <= bx || bb <= by {
+            return ctx.into_state();
+        }
+        let layer_w = (br - bx).max(1.0) as u32;
+        let layer_h = (bb - by).max(1.0) as u32;
+        let origin_x = bx / scale;
+        let origin_y = by / scale;
+        let local_mesh = ShadowMesh::new(
+            mesh.vertices
+                .iter()
+                .map(|[x, y]| [x - origin_x, y - origin_y])
+                .collect(),
+            mesh.indices.clone(),
+        );
+
+        let shadow_layer = graph.declare_texture(TextureDesc::new(
+            layer_w,
+            layer_h,
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureDimension::D2,
+        ));
+        let shadow_mask_layer = if clip_to_geometry {
+            graph.declare_texture(TextureDesc::new(
+                layer_w,
+                layer_h,
+                wgpu::TextureFormat::Rgba16Float,
+                wgpu::TextureDimension::D2,
+            ))
+        } else {
+            RenderTargetOut::default()
+        };
+
+        let clear_dep = graph.declare_dep_token();
+        let clear_pass = ClearPass::new(
+            ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+            ClearInput {
+                dep: DepIn::default(),
             },
-            ShadowOutput {
-                render_target: output,
-                dep: DepOut::with_handle(dep_out),
+            ClearOutput {
+                render_target: shadow_layer,
+                dep: DepOut::with_handle(clear_dep),
             },
         );
 
-        ctx.configure_pass(&mut pass);
+        graph.add_pass(clear_pass);
+        let prepare_dep = graph.declare_dep_token();
+        let pass = ShadowPass::new(
+            local_mesh,
+            params,
+            ShadowInput {
+                dep: DepIn::with_handle(clear_dep),
+            },
+            ShadowOutput {
+                render_target: shadow_layer,
+                mask_render_target: shadow_mask_layer,
+                dep: DepOut::with_handle(prepare_dep),
+            },
+        );
+        
         graph.add_pass(pass);
+        let composite_dep = graph.declare_dep_token();
+        let mut composite_pass = TextureCompositePass::new(
+            TextureCompositeParams {
+                bounds: [bx / scale, by / scale, layer_w as f32 / scale, layer_h as f32 / scale],
+                use_mask: clip_to_geometry,
+                opacity: 1.0,
+                ..Default::default()
+            },
+            TextureCompositeInput {
+                dep: DepIn::with_handle(prepare_dep),
+                source: shadow_layer
+                    .handle()
+                    .map(TextureCompositeSourceIn::with_handle)
+                    .unwrap_or_default(),
+                mask: shadow_mask_layer
+                    .handle()
+                    .map(TextureCompositeMaskIn::with_handle)
+                    .unwrap_or_default(),
+                ..Default::default()
+            },
+            TextureCompositeOutput {
+                render_target: output,
+                dep: DepOut::with_handle(composite_dep),
+            },
+        );
+        ctx.configure_pass(&mut composite_pass);
+        graph.add_pass(composite_pass);
         ctx.set_current_target(output);
-        ctx.set_current_dep_token(dep_out);
+        ctx.set_current_dep_token(composite_dep);
         ctx.into_state()
     }
 
@@ -5519,6 +5629,7 @@ mod tests {
             400,
             300,
             wgpu::TextureFormat::Bgra8Unorm,
+            1.0,
             graph.declare_dep_token(),
         );
         let target = ctx.allocate_target(&mut graph);

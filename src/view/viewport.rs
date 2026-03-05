@@ -1497,6 +1497,7 @@ impl Viewport {
             self.surface_config.width,
             self.surface_config.height,
             self.surface_config.format,
+            self.scale_factor,
             initial_dep,
         );
         let clear_uses_premultiplied_alpha = matches!(

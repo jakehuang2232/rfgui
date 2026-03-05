@@ -5,9 +5,7 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource, DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{
-    render_target_msaa_view, render_target_size, render_target_view,
-};
+use crate::view::render_pass::render_target::{render_target_size, render_target_view};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -139,13 +137,9 @@ impl Default for ShadowParams {
 pub struct ShadowPass {
     mesh: ShadowMesh,
     params: ShadowParams,
-    scissor_rect: Option<[u32; 4]>,
     blur_downsample_params_buffer: ShadowBlurDownsampleParamsBufferOut,
     blur_h_params_buffer: ShadowBlurHParamsBufferOut,
     blur_v_params_buffer: ShadowBlurVParamsBufferOut,
-    composite_params_buffer: ShadowCompositeParamsBufferOut,
-    composite_vertex_buffer: ShadowCompositeVertexBufferOut,
-    composite_index_buffer: ShadowCompositeIndexBufferOut,
     input: ShadowInput,
     output: ShadowOutput,
 }
@@ -160,15 +154,6 @@ pub type ShadowBlurHParamsBufferOut = OutSlot<BufferResource, ShadowBlurHParamsB
 #[derive(Clone, Copy)]
 pub struct ShadowBlurVParamsBufferTag;
 pub type ShadowBlurVParamsBufferOut = OutSlot<BufferResource, ShadowBlurVParamsBufferTag>;
-#[derive(Clone, Copy)]
-pub struct ShadowCompositeParamsBufferTag;
-pub type ShadowCompositeParamsBufferOut = OutSlot<BufferResource, ShadowCompositeParamsBufferTag>;
-#[derive(Clone, Copy)]
-pub struct ShadowCompositeVertexBufferTag;
-pub type ShadowCompositeVertexBufferOut = OutSlot<BufferResource, ShadowCompositeVertexBufferTag>;
-#[derive(Clone, Copy)]
-pub struct ShadowCompositeIndexBufferTag;
-pub type ShadowCompositeIndexBufferOut = OutSlot<BufferResource, ShadowCompositeIndexBufferTag>;
 
 #[derive(Default)]
 pub struct ShadowInput {
@@ -178,6 +163,7 @@ pub struct ShadowInput {
 #[derive(Default)]
 pub struct ShadowOutput {
     pub render_target: RenderTargetOut,
+    pub mask_render_target: RenderTargetOut,
     pub dep: DepOut,
 }
 
@@ -205,19 +191,10 @@ struct BlurParamsUniform {
     _pad: [f32; 2],
 }
 
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct CompositeParamsUniform {
-    use_mask: f32,
-    _pad: [f32; 3],
-}
-
 pub(crate) struct ShadowResources {
     fill_pipeline: wgpu::RenderPipeline,
     blur_pipeline: wgpu::RenderPipeline,
-    composite_pipeline: wgpu::RenderPipeline,
     blur_bind_group_layout: wgpu::BindGroupLayout,
-    composite_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     quad_vertex_buffer: wgpu::Buffer,
     quad_index_buffer: wgpu::Buffer,
@@ -277,13 +254,9 @@ impl ShadowPass {
         Self {
             mesh,
             params,
-            scissor_rect: None,
             blur_downsample_params_buffer: ShadowBlurDownsampleParamsBufferOut::default(),
             blur_h_params_buffer: ShadowBlurHParamsBufferOut::default(),
             blur_v_params_buffer: ShadowBlurVParamsBufferOut::default(),
-            composite_params_buffer: ShadowCompositeParamsBufferOut::default(),
-            composite_vertex_buffer: ShadowCompositeVertexBufferOut::default(),
-            composite_index_buffer: ShadowCompositeIndexBufferOut::default(),
             input,
             output,
         }
@@ -326,27 +299,15 @@ impl RenderPass for ShadowPass {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
             label: Some("ShadowPass Blur V Params"),
         });
-        self.composite_params_buffer = builder.create_buffer(BufferDesc {
-            size: std::mem::size_of::<CompositeParamsUniform>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-            label: Some("ShadowPass Composite Params"),
-        });
-        self.composite_vertex_buffer = builder.create_buffer(BufferDesc {
-            size: (std::mem::size_of::<QuadVertex>() * 4) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-            label: Some("ShadowPass Composite Vertex"),
-        });
-        self.composite_index_buffer = builder.create_buffer(BufferDesc {
-            size: (std::mem::size_of::<u16>() * 6) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
-            label: Some("ShadowPass Composite Index"),
-        });
         if let Some(handle) = self.input.dep.handle() {
             let source: DepOut = OutSlot::with_handle(handle);
             builder.read_dep(&mut self.input.dep, &source);
         }
         if self.output.render_target.handle().is_some() {
             builder.write_texture(&mut self.output.render_target);
+        }
+        if self.output.mask_render_target.handle().is_some() {
+            builder.write_texture(&mut self.output.mask_render_target);
         }
         if self.output.dep.handle().is_some() {
             builder.write_dep(&mut self.output.dep);
@@ -442,14 +403,6 @@ impl RenderPass for ShadowPass {
             sigma,
             _pad: [0.0, 0.0],
         };
-        let composite_params = CompositeParamsUniform {
-            use_mask: if self.params.clip_to_geometry {
-                1.0
-            } else {
-                0.0
-            },
-            _pad: [0.0; 3],
-        };
         if let Some(handle) = self.blur_downsample_params_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&blur_downsample_params));
         }
@@ -458,20 +411,6 @@ impl RenderPass for ShadowPass {
         }
         if let Some(handle) = self.blur_v_params_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&blur_v_params));
-        }
-        if let Some(handle) = self.composite_params_buffer.handle() {
-            let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&composite_params));
-        }
-        let (quad_vertices, quad_indices) = quad_for_bounds(
-            [bx as f32, by as f32, bw as f32, bh as f32],
-            target_w as f32,
-            target_h as f32,
-        );
-        if let Some(handle) = self.composite_vertex_buffer.handle() {
-            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&quad_vertices));
-        }
-        if let Some(handle) = self.composite_index_buffer.handle() {
-            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&quad_indices));
         }
     }
 
@@ -486,18 +425,14 @@ impl RenderPass for ShadowPass {
             return;
         }
 
-        let (offscreen_view, offscreen_msaa_view) = match target_handle {
-            Some(handle) => (
-                render_target_view(ctx, handle),
-                render_target_msaa_view(ctx, handle),
-            ),
-            None => (None, None),
+        let Some(target_handle) = target_handle else {
+            return;
+        };
+        let Some(offscreen_view) = render_target_view(ctx, target_handle) else {
+            return;
         };
         let surface_size = ctx.viewport.surface_size();
-        let (target_w, target_h) = match target_handle {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
-            None => surface_size,
-        };
+        let (target_w, target_h) = render_target_size(ctx, target_handle).unwrap_or(surface_size);
         if target_w == 0 || target_h == 0 {
             return;
         }
@@ -549,9 +484,7 @@ impl RenderPass for ShadowPass {
         let (
             fill_pipeline,
             blur_pipeline,
-            composite_pipeline,
             blur_bind_group_layout,
-            composite_bind_group_layout,
             sampler,
             quad_vertex_buffer,
             quad_index_buffer,
@@ -571,9 +504,7 @@ impl RenderPass for ShadowPass {
             (
                 resources.fill_pipeline.clone(),
                 resources.blur_pipeline.clone(),
-                resources.composite_pipeline.clone(),
                 resources.blur_bind_group_layout.clone(),
-                resources.composite_bind_group_layout.clone(),
                 resources.sampler.clone(),
                 resources.quad_vertex_buffer.clone(),
                 resources.quad_index_buffer.clone(),
@@ -612,35 +543,6 @@ impl RenderPass for ShadowPass {
             .blur_v_params_buffer
             .handle()
             .and_then(|h| ctx.acquire_buffer(h));
-        let composite_params_handle = self.composite_params_buffer.handle();
-        let composite_params_buffer = composite_params_handle.and_then(|h| ctx.acquire_buffer(h));
-        let composite_vertex_handle = self.composite_vertex_buffer.handle();
-        let composite_vertex_buffer = composite_vertex_handle.and_then(|h| ctx.acquire_buffer(h));
-        let composite_index_handle = self.composite_index_buffer.handle();
-        let composite_index_buffer = composite_index_handle.and_then(|h| ctx.acquire_buffer(h));
-        if composite_params_buffer.is_none()
-            || composite_vertex_buffer.is_none()
-            || composite_index_buffer.is_none()
-        {
-            let params_desc = composite_params_handle
-                .and_then(|h| ctx.buffer_desc(h))
-                .map(|d| (d.size, d.usage.bits(), d.label.unwrap_or("<none>")));
-            let vertex_desc = composite_vertex_handle
-                .and_then(|h| ctx.buffer_desc(h))
-                .map(|d| (d.size, d.usage.bits(), d.label.unwrap_or("<none>")));
-            let index_desc = composite_index_handle
-                .and_then(|h| ctx.buffer_desc(h))
-                .map(|d| (d.size, d.usage.bits(), d.label.unwrap_or("<none>")));
-            eprintln!(
-                "[warn] Shadow composite buffer unavailable, fallback will allocate temporary buffers: params_handle={:?} params_desc={:?} vertex_handle={:?} vertex_desc={:?} index_handle={:?} index_desc={:?}",
-                composite_params_handle.map(|h| h.0),
-                params_desc,
-                composite_vertex_handle.map(|h| h.0),
-                vertex_desc,
-                composite_index_handle.map(|h| h.0),
-                index_desc
-            );
-        }
 
         let fill_color = {
             let a = (self.params.color[3] * self.params.opacity).clamp(0.0, 1.0);
@@ -734,12 +636,12 @@ impl RenderPass for ShadowPass {
                             &sampler,
                             &quad_vertex_buffer,
                             &quad_index_buffer,
-                            quad_index_count,
-                            &shadow_tex_a_view.view,
-                            &ds_a.view,
-                            BlurParamsUniform {
-                                texel_size: [1.0 / ds_w.max(1) as f32, 1.0 / ds_h.max(1) as f32],
-                                direction: [1.0, 0.0],
+                        quad_index_count,
+                        &shadow_tex_a_view.view,
+                        &ds_a.view,
+                        BlurParamsUniform {
+                            texel_size: [1.0 / ds_w.max(1) as f32, 1.0 / ds_h.max(1) as f32],
+                            direction: [1.0, 0.0],
                                 radius: 0.0,
                                 sigma: 0.001,
                                 _pad: [0.0, 0.0],
@@ -822,31 +724,57 @@ impl RenderPass for ShadowPass {
             }
         };
 
-        let scissor_rect_physical = self.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport
-                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
-        });
         let composite_started_at = Instant::now();
-        composite_shadow(
+        blur_texture(
             ctx,
-            &composite_pipeline,
-            &composite_bind_group_layout,
+            &blur_pipeline,
+            &blur_bind_group_layout,
             &sampler,
+            &quad_vertex_buffer,
+            &quad_index_buffer,
+            quad_index_count,
             &shadow_output_surface.view,
-            mask_output_surface
-                .as_ref()
-                .map(|s| &s.view)
-                .unwrap_or(&shadow_output_surface.view),
-            offscreen_view.as_ref(),
-            offscreen_msaa_view.as_ref(),
-            (target_w, target_h),
-            [bx as f32, by as f32, bw as f32, bh as f32],
-            scissor_rect_physical,
-            self.params.clip_to_geometry,
-            composite_params_buffer.as_ref(),
-            composite_vertex_buffer.as_ref(),
-            composite_index_buffer.as_ref(),
+            &offscreen_view,
+            BlurParamsUniform {
+                texel_size: [
+                    1.0 / shadow_output_surface.width.max(1) as f32,
+                    1.0 / shadow_output_surface.height.max(1) as f32,
+                ],
+                direction: [1.0, 0.0],
+                radius: 0.0,
+                sigma: 0.001,
+                _pad: [0.0, 0.0],
+            },
+            None,
         );
+        if let (Some(mask_handle), Some(mask_surface)) =
+            (self.output.mask_render_target.handle(), mask_output_surface.as_ref())
+        {
+            if let Some(mask_view) = render_target_view(ctx, mask_handle) {
+                blur_texture(
+                    ctx,
+                    &blur_pipeline,
+                    &blur_bind_group_layout,
+                    &sampler,
+                    &quad_vertex_buffer,
+                    &quad_index_buffer,
+                    quad_index_count,
+                    &mask_surface.view,
+                    &mask_view,
+                    BlurParamsUniform {
+                        texel_size: [
+                            1.0 / mask_surface.width.max(1) as f32,
+                            1.0 / mask_surface.height.max(1) as f32,
+                        ],
+                        direction: [1.0, 0.0],
+                        radius: 0.0,
+                        sigma: 0.001,
+                        _pad: [0.0, 0.0],
+                    },
+                    None,
+                );
+            }
+        }
         ctx.record_detail_timing(
             "execute/shadow/composite",
             composite_started_at.elapsed().as_secs_f64() * 1000.0,
@@ -855,9 +783,7 @@ impl RenderPass for ShadowPass {
 }
 
 impl RenderTargetPass for ShadowPass {
-    fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
-    }
+    fn apply_clip(&mut self, _scissor_rect: Option<[u32; 4]>) {}
 }
 
 fn create_resources(
@@ -873,10 +799,6 @@ fn create_resources(
     let blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Shadow Blur Shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/shadow_blur.wgsl").into()),
-    });
-    let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Shadow Composite Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/shadow_composite.wgsl").into()),
     });
 
     let fill_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -972,48 +894,6 @@ fn create_resources(
                 },
             ],
         });
-    let composite_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Shadow Composite Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("Shadow Sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1084,73 +964,10 @@ fn create_resources(
         multiview_mask: None,
         cache: None,
     });
-    let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Shadow Composite Pipeline Layout"),
-        bind_group_layouts: &[&composite_bind_group_layout],
-        immediate_size: 0,
-    });
-    let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Shadow Composite Pipeline"),
-        layout: Some(&composite_layout),
-        vertex: wgpu::VertexState {
-            module: &composite_shader,
-            entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<QuadVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: 0,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: std::mem::size_of::<[f32; 2]>() as u64,
-                        shader_location: 1,
-                    },
-                ],
-            }],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &composite_shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: composite_format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: composite_sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    });
-
     ShadowResources {
         fill_pipeline,
         blur_pipeline,
-        composite_pipeline,
         blur_bind_group_layout,
-        composite_bind_group_layout,
         sampler,
         quad_vertex_buffer,
         quad_index_buffer,
@@ -1177,7 +994,7 @@ fn draw_mesh_fill(
     if bw <= 0.0 || bh <= 0.0 {
         return;
     }
-    let Some(device) = ctx.viewport.device() else {
+    let Some(device) = ctx.viewport.device().cloned() else {
         return;
     };
     let mut fill_vertices = Vec::with_capacity(vertices.len());
@@ -1532,7 +1349,7 @@ fn blur_texture(
     params: BlurParamsUniform,
     params_buffer: Option<&wgpu::Buffer>,
 ) {
-    let Some(device) = ctx.viewport.device() else {
+    let Some(device) = ctx.viewport.device().cloned() else {
         return;
     };
     let fallback_params_buffer;
@@ -1593,130 +1410,6 @@ fn blur_texture(
     pass.draw_indexed(0..quad_index_count, 0, 0..1);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn composite_shadow(
-    ctx: &mut PassContext<'_, '_>,
-    composite_pipeline: &wgpu::RenderPipeline,
-    composite_bind_group_layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    shadow_view: &wgpu::TextureView,
-    mask_view: &wgpu::TextureView,
-    offscreen_view: Option<&wgpu::TextureView>,
-    offscreen_msaa_view: Option<&wgpu::TextureView>,
-    target_size: (u32, u32),
-    bounds: [f32; 4],
-    scissor_rect_physical: Option<[u32; 4]>,
-    clip_to_geometry: bool,
-    params_buffer: Option<&wgpu::Buffer>,
-    vertex_buffer: Option<&wgpu::Buffer>,
-    index_buffer: Option<&wgpu::Buffer>,
-) {
-    let Some(device) = ctx.viewport.device() else {
-        return;
-    };
-    let params = CompositeParamsUniform {
-        use_mask: if clip_to_geometry { 1.0 } else { 0.0 },
-        _pad: [0.0; 3],
-    };
-    let fallback_params_buffer;
-    let params_binding = if let Some(buffer) = params_buffer {
-        buffer.as_entire_binding()
-    } else {
-        fallback_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Shadow Composite Params (Fallback)"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        eprintln!(
-            "[warn] Shadow fallback: using temporary composite params buffer (framegraph buffer unavailable)"
-        );
-        fallback_params_buffer.as_entire_binding()
-    };
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Shadow Composite Bind Group"),
-        layout: composite_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(shadow_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(mask_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: params_binding,
-            },
-        ],
-    });
-    let fallback_vertex_buffer;
-    let fallback_index_buffer;
-    let (vertex_buffer, index_buffer) = if let (Some(vertex_buffer), Some(index_buffer)) =
-        (vertex_buffer, index_buffer)
-    {
-        (vertex_buffer, index_buffer)
-    } else {
-        let (quad_vertices, quad_indices) =
-            quad_for_bounds(bounds, target_size.0 as f32, target_size.1 as f32);
-        fallback_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Shadow Composite Vertex (Fallback)"),
-            contents: bytemuck::cast_slice(&quad_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        fallback_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Shadow Composite Index (Fallback)"),
-            contents: bytemuck::cast_slice(&quad_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        eprintln!(
-            "[warn] Shadow fallback: using temporary composite quad buffers (framegraph buffers unavailable)"
-        );
-        (&fallback_vertex_buffer, &fallback_index_buffer)
-    };
-    let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
-    let Some(parts) = ctx.viewport.frame_parts() else {
-        return;
-    };
-    let surface_resolve = if msaa_enabled {
-        parts.resolve_view
-    } else {
-        None
-    };
-    let (target_view, resolve_target) = match (offscreen_view, offscreen_msaa_view) {
-        (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-        (Some(resolve_view), None) => (resolve_view, None),
-        (None, _) => (parts.view, surface_resolve),
-    };
-    let mut pass = parts
-        .encoder
-        .begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Shadow Composite"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
-    if let Some([x, y, w, h]) = scissor_rect_physical {
-        pass.set_scissor_rect(x, y, w, h);
-    }
-    pass.set_pipeline(composite_pipeline);
-    pass.set_bind_group(0, &bind_group, &[]);
-    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-    pass.draw_indexed(0..6, 0, 0..1);
-}
 
 fn fullscreen_quad() -> ([QuadVertex; 4], [u16; 6]) {
     (
@@ -1735,38 +1428,6 @@ fn fullscreen_quad() -> ([QuadVertex; 4], [u16; 6]) {
             },
             QuadVertex {
                 position: [-1.0, 1.0],
-                uv: [0.0, 0.0],
-            },
-        ],
-        [0, 1, 2, 0, 2, 3],
-    )
-}
-
-fn quad_for_bounds(bounds: [f32; 4], target_w: f32, target_h: f32) -> ([QuadVertex; 4], [u16; 6]) {
-    let x = bounds[0];
-    let y = bounds[1];
-    let w = bounds[2];
-    let h = bounds[3];
-    let left = (x / target_w) * 2.0 - 1.0;
-    let right = ((x + w) / target_w) * 2.0 - 1.0;
-    let top = 1.0 - (y / target_h) * 2.0;
-    let bottom = 1.0 - ((y + h) / target_h) * 2.0;
-    (
-        [
-            QuadVertex {
-                position: [left, bottom],
-                uv: [0.0, 1.0],
-            },
-            QuadVertex {
-                position: [right, bottom],
-                uv: [1.0, 1.0],
-            },
-            QuadVertex {
-                position: [right, top],
-                uv: [1.0, 0.0],
-            },
-            QuadVertex {
-                position: [left, top],
                 uv: [0.0, 0.0],
             },
         ],
@@ -1816,26 +1477,5 @@ fn apply_spread(vertices: &mut [[f32; 2]], spread: f32) {
         }
         v[0] += (dx / len) * spread;
         v[1] += (dy / len) * spread;
-    }
-}
-
-fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(rect), None) | (None, Some(rect)) => Some(rect),
-        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
-            let a_right = ax.saturating_add(aw);
-            let a_bottom = ay.saturating_add(ah);
-            let b_right = bx.saturating_add(bw);
-            let b_bottom = by.saturating_add(bh);
-            let left = ax.max(bx);
-            let top = ay.max(by);
-            let right = a_right.min(b_right);
-            let bottom = a_bottom.min(b_bottom);
-            if right <= left || bottom <= top {
-                return None;
-            }
-            Some([left, top, right - left, bottom - top])
-        }
     }
 }
