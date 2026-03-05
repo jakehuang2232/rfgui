@@ -1,53 +1,45 @@
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
-use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
+use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
 
 pub struct ClearPass {
-    color: [f32; 4],
-    color_target: Option<TextureHandle>,
+    params: ClearParams,
     input: ClearInput,
     output: ClearOutput,
 }
 
+pub struct ClearParams {
+    pub color: [f32; 4],
+}
+
+impl ClearParams {
+    pub fn new(color: [f32; 4]) -> Self {
+        Self { color }
+    }
+}
+
 #[derive(Default)]
 pub struct ClearInput {
-    pub render_target: RenderTargetIn,
+    pub dep: DepIn,
 }
 
 #[derive(Default)]
 pub struct ClearOutput {
     pub render_target: RenderTargetOut,
+    pub dep: DepOut,
 }
 
 impl ClearPass {
-    pub fn new(color: [f32; 4]) -> Self {
+    pub fn new(params: ClearParams, input: ClearInput, output: ClearOutput) -> Self {
         Self {
-            color,
-            color_target: None,
-            input: ClearInput::default(),
-            output: ClearOutput::default(),
+            params,
+            input,
+            output,
         }
-    }
-
-    pub fn set_color(&mut self, color: [f32; 4]) {
-        self.color = color;
-    }
-
-    pub fn set_input(&mut self, input: RenderTargetIn) {
-        self.input.render_target = input;
-    }
-
-    pub fn set_output(&mut self, output: RenderTargetOut) {
-        self.output.render_target = output;
-    }
-
-    pub fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        self.color_target = color_target;
     }
 }
 
@@ -72,24 +64,27 @@ impl RenderPass for ClearPass {
     }
 
     fn build(&mut self, builder: &mut BuildContext) {
-        if let Some(handle) = self.input.render_target.handle() {
-            let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.render_target, &source);
+        if let Some(handle) = self.input.dep.handle() {
+            let source: DepOut = DepOut::with_handle(handle);
+            builder.read_dep(&mut self.input.dep, &source);
         }
         if self.output.render_target.handle().is_some() {
             builder.write_texture(&mut self.output.render_target);
+        }
+        if self.output.dep.handle().is_some() {
+            builder.write_dep(&mut self.output.dep);
         }
     }
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
         let color = wgpu::Color {
-            r: self.color[0] as f64,
-            g: self.color[1] as f64,
-            b: self.color[2] as f64,
-            a: self.color[3] as f64,
+            r: self.params.color[0] as f64,
+            g: self.params.color[1] as f64,
+            b: self.params.color[2] as f64,
+            a: self.params.color[3] as f64,
         };
 
-        let (offscreen_view, offscreen_msaa_view) = match self.color_target {
+        let (offscreen_view, offscreen_msaa_view) = match self.output.render_target.handle() {
             Some(handle) => (
                 render_target_view(ctx, handle),
                 render_target_msaa_view(ctx, handle),
@@ -132,16 +127,4 @@ impl RenderPass for ClearPass {
     }
 }
 
-impl RenderTargetPass for ClearPass {
-    fn set_input(&mut self, input: RenderTargetIn) {
-        ClearPass::set_input(self, input);
-    }
-
-    fn set_output(&mut self, output: RenderTargetOut) {
-        ClearPass::set_output(self, output);
-    }
-
-    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        ClearPass::set_color_target(self, color_target);
-    }
-}
+impl RenderTargetPass for ClearPass {}

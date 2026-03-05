@@ -2,9 +2,11 @@ use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
+use crate::view::frame_graph::{
+    BufferDesc, BufferResource, DepIn, DepOut,
+};
 use crate::view::render_pass::RenderPass;
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     render_target_msaa_view, render_target_size, render_target_view,
 };
@@ -140,19 +142,45 @@ pub struct ShadowPass {
     mesh: ShadowMesh,
     params: ShadowParams,
     scissor_rect: Option<[u32; 4]>,
-    color_target: Option<TextureHandle>,
+    blur_downsample_params_buffer: ShadowBlurDownsampleParamsBufferOut,
+    blur_h_params_buffer: ShadowBlurHParamsBufferOut,
+    blur_v_params_buffer: ShadowBlurVParamsBufferOut,
+    composite_params_buffer: ShadowCompositeParamsBufferOut,
+    composite_vertex_buffer: ShadowCompositeVertexBufferOut,
+    composite_index_buffer: ShadowCompositeIndexBufferOut,
     input: ShadowInput,
     output: ShadowOutput,
 }
 
+#[derive(Clone, Copy)]
+pub struct ShadowBlurDownsampleParamsBufferTag;
+pub type ShadowBlurDownsampleParamsBufferOut =
+OutSlot<BufferResource, ShadowBlurDownsampleParamsBufferTag>;
+#[derive(Clone, Copy)]
+pub struct ShadowBlurHParamsBufferTag;
+pub type ShadowBlurHParamsBufferOut = OutSlot<BufferResource, ShadowBlurHParamsBufferTag>;
+#[derive(Clone, Copy)]
+pub struct ShadowBlurVParamsBufferTag;
+pub type ShadowBlurVParamsBufferOut = OutSlot<BufferResource, ShadowBlurVParamsBufferTag>;
+#[derive(Clone, Copy)]
+pub struct ShadowCompositeParamsBufferTag;
+pub type ShadowCompositeParamsBufferOut = OutSlot<BufferResource, ShadowCompositeParamsBufferTag>;
+#[derive(Clone, Copy)]
+pub struct ShadowCompositeVertexBufferTag;
+pub type ShadowCompositeVertexBufferOut = OutSlot<BufferResource, ShadowCompositeVertexBufferTag>;
+#[derive(Clone, Copy)]
+pub struct ShadowCompositeIndexBufferTag;
+pub type ShadowCompositeIndexBufferOut = OutSlot<BufferResource, ShadowCompositeIndexBufferTag>;
+
 #[derive(Default)]
 pub struct ShadowInput {
-    pub render_target: RenderTargetIn,
+    pub dep: DepIn,
 }
 
 #[derive(Default)]
 pub struct ShadowOutput {
     pub render_target: RenderTargetOut,
+    pub dep: DepOut,
 }
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -242,32 +270,27 @@ pub(crate) struct ShadowTempPool {
 }
 
 impl ShadowPass {
-    pub fn new(mesh: ShadowMesh, params: ShadowParams) -> Self {
+    pub fn new(
+        mesh: ShadowMesh,
+        params: ShadowParams,
+        input: ShadowInput,
+        output: ShadowOutput,
+    ) -> Self {
         Self {
             mesh,
             params,
             scissor_rect: None,
-            color_target: None,
-            input: ShadowInput::default(),
-            output: ShadowOutput::default(),
+            blur_downsample_params_buffer: ShadowBlurDownsampleParamsBufferOut::default(),
+            blur_h_params_buffer: ShadowBlurHParamsBufferOut::default(),
+            blur_v_params_buffer: ShadowBlurVParamsBufferOut::default(),
+            composite_params_buffer: ShadowCompositeParamsBufferOut::default(),
+            composite_vertex_buffer: ShadowCompositeVertexBufferOut::default(),
+            composite_index_buffer: ShadowCompositeIndexBufferOut::default(),
+            input,
+            output,
         }
     }
 
-    pub fn set_input(&mut self, input: RenderTargetIn) {
-        self.input.render_target = input;
-    }
-
-    pub fn set_output(&mut self, output: RenderTargetOut) {
-        self.output.render_target = output;
-    }
-
-    pub fn set_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.scissor_rect = scissor_rect;
-    }
-
-    pub fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        self.color_target = color_target;
-    }
 }
 
 impl RenderPass for ShadowPass {
@@ -291,22 +314,178 @@ impl RenderPass for ShadowPass {
     }
 
     fn build(&mut self, builder: &mut BuildContext) {
-        if let Some(handle) = self.input.render_target.handle() {
-            let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.render_target, &source);
+        self.blur_downsample_params_buffer = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<BlurParamsUniform>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("ShadowPass Blur Downsample Params"),
+        });
+        self.blur_h_params_buffer = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<BlurParamsUniform>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("ShadowPass Blur H Params"),
+        });
+        self.blur_v_params_buffer = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<BlurParamsUniform>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("ShadowPass Blur V Params"),
+        });
+        self.composite_params_buffer = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<CompositeParamsUniform>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("ShadowPass Composite Params"),
+        });
+        self.composite_vertex_buffer = builder.create_buffer(BufferDesc {
+            size: (std::mem::size_of::<QuadVertex>() * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+            label: Some("ShadowPass Composite Vertex"),
+        });
+        self.composite_index_buffer = builder.create_buffer(BufferDesc {
+            size: (std::mem::size_of::<u16>() * 6) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
+            label: Some("ShadowPass Composite Index"),
+        });
+        if let Some(handle) = self.input.dep.handle() {
+            let source: DepOut = OutSlot::with_handle(handle);
+            builder.read_dep(&mut self.input.dep, &source);
         }
         if self.output.render_target.handle().is_some() {
             builder.write_texture(&mut self.output.render_target);
         }
+        if self.output.dep.handle().is_some() {
+            builder.write_dep(&mut self.output.dep);
+        }
+    }
+
+    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+        let target_handle = self.output.render_target.handle();
+        let surface_size = ctx.viewport.surface_size();
+        let (target_w, target_h) = match target_handle {
+            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+            None => surface_size,
+        };
+        if target_w == 0
+            || target_h == 0
+            || self.mesh.vertices.len() < 3
+            || self.mesh.indices.len() < 3
+        {
+            return;
+        }
+        let scale = ctx.viewport.scale_factor().max(0.0001);
+        let base_vertices = self
+            .mesh
+            .vertices
+            .iter()
+            .map(|[x, y]| [x * scale, y * scale])
+            .collect::<Vec<_>>();
+        let mut shadow_vertices = base_vertices.clone();
+        apply_spread(&mut shadow_vertices, (self.params.spread * scale).max(0.0));
+        let offset = [self.params.offset_x * scale, self.params.offset_y * scale];
+        for v in &mut shadow_vertices {
+            v[0] += offset[0];
+            v[1] += offset[1];
+        }
+        let Some((min_x, min_y, max_x, max_y)) = bounds(&shadow_vertices) else {
+            return;
+        };
+        let blur_padding = ((self.params.blur_radius.max(0.0) * scale) * 1.5).ceil() as i32;
+        let bx = (min_x.floor() as i32 - blur_padding).max(0);
+        let by = (min_y.floor() as i32 - blur_padding).max(0);
+        let br = (max_x.ceil() as i32 + blur_padding).min(target_w as i32);
+        let bb = (max_y.ceil() as i32 + blur_padding).min(target_h as i32);
+        if br <= bx || bb <= by {
+            return;
+        }
+        let bw = (br - bx) as u32;
+        let bh = (bb - by) as u32;
+        if bw == 0 || bh == 0 {
+            return;
+        }
+        let blur_radius_px = (self.params.blur_radius.max(0.0) * scale).max(0.0);
+        let downsample = if blur_radius_px >= 28.0 {
+            4_u32
+        } else if blur_radius_px >= 12.0 {
+            2_u32
+        } else {
+            1_u32
+        };
+        let blur_w = if downsample > 1 {
+            (bw / downsample).max(1)
+        } else {
+            bw.max(1)
+        };
+        let blur_h = if downsample > 1 {
+            (bh / downsample).max(1)
+        } else {
+            bh.max(1)
+        };
+        let effective_radius = if downsample > 1 {
+            blur_radius_px / downsample as f32
+        } else {
+            blur_radius_px
+        };
+        let blur_downsample_params = BlurParamsUniform {
+            texel_size: [1.0 / blur_w as f32, 1.0 / blur_h as f32],
+            direction: [1.0, 0.0],
+            radius: 0.0,
+            sigma: 0.001,
+            _pad: [0.0, 0.0],
+        };
+        let sigma = (effective_radius * 0.5).max(0.001);
+        let blur_h_params = BlurParamsUniform {
+            texel_size: [1.0 / blur_w as f32, 1.0 / blur_h as f32],
+            direction: [1.0, 0.0],
+            radius: effective_radius.max(0.0),
+            sigma,
+            _pad: [0.0, 0.0],
+        };
+        let blur_v_params = BlurParamsUniform {
+            texel_size: [1.0 / blur_w as f32, 1.0 / blur_h as f32],
+            direction: [0.0, 1.0],
+            radius: effective_radius.max(0.0),
+            sigma,
+            _pad: [0.0, 0.0],
+        };
+        let composite_params = CompositeParamsUniform {
+            use_mask: if self.params.clip_to_geometry {
+                1.0
+            } else {
+                0.0
+            },
+            _pad: [0.0; 3],
+        };
+        if let Some(handle) = self.blur_downsample_params_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&blur_downsample_params));
+        }
+        if let Some(handle) = self.blur_h_params_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&blur_h_params));
+        }
+        if let Some(handle) = self.blur_v_params_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&blur_v_params));
+        }
+        if let Some(handle) = self.composite_params_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&composite_params));
+        }
+        let (quad_vertices, quad_indices) = quad_for_bounds(
+            [bx as f32, by as f32, bw as f32, bh as f32],
+            target_w as f32,
+            target_h as f32,
+        );
+        if let Some(handle) = self.composite_vertex_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&quad_vertices));
+        }
+        if let Some(handle) = self.composite_index_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&quad_indices));
+        }
     }
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+        let target_handle = self.output.render_target.handle();
         let geometry_started_at = Instant::now();
         if self.mesh.vertices.len() < 3 || self.mesh.indices.len() < 3 {
             return;
         }
 
-        let (offscreen_view, offscreen_msaa_view) = match self.color_target {
+        let (offscreen_view, offscreen_msaa_view) = match target_handle {
             Some(handle) => (
                 render_target_view(ctx, handle),
                 render_target_msaa_view(ctx, handle),
@@ -314,7 +493,7 @@ impl RenderPass for ShadowPass {
             None => (None, None),
         };
         let surface_size = ctx.viewport.surface_size();
-        let (target_w, target_h) = match self.color_target {
+        let (target_w, target_h) = match target_handle {
             Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
             None => surface_size,
         };
@@ -420,6 +599,47 @@ impl RenderPass for ShadowPass {
             "execute/shadow/resources",
             resources_started_at.elapsed().as_secs_f64() * 1000.0,
         );
+        let blur_downsample_params_buffer = self
+            .blur_downsample_params_buffer
+            .handle()
+            .and_then(|h| ctx.acquire_buffer(h));
+        let blur_h_params_buffer = self
+            .blur_h_params_buffer
+            .handle()
+            .and_then(|h| ctx.acquire_buffer(h));
+        let blur_v_params_buffer = self
+            .blur_v_params_buffer
+            .handle()
+            .and_then(|h| ctx.acquire_buffer(h));
+        let composite_params_handle = self.composite_params_buffer.handle();
+        let composite_params_buffer = composite_params_handle.and_then(|h| ctx.acquire_buffer(h));
+        let composite_vertex_handle = self.composite_vertex_buffer.handle();
+        let composite_vertex_buffer = composite_vertex_handle.and_then(|h| ctx.acquire_buffer(h));
+        let composite_index_handle = self.composite_index_buffer.handle();
+        let composite_index_buffer = composite_index_handle.and_then(|h| ctx.acquire_buffer(h));
+        if composite_params_buffer.is_none()
+            || composite_vertex_buffer.is_none()
+            || composite_index_buffer.is_none()
+        {
+            let params_desc = composite_params_handle
+                .and_then(|h| ctx.buffer_desc(h))
+                .map(|d| (d.size, d.usage.bits(), d.label.unwrap_or("<none>")));
+            let vertex_desc = composite_vertex_handle
+                .and_then(|h| ctx.buffer_desc(h))
+                .map(|d| (d.size, d.usage.bits(), d.label.unwrap_or("<none>")));
+            let index_desc = composite_index_handle
+                .and_then(|h| ctx.buffer_desc(h))
+                .map(|d| (d.size, d.usage.bits(), d.label.unwrap_or("<none>")));
+            eprintln!(
+                "[warn] Shadow composite buffer unavailable, fallback will allocate temporary buffers: params_handle={:?} params_desc={:?} vertex_handle={:?} vertex_desc={:?} index_handle={:?} index_desc={:?}",
+                composite_params_handle.map(|h| h.0),
+                params_desc,
+                composite_vertex_handle.map(|h| h.0),
+                vertex_desc,
+                composite_index_handle.map(|h| h.0),
+                index_desc
+            );
+        }
 
         let fill_color = {
             let a = (self.params.color[3] * self.params.opacity).clamp(0.0, 1.0);
@@ -516,10 +736,14 @@ impl RenderPass for ShadowPass {
                             quad_index_count,
                             &shadow_tex_a_view.view,
                             &ds_a.view,
-                            ds_w,
-                            ds_h,
-                            0.0,
-                            [1.0, 0.0],
+                            BlurParamsUniform {
+                                texel_size: [1.0 / ds_w.max(1) as f32, 1.0 / ds_h.max(1) as f32],
+                                direction: [1.0, 0.0],
+                                radius: 0.0,
+                                sigma: 0.001,
+                                _pad: [0.0, 0.0],
+                            },
+                            blur_downsample_params_buffer.as_ref(),
                         );
                         (ds_a.clone(), ds_b.clone(), ds_a, ds_w, ds_h)
                     } else {
@@ -541,10 +765,14 @@ impl RenderPass for ShadowPass {
                         quad_index_count,
                         &src.view,
                         &tmp.view,
-                        blur_w,
-                        blur_h,
-                        effective_radius,
-                        [1.0, 0.0],
+                        BlurParamsUniform {
+                            texel_size: [1.0 / blur_w.max(1) as f32, 1.0 / blur_h.max(1) as f32],
+                            direction: [1.0, 0.0],
+                            radius: effective_radius.max(0.0),
+                            sigma: (effective_radius * 0.5).max(0.001),
+                            _pad: [0.0, 0.0],
+                        },
+                        blur_h_params_buffer.as_ref(),
                     );
                     blur_texture(
                         ctx,
@@ -556,10 +784,14 @@ impl RenderPass for ShadowPass {
                         quad_index_count,
                         &tmp.view,
                         &out.view,
-                        blur_w,
-                        blur_h,
-                        effective_radius,
-                        [0.0, 1.0],
+                        BlurParamsUniform {
+                            texel_size: [1.0 / blur_w.max(1) as f32, 1.0 / blur_h.max(1) as f32],
+                            direction: [0.0, 1.0],
+                            radius: effective_radius.max(0.0),
+                            sigma: (effective_radius * 0.5).max(0.001),
+                            _pad: [0.0, 0.0],
+                        },
+                        blur_v_params_buffer.as_ref(),
                     );
                     shadow_output_surface = out;
                 }
@@ -610,6 +842,9 @@ impl RenderPass for ShadowPass {
             [bx as f32, by as f32, bw as f32, bh as f32],
             scissor_rect_physical,
             self.params.clip_to_geometry,
+            composite_params_buffer.as_ref(),
+            composite_vertex_buffer.as_ref(),
+            composite_index_buffer.as_ref(),
         );
         ctx.record_detail_timing(
             "execute/shadow/composite",
@@ -619,20 +854,8 @@ impl RenderPass for ShadowPass {
 }
 
 impl RenderTargetPass for ShadowPass {
-    fn set_input(&mut self, input: RenderTargetIn) {
-        ShadowPass::set_input(self, input);
-    }
-
-    fn set_output(&mut self, output: RenderTargetOut) {
-        ShadowPass::set_output(self, output);
-    }
-
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
         self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
-    }
-
-    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        ShadowPass::set_color_target(self, color_target);
     }
 }
 
@@ -1305,27 +1528,26 @@ fn blur_texture(
     quad_index_count: u32,
     input_view: &wgpu::TextureView,
     output_view: &wgpu::TextureView,
-    width: u32,
-    height: u32,
-    blur_radius_px: f32,
-    direction: [f32; 2],
+    params: BlurParamsUniform,
+    params_buffer: Option<&wgpu::Buffer>,
 ) {
     let Some(device) = ctx.viewport.device() else {
         return;
     };
-    let sigma = (blur_radius_px * 0.5).max(0.001);
-    let params = BlurParamsUniform {
-        texel_size: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
-        direction,
-        radius: blur_radius_px.max(0.0),
-        sigma,
-        _pad: [0.0, 0.0],
+    let fallback_params_buffer;
+    let params_binding = if let Some(buffer) = params_buffer {
+        buffer.as_entire_binding()
+    } else {
+        fallback_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Shadow Blur Params (Fallback)"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        eprintln!(
+            "[warn] Shadow fallback: using temporary blur params buffer (framegraph buffer unavailable)"
+        );
+        fallback_params_buffer.as_entire_binding()
     };
-    let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Blur Params"),
-        contents: bytemuck::bytes_of(&params),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Shadow Blur Bind Group"),
         layout: blur_bind_group_layout,
@@ -1340,7 +1562,7 @@ fn blur_texture(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: params_buffer.as_entire_binding(),
+                resource: params_binding,
             },
         ],
     });
@@ -1384,6 +1606,9 @@ fn composite_shadow(
     bounds: [f32; 4],
     scissor_rect_physical: Option<[u32; 4]>,
     clip_to_geometry: bool,
+    params_buffer: Option<&wgpu::Buffer>,
+    vertex_buffer: Option<&wgpu::Buffer>,
+    index_buffer: Option<&wgpu::Buffer>,
 ) {
     let Some(device) = ctx.viewport.device() else {
         return;
@@ -1392,11 +1617,20 @@ fn composite_shadow(
         use_mask: if clip_to_geometry { 1.0 } else { 0.0 },
         _pad: [0.0; 3],
     };
-    let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Composite Params"),
-        contents: bytemuck::bytes_of(&params),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
+    let fallback_params_buffer;
+    let params_binding = if let Some(buffer) = params_buffer {
+        buffer.as_entire_binding()
+    } else {
+        fallback_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Shadow Composite Params (Fallback)"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        eprintln!(
+            "[warn] Shadow fallback: using temporary composite params buffer (framegraph buffer unavailable)"
+        );
+        fallback_params_buffer.as_entire_binding()
+    };
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Shadow Composite Bind Group"),
         layout: composite_bind_group_layout,
@@ -1415,22 +1649,34 @@ fn composite_shadow(
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: params_buffer.as_entire_binding(),
+                resource: params_binding,
             },
         ],
     });
-    let (quad_vertices, quad_indices) =
-        quad_for_bounds(bounds, target_size.0 as f32, target_size.1 as f32);
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Composite Vertex"),
-        contents: bytemuck::cast_slice(&quad_vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Composite Index"),
-        contents: bytemuck::cast_slice(&quad_indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
+    let fallback_vertex_buffer;
+    let fallback_index_buffer;
+    let (vertex_buffer, index_buffer) = if let (Some(vertex_buffer), Some(index_buffer)) =
+        (vertex_buffer, index_buffer)
+    {
+        (vertex_buffer, index_buffer)
+    } else {
+        let (quad_vertices, quad_indices) =
+            quad_for_bounds(bounds, target_size.0 as f32, target_size.1 as f32);
+        fallback_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Shadow Composite Vertex (Fallback)"),
+            contents: bytemuck::cast_slice(&quad_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        fallback_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Shadow Composite Index (Fallback)"),
+            contents: bytemuck::cast_slice(&quad_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        eprintln!(
+            "[warn] Shadow fallback: using temporary composite quad buffers (framegraph buffers unavailable)"
+        );
+        (&fallback_vertex_buffer, &fallback_index_buffer)
+    };
     let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
     let Some(parts) = ctx.viewport.frame_parts() else {
         return;
@@ -1468,7 +1714,7 @@ fn composite_shadow(
     pass.set_bind_group(0, &bind_group, &[]);
     pass.set_vertex_buffer(0, vertex_buffer.slice(..));
     pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-    pass.draw_indexed(0..quad_indices.len() as u32, 0, 0..1);
+    pass.draw_indexed(0..6, 0, 0..1);
 }
 
 fn fullscreen_quad() -> ([QuadVertex; 4], [u16; 6]) {

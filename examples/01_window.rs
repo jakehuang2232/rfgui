@@ -3,8 +3,11 @@ use rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme, Window,
     WindowProps, init_theme, on_move, set_theme, use_theme,
 };
+use rfd::FileDialog;
+use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rfgui::ui::host::{Element, Text, TextArea};
 use rfgui::ui::{
@@ -25,6 +28,7 @@ use winit::window::{CursorIcon, Window as WinitWindow, WindowId};
 static DEBUG_GEOMETRY_OVERLAY: AtomicBool = AtomicBool::new(false);
 static DEBUG_RENDER_TIME: AtomicBool = AtomicBool::new(false);
 static THEME_DARK_MODE: AtomicBool = AtomicBool::new(true);
+static REQUEST_DUMP_FRAME_GRAPH_DOT: AtomicBool = AtomicBool::new(false);
 
 struct ManagedWindow {
     id: usize,
@@ -249,6 +253,13 @@ fn MainScene() -> RsxNode {
                 <Switch
                     label="Debug Render Time"
                     binding={debug_render_time.binding()}
+                />
+                <Button
+                    label="Dump FrameGraph DOT"
+                    variant={Some(ButtonVariant::Outlined)}
+                    on_click={move |_| {
+                        REQUEST_DUMP_FRAME_GRAPH_DOT.store(true, Ordering::Release);
+                    }}
                 />
             </Element>
         }],
@@ -1002,6 +1013,41 @@ impl App {
         self.last_ime_area = next_area;
         self.ime_dirty = false;
     }
+
+    fn dump_frame_graph_dot_with_dialog(&mut self) {
+        let Some(viewport) = &self.viewport else {
+            eprintln!("[warn] no viewport available for frame graph dump");
+            return;
+        };
+        let Some(dot) = viewport.dump_graph() else {
+            eprintln!("[warn] no frame graph available for dump");
+            return;
+        };
+        let default_file_name = format!("framegraph-{}.dot", current_unix_timestamp());
+        let Some(path) = FileDialog::new()
+            .add_filter("Graphviz DOT", &["dot"])
+            .set_file_name(&default_file_name)
+            .save_file()
+        else {
+            return;
+        };
+        if let Err(err) = fs::write(&path, dot.as_bytes()) {
+            eprintln!(
+                "[warn] failed to dump frame graph DOT to {}: {}",
+                path.display(),
+                err
+            );
+            return;
+        }
+        println!("[info] frame graph DOT dumped to {}", path.display());
+    }
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 impl ApplicationHandler for App {
@@ -1075,6 +1121,9 @@ impl ApplicationHandler for App {
                         .set_debug_geometry_overlay(DEBUG_GEOMETRY_OVERLAY.load(Ordering::Relaxed));
                     viewport.set_debug_trace_render_time(DEBUG_RENDER_TIME.load(Ordering::Relaxed));
                     let _ = viewport.render_rsx(&app);
+                }
+                if REQUEST_DUMP_FRAME_GRAPH_DOT.swap(false, Ordering::AcqRel) {
+                    self.dump_frame_graph_dot_with_dialog();
                 }
                 self.mark_ime_dirty();
             }
@@ -1179,6 +1228,9 @@ impl ApplicationHandler for App {
         }
 
         if let (Some(window), Some(viewport)) = (&self.window, &mut self.viewport) {
+            if REQUEST_DUMP_FRAME_GRAPH_DOT.load(Ordering::Acquire) {
+                viewport.request_redraw();
+            }
             if viewport.take_redraw_request() {
                 window.request_redraw();
             }

@@ -1,6 +1,9 @@
 use super::{ElementCore, Position, Size};
 use crate::ColorLike;
+use crate::frame_graph::{DepIn, DepOut};
+use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::render_pass::render_target::RenderTargetPass;
+use crate::render_pass::shadow_pass::{ShadowInput, ShadowOutput};
 use crate::style::{
     AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
     ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
@@ -20,12 +23,13 @@ use crate::ui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent,
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
-use crate::view::frame_graph::{FrameGraph, InSlot, RenderPass, TextureDesc};
-use crate::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
+use crate::view::frame_graph::{DepHandle, FrameGraph, RenderPass, TextureDesc};
+use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::{
     DrawRectPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowParams, ShadowPass,
 };
 use crate::view::viewport::ViewportControl;
+use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -174,16 +178,27 @@ struct ChildClipScope {
     child_clip_id: u8,
 }
 
-pub struct UiBuildContext {
-    last_target: Option<RenderTargetOut>,
+#[derive(Clone, Copy)]
+pub struct ViewportContext {
     color_target: Option<TextureHandle>,
     target_width: u32,
     target_height: u32,
     target_format: wgpu::TextureFormat,
+}
+
+#[derive(Clone)]
+pub struct BuildState {
+    target: Option<RenderTargetOut>,
+    dep: DepHandle,
     scissor_rect: Option<[u32; 4]>,
     clip_id_stack: Vec<u8>,
     deferred_node_ids: Vec<u64>,
     dfs_opaque_rect_order: u32,
+}
+
+pub struct UiBuildContext {
+    viewport: ViewportContext,
+    state: BuildState,
 }
 
 impl UiBuildContext {
@@ -191,59 +206,93 @@ impl UiBuildContext {
         viewport_width: u32,
         viewport_height: u32,
         viewport_format: wgpu::TextureFormat,
+        dep_handle: DepHandle,
     ) -> Self {
         Self {
-            last_target: None,
-            color_target: None,
-            target_width: viewport_width.max(1),
-            target_height: viewport_height.max(1),
-            target_format: viewport_format,
-            scissor_rect: None,
-            clip_id_stack: Vec::new(),
-            deferred_node_ids: Vec::new(),
-            dfs_opaque_rect_order: 0,
+            viewport: ViewportContext {
+                color_target: None,
+                target_width: viewport_width.max(1),
+                target_height: viewport_height.max(1),
+                target_format: viewport_format,
+            },
+            state: BuildState {
+                target: None,
+                dep: dep_handle,
+                scissor_rect: None,
+                clip_id_stack: Vec::new(),
+                deferred_node_ids: Vec::new(),
+                dfs_opaque_rect_order: 0,
+            },
         }
+    }
+
+    pub fn from_parts(viewport: ViewportContext, state: BuildState) -> Self {
+        Self { viewport, state }
+    }
+
+    pub fn viewport(&self) -> ViewportContext {
+        self.viewport
+    }
+
+    pub fn set_state(&mut self, state: BuildState) {
+        self.state = state;
+    }
+
+    pub fn state_clone(&self) -> BuildState {
+        self.state.clone()
+    }
+
+    pub fn into_state(self) -> BuildState {
+        self.state
     }
 
     pub fn allocate_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
         self.next_target(graph)
     }
 
-    pub fn set_last_target(&mut self, target: RenderTargetOut) {
-        self.last_target = Some(target);
+    pub fn set_current_target(&mut self, target: RenderTargetOut) {
+        self.state.target = Some(target);
     }
 
-    pub(crate) fn last_target(&self) -> Option<&RenderTargetOut> {
-        self.last_target.as_ref()
+    pub(crate) fn current_target(&self) -> Option<RenderTargetOut> {
+        self.state.target
+    }
+
+    pub(crate) fn set_current_dep_token(&mut self, token: DepHandle) {
+        self.state.dep = token;
+    }
+
+    pub(crate) fn current_dep_token(&self) -> DepHandle {
+        self.state.dep
     }
 
     fn next_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
         graph.declare_texture::<RenderTargetTag>(TextureDesc::new(
-            self.target_width,
-            self.target_height,
-            self.target_format,
+            self.viewport.target_width,
+            self.viewport.target_height,
+            self.viewport.target_format,
             wgpu::TextureDimension::D2,
         ))
     }
 
     fn color_target(&self) -> Option<TextureHandle> {
-        self.color_target
+        self.viewport.color_target
     }
 
     pub(crate) fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        self.color_target = color_target;
+        self.viewport.color_target = color_target;
     }
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {
-        self.scissor_rect
+        self.state.scissor_rect
     }
 
     fn current_clip_id(&self) -> u8 {
-        self.clip_id_stack.last().copied().unwrap_or(0)
+        self.state.clip_id_stack.last().copied().unwrap_or(0)
     }
 
     fn active_clip_id(&self) -> Option<u8> {
-        self.clip_id_stack.last().copied()
+        self.state.clip_id_stack.last().copied()
     }
 
     pub(crate) fn push_clip_id(&mut self) -> Option<u8> {
@@ -252,59 +301,44 @@ impl UiBuildContext {
             return None;
         }
         let next = current.saturating_add(1);
-        self.clip_id_stack.push(next);
+        self.state.clip_id_stack.push(next);
         Some(next)
     }
 
     pub(crate) fn pop_clip_id(&mut self) {
-        let _ = self.clip_id_stack.pop();
+        let _ = self.state.clip_id_stack.pop();
     }
 
     pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
-        let previous = self.scissor_rect;
-        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
+        let previous = self.state.scissor_rect;
+        self.state.scissor_rect = intersect_scissor_rects(self.state.scissor_rect, scissor_rect);
         previous
     }
 
     pub(crate) fn restore_scissor_rect(&mut self, previous: Option<[u32; 4]>) {
-        self.scissor_rect = previous;
+        self.state.scissor_rect = previous;
     }
 
     pub(crate) fn append_to_defer(&mut self, node_id: u64) {
-        if !self.deferred_node_ids.contains(&node_id) {
-            self.deferred_node_ids.push(node_id);
+        if !self.state.deferred_node_ids.contains(&node_id) {
+            self.state.deferred_node_ids.push(node_id);
         }
     }
 
     pub(crate) fn take_deferred_node_ids(&mut self) -> Vec<u64> {
-        std::mem::take(&mut self.deferred_node_ids)
+        std::mem::take(&mut self.state.deferred_node_ids)
     }
 
     pub(crate) fn next_opaque_rect_order(&mut self) -> u32 {
-        let order = self.dfs_opaque_rect_order;
-        self.dfs_opaque_rect_order = self.dfs_opaque_rect_order.saturating_add(1);
+        let order = self.state.dfs_opaque_rect_order;
+        self.state.dfs_opaque_rect_order = self.state.dfs_opaque_rect_order.saturating_add(1);
         order
     }
 
-    pub(crate) fn push_pass<P: RenderTargetPass + RenderPass + 'static>(
-        &mut self,
-        graph: &mut FrameGraph,
-        mut pass: P,
-    ) {
+    pub(crate) fn configure_pass<P: RenderTargetPass>(&self, pass: &mut P) {
         pass.apply_clip(self.scissor_rect());
         pass.apply_stencil_clip(self.active_clip_id());
         pass.set_color_target(self.color_target());
-
-        if let Some(prev) = self.last_target.as_ref() {
-            if let Some(handle) = prev.handle() {
-                pass.set_input(InSlot::with_handle(handle));
-            }
-        }
-        let output = self.next_target(graph);
-        let output_for_ctx = output.clone();
-        pass.set_output(output);
-        graph.add_pass(pass);
-        self.last_target = Some(output_for_ctx);
     }
 }
 
@@ -382,32 +416,26 @@ pub trait EventTarget {
         &mut self,
         _event: &mut MouseDownEvent,
         _control: &mut ViewportControl<'_>,
-    ) {
-    }
-    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
-    }
+    ) {}
+    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_mouse_move(
         &mut self,
         _event: &mut MouseMoveEvent,
         _control: &mut ViewportControl<'_>,
-    ) {
-    }
+    ) {}
     fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
-    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
-    }
+    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_text_input(
         &mut self,
         _event: &mut crate::ui::TextInputEvent,
         _control: &mut ViewportControl<'_>,
-    ) {
-    }
+    ) {}
     fn dispatch_ime_preedit(
         &mut self,
         _event: &mut crate::ui::ImePreeditEvent,
         _control: &mut ViewportControl<'_>,
-    ) {
-    }
+    ) {}
     fn dispatch_focus(&mut self, _event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_blur(&mut self, _event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {}
     fn cancel_pointer_interaction(&mut self) -> bool {
@@ -447,7 +475,7 @@ pub trait EventTarget {
 }
 
 pub trait Renderable {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext);
+    fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> BuildState;
 }
 
 pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
@@ -719,7 +747,7 @@ impl EventTarget for Element {
         control: &mut ViewportControl<'_>,
     ) {
         if self.handle_scrollbar_mouse_down(event, control) {
-            event.meta.request_keep_focus();
+            event.meta.keep_focus();
             event.meta.stop_propagation();
             return;
         }
@@ -1109,7 +1137,7 @@ impl Layoutable for Element {
 }
 
 impl Renderable for Element {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
+    fn build(&mut self, graph: &mut FrameGraph, mut ctx: UiBuildContext) -> BuildState {
         if trace_layout_enabled() {
             eprintln!(
                 "[build ] pos=({:.1},{:.1}) size=({:.1},{:.1}) should_render={}",
@@ -1122,9 +1150,9 @@ impl Renderable for Element {
         }
         if !self.core.should_render {
             if self.has_absolute_descendant_for_hit_test {
-                self.collect_root_viewport_deferred_descendants(ctx);
+                self.collect_root_viewport_deferred_descendants(&mut ctx);
             }
-            return;
+            return ctx.into_state();
         }
 
         let previous_scissor_rect = self
@@ -1138,14 +1166,19 @@ impl Renderable for Element {
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
         self.border_radius = outer_radii.max();
-        self.build_self(graph, ctx, false);
+        let pipeline_state = self.build_render_pipeline(
+            graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+            false,
+        );
+        ctx.set_state(pipeline_state);
 
         let overflow_child_indices: Vec<bool> = (0..self.children.len())
             .map(|idx| self.child_renders_outside_inner_clip(idx))
             .collect();
 
         let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii) {
-            self.begin_child_clip_scope(graph, ctx, inner_radii)
+            self.begin_child_clip_scope(graph, &mut ctx, inner_radii)
         } else {
             None
         };
@@ -1155,7 +1188,9 @@ impl Renderable for Element {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
-                child.build(graph, ctx);
+                let viewport = ctx.viewport();
+                let next_state = child.build(graph, ctx);
+                ctx = UiBuildContext::from_parts(viewport, next_state);
             }
         }
 
@@ -1172,15 +1207,22 @@ impl Renderable for Element {
                     ctx.append_to_defer(child.id());
                     continue;
                 }
-                child.build(graph, ctx);
+                let viewport = ctx.viewport();
+                let next_state = child.build(graph, ctx);
+                ctx = UiBuildContext::from_parts(viewport, next_state);
             }
         }
-        self.end_child_clip_scope(graph, ctx, child_clip_scope);
-        self.render_scrollbars(graph, ctx);
+        self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
+        let scrollbar_state = self.render_scrollbars(
+            graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(scrollbar_state);
 
         if let Some(previous) = previous_scissor_rect {
             ctx.restore_scissor_rect(previous);
         }
+        ctx.into_state()
     }
 }
 
@@ -1265,56 +1307,56 @@ impl Element {
         let tl = inner_radii.top_left.max(0.0);
         if tl > 0.0
             && Self::intersects_rect(
-                child_rect,
-                Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: tl,
-                    height: tl,
-                },
-            )
+            child_rect,
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: tl,
+                height: tl,
+            },
+        )
         {
             return true;
         }
         let tr = inner_radii.top_right.max(0.0);
         if tr > 0.0
             && Self::intersects_rect(
-                child_rect,
-                Rect {
-                    x: inner.x + inner.width - tr,
-                    y: inner.y,
-                    width: tr,
-                    height: tr,
-                },
-            )
+            child_rect,
+            Rect {
+                x: inner.x + inner.width - tr,
+                y: inner.y,
+                width: tr,
+                height: tr,
+            },
+        )
         {
             return true;
         }
         let br = inner_radii.bottom_right.max(0.0);
         if br > 0.0
             && Self::intersects_rect(
-                child_rect,
-                Rect {
-                    x: inner.x + inner.width - br,
-                    y: inner.y + inner.height - br,
-                    width: br,
-                    height: br,
-                },
-            )
+            child_rect,
+            Rect {
+                x: inner.x + inner.width - br,
+                y: inner.y + inner.height - br,
+                width: br,
+                height: br,
+            },
+        )
         {
             return true;
         }
         let bl = inner_radii.bottom_left.max(0.0);
         bl > 0.0
             && Self::intersects_rect(
-                child_rect,
-                Rect {
-                    x: inner.x,
-                    y: inner.y + inner.height - bl,
-                    width: bl,
-                    height: bl,
-                },
-            )
+            child_rect,
+            Rect {
+                x: inner.x,
+                y: inner.y + inner.height - bl,
+                width: bl,
+                height: bl,
+            },
+        )
     }
 
     fn should_clip_children(
@@ -1386,17 +1428,30 @@ impl Element {
         };
         let previous_scissor = ctx.push_scissor_rect(self.inner_clip_scissor_rect());
 
+        let mut pass_params = RectPassParams {
+            position: [self.layout_inner_position.x, self.layout_inner_position.y],
+            size: [self.layout_inner_size.width, self.layout_inner_size.height],
+            fill_color: [0.0, 0.0, 0.0, 0.0],
+            opacity: 1.0,
+            ..Default::default()
+        };
+
+        pass_params.set_border_width(0.0);
+        pass_params.set_border_radii(inner_radii.to_array());
+
         let mut increment = DrawRectPass::new(
-            [self.layout_inner_position.x, self.layout_inner_position.y],
-            [self.layout_inner_size.width, self.layout_inner_size.height],
-            [0.0, 0.0, 0.0, 0.0],
-            1.0,
+            pass_params,
+            DrawRectInput {
+                ..Default::default()
+            },
+            DrawRectOutput {
+                ..Default::default()
+            },
         );
-        increment.set_border_width(0.0);
-        increment.set_border_radii(inner_radii.to_array());
+
         increment.set_stencil_increment(parent_clip_id);
         increment.set_color_write_enabled(false);
-        self.push_pass(graph, ctx, increment);
+        self.push_stencil_pass(graph, ctx, increment);
 
         Some(ChildClipScope {
             previous_scissor,
@@ -1419,17 +1474,23 @@ impl Element {
             self.core.layout_size.width.max(0.0),
             self.core.layout_size.height.max(0.0),
         ));
+
         let mut decrement = DrawRectPass::new(
-            [self.layout_inner_position.x, self.layout_inner_position.y],
-            [self.layout_inner_size.width, self.layout_inner_size.height],
-            [0.0, 0.0, 0.0, 0.0],
-            1.0,
+            RectPassParams {
+                position: [self.layout_inner_position.x, self.layout_inner_position.y],
+                size: [self.layout_inner_size.width, self.layout_inner_size.height],
+                fill_color: [0.0, 0.0, 0.0, 0.0],
+                opacity: 1.0,
+                ..Default::default()
+            },
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
         );
         decrement.set_border_width(0.0);
         decrement.set_border_radii(inner_radii.to_array());
         decrement.set_stencil_decrement(scope.child_clip_id);
         decrement.set_color_write_enabled(false);
-        self.push_pass(graph, ctx, decrement);
+        self.push_stencil_pass(graph, ctx, decrement);
 
         ctx.pop_clip_id();
         ctx.restore_scissor_rect(scope.previous_scissor);
@@ -2213,14 +2274,14 @@ impl Element {
             .vertical_track
             .is_some_and(|track| track.contains(local_x, local_y))
             || geometry
-                .vertical_thumb
-                .is_some_and(|thumb| thumb.contains(local_x, local_y))
+            .vertical_thumb
+            .is_some_and(|thumb| thumb.contains(local_x, local_y))
             || geometry
-                .horizontal_track
-                .is_some_and(|track| track.contains(local_x, local_y))
+            .horizontal_track
+            .is_some_and(|track| track.contains(local_x, local_y))
             || geometry
-                .horizontal_thumb
-                .is_some_and(|thumb| thumb.contains(local_x, local_y))
+            .horizontal_thumb
+            .is_some_and(|thumb| thumb.contains(local_x, local_y))
     }
 
     fn handle_scrollbar_mouse_down(
@@ -2364,8 +2425,8 @@ impl Element {
             .vertical_thumb
             .is_some_and(|thumb| thumb.contains(local_x, local_y))
             || geometry
-                .horizontal_thumb
-                .is_some_and(|thumb| thumb.contains(local_x, local_y))
+            .horizontal_thumb
+            .is_some_and(|thumb| thumb.contains(local_x, local_y))
         {
             self.note_scrollbar_interaction();
         }
@@ -2395,11 +2456,11 @@ impl Element {
     fn render_scrollbar_shadow(
         &mut self,
         graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
+        mut ctx: UiBuildContext,
         rect: Rect,
         border_radius: f32,
         color: [f32; 4],
-    ) {
+    ) -> BuildState {
         let mesh = ShadowMesh::rounded_rect(
             rect.x,
             rect.y,
@@ -2407,25 +2468,30 @@ impl Element {
             rect.height.max(0.0),
             border_radius.max(0.0),
         );
-        let pass = ShadowPass::new(
+        let params = ShadowParams {
+            offset_x: 1.0,
+            offset_y: 1.0,
+            blur_radius: self.scrollbar_shadow_blur_radius.max(0.0),
+            color,
+            opacity: 1.0,
+            spread: 0.0,
+            clip_to_geometry: true,
+        };
+
+        let next_state = self.push_shadow_pass(
             mesh,
-            ShadowParams {
-                offset_x: 1.0,
-                offset_y: 1.0,
-                blur_radius: self.scrollbar_shadow_blur_radius.max(0.0),
-                color,
-                opacity: 1.0,
-                spread: 0.0,
-                clip_to_geometry: true,
-            },
+            params,
+            graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
         );
-        self.push_pass(graph, ctx, pass);
+        ctx.set_state(next_state);
+        ctx.into_state()
     }
 
-    fn render_scrollbars(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
+    fn render_scrollbars(&mut self, graph: &mut FrameGraph, mut ctx: UiBuildContext) -> BuildState {
         let alpha = self.scrollbar_visibility_alpha();
         if alpha <= 0.0 {
-            return;
+            return ctx.into_state();
         }
         const TRACK_SHADOW_ALPHA: f32 = 0.5;
         const THUMB_SHADOW_ALPHA: f32 = 0.5;
@@ -2440,81 +2506,106 @@ impl Element {
         let track_color = [0.95, 0.95, 0.95, track_alpha];
         let thumb_color = [0.95, 0.95, 0.95, thumb_alpha];
         if let Some(track) = geometry.vertical_track {
-            self.render_scrollbar_shadow(
+            let shadow_state = self.render_scrollbar_shadow(
                 graph,
-                ctx,
+                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
                 track,
                 (track.width * 0.5).max(0.0),
                 track_shadow_color,
             );
+            ctx.set_state(shadow_state);
 
             let mut pass = DrawRectPass::new(
-                [track.x, track.y],
-                [track.width, track.height],
-                track_color,
-                1.0,
+                RectPassParams {
+                    position: [track.x, track.y],
+                    size: [track.width, track.height],
+                    fill_color: track_color,
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((track.width * 0.5).max(0.0));
-            self.push_rect_pass_auto(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, &mut ctx, pass);
         }
         if let Some(track) = geometry.horizontal_track {
-            self.render_scrollbar_shadow(
+            let shadow_state = self.render_scrollbar_shadow(
                 graph,
-                ctx,
+                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
                 track,
                 (track.height * 0.5).max(0.0),
                 track_shadow_color,
             );
+            ctx.set_state(shadow_state);
 
             let mut pass = DrawRectPass::new(
-                [track.x, track.y],
-                [track.width, track.height],
-                track_color,
-                1.0,
+                RectPassParams {
+                    position: [track.x, track.y],
+                    size: [track.width, track.height],
+                    fill_color: track_color,
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((track.height * 0.5).max(0.0));
-            self.push_rect_pass_auto(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, &mut ctx, pass);
         }
         if let Some(thumb) = geometry.vertical_thumb {
-            self.render_scrollbar_shadow(
+            let shadow_state = self.render_scrollbar_shadow(
                 graph,
-                ctx,
+                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
                 thumb,
                 (thumb.width * 0.5).max(0.0),
                 thumb_shadow_color,
             );
+            ctx.set_state(shadow_state);
 
             let mut pass = DrawRectPass::new(
-                [thumb.x, thumb.y],
-                [thumb.width, thumb.height],
-                thumb_color,
-                1.0,
+                RectPassParams {
+                    position: [thumb.x, thumb.y],
+                    size: [thumb.width, thumb.height],
+                    fill_color: thumb_color,
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((thumb.width * 0.5).max(0.0));
-            self.push_rect_pass_auto(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, &mut ctx, pass);
         }
         if let Some(thumb) = geometry.horizontal_thumb {
-            self.render_scrollbar_shadow(
+            let shadow_state = self.render_scrollbar_shadow(
                 graph,
-                ctx,
+                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
                 thumb,
                 (thumb.height * 0.5).max(0.0),
                 thumb_shadow_color,
             );
+            ctx.set_state(shadow_state);
 
             let mut pass = DrawRectPass::new(
-                [thumb.x, thumb.y],
-                [thumb.width, thumb.height],
-                thumb_color,
-                1.0,
+                RectPassParams {
+                    position: [thumb.x, thumb.y],
+                    size: [thumb.width, thumb.height],
+                    fill_color: thumb_color,
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
             );
             pass.set_border_width(0.0);
             pass.set_border_radius((thumb.height * 0.5).max(0.0));
-            self.push_rect_pass_auto(graph, ctx, pass);
+            self.push_rect_pass_auto(graph, &mut ctx, pass);
         }
+        ctx.into_state()
     }
 
     pub fn on_mouse_down<F>(&mut self, handler: F)
@@ -2860,10 +2951,20 @@ impl Element {
         }
     }
 
-    fn build_self(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext, force_opaque: bool) {
+    fn build_render_pipeline(
+        &mut self,
+        graph: &mut FrameGraph,
+        mut ctx: UiBuildContext,
+        force_opaque: bool,
+    ) -> BuildState {
         let fill_color = self.background_color.as_ref().to_rgba_f32();
         let opacity = if force_opaque { 1.0 } else { self.opacity };
-        self.render_box_shadows(graph, ctx, opacity);
+        let shadow_state = self.render_box_shadows(
+            graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+            opacity,
+        );
+        ctx.set_state(shadow_state);
 
         let max_bw = (self
             .core
@@ -2882,25 +2983,35 @@ impl Element {
             self.core.layout_size.height.max(0.0),
         );
         let mut fill_pass = DrawRectPass::new(
-            [self.core.layout_position.x, self.core.layout_position.y],
-            [self.core.layout_size.width, self.core.layout_size.height],
-            fill_color,
-            opacity,
+            RectPassParams {
+                position: [self.core.layout_position.x, self.core.layout_position.y],
+                size: [self.core.layout_size.width, self.core.layout_size.height],
+                fill_color,
+                opacity,
+                ..Default::default()
+            },
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
         );
         fill_pass.set_render_mode(RectRenderMode::FillOnly);
         fill_pass.set_border_widths(left, right, top, bottom);
         fill_pass.set_border_radii(outer_radii.to_array());
-        self.push_rect_pass_auto(graph, ctx, fill_pass);
+        self.push_rect_pass_auto(graph, &mut ctx, fill_pass);
 
         if left <= 0.0 && right <= 0.0 && top <= 0.0 && bottom <= 0.0 {
-            return;
+            return ctx.into_state();
         }
 
         let mut border_pass = DrawRectPass::new(
-            [self.core.layout_position.x, self.core.layout_position.y],
-            [self.core.layout_size.width, self.core.layout_size.height],
-            [0.0, 0.0, 0.0, 0.0],
-            opacity,
+            RectPassParams {
+                position: [self.core.layout_position.x, self.core.layout_position.y],
+                size: [self.core.layout_size.width, self.core.layout_size.height],
+                fill_color: [0.0, 0.0, 0.0, 0.0],
+                opacity,
+                ..Default::default()
+            },
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
         );
         border_pass.set_render_mode(RectRenderMode::BorderOnly);
         border_pass.set_border_side_colors(
@@ -2911,16 +3022,52 @@ impl Element {
         );
         border_pass.set_border_widths(left, right, top, bottom);
         border_pass.set_border_radii(outer_radii.to_array());
-        self.push_rect_pass_auto(graph, ctx, border_pass);
+        self.push_rect_pass_auto(graph, &mut ctx, border_pass);
+        ctx.into_state()
     }
 
-    fn push_pass<P: RenderTargetPass + RenderPass + 'static>(
+    fn push_pass<
+        P: RenderTargetPass + RenderPass<Input = DrawRectInput, Output = DrawRectOutput> + 'static,
+    >(
         &mut self,
         graph: &mut FrameGraph,
         ctx: &mut UiBuildContext,
-        pass: P,
+        mut pass: P,
     ) {
-        ctx.push_pass(graph, pass);
+        ctx.configure_pass(&mut pass);
+        let input = self.ensure_current_render_target(graph, ctx);
+        if let Some(handle) = input.handle() {
+            pass.input_mut().render_target = RenderTargetIn::with_handle(handle);
+        }
+        pass.input_mut().dep = DepIn::with_handle(ctx.current_dep_token());
+        let next_dep = graph.declare_dep_token();
+        pass.output_mut().dep = DepOut::with_handle(next_dep);
+        pass.output_mut().render_target = input;
+        graph.add_pass(pass);
+        ctx.set_current_dep_token(next_dep);
+        ctx.set_current_target(input);
+    }
+
+    fn push_stencil_pass<
+        P: RenderTargetPass + RenderPass<Input = DrawRectInput, Output = DrawRectOutput> + 'static,
+    >(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        mut pass: P,
+    ) {
+        ctx.configure_pass(&mut pass);
+        let input = self.ensure_current_render_target(graph, ctx);
+        if let Some(handle) = input.handle() {
+            pass.input_mut().render_target = RenderTargetIn::with_handle(handle);
+        }
+        pass.input_mut().dep = DepIn::with_handle(ctx.current_dep_token());
+        let next_dep = graph.declare_dep_token();
+        pass.output_mut().dep = DepOut::with_handle(next_dep);
+        pass.output_mut().render_target = input;
+        graph.add_pass(pass);
+        ctx.set_current_dep_token(next_dep);
+        ctx.set_current_target(input);
     }
 
     fn push_rect_pass_auto(
@@ -3029,18 +3176,18 @@ impl Element {
     fn render_box_shadows(
         &mut self,
         graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
+        mut ctx: UiBuildContext,
         opacity: f32,
-    ) {
+    ) -> BuildState {
         if self.box_shadows.is_empty() {
-            return;
+            return ctx.into_state();
         }
         let layout_x = self.core.layout_position.x;
         let layout_y = self.core.layout_position.y;
         let layout_w = self.core.layout_size.width.max(0.0);
         let layout_h = self.core.layout_size.height.max(0.0);
         if layout_w <= 0.0 || layout_h <= 0.0 {
-            return;
+            return ctx.into_state();
         }
         let shadows = self.box_shadows.clone();
         for shadow in shadows {
@@ -3052,20 +3199,69 @@ impl Element {
                 layout_h + spread * 2.0,
                 (self.border_radius + spread).max(0.0),
             );
-            let pass = ShadowPass::new(
+            let params = ShadowParams {
+                offset_x: shadow.offset_x,
+                offset_y: shadow.offset_y,
+                blur_radius: shadow.blur.max(0.0),
+                color: shadow.color.to_rgba_f32(),
+                opacity: opacity.clamp(0.0, 1.0),
+                spread: 0.0,
+                clip_to_geometry: false,
+            };
+            let next_state = self.push_shadow_pass(
                 mesh,
-                ShadowParams {
-                    offset_x: shadow.offset_x,
-                    offset_y: shadow.offset_y,
-                    blur_radius: shadow.blur.max(0.0),
-                    color: shadow.color.to_rgba_f32(),
-                    opacity: opacity.clamp(0.0, 1.0),
-                    spread: 0.0,
-                    clip_to_geometry: false,
-                },
+                params,
+                graph,
+                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
             );
-            self.push_pass(graph, ctx, pass);
+            ctx.set_state(next_state);
         }
+        ctx.into_state()
+    }
+
+    fn push_shadow_pass(
+        &mut self,
+        mesh: ShadowMesh,
+        params: ShadowParams,
+        graph: &mut FrameGraph,
+        mut ctx: UiBuildContext,
+    ) -> BuildState {
+        let dep_out = graph.declare_dep_token();
+        self.ensure_current_render_target(graph, &mut ctx);
+        let output = ctx
+            .current_target()
+            .unwrap_or_else(|| ctx.allocate_target(graph));
+        let mut pass = ShadowPass::new(
+            mesh,
+            params,
+            ShadowInput {
+                dep: DepIn::with_handle(ctx.current_dep_token()),
+                ..Default::default()
+            },
+            ShadowOutput {
+                render_target: output,
+                dep: DepOut::with_handle(dep_out),
+            },
+        );
+
+        ctx.configure_pass(&mut pass);
+        graph.add_pass(pass);
+        ctx.set_current_target(output);
+        ctx.set_current_dep_token(dep_out);
+        ctx.into_state()
+    }
+
+    fn ensure_current_render_target(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+    ) -> RenderTargetOut {
+        if let Some(target) = ctx.current_target() {
+            return target;
+        }
+        let target = ctx.allocate_target(graph);
+        ctx.set_current_target(target);
+        target
     }
 
     fn measure_self(&mut self, proposal: LayoutProposal) {
@@ -3111,14 +3307,14 @@ impl Element {
             proposal.viewport_width,
             proposal.viewport_height,
         )
-        .unwrap_or(0.0);
+            .unwrap_or(0.0);
         let min_height = Self::resolve_size_constraint(
             self.computed_style.min_height,
             proposal.percent_base_height,
             proposal.viewport_width,
             proposal.viewport_height,
         )
-        .unwrap_or(0.0);
+            .unwrap_or(0.0);
 
         let mut max_width = Self::resolve_size_constraint(
             self.computed_style.max_width,
@@ -4516,8 +4712,7 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
             CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
             CHANNEL_STYLE_BORDER_LEFT_COLOR,
         ]),
-        TransitionProperty::Gap | TransitionProperty::Padding | TransitionProperty::BorderWidth => {
-        }
+        TransitionProperty::Gap | TransitionProperty::Padding | TransitionProperty::BorderWidth => {}
     }
 }
 
@@ -5320,8 +5515,21 @@ mod tests {
         parent.core.should_render = false;
 
         let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm);
-        parent.build(&mut graph, &mut ctx);
+        let mut ctx = UiBuildContext::new(
+            400,
+            300,
+            wgpu::TextureFormat::Bgra8Unorm,
+            graph.declare_dep_token(),
+        );
+        let target = ctx.allocate_target(&mut graph);
+        let dep = graph.declare_dep_token();
+        ctx.set_current_target(target);
+        ctx.set_current_dep_token(dep);
+        let next_state = parent.build(
+            &mut graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(next_state);
 
         let deferred = ctx.take_deferred_node_ids();
         let child_id = parent.children().expect("has child")[0].id();
@@ -5966,7 +6174,7 @@ mod tests {
     }
 
     #[test]
-    fn percent_min_and_max_size_do_not_apply_when_parent_size_is_unresolved() {
+    fn percent_min_and_max_size_apply_when_parent_auto_has_resolved_percent_base() {
         let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Auto);
@@ -6018,8 +6226,8 @@ mod tests {
         });
 
         let child_snapshot = parent.children().expect("child")[0].box_model_snapshot();
-        assert_eq!(child_snapshot.width, 20.0);
-        assert_eq!(child_snapshot.height, 20.0);
+        assert_eq!(child_snapshot.width, 480.0);
+        assert_eq!(child_snapshot.height, 420.0);
     }
 
     #[test]

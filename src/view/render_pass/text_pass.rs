@@ -1,54 +1,29 @@
-use std::sync::{Mutex, OnceLock};
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
-
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
+use crate::view::frame_graph::{BufferDesc, BufferResource};
+use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport as GlyphonViewport,
 };
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 pub struct TextPass {
-    content: String,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    color: [f32; 4],
-    opacity: f32,
-    font_size: f32,
-    line_height: f32,
-    font_weight: u16,
-    font_families: Vec<String>,
-    align: Align,
-    allow_wrap: bool,
-    scissor_rect: Option<[u32; 4]>,
-    stencil_clip_id: Option<u8>,
-    color_target: Option<TextureHandle>,
+    params: TextPassParams,
+    staging_buffer: TextStagingBufferOut,
+    prepared: Option<TextPreparedState>,
     input: TextInput,
     output: TextOutput,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TextPassBatchKey {
-    input_target: Option<TextureHandle>,
-    output_target: Option<TextureHandle>,
-    color_target: Option<TextureHandle>,
-    stencil_clip_id: Option<u8>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TextPassDraw {
+pub struct TextPassParams {
     pub content: String,
     pub x: f32,
     pub y: f32,
@@ -64,102 +39,74 @@ pub struct TextPassDraw {
     pub allow_wrap: bool,
     pub scissor_rect: Option<[u32; 4]>,
     pub stencil_clip_id: Option<u8>,
-    pub color_target: Option<TextureHandle>,
 }
+
+struct TextPreparedState {
+    renderer_key: TextRendererKey,
+    renderer: Option<TextRenderer>,
+    prepare_signature: u64,
+    stencil_clip_id: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TextRendererKey {
+    sample_count: u32,
+    stencil_enabled: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct TextStagingBufferTag;
+pub type TextStagingBufferOut = OutSlot<BufferResource, TextStagingBufferTag>;
 
 #[derive(Default)]
 pub struct TextInput {
-    pub render_target: RenderTargetIn,
+    pub dep: DepIn,
 }
 
 #[derive(Default)]
 pub struct TextOutput {
     pub render_target: RenderTargetOut,
+    pub dep: DepOut,
 }
 
 impl TextPass {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        content: String,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-        color: [f32; 4],
-        opacity: f32,
-        font_size: f32,
-        line_height: f32,
-        font_weight: u16,
-        font_families: Vec<String>,
-        align: Align,
-        allow_wrap: bool,
-    ) -> Self {
+    pub fn new(params: TextPassParams, input: TextInput, output: TextOutput) -> Self {
         Self {
-            content,
-            x,
-            y,
-            width,
-            height,
-            color,
-            opacity,
-            font_size,
-            line_height,
-            font_weight,
-            font_families,
-            align,
-            allow_wrap,
-            scissor_rect: None,
-            stencil_clip_id: None,
-            color_target: None,
-            input: TextInput::default(),
-            output: TextOutput::default(),
+            params,
+            staging_buffer: TextStagingBufferOut::default(),
+            prepared: None,
+            input,
+            output,
         }
     }
 
-    pub fn set_input(&mut self, input: RenderTargetIn) {
-        self.input.render_target = input;
-    }
-
-    pub fn set_output(&mut self, output: RenderTargetOut) {
-        self.output.render_target = output;
-    }
-
-    pub fn set_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.scissor_rect = scissor_rect;
-    }
-
-    pub fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        self.color_target = color_target;
-    }
-
-    pub fn batch_key(&self) -> TextPassBatchKey {
-        TextPassBatchKey {
-            input_target: self.input.render_target.handle(),
-            output_target: self.output.render_target.handle(),
-            color_target: self.color_target,
-            stencil_clip_id: self.stencil_clip_id,
+    fn prepare_signature(&self, bounds: TextBounds, scale: f32, screen_size: (u32, u32)) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.params.content.hash(&mut hasher);
+        self.params.x.to_bits().hash(&mut hasher);
+        self.params.y.to_bits().hash(&mut hasher);
+        self.params.width.to_bits().hash(&mut hasher);
+        self.params.height.to_bits().hash(&mut hasher);
+        self.params.font_size.to_bits().hash(&mut hasher);
+        self.params.line_height.to_bits().hash(&mut hasher);
+        self.params.opacity.to_bits().hash(&mut hasher);
+        self.params.font_weight.hash(&mut hasher);
+        self.params.font_families.hash(&mut hasher);
+        std::mem::discriminant(&self.params.align).hash(&mut hasher);
+        self.params.allow_wrap.hash(&mut hasher);
+        self.params.scissor_rect.hash(&mut hasher);
+        self.params.stencil_clip_id.hash(&mut hasher);
+        scale.to_bits().hash(&mut hasher);
+        screen_size.hash(&mut hasher);
+        bounds.left.hash(&mut hasher);
+        bounds.top.hash(&mut hasher);
+        bounds.right.hash(&mut hasher);
+        bounds.bottom.hash(&mut hasher);
+        for channel in self.params.color {
+            channel.to_bits().hash(&mut hasher);
         }
-    }
-
-    pub fn snapshot_draw(&self) -> TextPassDraw {
-        TextPassDraw {
-            content: self.content.clone(),
-            x: self.x,
-            y: self.y,
-            width: self.width,
-            height: self.height,
-            color: self.color,
-            opacity: self.opacity,
-            font_size: self.font_size,
-            line_height: self.line_height,
-            font_weight: self.font_weight,
-            font_families: self.font_families.clone(),
-            align: self.align,
-            allow_wrap: self.allow_wrap,
-            scissor_rect: self.scissor_rect,
-            stencil_clip_id: self.stencil_clip_id,
-            color_target: self.color_target,
-        }
+        hasher.finish()
     }
 }
 
@@ -184,250 +131,229 @@ impl RenderPass for TextPass {
     }
 
     fn build(&mut self, builder: &mut BuildContext) {
-        if let Some(handle) = self.input.render_target.handle() {
-            let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.render_target, &source);
+        self.staging_buffer = builder.create_buffer(BufferDesc {
+            size: (self.params.content.len().max(1) as u64).next_power_of_two(),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("TextPass Staging Buffer"),
+        });
+        if let Some(handle) = self.input.dep.handle() {
+            let source: DepOut = DepOut::with_handle(handle);
+            builder.read_dep(&mut self.input.dep, &source);
         }
         if self.output.render_target.handle().is_some() {
             builder.write_texture(&mut self.output.render_target);
         }
+        if self.output.dep.handle().is_some() {
+            builder.write_dep(&mut self.output.dep);
+        }
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
-        let draw = self.snapshot_draw();
-        execute_text_pass_batch(vec![draw], ctx);
-    }
+    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+        let Some(handle) = self.staging_buffer.handle() else {
+            return;
+        };
+        let mut packed = self.params.content.as_bytes().to_vec();
+        packed.push(0);
+        let _ = ctx.upload_buffer(handle, 0, &packed);
 
-    fn batchable(&self) -> bool {
-        true
-    }
-
-    fn get_batch_key(&self) -> Option<u64> {
-        let mut hasher = DefaultHasher::new();
-        self.batch_key().hash(&mut hasher);
-        Some(hasher.finish())
-    }
-}
-
-pub fn execute_text_pass_batch(draws: Vec<TextPassDraw>, ctx: &mut PassContext<'_, '_>) {
-    if draws.is_empty() {
-        return;
-    }
-
-    let color_target = draws[0].color_target;
-    let stencil_clip_id = draws[0].stencil_clip_id;
-    let (offscreen_view, offscreen_msaa_view) = match color_target {
-        Some(handle) => (
-            render_target_view(ctx, handle),
-            render_target_msaa_view(ctx, handle),
-        ),
-        None => (None, None),
-    };
-
-    let viewport = &mut ctx.viewport;
-    let device = match viewport.device() {
-        Some(device) => device,
-        None => return,
-    };
-    let queue = match viewport.queue() {
-        Some(queue) => queue,
-        None => return,
-    };
-
-    let (screen_w, screen_h) = viewport.surface_size();
-    let scale = viewport.scale_factor();
-    let format = viewport.surface_format();
-
-    let mut global = text_resources(device, queue, format);
-    let resources = global.resources.as_mut().unwrap();
-    let mut renderer = TextRenderer::new(
-        &mut resources.atlas,
-        device,
-        wgpu::MultisampleState {
-            count: viewport.msaa_sample_count(),
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        stencil_clip_id.map(|_| wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth24PlusStencil8,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
-            stencil: wgpu::StencilState {
-                front: wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::Equal,
-                    fail_op: wgpu::StencilOperation::Keep,
-                    depth_fail_op: wgpu::StencilOperation::Keep,
-                    pass_op: wgpu::StencilOperation::Keep,
-                },
-                back: wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::Equal,
-                    fail_op: wgpu::StencilOperation::Keep,
-                    depth_fail_op: wgpu::StencilOperation::Keep,
-                    pass_op: wgpu::StencilOperation::Keep,
-                },
-                read_mask: 0xFF,
-                write_mask: 0xFF,
-            },
-            bias: wgpu::DepthBiasState::default(),
-        }),
-    );
-    resources.viewport.update(
-        queue,
-        Resolution {
-            width: screen_w,
-            height: screen_h,
-        },
-    );
-
-    struct BatchEntry {
-        left: f32,
-        top: f32,
-        bounds: TextBounds,
-        color: GlyphonColor,
-    }
-
-    let mut buffers = Vec::with_capacity(draws.len());
-    let mut entries = Vec::with_capacity(draws.len());
-
-    for draw in &draws {
-        if draw.content.is_empty()
-            || draw.width <= 0.0
-            || draw.height <= 0.0
-            || !draw.x.is_finite()
-            || !draw.y.is_finite()
-            || !draw.width.is_finite()
-            || !draw.height.is_finite()
+        if self.params.content.is_empty()
+            || self.params.width <= 0.0
+            || self.params.height <= 0.0
+            || !self.params.x.is_finite()
+            || !self.params.y.is_finite()
+            || !self.params.width.is_finite()
+            || !self.params.height.is_finite()
         {
-            continue;
+            return;
         }
 
+        let viewport = &mut ctx.viewport;
+        let device = match viewport.device().cloned() {
+            Some(device) => device,
+            None => return,
+        };
+        let queue = match viewport.queue().cloned() {
+            Some(queue) => queue,
+            None => return,
+        };
+        let (screen_w, screen_h) = viewport.surface_size();
+        let scale = viewport.scale_factor();
+        let format = viewport.surface_format();
+        let mut global = text_resources(&device, &queue, format);
+        let resources = global.resources.as_mut().unwrap();
+        resources.viewport.update(
+            &queue,
+            Resolution {
+                width: screen_w,
+                height: screen_h,
+            },
+        );
+
         let bounds = match resolve_text_bounds(
-            draw.x * scale,
-            draw.y * scale,
-            draw.width * scale,
-            draw.height * scale,
+            self.params.x * scale,
+            self.params.y * scale,
+            self.params.width * scale,
+            self.params.height * scale,
             screen_w,
             screen_h,
-            draw.scissor_rect.and_then(|scissor| {
+            self.params.scissor_rect.and_then(|scissor| {
                 viewport.logical_scissor_to_physical(scissor, (screen_w, screen_h))
             }),
         ) {
             Some(bounds) => bounds,
-            None => continue,
+            None => return,
         };
-
+        let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
         let buffer = resources.prepare_buffer(
-            draw.content.as_str(),
-            draw.width * scale,
-            draw.height * scale,
-            draw.font_size * scale,
-            draw.line_height,
-            draw.font_weight,
-            draw.font_families.as_slice(),
-            draw.align,
-            draw.allow_wrap,
+            self.params.content.as_str(),
+            self.params.width * scale,
+            self.params.height * scale,
+            self.params.font_size * scale,
+            self.params.line_height,
+            self.params.font_weight,
+            self.params.font_families.as_slice(),
+            self.params.align,
+            self.params.allow_wrap,
         );
-        buffers.push(buffer);
-        entries.push(BatchEntry {
-            left: draw.x * scale,
-            top: draw.y * scale,
+        let text_area = build_text_area(
+            &buffer,
+            self.params.x * scale,
+            self.params.y * scale,
             bounds,
-            color: to_glyphon_color(draw.color, draw.opacity),
+            to_glyphon_color(self.params.color, self.params.opacity),
+        );
+        let renderer_key = TextRendererKey {
+            sample_count: viewport.msaa_sample_count(),
+            stencil_enabled: self.params.stencil_clip_id.is_some(),
+        };
+        if let Some(prepared) = self.prepared.as_mut() {
+            if prepared.renderer_key == renderer_key
+                && prepared.prepare_signature == prepare_signature
+            {
+                prepared.stencil_clip_id = self.params.stencil_clip_id;
+                return;
+            }
+        }
+        let mut renderer = match self.prepared.take() {
+            Some(mut previous) => {
+                if previous.renderer_key == renderer_key {
+                    previous
+                        .renderer
+                        .take()
+                        .unwrap_or_else(|| resources.take_renderer(&device, renderer_key))
+                } else {
+                    if let Some(old_renderer) = previous.renderer.take() {
+                        resources.put_renderer(previous.renderer_key, old_renderer);
+                    }
+                    resources.take_renderer(&device, renderer_key)
+                }
+            }
+            None => resources.take_renderer(&device, renderer_key),
+        };
+        if renderer
+            .prepare(
+                &device,
+                &queue,
+                &mut resources.font_system,
+                &mut resources.atlas,
+                &resources.viewport,
+                vec![text_area],
+                &mut resources.swash_cache,
+            )
+            .is_err()
+        {
+            resources.put_renderer(renderer_key, renderer);
+            return;
+        }
+        self.prepared = Some(TextPreparedState {
+            renderer_key,
+            renderer: Some(renderer),
+            prepare_signature,
+            stencil_clip_id: self.params.stencil_clip_id,
         });
     }
 
-    if entries.is_empty() {
-        return;
-    }
+    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+        let Some(prepared) = self.prepared.as_mut() else {
+            return;
+        };
+        let (offscreen_view, offscreen_msaa_view) = match self.output.render_target.handle() {
+            Some(handle) => (
+                render_target_view(ctx, handle),
+                render_target_msaa_view(ctx, handle),
+            ),
+            None => (None, None),
+        };
+        let viewport = &mut ctx.viewport;
+        let device = match viewport.device().cloned() {
+            Some(device) => device,
+            None => return,
+        };
+        let queue = match viewport.queue().cloned() {
+            Some(queue) => queue,
+            None => return,
+        };
+        let format = viewport.surface_format();
+        let mut global = text_resources(&device, &queue, format);
+        let resources = global.resources.as_mut().unwrap();
 
-    let mut text_areas = Vec::with_capacity(entries.len());
-    for (idx, entry) in entries.iter().enumerate() {
-        text_areas.push(build_text_area(
-            &buffers[idx],
-            entry.left,
-            entry.top,
-            entry.bounds,
-            entry.color,
-        ));
-    }
-
-    if renderer
-        .prepare(
-            device,
-            queue,
-            &mut resources.font_system,
-            &mut resources.atlas,
-            &resources.viewport,
-            text_areas,
-            &mut resources.swash_cache,
-        )
-        .is_err()
-    {
-        return;
-    }
-
-    let msaa_enabled = viewport.msaa_sample_count() > 1;
-    let parts = match viewport.frame_parts() {
-        Some(parts) => parts,
-        None => return,
-    };
-    let surface_resolve = if msaa_enabled {
-        parts.resolve_view
-    } else {
-        None
-    };
-    let (color_view, resolve_target) = match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref())
-    {
-        (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-        (Some(resolve_view), None) => (resolve_view, None),
-        (None, _) => (parts.view, surface_resolve),
-    };
-    let mut pass = parts
-        .encoder
-        .begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("TextPassBatch"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
+        let msaa_enabled = viewport.msaa_sample_count() > 1;
+        let parts = match viewport.frame_parts() {
+            Some(parts) => parts,
+            None => return,
+        };
+        let surface_resolve = if msaa_enabled {
+            parts.resolve_view
+        } else {
+            None
+        };
+        let (color_view, resolve_target) =
+            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
+                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+                (Some(resolve_view), None) => (resolve_view, None),
+                (None, _) => (parts.view, surface_resolve),
+            };
+        let mut pass = parts
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("TextPass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                    resolve_target,
+                })],
+                depth_stencil_attachment: if prepared.stencil_clip_id.is_some() {
+                    parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+                } else {
+                    None
                 },
-                depth_slice: None,
-                resolve_target,
-            })],
-            depth_stencil_attachment: if stencil_clip_id.is_some() {
-                parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-            } else {
-                None
-            },
-            ..Default::default()
-        });
-
-    if let Some(stencil_clip_id) = stencil_clip_id {
-        pass.set_stencil_reference(stencil_clip_id as u32);
+                ..Default::default()
+            });
+        if let Some(stencil_clip_id) = prepared.stencil_clip_id {
+            pass.set_stencil_reference(stencil_clip_id as u32);
+        }
+        let Some(renderer) = prepared.renderer.as_mut() else {
+            return;
+        };
+        let _ = renderer.render(&resources.atlas, &resources.viewport, &mut pass);
     }
-    let _ = renderer.render(&resources.atlas, &resources.viewport, &mut pass);
+
+    fn batchable(&self) -> bool {
+        false
+    }
 }
 
 impl RenderTargetPass for TextPass {
-    fn set_input(&mut self, input: RenderTargetIn) {
-        TextPass::set_input(self, input);
-    }
-
-    fn set_output(&mut self, output: RenderTargetOut) {
-        TextPass::set_output(self, output);
-    }
-
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
+        self.params.scissor_rect = intersect_scissor_rects(self.params.scissor_rect, scissor_rect);
     }
 
     fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
-        self.stencil_clip_id = clip_id;
-    }
-
-    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        TextPass::set_color_target(self, color_target);
+        self.params.stencil_clip_id = clip_id;
     }
 }
 
@@ -528,6 +454,7 @@ struct TextResources {
     atlas: TextAtlas,
     viewport: GlyphonViewport,
     format: wgpu::TextureFormat,
+    renderers: HashMap<TextRendererKey, TextRenderer>,
 }
 
 impl TextResources {
@@ -544,7 +471,28 @@ impl TextResources {
             atlas,
             viewport,
             format,
+            renderers: HashMap::new(),
         }
+    }
+
+    fn take_renderer(&mut self, device: &wgpu::Device, key: TextRendererKey) -> TextRenderer {
+        if let Some(renderer) = self.renderers.remove(&key) {
+            return renderer;
+        }
+        TextRenderer::new(
+            &mut self.atlas,
+            device,
+            wgpu::MultisampleState {
+                count: key.sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            key.stencil_enabled.then(text_depth_stencil_state),
+        )
+    }
+
+    fn put_renderer(&mut self, key: TextRendererKey, renderer: TextRenderer) {
+        self.renderers.insert(key, renderer);
     }
 
     fn prepare_buffer(
@@ -629,12 +577,54 @@ fn text_resources<'a>(
     guard
 }
 
+fn text_depth_stencil_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: false,
+        depth_compare: wgpu::CompareFunction::Always,
+        stencil: wgpu::StencilState {
+            front: wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Equal,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Keep,
+            },
+            back: wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Equal,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Keep,
+            },
+            read_mask: 0xFF,
+            write_mask: 0xFF,
+        },
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
 pub fn prewarm_text_pipeline(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     format: wgpu::TextureFormat,
+    sample_count: u32,
 ) {
-    drop(text_resources(device, queue, format));
+    let mut global = text_resources(device, queue, format);
+    let resources = global
+        .resources
+        .as_mut()
+        .expect("text resources must exist");
+    let regular_key = TextRendererKey {
+        sample_count,
+        stencil_enabled: false,
+    };
+    let stencil_key = TextRendererKey {
+        sample_count,
+        stencil_enabled: true,
+    };
+    let renderer_regular = resources.take_renderer(device, regular_key);
+    resources.put_renderer(regular_key, renderer_regular);
+    let renderer_stencil = resources.take_renderer(device, stencil_key);
+    resources.put_renderer(stencil_key, renderer_stencil);
 }
 
 pub fn clear_text_resources_cache() {

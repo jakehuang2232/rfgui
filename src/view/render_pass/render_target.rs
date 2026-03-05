@@ -1,11 +1,8 @@
-use crate::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut};
 use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
 use std::collections::HashMap;
 
 pub(crate) trait RenderTargetPass {
-    fn set_input(&mut self, input: RenderTargetIn);
-    fn set_output(&mut self, output: RenderTargetOut);
     fn apply_clip(&mut self, _scissor_rect: Option<[u32; 4]>) {}
     fn apply_stencil_clip(&mut self, _clip_id: Option<u8>) {}
     fn set_color_target(&mut self, _color_target: Option<TextureHandle>) {}

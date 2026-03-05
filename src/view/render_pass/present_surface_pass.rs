@@ -2,7 +2,8 @@ use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
+use crate::view::frame_graph::texture_resource::TextureResource;
+use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::render_target_view;
@@ -11,35 +12,38 @@ use std::sync::{Mutex, OnceLock};
 const PRESENT_SURFACE_RESOURCES: u64 = 401;
 
 pub struct PresentSurfacePass {
-    source_color_target: Option<TextureHandle>,
+    params: PresentSurfaceParams,
     input: PresentSurfaceInput,
     output: PresentSurfaceOutput,
 }
 
 #[derive(Default)]
+pub struct PresentSurfaceParams;
+
+#[derive(Default)]
 pub struct PresentSurfaceInput {
-    pub render_target: RenderTargetIn,
+    pub source: RenderTargetIn,
+    pub dep: DepIn,
 }
 
 #[derive(Default)]
-pub struct PresentSurfaceOutput {}
+pub struct PresentSurfaceOutput {
+    pub dep: DepOut,
+}
 
 impl PresentSurfacePass {
-    pub fn new() -> Self {
+    pub fn new(
+        params: PresentSurfaceParams,
+        input: PresentSurfaceInput,
+        output: PresentSurfaceOutput,
+    ) -> Self {
         Self {
-            source_color_target: None,
-            input: PresentSurfaceInput::default(),
-            output: PresentSurfaceOutput::default(),
+            params,
+            input,
+            output,
         }
     }
 
-    pub fn set_input(&mut self, input: RenderTargetIn) {
-        self.input.render_target = input;
-    }
-
-    pub fn set_source_color_target(&mut self, source_color_target: Option<TextureHandle>) {
-        self.source_color_target = source_color_target;
-    }
 }
 
 impl RenderPass for PresentSurfacePass {
@@ -63,26 +67,26 @@ impl RenderPass for PresentSurfacePass {
     }
 
     fn build(&mut self, builder: &mut BuildContext) {
-        if let Some(handle) = self.input.render_target.handle() {
+        if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.render_target, &source);
+            builder.read_texture(&mut self.input.source, &source);
+        }
+        if let Some(handle) = self.input.dep.handle() {
+            let source: DepOut = OutSlot::with_handle(handle);
+            builder.read_dep(&mut self.input.dep, &source);
+        }
+        if self.output.dep.handle().is_some() {
+            builder.write_dep(&mut self.output.dep);
         }
     }
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
-        let src_view = if let Some(handle) = self.source_color_target {
-            let Some(view) = render_target_view(ctx, handle) else {
-                return;
-            };
-            view
-        } else {
-            let Some(input_handle) = self.input.render_target.handle() else {
-                return;
-            };
-            let Some(view) = render_target_view(ctx, input_handle) else {
-                return;
-            };
-            view
+        let _ = &self.params;
+        let Some(input_handle) = self.input.source.handle() else {
+            return;
+        };
+        let Some(src_view) = render_target_view(ctx, input_handle) else {
+            return;
         };
         let Some(device) = ctx.viewport.device() else {
             return;

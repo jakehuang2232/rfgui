@@ -147,7 +147,7 @@ impl EventMeta {
         self.state.borrow_mut().propagation_stopped = true;
     }
 
-    pub fn request_keep_focus(&mut self) {
+    pub fn keep_focus(&mut self) {
         self.state.borrow_mut().keep_focus_requested = true;
     }
 

@@ -49,7 +49,11 @@ pub(crate) fn build_node_by_id(
     ctx: &mut UiBuildContext,
 ) -> bool {
     if node.id() == node_id {
-        node.build(graph, ctx);
+        let next_state = node.build(
+            graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(next_state);
         return true;
     }
     if let Some(children) = node.children_mut() {
