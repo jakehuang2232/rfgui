@@ -150,18 +150,33 @@ impl FrameGraph {
                 match handle {
                     ResourceHandle::Texture(_) => {
                         let Some(writers) = texture_writers.get(&handle) else {
+                            eprintln!(
+                                "[frame_graph][compile] missing writer: reader_index={} reader_pass={} handle={:?}",
+                                index,
+                                self.passes[index].pass.name(),
+                                handle
+                            );
                             return Err(FrameGraphError::MissingInput("resource has no writer"));
                         };
                         let mut has_prior_writer = false;
                         for &writer in writers {
-                            if writer < index && graph_edges[writer].insert(index) {
-                                indegree[index] += 1;
+                            if writer < index {
                                 has_prior_writer = true;
+                                if graph_edges[writer].insert(index) {
+                                    indegree[index] += 1;
+                                }
                             }
                         }
                         if !has_prior_writer
                             && !writers.iter().copied().any(|writer| writer == index)
                         {
+                            eprintln!(
+                                "[frame_graph][compile] no prior writer: reader_index={} reader_pass={} handle={:?} writers={:?}",
+                                index,
+                                self.passes[index].pass.name(),
+                                handle,
+                                writers
+                            );
                             return Err(FrameGraphError::MissingInput(
                                 "resource has no prior writer",
                             ));
@@ -169,6 +184,12 @@ impl FrameGraph {
                     }
                     _ => {
                         let Some(&writer) = single_writer_map.get(&handle) else {
+                            eprintln!(
+                                "[frame_graph][compile] missing writer: reader_index={} reader_pass={} handle={:?}",
+                                index,
+                                self.passes[index].pass.name(),
+                                handle
+                            );
                             return Err(FrameGraphError::MissingInput("resource has no writer"));
                         };
                         if writer != index && graph_edges[writer].insert(index) {
@@ -585,7 +606,7 @@ impl FrameGraph {
             });
         let encoder = unsafe { &mut *encoder_ptr };
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("FrameGraph RectRun"),
+            label: Some("FrameGraph ShareRun"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color_view,
                 ops: wgpu::Operations {

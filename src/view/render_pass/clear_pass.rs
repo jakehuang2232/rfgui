@@ -4,7 +4,9 @@ use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
+use crate::view::render_pass::render_target::{
+    render_target_msaa_view, render_target_size, render_target_view,
+};
 
 pub struct ClearPass {
     params: ClearParams,
@@ -95,6 +97,11 @@ impl RenderPass for ClearPass {
             ),
             None => (None, None),
         };
+        let surface_size = ctx.viewport.surface_size();
+        let target_size = match self.output.render_target.handle() {
+            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+            None => surface_size,
+        };
         let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
         let parts = match ctx.viewport.frame_parts() {
             Some(parts) => parts,
@@ -111,6 +118,11 @@ impl RenderPass for ClearPass {
                 (Some(resolve_view), None) => (resolve_view, None),
                 (None, _) => (parts.view, surface_resolve),
             };
+        let depth_stencil_attachment = if target_size == surface_size {
+            parts.depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), wgpu::LoadOp::Clear(0))
+        } else {
+            None
+        };
         let _pass = parts
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -124,8 +136,7 @@ impl RenderPass for ClearPass {
                     depth_slice: None,
                     resolve_target,
                 })],
-                depth_stencil_attachment: parts
-                    .depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), wgpu::LoadOp::Clear(0)),
+                depth_stencil_attachment,
                 ..Default::default()
             });
     }

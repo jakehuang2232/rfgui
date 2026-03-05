@@ -12,12 +12,17 @@ pub mod present_surface_pass;
 pub(crate) mod render_target;
 pub mod shadow_pass;
 pub mod text_pass;
+pub mod texture_composite_pass;
 pub use blur_pass::BlurPass;
 pub use clear_pass::ClearPass;
 pub use composite_layer_pass::{CompositeLayerPass, LayerOut, LayerTag};
 pub use draw_rect_pass::{AlphaRectPass, DrawRectPass, OpaqueRectPass, RectRenderMode};
 pub use shadow_pass::{ShadowMesh, ShadowParams, ShadowPass};
 pub use text_pass::{TextPass, prewarm_text_pipeline};
+pub use texture_composite_pass::{
+    TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
+    TextureCompositePass, TextureCompositeSourceIn,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RenderPassBatchKey {
