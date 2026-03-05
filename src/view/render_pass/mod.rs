@@ -29,6 +29,7 @@ pub trait RenderPass {
     fn output_mut(&mut self) -> &mut Self::Output;
 
     fn build(&mut self, builder: &mut BuildContext);
+    fn compile_upload(&mut self, _ctx: &mut PassContext<'_, '_>) {}
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
     fn batchable(&self) -> bool {
         false
@@ -40,6 +41,7 @@ pub trait RenderPass {
 
 pub trait RenderPassDyn {
     fn build(&mut self, builder: &mut BuildContext);
+    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>);
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>);
     fn batchable(&self) -> bool;
     fn get_batch_key(&self) -> Option<u64>;
@@ -58,6 +60,10 @@ impl<P: RenderPass + 'static> RenderPassDyn for PassWrapper<P> {
 
     fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
         self.pass.execute(ctx);
+    }
+
+    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+        self.pass.compile_upload(ctx);
     }
 
     fn batchable(&self) -> bool {

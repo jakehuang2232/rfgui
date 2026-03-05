@@ -3,11 +3,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
 use super::buffer_resource::{BufferDesc, BufferHandle};
+use super::dependency_resource::DepHandle;
 use super::texture_resource::{TextureDesc, TextureHandle};
-use crate::view::render_pass::draw_rect_pass::{
-    DrawRectPass, OpaqueRectPass, execute_draw_rect_pass_batch, execute_opaque_rect_pass_batch,
-};
-use crate::view::render_pass::text_pass::{TextPass, execute_text_pass_batch};
+use crate::view::render_pass::draw_rect_pass::{DrawRectPass, OpaqueRectPass};
+use crate::view::render_pass::text_pass::TextPass;
 use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
 use crate::view::viewport::Viewport;
 
@@ -15,6 +14,7 @@ use crate::view::viewport::Viewport;
 pub enum ResourceHandle {
     Texture(TextureHandle),
     Buffer(BufferHandle),
+    Dep(DepHandle),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,6 +30,7 @@ pub struct FrameGraph {
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
     buffers: Vec<BufferDesc>,
+    dep_count: u32,
     order: Vec<usize>,
     compiled: bool,
     build_errors: Vec<FrameGraphError>,
@@ -55,6 +56,7 @@ impl FrameGraph {
             passes: Vec::new(),
             textures: Vec::new(),
             buffers: Vec::new(),
+            dep_count: 0,
             order: Vec::new(),
             compiled: false,
             build_errors: Vec::new(),
@@ -80,6 +82,12 @@ impl FrameGraph {
         let handle = TextureHandle(self.textures.len() as u32);
         self.textures.push(desc);
         super::slot::OutSlot::with_handle(handle)
+    }
+
+    pub fn declare_dep_token(&mut self) -> DepHandle {
+        let handle = DepHandle(self.dep_count);
+        self.dep_count = self.dep_count.saturating_add(1);
+        handle
     }
 
     pub fn compile(&mut self) -> Result<(), FrameGraphError> {
@@ -114,11 +122,19 @@ impl FrameGraph {
             return Err(err);
         }
 
-        let mut writer_map: HashMap<ResourceHandle, usize> = HashMap::new();
+        let mut single_writer_map: HashMap<ResourceHandle, usize> = HashMap::new();
+        let mut texture_writers: HashMap<ResourceHandle, Vec<usize>> = HashMap::new();
         for (index, node) in self.passes.iter().enumerate() {
             for &handle in &node.writes {
-                if writer_map.insert(handle, index).is_some() {
-                    return Err(FrameGraphError::MultipleWriters);
+                match handle {
+                    ResourceHandle::Texture(_) => {
+                        texture_writers.entry(handle).or_default().push(index);
+                    }
+                    _ => {
+                        if single_writer_map.insert(handle, index).is_some() {
+                            return Err(FrameGraphError::MultipleWriters);
+                        }
+                    }
                 }
             }
         }
@@ -128,11 +144,32 @@ impl FrameGraph {
 
         for (index, node) in self.passes.iter().enumerate() {
             for &handle in &node.reads {
-                let Some(&writer) = writer_map.get(&handle) else {
-                    return Err(FrameGraphError::MissingInput("resource has no writer"));
-                };
-                if writer != index && graph_edges[writer].insert(index) {
-                    indegree[index] += 1;
+                match handle {
+                    ResourceHandle::Texture(_) => {
+                        let Some(writers) = texture_writers.get(&handle) else {
+                            return Err(FrameGraphError::MissingInput("resource has no writer"));
+                        };
+                        let mut has_prior_writer = false;
+                        for &writer in writers {
+                            if writer < index && graph_edges[writer].insert(index) {
+                                indegree[index] += 1;
+                                has_prior_writer = true;
+                            }
+                        }
+                        if !has_prior_writer
+                            && !writers.iter().copied().any(|writer| writer == index)
+                        {
+                            return Err(FrameGraphError::MissingInput("resource has no prior writer"));
+                        }
+                    }
+                    _ => {
+                        let Some(&writer) = single_writer_map.get(&handle) else {
+                            return Err(FrameGraphError::MissingInput("resource has no writer"));
+                        };
+                        if writer != index && graph_edges[writer].insert(index) {
+                            indegree[index] += 1;
+                        }
+                    }
                 }
             }
         }
@@ -179,6 +216,139 @@ impl FrameGraph {
         Ok(())
     }
 
+    pub fn compile_with_upload(&mut self, viewport: &mut Viewport) -> Result<(), FrameGraphError> {
+        self.compile()?;
+        let textures = self.textures.clone();
+        let buffers = self.buffers.clone();
+        let mut ctx = PassContext::new(viewport, &textures, &buffers);
+        for &index in &self.order {
+            self.passes[index].pass.compile_upload(&mut ctx);
+        }
+        Ok(())
+    }
+
+    pub fn to_dot(&self) -> String {
+        fn escape_dot_label(text: &str) -> String {
+            text.replace('\\', "\\\\")
+                .replace('\"', "\\\"")
+                .replace('\n', "\\n")
+        }
+
+        fn resource_label(handle: ResourceHandle) -> String {
+            match handle {
+                ResourceHandle::Texture(h) => format!("tex#{}", h.0),
+                ResourceHandle::Buffer(h) => format!("buf#{}", h.0),
+                ResourceHandle::Dep(h) => format!("dep#{}", h.0),
+            }
+        }
+
+        fn resource_node_id(handle: ResourceHandle) -> String {
+            match handle {
+                ResourceHandle::Texture(h) => format!("r_tex_{}", h.0),
+                ResourceHandle::Buffer(h) => format!("r_buf_{}", h.0),
+                ResourceHandle::Dep(h) => format!("r_dep_{}", h.0),
+            }
+        }
+
+        fn resource_sort_key(handle: ResourceHandle) -> (u8, u32) {
+            match handle {
+                ResourceHandle::Texture(h) => (0, h.0),
+                ResourceHandle::Buffer(h) => (1, h.0),
+                ResourceHandle::Dep(h) => (2, h.0),
+            }
+        }
+
+        let mut resources: HashSet<ResourceHandle> = HashSet::new();
+        let mut write_edges: HashSet<(usize, ResourceHandle)> = HashSet::new();
+        let mut read_edges: HashSet<(ResourceHandle, usize)> = HashSet::new();
+        let mut dep_writers: HashMap<DepHandle, usize> = HashMap::new();
+
+        for (index, node) in self.passes.iter().enumerate() {
+            for &handle in &node.writes {
+                resources.insert(handle);
+                write_edges.insert((index, handle));
+                if let ResourceHandle::Dep(dep) = handle {
+                    dep_writers.insert(dep, index);
+                }
+            }
+            for &handle in &node.reads {
+                resources.insert(handle);
+                read_edges.insert((handle, index));
+            }
+        }
+
+        let mut execution_dep_edges: Vec<(usize, usize, DepHandle)> = Vec::new();
+        for (index, node) in self.passes.iter().enumerate() {
+            for &handle in &node.reads {
+                let ResourceHandle::Dep(dep) = handle else {
+                    continue;
+                };
+                let Some(&writer) = dep_writers.get(&dep) else {
+                    continue;
+                };
+                if writer != index {
+                    execution_dep_edges.push((writer, index, dep));
+                }
+            }
+        }
+        execution_dep_edges.sort_by_key(|(from, to, dep)| (*from, *to, dep.0));
+        execution_dep_edges.dedup_by_key(|(from, to, dep)| (*from, *to, dep.0));
+
+        let mut resource_nodes = resources.into_iter().collect::<Vec<_>>();
+        resource_nodes.sort_by_key(|handle| resource_sort_key(*handle));
+        let mut write_edges = write_edges.into_iter().collect::<Vec<_>>();
+        write_edges.sort_by_key(|(from, handle)| (*from, resource_sort_key(*handle)));
+        let mut read_edges = read_edges.into_iter().collect::<Vec<_>>();
+        read_edges.sort_by_key(|(handle, to)| (resource_sort_key(*handle), *to));
+
+        let mut dot = String::new();
+        dot.push_str("digraph FrameGraph {\n");
+        dot.push_str("  rankdir=LR;\n");
+        dot.push_str("  graph [splines=true, ranksep=1.0, nodesep=0.35];\n");
+        dot.push_str("  node [fontname=\"Helvetica\"];\n");
+        dot.push_str("  edge [fontname=\"Helvetica\"];\n");
+        dot.push_str("  node [shape=box, style=rounded];\n");
+        for (index, node) in self.passes.iter().enumerate() {
+            let label = escape_dot_label(node.pass.name());
+            dot.push_str(&format!("  p{index} [label=\"{index}: {label}\"];\n"));
+        }
+        dot.push_str("  node [shape=ellipse, style=solid];\n");
+        for handle in &resource_nodes {
+            let node_id = resource_node_id(*handle);
+            let label = escape_dot_label(&resource_label(*handle));
+            dot.push_str(&format!("  {node_id} [label=\"{label}\"];\n"));
+        }
+        if !self.passes.is_empty() {
+            dot.push_str("  { rank=same; ");
+            for index in 0..self.passes.len() {
+                dot.push_str(&format!("p{index}; "));
+            }
+            dot.push_str("}\n");
+        }
+        for (from, handle) in write_edges {
+            let node_id = resource_node_id(handle);
+            let label = escape_dot_label(&resource_label(handle));
+            dot.push_str(&format!(
+                "  p{from} -> {node_id} [color=\"red\", fontcolor=\"red\", label=\"{label}\", constraint=false];\n"
+            ));
+        }
+        for (handle, to) in read_edges {
+            let node_id = resource_node_id(handle);
+            let label = escape_dot_label(&resource_label(handle));
+            dot.push_str(&format!(
+                "  {node_id} -> p{to} [color=\"blue\", fontcolor=\"blue\", label=\"{label}\", constraint=false];\n"
+            ));
+        }
+        for (from, to, dep) in execution_dep_edges {
+            dot.push_str(&format!(
+                "  p{from} -> p{to} [color=\"gray\", fontcolor=\"gray\", label=\"dep#{}\", constraint=true];\n",
+                dep.0
+            ));
+        }
+        dot.push_str("}\n");
+        dot
+    }
+
     pub fn normalize_opaque_rect_depths(&mut self) {
         let mut total = 0_u32;
         for node in &mut self.passes {
@@ -213,7 +383,8 @@ impl FrameGraph {
         let mut pass_counts: HashMap<String, usize> = HashMap::new();
         let mut pass_first_seen_order: Vec<String> = Vec::new();
         let textures = self.textures.clone();
-        let mut ctx = PassContext::new(viewport, &textures);
+        let buffers = self.buffers.clone();
+        let mut ctx = PassContext::new(viewport, &textures, &buffers);
         let mut cursor = 0usize;
         while cursor < self.order.len() {
             let index = self.order[cursor];
@@ -327,55 +498,19 @@ impl FrameGraph {
 
     fn execute_batch_if_supported(
         &mut self,
-        start: usize,
-        end: usize,
+        _start: usize,
+        _end: usize,
         pass_name: &str,
-        ctx: &mut PassContext<'_, '_>,
+        _ctx: &mut PassContext<'_, '_>,
     ) -> bool {
         if pass_name == std::any::type_name::<TextPass>() {
-            let mut batch = Vec::with_capacity(end - start);
-            for pos in start..end {
-                let pass_index = self.order[pos];
-                if let Some(text_pass) = self.passes[pass_index]
-                    .pass
-                    .as_any_mut()
-                    .downcast_mut::<TextPass>()
-                {
-                    batch.push(text_pass.snapshot_draw());
-                }
-            }
-            execute_text_pass_batch(batch, ctx);
-            return true;
+            return false;
         }
         if pass_name == std::any::type_name::<DrawRectPass>() {
-            let mut batch = Vec::with_capacity(end - start);
-            for pos in start..end {
-                let pass_index = self.order[pos];
-                if let Some(pass) = self.passes[pass_index]
-                    .pass
-                    .as_any_mut()
-                    .downcast_mut::<DrawRectPass>()
-                {
-                    batch.push(pass.snapshot_draw());
-                }
-            }
-            execute_draw_rect_pass_batch(batch, ctx);
-            return true;
+            return false;
         }
         if pass_name == std::any::type_name::<OpaqueRectPass>() {
-            let mut batch = Vec::with_capacity(end - start);
-            for pos in start..end {
-                let pass_index = self.order[pos];
-                if let Some(pass) = self.passes[pass_index]
-                    .pass
-                    .as_any_mut()
-                    .downcast_mut::<OpaqueRectPass>()
-                {
-                    batch.push(pass.snapshot_draw());
-                }
-            }
-            execute_opaque_rect_pass_batch(batch, ctx);
-            return true;
+            return false;
         }
         false
     }
@@ -444,20 +579,43 @@ fn select_next_ready_node(
 pub struct PassContext<'a, 'b> {
     pub(crate) viewport: &'a mut Viewport,
     pub(crate) textures: &'b [TextureDesc],
+    pub(crate) buffers: &'b [BufferDesc],
     detail_timings: HashMap<String, f64>,
     detail_counts: HashMap<String, usize>,
     detail_order: Vec<String>,
 }
 
 impl<'a, 'b> PassContext<'a, 'b> {
-    pub(crate) fn new(viewport: &'a mut Viewport, textures: &'b [TextureDesc]) -> Self {
+    pub(crate) fn new(
+        viewport: &'a mut Viewport,
+        textures: &'b [TextureDesc],
+        buffers: &'b [BufferDesc],
+    ) -> Self {
         Self {
             viewport,
             textures,
+            buffers,
             detail_timings: HashMap::new(),
             detail_counts: HashMap::new(),
             detail_order: Vec::new(),
         }
+    }
+
+    pub fn buffer_desc(&self, handle: BufferHandle) -> Option<BufferDesc> {
+        self.buffers.get(handle.0 as usize).copied()
+    }
+
+    pub fn acquire_buffer(&mut self, handle: BufferHandle) -> Option<wgpu::Buffer> {
+        let desc = self.buffer_desc(handle)?;
+        self.viewport.acquire_frame_buffer(handle, desc)
+    }
+
+    pub fn upload_buffer(&mut self, handle: BufferHandle, offset: u64, data: &[u8]) -> bool {
+        let Some(desc) = self.buffer_desc(handle) else {
+            return false;
+        };
+        self.viewport
+            .upload_frame_buffer(handle, desc, offset, data)
     }
 
     pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {

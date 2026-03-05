@@ -1,4 +1,5 @@
 use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
+use super::dependency_resource::{DepIn, DepOut};
 use super::frame_graph::{FrameGraphError, ResourceHandle};
 use super::slot::{InSlot, OutSlot};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
@@ -80,6 +81,33 @@ impl<'a> BuildContext<'a> {
             None => {
                 self.build_errors
                     .push(FrameGraphError::MissingOutput("buffer slot has no handle"));
+            }
+        }
+    }
+
+    pub fn read_dep(&mut self, input: &mut DepIn, source: &DepOut) {
+        match source.handle {
+            Some(handle) => {
+                input.handle = Some(handle);
+                self.reads.push(ResourceHandle::Dep(handle));
+            }
+            None => {
+                self.build_errors.push(FrameGraphError::MissingInput(
+                    "dependency slot has no handle",
+                ));
+            }
+        }
+    }
+
+    pub fn write_dep(&mut self, output: &mut DepOut) {
+        match output.handle {
+            Some(handle) => {
+                self.writes.push(ResourceHandle::Dep(handle));
+            }
+            None => {
+                self.build_errors.push(FrameGraphError::MissingOutput(
+                    "dependency slot has no handle",
+                ));
             }
         }
     }

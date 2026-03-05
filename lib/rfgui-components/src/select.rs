@@ -175,28 +175,21 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     };
 
     if is_open && let RsxNode::Element(root_node) = &mut root {
-        root_node.children.push(build_menu_node(
-            &menu_items,
-            open_binding,
-            SELECT_TRIGGER_ANCHOR,
-        ));
+        root_node
+            .children
+            .push(build_menu_node(&menu_items, SELECT_TRIGGER_ANCHOR));
     }
 
     root
 }
 
-fn build_menu_node(
-    menu_items: &[SelectMenuItem],
-    menu_open: Binding<bool>,
-    anchor_name: &str,
-) -> RsxNode {
+fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode {
     let theme = use_theme().get();
     let option_nodes: Vec<RsxNode> = menu_items
         .iter()
         .map(|item| {
-            let menu_open = menu_open.clone();
             let mouse_down = MouseDownHandlerProp::new(move |event| {
-                event.meta.request_keep_focus();
+                event.meta.keep_focus();
                 event.meta.stop_propagation();
             });
             let option_disabled = item.disabled;
@@ -206,7 +199,7 @@ fn build_menu_node(
                     return;
                 }
                 on_select.call(event);
-                menu_open.set(false);
+                event.meta.viewport().set_focus(None);
                 event.meta.stop_propagation();
             });
 

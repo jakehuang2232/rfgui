@@ -38,7 +38,7 @@ impl<R: ResourceType, Tag> OutSlot<R, Tag> {
         self.handle
     }
 
-    pub(crate) fn with_handle(handle: R::Handle) -> Self {
+    pub fn with_handle(handle: R::Handle) -> Self {
         Self {
             handle: Some(handle),
             _pd: PhantomData,
@@ -51,7 +51,7 @@ impl<R: ResourceType, Tag> InSlot<R, Tag> {
         self.handle
     }
 
-    pub(crate) fn with_handle(handle: R::Handle) -> Self {
+    pub fn with_handle(handle: R::Handle) -> Self {
         Self {
             handle: Some(handle),
             _pd: PhantomData,

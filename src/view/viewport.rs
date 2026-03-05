@@ -3,11 +3,11 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use wgpu::util::StagingBelt;
 use wgpu::{
     Instance, Queue, TextureUsages,
     rwh::{HasDisplayHandle, HasWindowHandle},
 };
-
 use crate::transition::{
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y,
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -25,6 +25,7 @@ use crate::ui::{
     ViewportListenerAction, ViewportListenerHandle, take_state_dirty,
 };
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
+use crate::view::frame_graph::{BufferDesc, BufferHandle, FrameGraph};
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 use crate::{ColorLike, Cursor, HexColor, Style};
 
@@ -358,6 +359,8 @@ pub struct Viewport {
     depth_view: Option<wgpu::TextureView>,
     frame_state: Option<FrameState>,
     offscreen_render_target_pool: OffscreenRenderTargetPool,
+    frame_buffer_pool: HashMap<u32, FrameBufferEntry>,
+    upload_staging_belt: Option<StagingBelt>,
     pending_size: Option<(u32, u32)>,
     needs_reconfigure: bool,
     redraw_requested: bool,
@@ -384,8 +387,16 @@ pub struct Viewport {
     cursor_handler: Option<CursorHandler>,
     cursor_override: Option<Cursor>,
     frame_presented: bool,
+    last_frame_graph: Option<FrameGraph>,
     viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
     viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
+}
+
+#[derive(Clone)]
+struct FrameBufferEntry {
+    buffer: wgpu::Buffer,
+    size: u64,
+    usage: wgpu::BufferUsages,
 }
 
 impl Viewport {
@@ -993,6 +1004,8 @@ impl Viewport {
             depth_view: None,
             frame_state: None,
             offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
+            frame_buffer_pool: HashMap::new(),
+            upload_staging_belt: None,
             pending_size: None,
             needs_reconfigure: false,
             redraw_requested: false,
@@ -1036,9 +1049,14 @@ impl Viewport {
             cursor_handler: None,
             cursor_override: None,
             frame_presented: false,
+            last_frame_graph: None,
             viewport_mouse_move_listeners: Vec::new(),
             viewport_mouse_up_listeners: Vec::new(),
         }
+    }
+
+    pub fn dump_graph(&self) -> Option<String> {
+        self.last_frame_graph.as_ref().map(|graph| graph.to_dot())
     }
 
     pub fn debug_options(&self) -> ViewportDebugOptions {
@@ -1269,6 +1287,7 @@ impl Viewport {
                         device,
                         queue,
                         self.surface_config.format,
+                        self.msaa_sample_count,
                     );
                 }
             }
@@ -1292,8 +1311,17 @@ impl Viewport {
             None => return false,
         };
         surface.configure(device, &self.surface_config);
+        let device_for_prewarm = device.clone();
         self.release_render_resource_caches();
         self.create_frame_attachments();
+        if let Some(queue) = self.queue.as_ref() {
+            crate::view::render_pass::prewarm_text_pipeline(
+                &device_for_prewarm,
+                queue,
+                self.surface_config.format,
+                self.msaa_sample_count,
+            );
+        }
         self.needs_reconfigure = false;
         true
     }
@@ -1463,11 +1491,13 @@ impl Viewport {
             relayout_after_transition_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let build_graph_started_at = Instant::now();
-        let mut graph = super::frame_graph::FrameGraph::new();
+        let mut graph = FrameGraph::new();
+        let initial_dep = graph.declare_dep_token();
         let mut ctx = super::base_component::UiBuildContext::new(
             self.surface_config.width,
             self.surface_config.height,
             self.surface_config.format,
+            initial_dep,
         );
         let use_surface_present_pass =
             self.surface_config.alpha_mode == wgpu::CompositeAlphaMode::PostMultiplied;
@@ -1479,20 +1509,34 @@ impl Viewport {
             clear_rgba[2] *= a;
             clear_rgba[3] = a;
         }
-        let mut clear_pass = super::frame_graph::ClearPass::new(clear_rgba);
+
         let output = ctx.allocate_target(&mut graph);
         let output_handle = output.handle();
-        clear_pass.set_output(output.clone());
+        let clear_pass = super::frame_graph::ClearPass::new(
+            super::render_pass::clear_pass::ClearParams::new(clear_rgba),
+            super::render_pass::clear_pass::ClearInput::default(),
+            super::render_pass::clear_pass::ClearOutput {
+                render_target: output.clone(),
+                dep: super::frame_graph::DepOut::with_handle(initial_dep),
+            },
+        );
         if use_surface_present_pass {
             if let Some(handle) = output_handle {
-                clear_pass.set_color_target(Some(handle));
                 ctx.set_color_target(Some(handle));
             }
         }
         graph.add_pass(clear_pass);
-        ctx.set_last_target(output);
+        ctx.set_current_dep_token(initial_dep);
+        ctx.set_current_target(output);
         for root in roots.iter_mut() {
-            root.build(&mut graph, &mut ctx);
+            let next_state = root.build(
+                &mut graph,
+                super::base_component::UiBuildContext::from_parts(
+                    ctx.viewport(),
+                    ctx.state_clone(),
+                ),
+            );
+            ctx.set_state(next_state);
         }
         let mut deferred_node_ids = ctx.take_deferred_node_ids();
         let mut deferred_index = 0usize;
@@ -1515,22 +1559,37 @@ impl Viewport {
             }
         }
         if use_surface_present_pass {
-            let dependency_handle = ctx.last_target().and_then(|target| target.handle());
-            if let (Some(source_handle), Some(dep_handle)) = (output_handle, dependency_handle) {
-                let mut present_pass =
-                    super::render_pass::present_surface_pass::PresentSurfacePass::new();
-                present_pass.set_source_color_target(Some(source_handle));
-                present_pass.set_input(
-                    super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(dep_handle),
-                );
+            let dependency_handle = ctx.current_target().and_then(|target| target.handle());
+            if let Some(dep_handle) = dependency_handle {
+                let present_dep_out = graph.declare_dep_token();
+                let present_pass =
+                    super::render_pass::present_surface_pass::PresentSurfacePass::new(
+                        super::render_pass::present_surface_pass::PresentSurfaceParams,
+                        super::render_pass::present_surface_pass::PresentSurfaceInput {
+                            source: super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
+                                dep_handle,
+                            ),
+                            dep: super::frame_graph::DepIn::with_handle(ctx.current_dep_token()),
+                        },
+                        super::render_pass::present_surface_pass::PresentSurfaceOutput {
+                            dep: super::frame_graph::DepOut::with_handle(present_dep_out),
+                        },
+                    );
                 graph.add_pass(present_pass);
+                ctx.set_current_dep_token(present_dep_out);
             }
         }
         graph.normalize_opaque_rect_depths();
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let compile_started_at = Instant::now();
-        let compiled = graph.compile().is_ok();
+        let compiled = match graph.compile_with_upload(self) {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!("[warn] frame graph compile failed: {:?}", err);
+                false
+            }
+        };
         let compile_elapsed_ms = compile_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let mut execute_elapsed_ms = 0.0_f64;
@@ -1641,6 +1700,7 @@ impl Viewport {
             println!("{}", format_trace_render_tree(&trace_root));
         }
         self.frame_stats.record_frame(frame_start.elapsed());
+        self.last_frame_graph = Some(graph);
         transition_changed_after_layout
     }
 
@@ -1753,6 +1813,88 @@ impl Viewport {
             .acquire(device, handle, desc, self.msaa_sample_count)
     }
 
+    pub(crate) fn acquire_frame_buffer(
+        &mut self,
+        handle: BufferHandle,
+        desc: BufferDesc,
+    ) -> Option<wgpu::Buffer> {
+        let device = self.device.as_ref()?;
+        let key = handle.0;
+        let recreate = self
+            .frame_buffer_pool
+            .get(&key)
+            .is_none_or(|entry| entry.size != desc.size || entry.usage != desc.usage);
+        if recreate {
+            let usage = desc.usage | wgpu::BufferUsages::COPY_DST;
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: desc.label,
+                size: desc.size.max(1),
+                usage,
+                mapped_at_creation: false,
+            });
+            self.frame_buffer_pool.insert(
+                key,
+                FrameBufferEntry {
+                    buffer: buffer.clone(),
+                    size: desc.size.max(1),
+                    usage: desc.usage,
+                },
+            );
+        }
+        self.frame_buffer_pool
+            .get(&key)
+            .map(|entry| entry.buffer.clone())
+    }
+
+    pub(crate) fn upload_frame_buffer(
+        &mut self,
+        handle: BufferHandle,
+        desc: BufferDesc,
+        offset: u64,
+        data: &[u8],
+    ) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+        if offset % wgpu::COPY_BUFFER_ALIGNMENT != 0 {
+            return false;
+        }
+        let Some(buffer) = self.acquire_frame_buffer(handle, desc) else {
+            return false;
+        };
+        if self.upload_staging_belt.is_none() {
+            let Some(device) = self.device.as_ref().cloned() else {
+                return false;
+            };
+            self.upload_staging_belt = Some(StagingBelt::new(device, 1024 * 1024));
+        }
+        let Some(frame) = self.frame_state.as_mut() else {
+            return false;
+        };
+        let Some(staging_belt) = self.upload_staging_belt.as_mut() else {
+            return false;
+        };
+        let align = wgpu::COPY_BUFFER_ALIGNMENT as usize;
+        let rem = data.len() % align;
+        let padded_len = if rem == 0 {
+            data.len()
+        } else {
+            data.len() + (align - rem)
+        };
+        let end = offset.saturating_add(padded_len as u64);
+        if end > desc.size.max(1) {
+            return false;
+        }
+        let Some(size) = wgpu::BufferSize::new(padded_len as u64) else {
+            return false;
+        };
+        let mut mapped = staging_belt.write_buffer(&mut frame.encoder, &buffer, offset, size);
+        mapped.fill(0);
+        mapped[..data.len()].copy_from_slice(data);
+        drop(mapped);
+        true
+    }
+
     pub fn release_render_resource_caches(&mut self) {
         crate::view::render_pass::draw_rect_pass::clear_draw_rect_resources_cache();
         crate::view::render_pass::shadow_pass::clear_shadow_resources_cache();
@@ -1761,6 +1903,8 @@ impl Viewport {
         crate::view::render_pass::composite_layer_pass::clear_composite_layer_resources_cache();
         crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
         self.offscreen_render_target_pool.clear();
+        self.frame_buffer_pool.clear();
+        self.upload_staging_belt = None;
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
@@ -2114,8 +2258,10 @@ impl Viewport {
             }
         }
         let listener_handled = self.dispatch_viewport_mouse_up_listeners(&mut event);
-        self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled || listener_handled {
             self.request_redraw();
         }
@@ -2182,8 +2328,10 @@ impl Viewport {
             }
         }
         let listener_handled = self.dispatch_viewport_mouse_move_listeners(&mut event);
-        self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled || hover_changed || listener_handled {
             self.request_redraw();
         }
@@ -2238,7 +2386,10 @@ impl Viewport {
                 }
             }
         }
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -2346,9 +2497,10 @@ impl Viewport {
                 }
             }
         }
-        self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
-        self.sync_focus_dispatch();
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -2384,7 +2536,10 @@ impl Viewport {
                 }
             }
         }
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -2418,7 +2573,10 @@ impl Viewport {
                 }
             }
         }
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -2454,7 +2612,10 @@ impl Viewport {
                 }
             }
         }
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -2691,10 +2852,16 @@ impl Viewport {
                 };
             }
         };
+        if let Some(staging_belt) = self.upload_staging_belt.as_mut() {
+            staging_belt.finish();
+        }
 
         let submit_started_at = Instant::now();
         let queue = self.queue.as_ref().unwrap();
         queue.submit(Some(frame.encoder.finish()));
+        if let Some(staging_belt) = self.upload_staging_belt.as_mut() {
+            staging_belt.recall();
+        }
         let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let present_started_at = Instant::now();

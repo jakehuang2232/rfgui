@@ -3,9 +3,12 @@ use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
-use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
+use crate::view::frame_graph::texture_resource::TextureResource;
+use crate::view::frame_graph::{
+    BufferDesc, BufferResource, DepIn, DepOut,
+};
 use crate::view::render_pass::RenderPass;
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -19,25 +22,40 @@ pub type LayerIn = InSlot<TextureResource, LayerTag>;
 pub type LayerOut = OutSlot<TextureResource, LayerTag>;
 
 pub struct CompositeLayerPass {
-    rect_pos: [f32; 2],
-    rect_size: [f32; 2],
-    corner_radii: [f32; 4], // [top_left, top_right, bottom_right, bottom_left]
-    opacity: f32,
-    scissor_rect: Option<[u32; 4]>,
-    color_target: Option<TextureHandle>,
+    params: CompositeLayerParams,
+    vertex_buffer: CompositeVertexBufferOut,
+    index_buffer: CompositeIndexBufferOut,
+    prepared_vertices: Vec<CompositeVertex>,
+    prepared_indices: Vec<u32>,
     input: CompositeLayerInput,
     output: CompositeLayerOutput,
 }
 
+pub struct CompositeLayerParams {
+    pub rect_pos: [f32; 2],
+    pub rect_size: [f32; 2],
+    pub corner_radii: [f32; 4], // [top_left, top_right, bottom_right, bottom_left]
+    pub opacity: f32,
+    pub scissor_rect: Option<[u32; 4]>,
+}
+
+#[derive(Clone, Copy)]
+pub struct CompositeVertexBufferTag;
+pub type CompositeVertexBufferOut = OutSlot<BufferResource, CompositeVertexBufferTag>;
+#[derive(Clone, Copy)]
+pub struct CompositeIndexBufferTag;
+pub type CompositeIndexBufferOut = OutSlot<BufferResource, CompositeIndexBufferTag>;
+
 #[derive(Default)]
 pub struct CompositeLayerInput {
-    pub render_target: RenderTargetIn,
+    pub dep: DepIn,
     pub layer: LayerIn,
 }
 
 #[derive(Default)]
 pub struct CompositeLayerOutput {
     pub render_target: RenderTargetOut,
+    pub dep: DepOut,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -66,42 +84,21 @@ struct DebugVertex {
 
 impl CompositeLayerPass {
     pub fn new(
-        rect_pos: [f32; 2],
-        rect_size: [f32; 2],
-        corner_radii: [f32; 4],
-        opacity: f32,
-        layer: LayerOut,
+        params: CompositeLayerParams,
+        input: CompositeLayerInput,
+        output: CompositeLayerOutput,
     ) -> Self {
         Self {
-            rect_pos,
-            rect_size,
-            corner_radii,
-            opacity,
-            scissor_rect: None,
-            color_target: None,
-            input: CompositeLayerInput {
-                render_target: RenderTargetIn::default(),
-                layer: InSlot::with_handle(layer.handle().unwrap()),
-            },
-            output: CompositeLayerOutput::default(),
+            params,
+            vertex_buffer: CompositeVertexBufferOut::default(),
+            index_buffer: CompositeIndexBufferOut::default(),
+            prepared_vertices: Vec::new(),
+            prepared_indices: Vec::new(),
+            input,
+            output,
         }
     }
 
-    pub fn set_input(&mut self, input: RenderTargetIn) {
-        self.input.render_target = input;
-    }
-
-    pub fn set_output(&mut self, output: RenderTargetOut) {
-        self.output.render_target = output;
-    }
-
-    pub fn set_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.scissor_rect = scissor_rect;
-    }
-
-    pub fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        self.color_target = color_target;
-    }
 }
 
 impl RenderPass for CompositeLayerPass {
@@ -125,12 +122,59 @@ impl RenderPass for CompositeLayerPass {
     }
 
     fn build(&mut self, builder: &mut BuildContext) {
-        if let Some(handle) = self.input.render_target.handle() {
-            let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.render_target, &source);
+        self.vertex_buffer = builder.create_buffer(BufferDesc {
+            size: 256 * 1024,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+            label: Some("CompositeLayer Vertex Buffer"),
+        });
+        self.index_buffer = builder.create_buffer(BufferDesc {
+            size: 256 * 1024,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
+            label: Some("CompositeLayer Index Buffer"),
+        });
+        if let Some(handle) = self.input.dep.handle() {
+            let source: DepOut = DepOut::with_handle(handle);
+            builder.read_dep(&mut self.input.dep, &source);
         }
         if self.output.render_target.handle().is_some() {
             builder.write_texture(&mut self.output.render_target);
+        }
+        if self.output.dep.handle().is_some() {
+            builder.write_dep(&mut self.output.dep);
+        }
+    }
+
+    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+        let Some(layer_handle) = self.input.layer.handle() else {
+            return;
+        };
+        let surface_size = ctx.viewport.surface_size();
+        let (target_w, target_h) = match self.output.render_target.handle() {
+            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+            None => surface_size,
+        };
+        let (layer_w, layer_h) = render_target_size(ctx, layer_handle).unwrap_or(surface_size);
+        let scale = ctx.viewport.scale_factor();
+        let scaled_rect_pos = [self.params.rect_pos[0] * scale, self.params.rect_pos[1] * scale];
+        let scaled_rect_size = [self.params.rect_size[0] * scale, self.params.rect_size[1] * scale];
+        let scaled_corner_radii = self.params.corner_radii.map(|radius| radius * scale);
+        let (vertices, indices) = tessellate_composite_layer(
+            scaled_rect_pos,
+            scaled_rect_size,
+            scaled_corner_radii,
+            self.params.opacity,
+            target_w as f32,
+            target_h as f32,
+            layer_w as f32,
+            layer_h as f32,
+        );
+        self.prepared_vertices = vertices;
+        self.prepared_indices = indices;
+        if let Some(handle) = self.vertex_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&self.prepared_vertices));
+        }
+        if let Some(handle) = self.index_buffer.handle() {
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&self.prepared_indices));
         }
     }
 
@@ -141,19 +185,16 @@ impl RenderPass for CompositeLayerPass {
         let Some(layer_view) = render_target_view(ctx, layer_handle) else {
             return;
         };
-        let offscreen_view = match self.color_target {
+        let offscreen_view = match self.output.render_target.handle() {
             Some(handle) => render_target_view(ctx, handle),
             None => None,
         };
 
         let surface_size = ctx.viewport.surface_size();
-        let (target_w, target_h) = match self.color_target {
+        let (target_w, target_h) = match self.output.render_target.handle() {
             Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
             None => surface_size,
         };
-        let (layer_w, layer_h) = render_target_size(ctx, layer_handle).unwrap_or(surface_size);
-        let scale = ctx.viewport.scale_factor();
-
         let device = match ctx.viewport.device() {
             Some(device) => device.clone(),
             None => return,
@@ -168,34 +209,23 @@ impl RenderPass for CompositeLayerPass {
             *resources = create_resources(&device, format);
         }
 
-        let scaled_rect_pos = [self.rect_pos[0] * scale, self.rect_pos[1] * scale];
-        let scaled_rect_size = [self.rect_size[0] * scale, self.rect_size[1] * scale];
-        let scaled_corner_radii = self.corner_radii.map(|radius| radius * scale);
-
-        let (vertices, indices) = tessellate_composite_layer(
-            scaled_rect_pos,
-            scaled_rect_size,
-            scaled_corner_radii,
-            self.opacity,
-            target_w as f32,
-            target_h as f32,
-            layer_w as f32,
-            layer_h as f32,
-        );
-        if vertices.is_empty() || indices.is_empty() {
+        if self.prepared_vertices.is_empty() || self.prepared_indices.is_empty() {
             return;
         }
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("CompositeLayer Vertex Buffer (Per Pass)"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("CompositeLayer Index Buffer (Per Pass)"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let Some(vertex_buffer) = self
+            .vertex_buffer
+            .handle()
+            .and_then(|h| ctx.acquire_buffer(h))
+        else {
+            return;
+        };
+        let Some(index_buffer) = self
+            .index_buffer
+            .handle()
+            .and_then(|h| ctx.acquire_buffer(h))
+        else {
+            return;
+        };
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("CompositeLayer Bind Group"),
@@ -211,7 +241,7 @@ impl RenderPass for CompositeLayerPass {
                 },
             ],
         });
-        let scissor_rect_physical = self.scissor_rect.and_then(|scissor_rect| {
+        let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
             ctx.viewport
                 .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
@@ -252,12 +282,12 @@ impl RenderPass for CompositeLayerPass {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+        pass.draw_indexed(0..self.prepared_indices.len() as u32, 0, 0..1);
 
         if debug_geometry_overlay {
             let (debug_vertices, debug_indices) = build_debug_overlay_geometry(
-                &vertices,
-                &indices,
+                &self.prepared_vertices,
+                &self.prepared_indices,
                 target_w as f32,
                 target_h as f32,
                 [0.2, 1.0, 0.95, 0.95],
@@ -286,20 +316,9 @@ impl RenderPass for CompositeLayerPass {
 }
 
 impl RenderTargetPass for CompositeLayerPass {
-    fn set_input(&mut self, input: RenderTargetIn) {
-        CompositeLayerPass::set_input(self, input);
-    }
-
-    fn set_output(&mut self, output: RenderTargetOut) {
-        CompositeLayerPass::set_output(self, output);
-    }
-
     fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.scissor_rect = intersect_scissor_rects(self.scissor_rect, scissor_rect);
-    }
-
-    fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
-        CompositeLayerPass::set_color_target(self, color_target);
+        self.params.scissor_rect =
+            intersect_scissor_rects(self.params.scissor_rect, scissor_rect);
     }
 }
 

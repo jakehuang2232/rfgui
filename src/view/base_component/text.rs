@@ -2,14 +2,17 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::view::frame_graph::FrameGraph;
+use crate::view::frame_graph::{DepIn, DepOut};
+use crate::view::render_pass::text_pass::TextPassParams;
+use crate::view::render_pass::text_pass::{TextInput, TextOutput};
 use crate::view::render_pass::TextPass;
 use crate::{ColorLike, Cursor, HexColor, Style, TextAlign};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
 
 use super::{
-    BoxModelSnapshot, Element, ElementTrait, EventTarget, Layoutable, Position, Renderable, Size,
-    UiBuildContext,
+    BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, Layoutable, Position,
+    Renderable, Size, UiBuildContext,
 };
 
 pub struct Text {
@@ -583,33 +586,51 @@ impl Layoutable for Text {
 }
 
 impl Renderable for Text {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
+    fn build(&mut self, graph: &mut FrameGraph, mut ctx: UiBuildContext) -> BuildState {
         if !self.should_render || self.content.is_empty() {
-            return;
+            return ctx.into_state();
         }
 
         let opacity = self.opacity.clamp(0.0, 1.0);
         if opacity <= 0.0 {
-            return;
+            return ctx.into_state();
         }
 
+        let Some(input_target) = ctx.current_target() else {
+            return ctx.into_state();
+        };
+        let next_dep = graph.declare_dep_token();
         let mut pass = TextPass::new(
-            self.content.clone(),
-            self.layout_position.x,
-            self.layout_position.y,
-            self.layout_size.width,
-            self.layout_size.height,
-            self.color.to_rgba_f32(),
-            opacity,
-            self.font_size,
-            self.line_height,
-            self.font_weight,
-            self.font_families.clone(),
-            self.align,
-            self.allow_wrap,
+            TextPassParams {
+                content: self.content.clone(),
+                x: self.layout_position.x,
+                y: self.layout_position.y,
+                width: self.layout_size.width,
+                height: self.layout_size.height,
+                color: self.color.to_rgba_f32(),
+                opacity,
+                font_size: self.font_size,
+                line_height: self.line_height,
+                font_weight: self.font_weight,
+                font_families: self.font_families.clone(),
+                align: self.align,
+                allow_wrap: self.allow_wrap,
+                scissor_rect: None,
+                stencil_clip_id: None,
+            },
+            TextInput {
+                dep: DepIn::with_handle(ctx.current_dep_token()),
+            },
+            TextOutput {
+                render_target: input_target,
+                dep: DepOut::with_handle(next_dep),
+            },
         );
-        pass.set_scissor_rect(None);
-        ctx.push_pass(graph, pass);
+        ctx.configure_pass(&mut pass);
+        graph.add_pass(pass);
+        ctx.set_current_target(input_target);
+        ctx.set_current_dep_token(next_dep);
+        ctx.into_state()
     }
 }
 

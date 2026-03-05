@@ -1,5 +1,10 @@
 use crate::ui::MouseButton as UiMouseButton;
 use crate::view::frame_graph::FrameGraph;
+use crate::view::frame_graph::{DepIn, DepOut};
+use crate::view::render_pass::draw_rect_pass::{
+    DrawRectInput, DrawRectOutput, RectPassParams, RenderTargetIn,
+};
+use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPassParams};
 use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::{ColorLike, Cursor as UiCursor, HexColor, Style};
 use glyphon::cosmic_text::{Affinity, Align, Cursor, Motion};
@@ -10,8 +15,8 @@ use std::time::{Duration, Instant};
 use crate::ui::Binding;
 
 use super::{
-    BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
-    Layoutable, Position, Renderable, Size, UiBuildContext,
+    BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, LayoutConstraints,
+    LayoutPlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
 };
 
 pub struct TextArea {
@@ -1831,14 +1836,14 @@ impl Layoutable for TextArea {
 }
 
 impl Renderable for TextArea {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
+    fn build(&mut self, graph: &mut FrameGraph, mut ctx: UiBuildContext) -> BuildState {
         if !self.should_render {
-            return;
+            return ctx.into_state();
         }
 
         let opacity = self.opacity.clamp(0.0, 1.0);
         if opacity <= 0.0 {
-            return;
+            return ctx.into_state();
         }
 
         let (content, color) = self.render_payload();
@@ -1852,56 +1857,127 @@ impl Renderable for TextArea {
 
         if !content.is_empty() {
             for (position, size) in self.selection_screen_rects(content.as_str()) {
-                let mut selection_pass =
-                    DrawRectPass::new(position, size, [0.28, 0.52, 0.94, 0.35], opacity);
+                let mut selection_pass = DrawRectPass::new(
+                    RectPassParams {
+                        position,
+                        size,
+                        fill_color: [0.28, 0.52, 0.94, 0.35],
+                        opacity,
+                        ..Default::default()
+                    },
+                    DrawRectInput::default(),
+                    DrawRectOutput::default(),
+                );
                 selection_pass.set_scissor_rect(clip);
-                ctx.push_pass(graph, selection_pass);
+                push_draw_rect_pass_explicit(graph, &mut ctx, selection_pass);
             }
             let ime_underline_rects = self.ime_preedit_underline_rects(content.as_str());
 
-            let mut pass = TextPass::new(
-                content,
-                self.layout_position.x,
-                self.layout_position.y - self.scroll_y,
-                self.layout_size.width,
-                self.layout_size.height.max(self.content_height()),
-                color,
-                opacity,
-                self.font_size,
-                self.line_height,
-                400,
-                self.font_families.clone(),
-                Align::Left,
-                self.multiline,
+            push_text_pass_explicit(
+                graph,
+                &mut ctx,
+                TextPassParams {
+                    content,
+                    x: self.layout_position.x,
+                    y: self.layout_position.y - self.scroll_y,
+                    width: self.layout_size.width,
+                    height: self.layout_size.height.max(self.content_height()),
+                    color,
+                    opacity,
+                    font_size: self.font_size,
+                    line_height: self.line_height,
+                    font_weight: 400,
+                    font_families: self.font_families.clone(),
+                    align: Align::Left,
+                    allow_wrap: self.multiline,
+                    scissor_rect: clip,
+                    stencil_clip_id: None,
+                },
             );
-            pass.set_scissor_rect(clip);
-            ctx.push_pass(graph, pass);
 
             for (position, size) in ime_underline_rects {
-                let mut underline_pass =
-                    DrawRectPass::new(position, size, self.color.to_rgba_f32(), opacity);
+                let mut underline_pass = DrawRectPass::new(
+                    RectPassParams {
+                        position,
+                        size,
+                        fill_color: self.color.to_rgba_f32(),
+                        opacity,
+                        ..Default::default()
+                    },
+                    DrawRectInput::default(),
+                    DrawRectOutput::default(),
+                );
                 underline_pass.set_scissor_rect(clip);
-                ctx.push_pass(graph, underline_pass);
+                push_draw_rect_pass_explicit(graph, &mut ctx, underline_pass);
             }
         }
 
         if let Some((caret_x, caret_y)) = self.caret_screen_position() {
             self.cached_ime_cursor_rect = Some((caret_x, caret_y, 1.0, self.line_height_px()));
             if !self.should_draw_caret() {
-                return;
+                return ctx.into_state();
             }
             let mut caret_pass = DrawRectPass::new(
-                [caret_x, caret_y],
-                [1.0, self.line_height_px()],
-                self.color.to_rgba_f32(),
-                opacity,
+                RectPassParams {
+                    position: [caret_x, caret_y],
+                    size: [1.0, self.line_height_px()],
+                    fill_color: self.color.to_rgba_f32(),
+                    opacity,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
             );
             caret_pass.set_scissor_rect(clip);
-            ctx.push_pass(graph, caret_pass);
+            push_draw_rect_pass_explicit(graph, &mut ctx, caret_pass);
         } else {
             self.cached_ime_cursor_rect = None;
         }
+        ctx.into_state()
     }
+}
+
+fn push_draw_rect_pass_explicit(
+    graph: &mut FrameGraph,
+    ctx: &mut UiBuildContext,
+    mut pass: DrawRectPass,
+) {
+    ctx.configure_pass(&mut pass);
+    let Some(input_target) = ctx.current_target() else {
+        return;
+    };
+    let output_target = ctx.allocate_target(graph);
+    if let Some(handle) = input_target.handle() {
+        pass.set_input(RenderTargetIn::with_handle(handle));
+    }
+    pass.set_dep_input(Some(ctx.current_dep_token()));
+    let next_dep = graph.declare_dep_token();
+    pass.set_dep_output(Some(next_dep));
+    pass.set_output(output_target);
+    graph.add_pass(pass);
+    ctx.set_current_target(output_target);
+    ctx.set_current_dep_token(next_dep);
+}
+
+fn push_text_pass_explicit(graph: &mut FrameGraph, ctx: &mut UiBuildContext, params: TextPassParams) {
+    let Some(input_target) = ctx.current_target() else {
+        return;
+    };
+    let next_dep = graph.declare_dep_token();
+    let mut pass = TextPass::new(
+        params,
+        TextInput {
+            dep: DepIn::with_handle(ctx.current_dep_token()),
+        },
+        TextOutput {
+            render_target: input_target,
+            dep: DepOut::with_handle(next_dep),
+        },
+    );
+    ctx.configure_pass(&mut pass);
+    graph.add_pass(pass);
+    ctx.set_current_target(input_target);
+    ctx.set_current_dep_token(next_dep);
 }
 
 #[cfg(test)]

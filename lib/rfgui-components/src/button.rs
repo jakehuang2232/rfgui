@@ -91,7 +91,7 @@ impl RsxComponent<ButtonProps> for Button {
                     align_items: AlignItems::Center,
                     padding: theme.component.button.padding,
                     border_radius: theme.component.button.radius,
-                    border: Border::uniform(Length::px(1.0), border_color.as_ref()),
+                    border: Border::uniform(Length::px(0.5), border_color.as_ref()),
                     background: background,
                     transition: Transitions::single(
                         Transition::new(TransitionProperty::BackgroundColor, transition_duration)
@@ -104,6 +104,7 @@ impl RsxComponent<ButtonProps> for Button {
                 }}
             >
                 <Text
+                    font_size={theme.typography.size.sm}
                     align={Center}
                     style={{ color: text_color }}
                 >

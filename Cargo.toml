@@ -23,6 +23,7 @@ rfgui-rsx = { path = "rsx-macro" }
 winit = "0.30.12"
 pollster = "0.3"
 rfgui-components = { path = "lib/rfgui-components" }
+rfd = "0.17.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26.1"
