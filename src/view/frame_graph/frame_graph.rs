@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::buffer_resource::{BufferDesc, BufferHandle};
 use super::dependency_resource::DepHandle;
 use super::texture_resource::{TextureDesc, TextureHandle};
 use crate::view::render_pass::draw_rect_pass::{DrawRectPass, OpaqueRectPass};
-use crate::view::render_pass::text_pass::TextPass;
-use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
+use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
+use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassBatchKey, RenderPassDyn};
 use crate::view::viewport::Viewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,6 +27,12 @@ struct PassNode {
     writes: Vec<ResourceHandle>,
 }
 
+#[derive(Clone, Copy)]
+enum ExecuteStep {
+    Single { index: usize },
+    SharedRun { start: usize, end: usize },
+}
+
 pub struct FrameGraph {
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
@@ -34,12 +41,7 @@ pub struct FrameGraph {
     order: Vec<usize>,
     compiled: bool,
     build_errors: Vec<FrameGraphError>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct BatchSignature {
-    pass_name: &'static str,
-    key: u64,
+    execute_steps: Vec<ExecuteStep>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -60,6 +62,7 @@ impl FrameGraph {
             order: Vec::new(),
             compiled: false,
             build_errors: Vec::new(),
+            execute_steps: Vec::new(),
         }
     }
 
@@ -159,7 +162,9 @@ impl FrameGraph {
                         if !has_prior_writer
                             && !writers.iter().copied().any(|writer| writer == index)
                         {
-                            return Err(FrameGraphError::MissingInput("resource has no prior writer"));
+                            return Err(FrameGraphError::MissingInput(
+                                "resource has no prior writer",
+                            ));
                         }
                     }
                     _ => {
@@ -180,20 +185,17 @@ impl FrameGraph {
             .filter_map(|(idx, &deg)| if deg == 0 { Some(idx) } else { None })
             .collect();
 
-        let batch_signatures: Vec<Option<BatchSignature>> = self
+        let batch_signatures: Vec<Option<RenderPassBatchKey>> = self
             .passes
             .iter()
             .map(|node| {
                 if !node.pass.batchable() {
                     return None;
                 }
-                node.pass.get_batch_key().map(|key| BatchSignature {
-                    pass_name: node.pass.name(),
-                    key,
-                })
+                node.pass.batch_key()
             })
             .collect();
-        let mut last_signature: Option<BatchSignature> = None;
+        let mut last_signature: Option<RenderPassBatchKey> = None;
 
         while !queue.is_empty() {
             let n = select_next_ready_node(&queue, &batch_signatures, last_signature);
@@ -212,7 +214,22 @@ impl FrameGraph {
             return Err(FrameGraphError::CyclicDependency);
         }
 
+        if batch_trace_enabled() {
+            for (pos, &pass_index) in self.order.iter().enumerate() {
+                let pass = &self.passes[pass_index].pass;
+                if is_rect_pass_name(pass.name()) {
+                    eprintln!(
+                        "[batch][compile] pos={} pass={} key={:?}",
+                        pos,
+                        pass.name(),
+                        pass.batch_key()
+                    );
+                }
+            }
+        }
+
         self.compiled = true;
+        self.rebuild_execute_steps();
         Ok(())
     }
 
@@ -385,51 +402,21 @@ impl FrameGraph {
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
         let mut ctx = PassContext::new(viewport, &textures, &buffers);
-        let mut cursor = 0usize;
-        while cursor < self.order.len() {
-            let index = self.order[cursor];
-            let pass_name = self.passes[index].pass.name().to_string();
-            let (batchable, batch_key) = {
-                let pass = &mut self.passes[index].pass;
-                (pass.batchable(), pass.get_batch_key())
-            };
-
-            if batchable && batch_key.is_some() {
-                let mut end = cursor + 1;
-                while end < self.order.len() {
-                    let next_index = self.order[end];
-                    let (next_name, next_batchable, next_key) = {
-                        let pass = &mut self.passes[next_index].pass;
-                        (pass.name(), pass.batchable(), pass.get_batch_key())
-                    };
-                    if !next_batchable || next_name != pass_name.as_str() || next_key != batch_key {
-                        break;
+        for step in self.execute_steps.clone() {
+            match step {
+                ExecuteStep::Single { index } => {
+                    let pass_name = self.passes[index].pass.name().to_string();
+                    let pass_started_at = Instant::now();
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        self.passes[index].pass.execute(&mut ctx, None);
+                    }));
+                    let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
+                    if !pass_timings.contains_key(&pass_name) {
+                        pass_first_seen_order.push(pass_name.clone());
                     }
-                    end += 1;
-                }
-
-                let pass_started_at = Instant::now();
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    self.execute_batch_if_supported(cursor, end, &pass_name, &mut ctx)
-                }));
-                let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
-                match result {
-                    Ok(true) => {
-                        if !pass_timings.contains_key(&pass_name) {
-                            pass_first_seen_order.push(pass_name.clone());
-                        }
-                        *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
-                        *pass_counts.entry(pass_name).or_insert(0) += end - cursor;
-                        cursor = end;
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(payload) => {
-                        if !pass_timings.contains_key(&pass_name) {
-                            pass_first_seen_order.push(pass_name.clone());
-                        }
-                        *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
-                        *pass_counts.entry(pass_name.clone()).or_insert(0) += end - cursor;
+                    *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
+                    *pass_counts.entry(pass_name.clone()).or_insert(0) += 1;
+                    if let Err(payload) = result {
                         let detail = if let Some(message) = payload.downcast_ref::<&str>() {
                             *message
                         } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -441,36 +428,19 @@ impl FrameGraph {
                             "[warn] render pass panicked and was skipped: {} ({})",
                             pass_name, detail
                         );
-                        cursor = end;
-                        continue;
                     }
                 }
+                ExecuteStep::SharedRun { start, end } => {
+                    self.execute_shared_run(
+                        start,
+                        end,
+                        &mut ctx,
+                        &mut pass_timings,
+                        &mut pass_counts,
+                        &mut pass_first_seen_order,
+                    );
+                }
             }
-
-            let pass_started_at = Instant::now();
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                self.passes[index].pass.execute(&mut ctx);
-            }));
-            let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
-            if !pass_timings.contains_key(&pass_name) {
-                pass_first_seen_order.push(pass_name.clone());
-            }
-            *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
-            *pass_counts.entry(pass_name.clone()).or_insert(0) += 1;
-            if let Err(payload) = result {
-                let detail = if let Some(message) = payload.downcast_ref::<&str>() {
-                    *message
-                } else if let Some(message) = payload.downcast_ref::<String>() {
-                    message.as_str()
-                } else {
-                    "unknown panic payload"
-                };
-                eprintln!(
-                    "[warn] render pass panicked and was skipped: {} ({})",
-                    pass_name, detail
-                );
-            }
-            cursor += 1;
         }
         let mut top_passes: Vec<(String, f64)> = pass_timings
             .iter()
@@ -496,23 +466,153 @@ impl FrameGraph {
         })
     }
 
-    fn execute_batch_if_supported(
+}
+
+impl FrameGraph {
+    fn rebuild_execute_steps(&mut self) {
+        self.execute_steps.clear();
+        let mut cursor = 0usize;
+        while cursor < self.order.len() {
+            let index = self.order[cursor];
+            let key = self.passes[index].pass.batch_key();
+            if !self.passes[index].pass.shared_render_pass_capable() || key.is_none() {
+                self.execute_steps.push(ExecuteStep::Single { index });
+                cursor += 1;
+                continue;
+            }
+            let current_key = key;
+            let mut end = cursor + 1;
+            while end < self.order.len() {
+                let next_index = self.order[end];
+                if !self.passes[next_index].pass.shared_render_pass_capable() {
+                    break;
+                }
+                let next_key = self.passes[next_index].pass.batch_key();
+                let compatible = match (current_key, next_key) {
+                    (Some(a), Some(b)) => batch_keys_compatible(a, b),
+                    _ => false,
+                };
+                if !compatible {
+                    break;
+                }
+                end += 1;
+            }
+            if end > cursor + 1 {
+                self.execute_steps.push(ExecuteStep::SharedRun { start: cursor, end });
+                cursor = end;
+            } else {
+                self.execute_steps.push(ExecuteStep::Single { index });
+                cursor += 1;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_shared_run(
         &mut self,
-        _start: usize,
-        _end: usize,
-        pass_name: &str,
-        _ctx: &mut PassContext<'_, '_>,
-    ) -> bool {
-        if pass_name == std::any::type_name::<TextPass>() {
-            return false;
+        start: usize,
+        end: usize,
+        ctx: &mut PassContext<'_, '_>,
+        pass_timings: &mut HashMap<String, f64>,
+        pass_counts: &mut HashMap<String, usize>,
+        pass_first_seen_order: &mut Vec<String>,
+    ) {
+        let Some(first_index) = self.order.get(start).copied() else {
+            return;
+        };
+        let Some(key) = self.passes[first_index].pass.batch_key() else {
+            for offset in start..end {
+                let index = self.order[offset];
+                let pass_name = self.passes[index].pass.name().to_string();
+                let pass_started_at = Instant::now();
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    self.passes[index].pass.execute(ctx, None);
+                }));
+                let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
+                if !pass_timings.contains_key(&pass_name) {
+                    pass_first_seen_order.push(pass_name.clone());
+                }
+                *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
+                *pass_counts.entry(pass_name.clone()).or_insert(0) += 1;
+                if result.is_err() {
+                    eprintln!("[warn] render pass panicked and was skipped: {}", pass_name);
+                }
+            }
+            return;
+        };
+
+        let (offscreen_view, offscreen_msaa_view) = match key.color_target {
+            Some(handle) => (
+                render_target_view(ctx, handle),
+                render_target_msaa_view(ctx, handle),
+            ),
+            None => (None, None),
+        };
+        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
+        let (encoder_ptr, surface_view, surface_resolve_view, depth_view) = {
+            let Some(parts) = ctx.viewport.frame_parts() else {
+                return;
+            };
+            (
+                parts.encoder as *mut wgpu::CommandEncoder,
+                parts.view.clone(),
+                parts.resolve_view.cloned(),
+                parts.depth_view.cloned(),
+            )
+        };
+        let surface_resolve = if msaa_enabled {
+            surface_resolve_view.as_ref()
+        } else {
+            None
+        };
+        let (color_view, resolve_target) = match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
+            (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+            (Some(resolve_view), None) => (resolve_view, None),
+            (None, _) => (&surface_view, surface_resolve),
+        };
+        let depth_attachment = depth_view
+            .as_ref()
+            .map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            });
+        let encoder = unsafe { &mut *encoder_ptr };
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("FrameGraph RectRun"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+                resolve_target,
+            })],
+            depth_stencil_attachment: depth_attachment,
+            ..Default::default()
+        });
+
+        for offset in start..end {
+            let index = self.order[offset];
+            let pass_name = self.passes[index].pass.name().to_string();
+            let pass_started_at = Instant::now();
+            self.passes[index]
+                .pass
+                .execute(ctx, Some(&mut render_pass));
+            let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
+            if !pass_timings.contains_key(&pass_name) {
+                pass_first_seen_order.push(pass_name.clone());
+            }
+            *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
+            *pass_counts.entry(pass_name).or_insert(0) += 1;
         }
-        if pass_name == std::any::type_name::<DrawRectPass>() {
-            return false;
-        }
-        if pass_name == std::any::type_name::<OpaqueRectPass>() {
-            return false;
-        }
-        false
     }
 }
 
@@ -526,13 +626,15 @@ fn remove_from_queue(queue: &mut VecDeque<usize>, value: usize) -> usize {
 
 fn select_next_ready_node(
     queue: &VecDeque<usize>,
-    signatures: &[Option<BatchSignature>],
-    last_signature: Option<BatchSignature>,
+    signatures: &[Option<RenderPassBatchKey>],
+    last_signature: Option<RenderPassBatchKey>,
 ) -> usize {
     if let Some(last_signature) = last_signature {
         let mut best: Option<usize> = None;
         for &idx in queue {
-            if signatures[idx] == Some(last_signature) {
+            if signatures[idx]
+                .is_some_and(|signature| batch_keys_compatible(last_signature, signature))
+            {
                 if best.is_none_or(|current| idx < current) {
                     best = Some(idx);
                 }
@@ -543,15 +645,15 @@ fn select_next_ready_node(
         }
     }
 
-    let mut grouped_counts: HashMap<BatchSignature, usize> = HashMap::new();
-    for &idx in queue {
-        if let Some(signature) = signatures[idx] {
-            *grouped_counts.entry(signature).or_insert(0) += 1;
-        }
-    }
-
-    let mut best_signature: Option<(BatchSignature, usize)> = None;
-    for (signature, count) in grouped_counts {
+    let mut best_signature: Option<(RenderPassBatchKey, usize)> = None;
+    let unique_signatures: HashSet<RenderPassBatchKey> =
+        queue.iter().filter_map(|&idx| signatures[idx]).collect();
+    for signature in unique_signatures {
+        let count = queue
+            .iter()
+            .filter_map(|&idx| signatures[idx])
+            .filter(|&candidate| batch_keys_compatible(signature, candidate))
+            .count();
         if best_signature.is_none_or(|(_, best_count)| count > best_count) {
             best_signature = Some((signature, count));
         }
@@ -562,7 +664,9 @@ fn select_next_ready_node(
     {
         let mut best: Option<usize> = None;
         for &idx in queue {
-            if signatures[idx] == Some(target_signature) {
+            if signatures[idx]
+                .is_some_and(|signature| batch_keys_compatible(target_signature, signature))
+            {
                 if best.is_none_or(|current| idx < current) {
                     best = Some(idx);
                 }
@@ -574,6 +678,23 @@ fn select_next_ready_node(
     }
 
     queue.iter().copied().min().unwrap_or(0)
+}
+
+fn is_rect_pass_name(name: &str) -> bool {
+    name == std::any::type_name::<DrawRectPass>() || name == std::any::type_name::<OpaqueRectPass>()
+}
+
+fn batch_keys_compatible(current: RenderPassBatchKey, next: RenderPassBatchKey) -> bool {
+    current.color_target == next.color_target
+}
+
+fn batch_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("RFGUI_TRACE_BATCH")
+            .ok()
+            .is_some_and(|value| value == "1")
+    })
 }
 
 pub struct PassContext<'a, 'b> {

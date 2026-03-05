@@ -4,12 +4,10 @@ use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{BufferDesc, BufferResource, DepHandle, DepIn, DepOut};
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::render_target::{
     render_target_bundle, render_target_msaa_view, render_target_size, render_target_view,
 };
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use crate::view::render_pass::{RenderPass, RenderPassBatchKey};
 use std::num::NonZeroU64;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -257,13 +255,13 @@ impl DrawRectPass {
         OpaqueRectPass::from_draw_rect_pass(self)
     }
 
-    pub fn batch_key(&self) -> DrawRectBatchKey {
-        let (stencil_class, _) = stencil_class_and_reference(self.stencil_mode);
-        DrawRectBatchKey {
+    pub fn batch_key(&self) -> RenderPassBatchKey {
+        RenderPassBatchKey {
             color_target: self.output.render_target.handle(),
-            stencil_class,
-            color_write_enabled: self.color_write_enabled,
-            render_mode: self.render_mode,
+            uses_depth_stencil: draw_requires_depth_stencil(
+                RectShaderVariant::Alpha,
+                self.stencil_mode,
+            ),
         }
     }
 
@@ -302,11 +300,15 @@ impl DrawRectPass {
             None => surface_size,
         };
         let scale = ctx.viewport.scale_factor();
-        let scaled_position = [self.params.position[0] * scale, self.params.position[1] * scale];
+        let scaled_position = [
+            self.params.position[0] * scale,
+            self.params.position[1] * scale,
+        ];
         let scaled_size = [self.params.size[0] * scale, self.params.size[1] * scale];
         let scaled_border_widths = self.params.border_widths.map(|v| v * scale);
         let scaled_border_radii = self
-            .params.border_radii
+            .params
+            .border_radii
             .map(|r| [r[0].max(0.0) * scale, r[1].max(0.0) * scale]);
         let border_side_colors = if self.params.use_border_side_colors {
             self.params.border_side_colors
@@ -387,6 +389,7 @@ impl DrawRectPass {
             }],
         }));
     }
+
 }
 
 impl OpaqueRectPass {
@@ -427,9 +430,16 @@ impl OpaqueRectPass {
         self.inner.params.depth = (1.0 - t).clamp(0.0, 1.0);
     }
 
-    pub fn batch_key(&self) -> DrawRectBatchKey {
-        self.inner.batch_key()
+    pub fn batch_key(&self) -> RenderPassBatchKey {
+        RenderPassBatchKey {
+            color_target: self.inner.output.render_target.handle(),
+            uses_depth_stencil: draw_requires_depth_stencil(
+                RectShaderVariant::Opaque,
+                self.inner.stencil_mode,
+            ),
+        }
     }
+
 }
 
 impl RenderTargetPass for DrawRectPass {
@@ -445,7 +455,6 @@ impl RenderTargetPass for DrawRectPass {
             self.set_stencil_test(clip_id);
         }
     }
-
 }
 
 impl RenderTargetPass for OpaqueRectPass {
@@ -456,7 +465,6 @@ impl RenderTargetPass for OpaqueRectPass {
     fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
         self.inner.apply_stencil_clip(clip_id);
     }
-
 }
 
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
@@ -507,14 +515,6 @@ enum RectStencilClass {
     Decrement,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DrawRectBatchKey {
-    color_target: Option<TextureHandle>,
-    stencil_class: RectStencilClass,
-    color_write_enabled: bool,
-    render_mode: RectRenderMode,
-}
-
 #[derive(Clone, Copy)]
 pub struct DrawRectDraw {
     position: [f32; 2],
@@ -532,6 +532,13 @@ pub struct DrawRectDraw {
     color_write_enabled: bool,
     color_target: Option<TextureHandle>,
     render_mode: RectRenderMode,
+}
+
+#[derive(Clone)]
+pub(crate) struct DrawRectBatchEntry {
+    draw: DrawRectDraw,
+    variant: RectShaderVariant,
+    prepared_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl RenderPass for DrawRectPass {
@@ -576,18 +583,24 @@ impl RenderPass for DrawRectPass {
         self.compile_upload_uniform(ctx, RectShaderVariant::Alpha);
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
-        execute_draw_rect_pass(self, ctx, RectShaderVariant::Alpha);
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
+        execute_draw_rect_pass(self, ctx, RectShaderVariant::Alpha, render_pass);
     }
 
     fn batchable(&self) -> bool {
-        false
+        true
     }
 
-    fn get_batch_key(&self) -> Option<u64> {
-        let mut hasher = DefaultHasher::new();
-        self.batch_key().hash(&mut hasher);
-        Some(hasher.finish())
+    fn batch_key(&self) -> Option<RenderPassBatchKey> {
+        Some(DrawRectPass::batch_key(self))
+    }
+
+    fn shared_render_pass_capable(&self) -> bool {
+        true
     }
 }
 
@@ -634,18 +647,24 @@ impl RenderPass for OpaqueRectPass {
             .compile_upload_uniform(ctx, RectShaderVariant::Opaque);
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
-        execute_draw_rect_pass(&mut self.inner, ctx, RectShaderVariant::Opaque);
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
+        execute_draw_rect_pass(&mut self.inner, ctx, RectShaderVariant::Opaque, render_pass);
     }
 
     fn batchable(&self) -> bool {
-        false
+        true
     }
 
-    fn get_batch_key(&self) -> Option<u64> {
-        let mut hasher = DefaultHasher::new();
-        self.batch_key().hash(&mut hasher);
-        Some(hasher.finish())
+    fn batch_key(&self) -> Option<RenderPassBatchKey> {
+        Some(OpaqueRectPass::batch_key(self))
+    }
+
+    fn shared_render_pass_capable(&self) -> bool {
+        true
     }
 }
 
@@ -683,12 +702,192 @@ fn stencil_class_and_reference(stencil_mode: RectStencilMode) -> (RectStencilCla
     }
 }
 
+fn draw_requires_depth_stencil(variant: RectShaderVariant, stencil_mode: RectStencilMode) -> bool {
+    let _ = (variant, stencil_mode);
+    true
+}
+
 fn execute_draw_rect_pass(
     pass_def: &mut DrawRectPass,
     ctx: &mut PassContext<'_, '_>,
     variant: RectShaderVariant,
+    mut render_pass: Option<&mut wgpu::RenderPass<'_>>,
 ) {
-    let first_draw = pass_def.snapshot_draw();
+    if let Some(pass) = render_pass.as_mut() {
+        encode_draw_rect_into_existing_pass(pass_def, ctx, variant, pass);
+        return;
+    }
+    let entry = DrawRectBatchEntry {
+        draw: pass_def.snapshot_draw(),
+        variant,
+        prepared_bind_group: pass_def.prepared_bind_group.clone(),
+    };
+    let _ = execute_draw_rect_batch(std::slice::from_ref(&entry), ctx);
+}
+
+fn encode_draw_rect_into_existing_pass(
+    pass_def: &mut DrawRectPass,
+    ctx: &mut PassContext<'_, '_>,
+    variant: RectShaderVariant,
+    pass: &mut wgpu::RenderPass<'_>,
+) {
+    let draw = pass_def.snapshot_draw();
+    let surface_size = ctx.viewport.surface_size();
+    let (target_w, target_h) = match draw.color_target {
+        Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+        None => surface_size,
+    };
+    let scale = ctx.viewport.scale_factor();
+    let device = match ctx.viewport.device() {
+        Some(device) => device.clone(),
+        None => return,
+    };
+    let format = ctx.viewport.surface_format();
+    let sample_count = ctx.viewport.msaa_sample_count();
+    let scaled_position = [draw.position[0] * scale, draw.position[1] * scale];
+    let scaled_size = [draw.size[0] * scale, draw.size[1] * scale];
+    let scaled_border_widths = draw.border_widths.map(|v| v * scale);
+    let scaled_border_radii = draw
+        .border_radii
+        .map(|r| [r[0].max(0.0) * scale, r[1].max(0.0) * scale]);
+    let border_side_colors = if draw.use_border_side_colors {
+        draw.border_side_colors
+    } else {
+        [draw.border_color; 4]
+    };
+    let params = build_rect_params(
+        scaled_position,
+        scaled_size,
+        scaled_border_widths,
+        scaled_border_radii,
+        draw.fill_color,
+        border_side_colors,
+        draw.opacity,
+        draw.depth,
+        target_w as f32,
+        target_h as f32,
+    );
+    if params.outer_rect[2] <= params.outer_rect[0] || params.outer_rect[3] <= params.outer_rect[1]
+    {
+        return;
+    }
+    let (stencil_class, stencil_reference) = stencil_class_and_reference(draw.stencil_mode);
+    let cache_key = rect_resource_cache_key(
+        variant,
+        stencil_class,
+        draw.color_write_enabled,
+        draw.render_mode,
+    );
+    let (pipeline, bind_group_layout, vertex_buffer, index_buffer, index_count) = {
+        let cache = draw_rect_resources_cache();
+        let mut cache = cache.lock().unwrap();
+        let resources = cache.get_or_insert_with(cache_key, || {
+            create_draw_rect_resources(
+                &device,
+                format,
+                sample_count,
+                variant,
+                stencil_class,
+                draw.color_write_enabled,
+                draw.render_mode,
+            )
+        });
+        if resources.pipeline_format != format
+            || resources.pipeline_sample_count != sample_count
+            || resources.variant != variant
+            || resources.stencil_class != stencil_class
+            || resources.color_write_enabled != draw.color_write_enabled
+            || resources.render_mode != draw.render_mode
+        {
+            *resources = create_draw_rect_resources(
+                &device,
+                format,
+                sample_count,
+                variant,
+                stencil_class,
+                draw.color_write_enabled,
+                draw.render_mode,
+            );
+        }
+        (
+            resources.pipeline.clone(),
+            resources.bind_group_layout.clone(),
+            resources.vertex_buffer.clone(),
+            resources.index_buffer.clone(),
+            resources.index_count,
+        )
+    };
+    let bind_group = if let Some(bind_group) = pass_def.prepared_bind_group.clone() {
+        bind_group
+    } else {
+        let fallback_uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("DrawRect Params Buffer Fallback"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("DrawRect Bind Group Fallback"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: fallback_uniform_buffer.as_entire_binding(),
+            }],
+        })
+    };
+    let scissor_rect_physical = draw.scissor_rect.and_then(|scissor_rect| {
+        ctx.viewport
+            .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
+    });
+    pass.set_pipeline(&pipeline);
+    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+    pass.set_bind_group(0, &bind_group, &[0]);
+    if let Some(stencil_reference) = stencil_reference {
+        pass.set_stencil_reference(stencil_reference as u32);
+    }
+    if let Some([x, y, width, height]) = scissor_rect_physical {
+        pass.set_scissor_rect(x, y, width, height);
+    } else {
+        pass.set_scissor_rect(0, 0, target_w, target_h);
+    }
+    pass.draw_indexed(0..index_count, 0, 0..1);
+}
+
+pub(crate) fn execute_draw_rect_batch(
+    entries: &[DrawRectBatchEntry],
+    ctx: &mut PassContext<'_, '_>,
+) -> bool {
+    if entries.is_empty() {
+        return true;
+    }
+    let first_draw = entries[0].draw;
+    if entries
+        .iter()
+        .any(|entry| entry.draw.color_target != first_draw.color_target)
+    {
+        if batch_trace_enabled() {
+            eprintln!(
+                "[batch][draw_rect] reject: mixed color_target in batch (len={})",
+                entries.len()
+            );
+        }
+        return false;
+    }
+    let first_uses_depth = draw_requires_depth_stencil(entries[0].variant, first_draw.stencil_mode);
+    if entries.iter().any(|entry| {
+        let uses_depth = draw_requires_depth_stencil(entry.variant, entry.draw.stencil_mode);
+        uses_depth != first_uses_depth
+    }) {
+        if batch_trace_enabled() {
+            eprintln!(
+                "[batch][draw_rect] reject: mixed depth/stencil requirement in batch (len={})",
+                entries.len()
+            );
+        }
+        return false;
+    }
+
     let surface_size = ctx.viewport.surface_size();
     let lookup_started_at = Instant::now();
     let (offscreen_view, offscreen_msaa_view, target_w, target_h) = match first_draw.color_target {
@@ -714,126 +913,164 @@ fn execute_draw_rect_pass(
         lookup_started_at.elapsed().as_secs_f64() * 1000.0,
     );
 
-    let device_state_started_at = Instant::now();
     let scale = ctx.viewport.scale_factor();
     let device = match ctx.viewport.device() {
         Some(device) => device.clone(),
-        None => return,
+        None => return false,
     };
     let format = ctx.viewport.surface_format();
     let sample_count = ctx.viewport.msaa_sample_count();
-    let (stencil_class, _) = stencil_class_and_reference(first_draw.stencil_mode);
-    let cache_key = rect_resource_cache_key(
-        variant,
-        stencil_class,
-        first_draw.color_write_enabled,
-        first_draw.render_mode,
-    );
-    ctx.record_detail_timing(
-        "execute/draw_rect/resources/device_state",
-        device_state_started_at.elapsed().as_secs_f64() * 1000.0,
-    );
+    let uses_depth_stencil = first_uses_depth;
 
-    let cache_started_at = Instant::now();
-    let (pipeline, bind_group_layout, vertex_buffer, index_buffer, index_count, uses_depth_stencil) = {
-        let cache = draw_rect_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(cache_key, || {
-            create_draw_rect_resources(
-                &device,
-                format,
-                sample_count,
-                variant,
-                stencil_class,
-                first_draw.color_write_enabled,
-                first_draw.render_mode,
-            )
-        });
-        if resources.pipeline_format != format
-            || resources.pipeline_sample_count != sample_count
-            || resources.variant != variant
-            || resources.stencil_class != stencil_class
-            || resources.color_write_enabled != first_draw.color_write_enabled
-            || resources.render_mode != first_draw.render_mode
+    struct EncodedDraw {
+        pipeline: wgpu::RenderPipeline,
+        vertex_buffer: wgpu::Buffer,
+        index_buffer: wgpu::Buffer,
+        index_count: u32,
+        bind_group: wgpu::BindGroup,
+        stencil_reference: Option<u8>,
+        scissor_rect_physical: Option<[u32; 4]>,
+    }
+
+    let mut encoded_draws: Vec<EncodedDraw> = Vec::with_capacity(entries.len());
+    let mut fallback_total_ms = 0.0_f64;
+    let mut framegraph_bind_count = 0_u32;
+    for entry in entries {
+        let draw = entry.draw;
+        let scaled_position = [draw.position[0] * scale, draw.position[1] * scale];
+        let scaled_size = [draw.size[0] * scale, draw.size[1] * scale];
+        let scaled_border_widths = draw.border_widths.map(|v| v * scale);
+        let scaled_border_radii = draw
+            .border_radii
+            .map(|r| [r[0].max(0.0) * scale, r[1].max(0.0) * scale]);
+        let border_side_colors = if draw.use_border_side_colors {
+            draw.border_side_colors
+        } else {
+            [draw.border_color; 4]
+        };
+        let params = build_rect_params(
+            scaled_position,
+            scaled_size,
+            scaled_border_widths,
+            scaled_border_radii,
+            draw.fill_color,
+            border_side_colors,
+            draw.opacity,
+            draw.depth,
+            target_w as f32,
+            target_h as f32,
+        );
+        if params.outer_rect[2] <= params.outer_rect[0]
+            || params.outer_rect[3] <= params.outer_rect[1]
         {
-            *resources = create_draw_rect_resources(
-                &device,
-                format,
-                sample_count,
-                variant,
-                stencil_class,
-                first_draw.color_write_enabled,
-                first_draw.render_mode,
+            continue;
+        }
+        let (stencil_class, stencil_reference) = stencil_class_and_reference(draw.stencil_mode);
+        let cache_key = rect_resource_cache_key(
+            entry.variant,
+            stencil_class,
+            draw.color_write_enabled,
+            draw.render_mode,
+        );
+        let (pipeline, bind_group_layout, vertex_buffer, index_buffer, index_count) = {
+            let cache = draw_rect_resources_cache();
+            let mut cache = cache.lock().unwrap();
+            let resources = cache.get_or_insert_with(cache_key, || {
+                create_draw_rect_resources(
+                    &device,
+                    format,
+                    sample_count,
+                    entry.variant,
+                    stencil_class,
+                    draw.color_write_enabled,
+                    draw.render_mode,
+                )
+            });
+            if resources.pipeline_format != format
+                || resources.pipeline_sample_count != sample_count
+                || resources.variant != entry.variant
+                || resources.stencil_class != stencil_class
+                || resources.color_write_enabled != draw.color_write_enabled
+                || resources.render_mode != draw.render_mode
+            {
+                *resources = create_draw_rect_resources(
+                    &device,
+                    format,
+                    sample_count,
+                    entry.variant,
+                    stencil_class,
+                    draw.color_write_enabled,
+                    draw.render_mode,
+                );
+            }
+            (
+                resources.pipeline.clone(),
+                resources.bind_group_layout.clone(),
+                resources.vertex_buffer.clone(),
+                resources.index_buffer.clone(),
+                resources.index_count,
+            )
+        };
+        let bind_group = if let Some(bind_group) = entry.prepared_bind_group.clone() {
+            framegraph_bind_count = framegraph_bind_count.saturating_add(1);
+            bind_group
+        } else {
+            let fallback_started_at = Instant::now();
+            let fallback_uniform_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("DrawRect Params Buffer Fallback"),
+                    contents: bytemuck::bytes_of(&params),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            fallback_total_ms += fallback_started_at.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "[warn] DrawRect fallback: using temporary uniform buffer (prepared bind group unavailable)"
+            );
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("DrawRect Bind Group Fallback"),
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: fallback_uniform_buffer.as_entire_binding(),
+                }],
+            })
+        };
+        let scissor_rect_physical = draw.scissor_rect.and_then(|scissor_rect| {
+            ctx.viewport
+                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
+        });
+        encoded_draws.push(EncodedDraw {
+            pipeline,
+            vertex_buffer,
+            index_buffer,
+            index_count,
+            bind_group,
+            stencil_reference,
+            scissor_rect_physical,
+        });
+    }
+
+    if encoded_draws.is_empty() {
+        if batch_trace_enabled() {
+            eprintln!(
+                "[batch][draw_rect] skip: all draws clipped out/empty (len={})",
+                entries.len()
             );
         }
-        (
-            resources.pipeline.clone(),
-            resources.bind_group_layout.clone(),
-            resources.vertex_buffer.clone(),
-            resources.index_buffer.clone(),
-            resources.index_count,
-            resources.uses_depth_stencil,
-        )
-    };
-    ctx.record_detail_timing(
-        "execute/draw_rect/resources/cache",
-        cache_started_at.elapsed().as_secs_f64() * 1000.0,
-    );
+        return true;
+    }
+
     ctx.record_detail_timing(
         "execute/draw_rect/resources",
         lookup_started_at.elapsed().as_secs_f64() * 1000.0,
     );
 
-    let params_started_at = Instant::now();
-    let scaled_position = [
-        first_draw.position[0] * scale,
-        first_draw.position[1] * scale,
-    ];
-    let scaled_size = [first_draw.size[0] * scale, first_draw.size[1] * scale];
-    let scaled_border_widths = first_draw.border_widths.map(|v| v * scale);
-    let scaled_border_radii = first_draw
-        .border_radii
-        .map(|r| [r[0].max(0.0) * scale, r[1].max(0.0) * scale]);
-    let border_side_colors = if first_draw.use_border_side_colors {
-        first_draw.border_side_colors
-    } else {
-        [first_draw.border_color; 4]
-    };
-    let params = build_rect_params(
-        scaled_position,
-        scaled_size,
-        scaled_border_widths,
-        scaled_border_radii,
-        first_draw.fill_color,
-        border_side_colors,
-        first_draw.opacity,
-        first_draw.depth,
-        target_w as f32,
-        target_h as f32,
-    );
-    ctx.record_detail_timing(
-        "execute/draw_rect/params",
-        params_started_at.elapsed().as_secs_f64() * 1000.0,
-    );
-    if params.outer_rect[2] <= params.outer_rect[0] || params.outer_rect[3] <= params.outer_rect[1]
-    {
-        return;
-    }
-    let (_, stencil_reference) = stencil_class_and_reference(first_draw.stencil_mode);
-    let scissor_rect_physical = first_draw.scissor_rect.and_then(|scissor_rect| {
-        ctx.viewport
-            .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
-    });
-
     let encode_started_at = Instant::now();
-    let mut binding_total_ms = 0.0_f64;
-    let mut fallback_total_ms = 0.0_f64;
-    let mut framegraph_bind_count = 0_u32;
     {
         let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
         let parts = match ctx.viewport.frame_parts() {
             Some(parts) => parts,
-            None => return,
+            None => return false,
         };
         let surface_resolve = if msaa_enabled {
             parts.resolve_view
@@ -866,49 +1103,21 @@ fn execute_draw_rect_pass(
                 },
                 ..Default::default()
             });
-
-        pass.set_pipeline(&pipeline);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        let binding_started_at = Instant::now();
-        let fallback_started_at = Instant::now();
-        let (bind_group, dynamic_offset) = if let Some(bind_group) =
-            pass_def.prepared_bind_group.as_ref()
-        {
-            framegraph_bind_count = framegraph_bind_count.saturating_add(1);
-            (bind_group.clone(), 0)
-        } else {
-            let fallback_uniform_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("DrawRect Params Buffer Fallback"),
-                    contents: bytemuck::bytes_of(&params),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-            eprintln!(
-                "[warn] DrawRect fallback: using temporary uniform buffer (prepared bind group unavailable)"
-            );
-            let fallback_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("DrawRect Bind Group Fallback"),
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: fallback_uniform_buffer.as_entire_binding(),
-                }],
-            });
-            fallback_total_ms += fallback_started_at.elapsed().as_secs_f64() * 1000.0;
-            (fallback_bind_group, 0)
-        };
-        binding_total_ms += binding_started_at.elapsed().as_secs_f64() * 1000.0;
-        pass.set_bind_group(0, &bind_group, &[dynamic_offset]);
-        if let Some(stencil_reference) = stencil_reference {
-            pass.set_stencil_reference(stencil_reference as u32);
+        for draw in &encoded_draws {
+            pass.set_pipeline(&draw.pipeline);
+            pass.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
+            pass.set_index_buffer(draw.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_bind_group(0, &draw.bind_group, &[0]);
+            if let Some(stencil_reference) = draw.stencil_reference {
+                pass.set_stencil_reference(stencil_reference as u32);
+            }
+            if let Some([x, y, width, height]) = draw.scissor_rect_physical {
+                pass.set_scissor_rect(x, y, width, height);
+            } else {
+                pass.set_scissor_rect(0, 0, target_w, target_h);
+            }
+            pass.draw_indexed(0..draw.index_count, 0, 0..1);
         }
-        if let Some([x, y, width, height]) = scissor_rect_physical {
-            pass.set_scissor_rect(x, y, width, height);
-        } else {
-            pass.set_scissor_rect(0, 0, target_w, target_h);
-        }
-        pass.draw_indexed(0..index_count, 0, 0..1);
     }
     for _ in 0..framegraph_bind_count {
         ctx.record_detail_count("execute/draw_rect/binding/ring_hit");
@@ -916,13 +1125,20 @@ fn execute_draw_rect_pass(
     if fallback_total_ms > 0.0 {
         ctx.record_detail_timing("execute/draw_rect/binding/fallback", fallback_total_ms);
     }
-    if binding_total_ms > 0.0 {
-        ctx.record_detail_timing("execute/draw_rect/binding", binding_total_ms);
-    }
     ctx.record_detail_timing(
         "execute/draw_rect/encode",
         encode_started_at.elapsed().as_secs_f64() * 1000.0,
     );
+    true
+}
+
+fn batch_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("RFGUI_TRACE_BATCH")
+            .ok()
+            .is_some_and(|value| value == "1")
+    })
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -971,7 +1187,6 @@ pub(crate) struct DrawRectResources {
     stencil_class: RectStencilClass,
     color_write_enabled: bool,
     render_mode: RectRenderMode,
-    uses_depth_stencil: bool,
 }
 
 fn create_draw_rect_resources(
@@ -1083,16 +1298,22 @@ fn create_draw_rect_resources(
             topology: wgpu::PrimitiveTopology::TriangleList,
             ..Default::default()
         },
-        depth_stencil: match (variant, stencil_class) {
-            (RectShaderVariant::Alpha, RectStencilClass::None) => None,
-            (RectShaderVariant::Opaque, RectStencilClass::None) => Some(wgpu::DepthStencilState {
+        depth_stencil: Some(match (variant, stencil_class) {
+            (RectShaderVariant::Alpha, RectStencilClass::None) => wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24PlusStencil8,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            },
+            (RectShaderVariant::Opaque, RectStencilClass::None) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
-            }),
-            (_, RectStencilClass::Test) => Some(wgpu::DepthStencilState {
+            },
+            (_, RectStencilClass::Test) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: matches!(variant, RectShaderVariant::Opaque),
                 depth_compare: if matches!(variant, RectShaderVariant::Opaque) {
@@ -1117,8 +1338,8 @@ fn create_draw_rect_resources(
                     write_mask: 0xFF,
                 },
                 bias: wgpu::DepthBiasState::default(),
-            }),
-            (_, RectStencilClass::Increment) => Some(wgpu::DepthStencilState {
+            },
+            (_, RectStencilClass::Increment) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Always,
@@ -1139,8 +1360,8 @@ fn create_draw_rect_resources(
                     write_mask: 0xFF,
                 },
                 bias: wgpu::DepthBiasState::default(),
-            }),
-            (_, RectStencilClass::Decrement) => Some(wgpu::DepthStencilState {
+            },
+            (_, RectStencilClass::Decrement) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Always,
@@ -1161,8 +1382,8 @@ fn create_draw_rect_resources(
                     write_mask: 0xFF,
                 },
                 bias: wgpu::DepthBiasState::default(),
-            }),
-        },
+            },
+        }),
         multisample: wgpu::MultisampleState {
             count: sample_count,
             mask: !0,
@@ -1203,10 +1424,6 @@ fn create_draw_rect_resources(
         stencil_class,
         color_write_enabled,
         render_mode,
-        uses_depth_stencil: !matches!(
-            (variant, stencil_class),
-            (RectShaderVariant::Alpha, RectStencilClass::None)
-        ),
     }
 }
 

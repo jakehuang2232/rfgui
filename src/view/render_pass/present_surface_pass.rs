@@ -43,7 +43,6 @@ impl PresentSurfacePass {
             output,
         }
     }
-
 }
 
 impl RenderPass for PresentSurfacePass {
@@ -80,7 +79,11 @@ impl RenderPass for PresentSurfacePass {
         }
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
         let _ = &self.params;
         let Some(input_handle) = self.input.source.handle() else {
             return;

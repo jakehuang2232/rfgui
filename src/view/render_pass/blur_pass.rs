@@ -3,9 +3,7 @@ use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{
-    BufferDesc, BufferResource, DepIn, DepOut,
-};
+use crate::view::frame_graph::{BufferDesc, BufferResource, DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
@@ -89,7 +87,6 @@ impl BlurPass {
             output,
         }
     }
-
 }
 
 impl RenderPass for BlurPass {
@@ -149,7 +146,11 @@ impl RenderPass for BlurPass {
         }
     }
 
-    fn execute(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn execute(
+        &mut self,
+        ctx: &mut PassContext<'_, '_>,
+        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
+    ) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };
