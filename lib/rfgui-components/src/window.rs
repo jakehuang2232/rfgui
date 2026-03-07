@@ -151,6 +151,8 @@ enum ResizeEdge {
     Right,
     Top,
     Bottom,
+    TopLeft,
+    TopRight,
     BottomLeft,
     BottomRight,
 }
@@ -160,6 +162,8 @@ impl ResizeEdge {
         match self {
             Self::Left | Self::Right => Cursor::EwResize,
             Self::Top | Self::Bottom => Cursor::NsResize,
+            Self::TopLeft => Cursor::NwseResize,
+            Self::TopRight => Cursor::NeswResize,
             Self::BottomLeft => Cursor::NeswResize,
             Self::BottomRight => Cursor::NwseResize,
         }
@@ -468,6 +472,22 @@ fn WindowView(
                         ResizeEdge::Bottom => {
                             next_height = (start_height + dy).max(MIN_HEIGHT);
                         }
+                        ResizeEdge::TopLeft => {
+                            let raw_width = start_width - dx;
+                            next_width = raw_width.max(MIN_WIDTH);
+                            next_x = start_x + (start_width - next_width);
+
+                            let raw_height = start_height - dy;
+                            next_height = raw_height.max(MIN_HEIGHT);
+                            next_y = start_y + (start_height - next_height);
+                        }
+                        ResizeEdge::TopRight => {
+                            next_width = (start_width + dx).max(MIN_WIDTH);
+
+                            let raw_height = start_height - dy;
+                            next_height = raw_height.max(MIN_HEIGHT);
+                            next_y = start_y + (start_height - next_height);
+                        }
                         ResizeEdge::BottomRight => {
                             next_width = (start_width + dx).max(MIN_WIDTH);
                             next_height = (start_height + dy).max(MIN_HEIGHT);
@@ -529,6 +549,8 @@ fn WindowView(
     let resize_right_down = make_resize_down(ResizeEdge::Right);
     let resize_top_down = make_resize_down(ResizeEdge::Top);
     let resize_bottom_down = make_resize_down(ResizeEdge::Bottom);
+    let resize_top_left_down = make_resize_down(ResizeEdge::TopLeft);
+    let resize_top_right_down = make_resize_down(ResizeEdge::TopRight);
     let resize_bottom_left_down = make_resize_down(ResizeEdge::BottomLeft);
     let resize_bottom_right_down = make_resize_down(ResizeEdge::BottomRight);
 
@@ -626,6 +648,30 @@ fn WindowView(
                     cursor: Cursor::NsResize,
                 }}
                 on_mouse_down={resize_bottom_down}
+            />
+            <Element
+                style={{
+                    position: Position::absolute()
+                        .left(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .top(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .clip(Viewport),
+                    width: Length::px(RESIZE_CORNER_SIZE),
+                    height: Length::px(RESIZE_CORNER_SIZE),
+                    cursor: Cursor::NwseResize,
+                }}
+                on_mouse_down={resize_top_left_down}
+            />
+            <Element
+                style={{
+                    position: Position::absolute()
+                        .right(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .top(Length::px(-RESIZE_CORNER_SIZE / 2.0))
+                        .clip(Viewport),
+                    width: Length::px(RESIZE_CORNER_SIZE),
+                    height: Length::px(RESIZE_CORNER_SIZE),
+                    cursor: Cursor::NeswResize,
+                }}
+                on_mouse_down={resize_top_right_down}
             />
             <Element
                 style={{

@@ -1,7 +1,7 @@
 use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
-use rfgui::{AlignItems, BorderRadius, Display, Length, Padding, Transition, TransitionProperty};
+use rfgui::{AlignItems, Display, Length, Operator, Transition, TransitionProperty};
 
 pub struct Switch;
 
@@ -40,6 +40,20 @@ fn SwitchView(
     disabled: bool,
 ) -> RsxNode {
     let theme = use_theme().get();
+    let switch_theme = &theme.component.switch;
+    let thumb_travel = Length::calc(
+        Length::calc(
+            Length::calc(
+                switch_theme.track_width,
+                Operator::subtract,
+                switch_theme.track_padding.left,
+            ),
+            Operator::subtract,
+            switch_theme.track_padding.right,
+        ),
+        Operator::subtract,
+        switch_theme.thumb_width,
+    );
     let fallback_checked = use_state(|| checked);
     let checked_binding = if has_binding {
         binding
@@ -64,10 +78,10 @@ fn SwitchView(
             <Element style={{
                 display: Display::flow().row().no_wrap(),
                 align_items: AlignItems::Center,
-                width: Length::px(44.0),
-                height: Length::px(18.0),
-                padding: Padding::uniform(Length::px(2.0)),
-                border_radius: BorderRadius::uniform(Length::px(8.0)),
+                width: switch_theme.track_width,
+                height: switch_theme.track_height,
+                padding: switch_theme.track_padding,
+                border_radius: switch_theme.track_radius,
                 transition: [
                     Transition::new(
                         TransitionProperty::BackgroundColor,
@@ -84,16 +98,16 @@ fn SwitchView(
                 },
             }}>
                 <Element style={{
-                    width: Length::px(if checked { 20.0 } else { 0.0 }),
-                    height: Length::px(14.0),
+                    width: if checked { thumb_travel } else { Length::Zero },
+                    height: switch_theme.thumb_height,
                     transition: [
                         Transition::new(TransitionProperty::Width, 180).ease_in_out(),
                     ],
                 }} />
                 <Element style={{
-                    width: Length::px(20.0),
-                    height: Length::px(14.0),
-                    border_radius: BorderRadius::uniform(Length::px(10.0)),
+                    width: switch_theme.thumb_width,
+                    height: switch_theme.thumb_height,
+                    border_radius: switch_theme.thumb_radius,
                     background: if disabled {
                         theme.color.layer.raised.clone()
                     } else {

@@ -46,41 +46,6 @@ impl RsxComponent<ButtonProps> for Button {
         let theme = use_theme().get();
         let variant = props.variant.unwrap_or(ButtonVariant::Contained);
         let disabled = props.disabled.unwrap_or(false);
-        let (background, border_color, hover_background, text_color): (
-            Box<dyn ColorLike>,
-            Box<dyn ColorLike>,
-            Box<dyn ColorLike>,
-            Box<dyn ColorLike>,
-        ) = if disabled {
-            (
-                theme.color.state.disabled.clone(),
-                theme.color.state.disabled.clone(),
-                theme.color.state.disabled.clone(),
-                theme.color.text.disabled.clone(),
-            )
-        } else {
-            match variant {
-                ButtonVariant::Contained => (
-                    theme.color.primary.base.clone(),
-                    theme.color.primary.base.clone(),
-                    theme.color.state.active.clone(),
-                    theme.color.primary.on.clone(),
-                ),
-                ButtonVariant::Outlined => (
-                    theme.color.layer.surface.clone(),
-                    theme.color.primary.base.clone(),
-                    theme.color.state.hover.clone(),
-                    theme.color.text.primary.clone(),
-                ),
-                ButtonVariant::Text => (
-                    Box::new(Color::transparent()) as Box<dyn ColorLike>,
-                    Box::new(Color::transparent()) as Box<dyn ColorLike>,
-                    theme.color.state.hover.clone(),
-                    theme.color.text.primary.clone(),
-                ),
-            }
-        };
-        let transition_duration = theme.motion.duration.normal;
         let mut root = rsx! {
             <Element
                 style={{
@@ -91,22 +56,59 @@ impl RsxComponent<ButtonProps> for Button {
                     align_items: AlignItems::Center,
                     padding: theme.component.button.padding,
                     border_radius: theme.component.button.radius,
-                    border: Border::uniform(Length::px(0.5), border_color.as_ref()),
-                    background: background,
+                    border: if disabled {
+                        Border::uniform(Length::px(0.5), theme.color.state.disabled.as_ref())
+                    } else {
+                        match variant {
+                            ButtonVariant::Contained => Border::uniform(Length::px(0.5), theme.color.primary.base.as_ref()),
+                            ButtonVariant::Outlined => Border::uniform(Length::px(0.5), theme.color.primary.base.as_ref()),
+                            ButtonVariant::Text => Border::uniform(
+                                Length::px(0.5),
+                                (Box::new(Color::transparent()) as Box<dyn ColorLike>).as_ref(),
+                            ),
+                        }
+                    },
+                    background: if disabled {
+                        theme.color.state.disabled.clone()
+                    } else {
+                        match variant {
+                            ButtonVariant::Contained => theme.color.primary.base.clone(),
+                            ButtonVariant::Outlined => None,
+                            ButtonVariant::Text => Box::new(Color::transparent()) as Box<dyn ColorLike>,
+                        }
+                    },
                     transition: Transitions::single(
-                        Transition::new(TransitionProperty::BackgroundColor, transition_duration)
+                        Transition::new(TransitionProperty::BackgroundColor, theme.motion.duration.normal)
                             .ease_in_out(),
                     ),
                     cursor: Cursor::Pointer,
                     hover: {
-                        background: hover_background,
+                        background: if disabled {
+                            theme.color.state.disabled.clone()
+                        } else {
+                            match variant {
+                                ButtonVariant::Contained => theme.color.state.active.clone(),
+                                ButtonVariant::Outlined => theme.color.state.hover.clone(),
+                                ButtonVariant::Text => theme.color.state.hover.clone(),
+                            }
+                        },
                     },
                 }}
             >
                 <Text
                     font_size={theme.typography.size.sm}
                     align={Center}
-                    style={{ color: text_color }}
+                    style={{
+                        color: if disabled {
+                            theme.color.text.disabled.clone()
+                        } else {
+                            match variant {
+                                ButtonVariant::Contained => theme.color.primary.on.clone(),
+                                ButtonVariant::Outlined => theme.color.text.primary.clone(),
+                                ButtonVariant::Text => theme.color.text.primary.clone(),
+                            }
+                        }
+                    }}
                 >
                     {props.label}
                 </Text>

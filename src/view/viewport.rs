@@ -1,13 +1,3 @@
-use arboard::Clipboard;
-use std::any::Any;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use wgpu::util::StagingBelt;
-use wgpu::{
-    Instance, Queue, TextureUsages,
-    rwh::{HasDisplayHandle, HasWindowHandle},
-};
 use crate::transition::{
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y,
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -28,6 +18,16 @@ use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
 use crate::view::frame_graph::{BufferDesc, BufferHandle, FrameGraph};
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 use crate::{ColorLike, Cursor, HexColor, Style};
+use arboard::Clipboard;
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use wgpu::util::StagingBelt;
+use wgpu::{
+    Instance, Queue, TextureUsages,
+    rwh::{HasDisplayHandle, HasWindowHandle},
+};
 
 pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
 impl<T: HasWindowHandle + HasDisplayHandle> WindowHandle for T {}
@@ -388,6 +388,8 @@ pub struct Viewport {
     cursor_override: Option<Cursor>,
     frame_presented: bool,
     last_frame_graph: Option<FrameGraph>,
+    debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+    debug_overlay_indices: Vec<u32>,
     viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
     viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
 }
@@ -571,6 +573,27 @@ impl Viewport {
             }
         }
         changed
+    }
+
+    fn sync_hover_target(
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+        hovered_node_id: &mut Option<u64>,
+        next_target: Option<u64>,
+    ) -> (bool, bool) {
+        let transition_dispatched =
+            super::base_component::dispatch_hover_transition(roots, *hovered_node_id, next_target);
+        *hovered_node_id = next_target;
+        let hover_changed = Self::apply_hover_target(roots, next_target);
+        (hover_changed, transition_dispatched)
+    }
+
+    fn sync_hover_visual_only(
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+        hovered_node_id: &mut Option<u64>,
+        next_target: Option<u64>,
+    ) -> bool {
+        *hovered_node_id = next_target;
+        Self::apply_hover_target(roots, next_target)
     }
 
     fn save_scroll_states(
@@ -989,7 +1012,7 @@ impl Viewport {
                 width: 1,
                 height: 1,
                 present_mode: Self::present_mode_from_env(),
-                desired_maximum_frame_latency: 3,
+                desired_maximum_frame_latency: 2,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
                 view_formats: vec![],
             },
@@ -1050,6 +1073,8 @@ impl Viewport {
             cursor_override: None,
             frame_presented: false,
             last_frame_graph: None,
+            debug_overlay_vertices: Vec::new(),
+            debug_overlay_indices: Vec::new(),
             viewport_mouse_move_listeners: Vec::new(),
             viewport_mouse_up_listeners: Vec::new(),
         }
@@ -1108,6 +1133,37 @@ impl Viewport {
 
     pub fn set_debug_geometry_overlay(&mut self, enabled: bool) {
         self.debug_options.geometry_overlay = enabled;
+    }
+
+    pub fn clear_debug_overlay_geometry(&mut self) {
+        self.debug_overlay_vertices.clear();
+        self.debug_overlay_indices.clear();
+    }
+
+    pub fn push_debug_overlay_geometry(
+        &mut self,
+        vertices: &[super::render_pass::debug_overlay_pass::DebugOverlayVertex],
+        indices: &[u32],
+    ) {
+        if vertices.is_empty() || indices.is_empty() {
+            return;
+        }
+        let base = self.debug_overlay_vertices.len() as u32;
+        self.debug_overlay_vertices.extend_from_slice(vertices);
+        self.debug_overlay_indices
+            .extend(indices.iter().map(|index| base + *index));
+    }
+
+    pub fn take_debug_overlay_geometry(
+        &mut self,
+    ) -> (
+        Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+        Vec<u32>,
+    ) {
+        (
+            std::mem::take(&mut self.debug_overlay_vertices),
+            std::mem::take(&mut self.debug_overlay_indices),
+        )
     }
 
     pub async fn set_window(&mut self, window: Window) {
@@ -1491,6 +1547,7 @@ impl Viewport {
             relayout_after_transition_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let build_graph_started_at = Instant::now();
+        self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
         let initial_dep = graph.declare_dep_token();
         let mut ctx = super::base_component::UiBuildContext::new(
@@ -1561,6 +1618,22 @@ impl Viewport {
         }
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
+            if self.debug_options.geometry_overlay {
+                let debug_dep_out = graph.declare_dep_token();
+                let debug_pass = super::render_pass::debug_overlay_pass::DebugOverlayPass::new(
+                    super::render_pass::debug_overlay_pass::DebugOverlayInput {
+                        dep: super::frame_graph::DepIn::with_handle(ctx.current_dep_token()),
+                    },
+                    super::render_pass::debug_overlay_pass::DebugOverlayOutput {
+                        render_target: super::render_pass::draw_rect_pass::RenderTargetOut::with_handle(
+                            dep_handle,
+                        ),
+                        dep: super::frame_graph::DepOut::with_handle(debug_dep_out),
+                    },
+                );
+                graph.add_pass(debug_pass);
+                ctx.set_current_dep_token(debug_dep_out);
+            }
             let present_dep_out = graph.declare_dep_token();
             let present_pass = super::render_pass::present_surface_pass::PresentSurfacePass::new(
                 super::render_pass::present_surface_pass::PresentSurfaceParams,
@@ -1749,16 +1822,19 @@ impl Viewport {
             if canceled_tracks || has_inflight_transition {
                 self.request_redraw();
             }
-            self.input_state.hovered_node_id = self.mouse_position_viewport().and_then(|(x, y)| {
-                self.ui_roots
-                    .iter()
-                    .rev()
-                    .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y))
-            });
         }
         self.sync_focus_dispatch();
         let mut roots = std::mem::take(&mut self.ui_roots);
-        Self::apply_hover_target(&mut roots, self.input_state.hovered_node_id);
+        let next_hover_target = self.mouse_position_viewport().and_then(|(x, y)| {
+            roots.iter()
+                .rev()
+                .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y))
+        });
+        let hover_changed = Self::sync_hover_visual_only(
+            &mut roots,
+            &mut self.input_state.hovered_node_id,
+            next_hover_target,
+        );
         let canceled_tracks = self.cancel_disallowed_transition_tracks(&roots);
         let (dt, now_seconds) = self.transition_timing();
         let transition_changed_before_render =
@@ -1767,7 +1843,7 @@ impl Viewport {
         if !roots.is_empty() {
             transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);
         }
-        if transition_changed_before_render || transition_changed_after_layout {
+        if hover_changed || transition_changed_before_render || transition_changed_after_layout {
             self.request_redraw();
         }
         if roots
@@ -1999,9 +2075,10 @@ impl Viewport {
     pub fn clear_mouse_position_viewport(&mut self) {
         self.input_state.mouse_position_viewport = None;
         self.input_state.pointer_capture_node_id = None;
-        let hover_changed = Self::apply_hover_target(&mut self.ui_roots, None);
+        let (hover_changed, hover_event_dispatched) =
+            Self::sync_hover_target(&mut self.ui_roots, &mut self.input_state.hovered_node_id, None);
         let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
-        if hover_changed || pointer_changed {
+        if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
         }
     }
@@ -2064,13 +2141,16 @@ impl Viewport {
     pub fn clear_input_state(&mut self) {
         self.set_focused_node_id(None);
         self.sync_focus_dispatch();
+        let previous_hovered_node_id = self.input_state.hovered_node_id;
         self.input_state = InputState::default();
+        self.input_state.hovered_node_id = previous_hovered_node_id;
         self.viewport_mouse_move_listeners.clear();
         self.viewport_mouse_up_listeners.clear();
         self.dispatched_focus_node_id = None;
-        let hover_changed = Self::apply_hover_target(&mut self.ui_roots, None);
+        let (hover_changed, hover_event_dispatched) =
+            Self::sync_hover_target(&mut self.ui_roots, &mut self.input_state.hovered_node_id, None);
         let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
-        if hover_changed || pointer_changed {
+        if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
         }
     }
@@ -2275,10 +2355,11 @@ impl Viewport {
             .iter()
             .rev()
             .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y));
-        if self.input_state.hovered_node_id != hover_target {
-            self.input_state.hovered_node_id = hover_target;
-        }
-        let hover_changed = Self::apply_hover_target(&mut roots, hover_target);
+        let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
+            &mut roots,
+            &mut self.input_state.hovered_node_id,
+            hover_target,
+        );
         let buttons = self.current_ui_mouse_buttons();
         let meta = EventMeta::new(0);
         let mut event = MouseMoveEvent {
@@ -2330,10 +2411,10 @@ impl Viewport {
         self.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
-        if handled || hover_changed || listener_handled {
+        if handled || hover_changed || hover_event_dispatched || listener_handled {
             self.request_redraw();
         }
-        handled || hover_changed || listener_handled
+        handled || hover_changed || hover_event_dispatched || listener_handled
     }
 
     pub fn dispatch_click_event(&mut self, button: MouseButton) -> bool {

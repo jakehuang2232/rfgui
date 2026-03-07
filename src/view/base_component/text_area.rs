@@ -1959,7 +1959,11 @@ fn push_draw_rect_pass_explicit(
     ctx.set_current_dep_token(next_dep);
 }
 
-fn push_text_pass_explicit(graph: &mut FrameGraph, ctx: &mut UiBuildContext, params: TextPassParams) {
+fn push_text_pass_explicit(
+    graph: &mut FrameGraph,
+    ctx: &mut UiBuildContext,
+    params: TextPassParams,
+) {
     let Some(input_target) = ctx.current_target() else {
         return;
     };

@@ -291,6 +291,16 @@ pub struct MouseMoveEvent {
 }
 
 #[derive(Debug, Clone)]
+pub struct MouseEnterEvent {
+    pub meta: EventMeta,
+}
+
+#[derive(Debug, Clone)]
+pub struct MouseLeaveEvent {
+    pub meta: EventMeta,
+}
+
+#[derive(Debug, Clone)]
 pub struct ClickEvent {
     pub meta: EventMeta,
     pub mouse: MouseEventData,
@@ -347,6 +357,18 @@ pub struct MouseUpHandlerProp {
 pub struct MouseMoveHandlerProp {
     id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut MouseMoveEvent)>>,
+}
+
+#[derive(Clone)]
+pub struct MouseEnterHandlerProp {
+    id: u64,
+    handler: Rc<RefCell<dyn FnMut(&mut MouseEnterEvent)>>,
+}
+
+#[derive(Clone)]
+pub struct MouseLeaveHandlerProp {
+    id: u64,
+    handler: Rc<RefCell<dyn FnMut(&mut MouseLeaveEvent)>>,
 }
 
 #[derive(Clone)]
@@ -434,6 +456,8 @@ macro_rules! impl_handler_prop {
 impl_handler_prop!(MouseDownHandlerProp, MouseDownEvent);
 impl_handler_prop!(MouseUpHandlerProp, MouseUpEvent);
 impl_handler_prop!(MouseMoveHandlerProp, MouseMoveEvent);
+impl_handler_prop!(MouseEnterHandlerProp, MouseEnterEvent);
+impl_handler_prop!(MouseLeaveHandlerProp, MouseLeaveEvent);
 impl_handler_prop!(ClickHandlerProp, ClickEvent);
 impl_handler_prop!(KeyDownHandlerProp, KeyDownEvent);
 impl_handler_prop!(KeyUpHandlerProp, KeyUpEvent);
@@ -459,6 +483,20 @@ where
     F: for<'a> FnMut(&'a mut MouseMoveEvent) + 'static,
 {
     MouseMoveHandlerProp::new(handler)
+}
+
+pub fn on_mouse_enter<F>(handler: F) -> MouseEnterHandlerProp
+where
+    F: for<'a> FnMut(&'a mut MouseEnterEvent) + 'static,
+{
+    MouseEnterHandlerProp::new(handler)
+}
+
+pub fn on_mouse_leave<F>(handler: F) -> MouseLeaveHandlerProp
+where
+    F: for<'a> FnMut(&'a mut MouseLeaveEvent) + 'static,
+{
+    MouseLeaveHandlerProp::new(handler)
 }
 
 pub fn on_click<F>(handler: F) -> ClickHandlerProp

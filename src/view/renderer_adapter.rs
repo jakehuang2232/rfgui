@@ -407,6 +407,14 @@ fn convert_container_element(
                 let handler = as_mouse_move_handler(value, key)?;
                 element.on_mouse_move(move |event, _control| handler.call(event));
             }
+            "on_mouse_enter" => {
+                let handler = as_mouse_enter_handler(value, key)?;
+                element.on_mouse_enter(move |event| handler.call(event));
+            }
+            "on_mouse_leave" => {
+                let handler = as_mouse_leave_handler(value, key)?;
+                element.on_mouse_leave(move |event| handler.call(event));
+            }
             "on_click" => {
                 let handler = as_click_handler(value, key)?;
                 element.on_click(move |event, _control| handler.call(event));
@@ -963,6 +971,26 @@ fn as_mouse_move_handler(
     match value {
         PropValue::OnMouseMove(v) => Ok(v.clone()),
         _ => Err(format!("prop `{key}` expects mouse move handler value")),
+    }
+}
+
+fn as_mouse_enter_handler(
+    value: &PropValue,
+    key: &str,
+) -> Result<crate::ui::MouseEnterHandlerProp, String> {
+    match value {
+        PropValue::OnMouseEnter(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects mouse enter handler value")),
+    }
+}
+
+fn as_mouse_leave_handler(
+    value: &PropValue,
+    key: &str,
+) -> Result<crate::ui::MouseLeaveHandlerProp, String> {
+    match value {
+        PropValue::OnMouseLeave(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects mouse leave handler value")),
     }
 }
 

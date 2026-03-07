@@ -4,11 +4,11 @@ use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{DepIn, DepOut};
+use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     render_target_msaa_view, render_target_size, render_target_view,
 };
-use crate::view::render_pass::RenderPass;
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
@@ -16,7 +16,6 @@ use glyphon::{
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-
 pub struct TextPass {
     params: TextPassParams,
     staging_buffer: TextStagingBufferOut,
@@ -54,6 +53,18 @@ struct TextPreparedState {
 struct TextRendererKey {
     sample_count: u32,
     stencil_enabled: bool,
+}
+
+struct TextDebugOverlay {
+    vertices: Vec<TextDebugVertex>,
+    indices: Vec<u32>,
+}
+
+#[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct TextDebugVertex {
+    position: [f32; 2],
+    color: [f32; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -198,9 +209,7 @@ impl RenderPass for TextPass {
             self.params.height * scale,
             screen_w,
             screen_h,
-            self.params.scissor_rect.and_then(|scissor| {
-                viewport.logical_scissor_to_physical(scissor, (screen_w, screen_h))
-            }),
+            physical_scissor_rect(self.params.scissor_rect, scale, (screen_w, screen_h)),
         ) {
             Some(bounds) => bounds,
             None => return,
@@ -234,6 +243,29 @@ impl RenderPass for TextPass {
             {
                 prepared.stencil_clip_id = self.params.stencil_clip_id;
                 return;
+            }
+        }
+        if viewport.debug_geometry_overlay() {
+            let overlay = build_text_debug_overlay(
+                &buffer,
+                self.params.x * scale,
+                self.params.y * scale,
+                bounds,
+                screen_w as f32,
+                screen_h as f32,
+            );
+            if !overlay.vertices.is_empty() && !overlay.indices.is_empty() {
+                let overlay_vertices: Vec<
+                    crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex,
+                > = overlay
+                    .vertices
+                    .iter()
+                    .map(|vertex| crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
+                        position: vertex.position,
+                        color: vertex.color,
+                    })
+                    .collect();
+                viewport.push_debug_overlay_geometry(&overlay_vertices, &overlay.indices);
             }
         }
         let mut renderer = match self.prepared.take() {
@@ -297,13 +329,13 @@ impl RenderPass for TextPass {
 
         if let Some(pass) = render_pass.as_mut() {
             let target_size = match self.output.render_target.handle() {
-                Some(handle) => render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size()),
+                Some(handle) => {
+                    render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size())
+                }
                 None => ctx.viewport.surface_size(),
             };
-            let scissor_rect = self.params.scissor_rect.and_then(|scissor| {
-                ctx.viewport
-                    .logical_scissor_to_physical(scissor, target_size)
-            });
+            let scissor_rect =
+                physical_scissor_rect(self.params.scissor_rect, ctx.viewport.scale_factor(), target_size);
             if let Some([x, y, width, height]) = scissor_rect {
                 pass.set_scissor_rect(x, y, width, height);
             } else {
@@ -328,9 +360,15 @@ impl RenderPass for TextPass {
             ),
             None => (None, None),
         };
+        let target_size = match self.output.render_target.handle() {
+            Some(handle) => render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size()),
+            None => ctx.viewport.surface_size(),
+        };
 
+        let sample_count = ctx.viewport.msaa_sample_count();
         let viewport = &mut ctx.viewport;
-        let msaa_enabled = viewport.msaa_sample_count() > 1;
+        let viewport_scale = viewport.scale_factor();
+        let msaa_enabled = sample_count > 1;
         let parts = match viewport.frame_parts() {
             Some(parts) => parts,
             None => return,
@@ -368,6 +406,13 @@ impl RenderPass for TextPass {
             });
         if let Some(stencil_clip_id) = prepared.stencil_clip_id {
             pass.set_stencil_reference(stencil_clip_id as u32);
+        }
+        let scissor_rect =
+            physical_scissor_rect(self.params.scissor_rect, viewport_scale, target_size);
+        if let Some([x, y, width, height]) = scissor_rect {
+            pass.set_scissor_rect(x, y, width, height);
+        } else {
+            pass.set_scissor_rect(0, 0, target_size.0, target_size.1);
         }
         let Some(renderer) = prepared.renderer.as_mut() else {
             return;
@@ -472,6 +517,36 @@ fn resolve_text_bounds(
         right: clipped[2].ceil() as i32,
         bottom: clipped[3].ceil() as i32,
     })
+}
+
+fn physical_scissor_rect(
+    scissor_rect: Option<[u32; 4]>,
+    scale: f32,
+    target_size: (u32, u32),
+) -> Option<[u32; 4]> {
+    let [x, y, width, height] = scissor_rect?;
+    let scale = scale.max(0.0001);
+    let left = (x as f32 * scale).floor().max(0.0) as i64;
+    let top = (y as f32 * scale).floor().max(0.0) as i64;
+    let right = ((x as f32 + width as f32) * scale).ceil().max(0.0) as i64;
+    let bottom = ((y as f32 + height as f32) * scale).ceil().max(0.0) as i64;
+    let max_w = target_size.0 as i64;
+    let max_h = target_size.1 as i64;
+
+    let clamped_left = left.clamp(0, max_w);
+    let clamped_top = top.clamp(0, max_h);
+    let clamped_right = right.clamp(0, max_w);
+    let clamped_bottom = bottom.clamp(0, max_h);
+    if clamped_right <= clamped_left || clamped_bottom <= clamped_top {
+        return None;
+    }
+
+    Some([
+        clamped_left as u32,
+        clamped_top as u32,
+        (clamped_right - clamped_left) as u32,
+        (clamped_bottom - clamped_top) as u32,
+    ])
 }
 
 fn build_text_area<'a>(
@@ -601,6 +676,150 @@ fn text_global_cache() -> &'static Mutex<TextGlobalCache> {
     CACHE.get_or_init(|| Mutex::new(TextGlobalCache { resources: None }))
 }
 
+fn build_text_debug_overlay(
+    buffer: &Buffer,
+    left: f32,
+    top: f32,
+    bounds: TextBounds,
+    screen_w: f32,
+    screen_h: f32,
+) -> TextDebugOverlay {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let clip_rect = [
+        bounds.left as f32,
+        bounds.top as f32,
+        bounds.right as f32,
+        bounds.bottom as f32,
+    ];
+    for run in buffer.layout_runs() {
+        let run_top = top + run.line_top;
+        let run_bottom = run_top + run.line_height;
+        for glyph in run.glyphs.iter() {
+            let glyph_left = left + glyph.x;
+            let glyph_right = glyph_left + glyph.w.max(0.0);
+            let rect = intersect_rect([glyph_left, run_top, glyph_right, run_bottom], clip_rect);
+            if rect[2] <= rect[0] || rect[3] <= rect[1] {
+                continue;
+            }
+            let corners = [
+                [rect[0], rect[1]],
+                [rect[2], rect[1]],
+                [rect[2], rect[3]],
+                [rect[0], rect[3]],
+            ];
+            for (u, v) in [(0_usize, 1_usize), (1, 2), (2, 3), (3, 0)] {
+                append_text_debug_line_quad(
+                    &mut vertices,
+                    &mut indices,
+                    corners[u],
+                    corners[v],
+                    1.0,
+                    [0.2, 1.0, 0.95, 0.9],
+                    screen_w,
+                    screen_h,
+                );
+            }
+            for corner in corners {
+                append_text_debug_point_quad(
+                    &mut vertices,
+                    &mut indices,
+                    corner,
+                    2.5,
+                    [1.0, 0.35, 0.2, 0.95],
+                    screen_w,
+                    screen_h,
+                );
+            }
+        }
+    }
+    TextDebugOverlay { vertices, indices }
+}
+
+fn append_text_debug_line_quad(
+    vertices: &mut Vec<TextDebugVertex>,
+    indices: &mut Vec<u32>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    thickness_px: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 1e-5 {
+        return;
+    }
+    let nx = -dy / len;
+    let ny = dx / len;
+    let half = thickness_px * 0.5;
+    let offset = [nx * half, ny * half];
+    append_text_debug_quad(
+        vertices,
+        indices,
+        [
+            [p0[0] + offset[0], p0[1] + offset[1]],
+            [p0[0] - offset[0], p0[1] - offset[1]],
+            [p1[0] - offset[0], p1[1] - offset[1]],
+            [p1[0] + offset[0], p1[1] + offset[1]],
+        ],
+        color,
+        screen_w,
+        screen_h,
+    );
+}
+
+fn append_text_debug_point_quad(
+    vertices: &mut Vec<TextDebugVertex>,
+    indices: &mut Vec<u32>,
+    center: [f32; 2],
+    size_px: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let half = size_px * 0.5;
+    append_text_debug_quad(
+        vertices,
+        indices,
+        [
+            [center[0] - half, center[1] - half],
+            [center[0] + half, center[1] - half],
+            [center[0] + half, center[1] + half],
+            [center[0] - half, center[1] + half],
+        ],
+        color,
+        screen_w,
+        screen_h,
+    );
+}
+
+fn append_text_debug_quad(
+    vertices: &mut Vec<TextDebugVertex>,
+    indices: &mut Vec<u32>,
+    quad: [[f32; 2]; 4],
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let base = vertices.len() as u32;
+    for point in quad {
+        vertices.push(TextDebugVertex {
+            position: text_pixel_to_ndc(point[0], point[1], screen_w, screen_h),
+            color,
+        });
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn text_pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
+    let nx = x / screen_w.max(1.0);
+    let ny = y / screen_h.max(1.0);
+    [nx * 2.0 - 1.0, 1.0 - ny * 2.0]
+}
+
 fn text_resources<'a>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -675,4 +894,102 @@ pub fn clear_text_resources_cache() {
     let cache = text_global_cache();
     let mut guard = cache.lock().unwrap();
     guard.resources = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        TextBounds, TextDebugOverlay, build_text_debug_overlay, physical_scissor_rect,
+        text_pixel_to_ndc,
+    };
+    use glyphon::cosmic_text::{Weight, Wrap};
+    use glyphon::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+
+    fn build_buffer(content: &str, width: f32, font_size: f32, line_height: f32) -> Buffer {
+        let mut font_system = FontSystem::new();
+        let mut buffer = Buffer::new(
+            &mut font_system,
+            Metrics::new(font_size, (font_size * line_height).max(1.0)),
+        );
+        buffer.set_wrap(&mut font_system, Wrap::WordOrGlyph);
+        buffer.set_size(&mut font_system, Some(width.max(1.0)), None);
+        buffer.set_text(
+            &mut font_system,
+            content,
+            &Attrs::new().weight(Weight(400)),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+        buffer
+    }
+
+    fn overlay_rects(
+        overlay: &TextDebugOverlay,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> Vec<[f32; 4]> {
+        overlay
+            .vertices
+            .chunks_exact(4)
+            .map(|quad| {
+                let xs: Vec<f32> = quad
+                    .iter()
+                    .map(|v| ((v.position[0] + 1.0) * 0.5) * screen_w)
+                    .collect();
+                let ys: Vec<f32> = quad
+                    .iter()
+                    .map(|v| ((1.0 - v.position[1]) * 0.5) * screen_h)
+                    .collect();
+                [
+                    xs.iter().copied().fold(f32::INFINITY, f32::min),
+                    ys.iter().copied().fold(f32::INFINITY, f32::min),
+                    xs.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                    ys.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn text_debug_overlay_clips_glyph_rects_to_bounds() {
+        let screen_w = 400.0;
+        let screen_h = 300.0;
+        let buffer = build_buffer("clip me please clip me please", 80.0, 16.0, 1.25);
+        let bounds = TextBounds {
+            left: 0,
+            top: 0,
+            right: 80,
+            bottom: 22,
+        };
+
+        let overlay = build_text_debug_overlay(&buffer, 0.0, 0.0, bounds, screen_w, screen_h);
+        let rects = overlay_rects(&overlay, screen_w, screen_h);
+
+        assert!(!rects.is_empty());
+        assert!(
+            rects.iter().all(|rect| {
+                rect[0] >= -2.0
+                    && rect[1] >= -2.0
+                    && rect[2] <= 82.0
+                    && rect[3] <= 24.0
+            }),
+            "all overlay quads should stay near the resolved text bounds"
+        );
+    }
+
+    #[test]
+    fn physical_scissor_rect_scales_and_clamps_to_target() {
+        assert_eq!(
+            physical_scissor_rect(Some([10, 5, 40, 20]), 2.0, (90, 40)),
+            Some([20, 10, 70, 30])
+        );
+        assert_eq!(physical_scissor_rect(Some([200, 0, 10, 10]), 1.0, (50, 50)), None);
+    }
+
+    #[test]
+    fn text_pixel_to_ndc_maps_screen_corners() {
+        assert_eq!(text_pixel_to_ndc(0.0, 0.0, 200.0, 100.0), [-1.0, 1.0]);
+        assert_eq!(text_pixel_to_ndc(200.0, 100.0, 200.0, 100.0), [1.0, -1.0]);
+    }
 }

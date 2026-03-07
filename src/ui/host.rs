@@ -1,8 +1,8 @@
 use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
-    MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxChildrenPolicy,
-    RsxComponent, props,
+    MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
+    MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, props,
 };
 use crate::{
     AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Display, FontFamily, FontSize,
@@ -20,6 +20,8 @@ pub struct ElementPropSchema {
     pub on_mouse_down: Option<MouseDownHandlerProp>,
     pub on_mouse_up: Option<MouseUpHandlerProp>,
     pub on_mouse_move: Option<MouseMoveHandlerProp>,
+    pub on_mouse_enter: Option<MouseEnterHandlerProp>,
+    pub on_mouse_leave: Option<MouseLeaveHandlerProp>,
     pub on_click: Option<ClickHandlerProp>,
     pub on_key_down: Option<KeyDownHandlerProp>,
     pub on_key_up: Option<KeyUpHandlerProp>,
@@ -108,6 +110,12 @@ impl RsxComponent<ElementPropSchema> for Element {
         }
         if let Some(handler) = props.on_mouse_move {
             node = node.with_prop("on_mouse_move", handler);
+        }
+        if let Some(handler) = props.on_mouse_enter {
+            node = node.with_prop("on_mouse_enter", handler);
+        }
+        if let Some(handler) = props.on_mouse_leave {
+            node = node.with_prop("on_mouse_leave", handler);
         }
         if let Some(handler) = props.on_click {
             node = node.with_prop("on_click", handler);

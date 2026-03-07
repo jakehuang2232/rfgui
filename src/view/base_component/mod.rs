@@ -5,7 +5,7 @@ use crate::transition::{
 use crate::transition::{TrackKey, TrackTarget};
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyUpEvent, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, TextInputEvent,
+    MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent, TextInputEvent,
 };
 use crate::view::viewport::ViewportControl;
 use std::collections::HashMap;
@@ -660,6 +660,120 @@ pub fn update_hover_state(root: &mut dyn ElementTrait, target_id: Option<u64>) -
     walk(root, target_id).1
 }
 
+fn append_path_to_target(
+    node: &dyn ElementTrait,
+    target_id: u64,
+    path: &mut Vec<u64>,
+) -> bool {
+    path.push(node.id());
+    if node.id() == target_id {
+        return true;
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            if append_path_to_target(child.as_ref(), target_id, path) {
+                return true;
+            }
+        }
+    }
+    let _ = path.pop();
+    false
+}
+
+pub fn hover_path_for_target(roots: &[Box<dyn ElementTrait>], target_id: Option<u64>) -> Vec<u64> {
+    let Some(target_id) = target_id else {
+        return Vec::new();
+    };
+
+    for root in roots {
+        let mut path = Vec::new();
+        if append_path_to_target(root.as_ref(), target_id, &mut path) {
+            return path;
+        }
+    }
+
+    Vec::new()
+}
+
+fn dispatch_mouse_enter_to_target(node: &mut dyn ElementTrait, target_id: u64) -> bool {
+    if node.id() == target_id {
+        let mut event = MouseEnterEvent {
+            meta: crate::ui::EventMeta::new(target_id),
+        };
+        node.dispatch_mouse_enter(&mut event);
+        return true;
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children.iter_mut() {
+            if dispatch_mouse_enter_to_target(child.as_mut(), target_id) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn dispatch_mouse_leave_to_target(node: &mut dyn ElementTrait, target_id: u64) -> bool {
+    if node.id() == target_id {
+        let mut event = MouseLeaveEvent {
+            meta: crate::ui::EventMeta::new(target_id),
+        };
+        node.dispatch_mouse_leave(&mut event);
+        return true;
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children.iter_mut() {
+            if dispatch_mouse_leave_to_target(child.as_mut(), target_id) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn dispatch_hover_transition(
+    roots: &mut [Box<dyn ElementTrait>],
+    previous_target: Option<u64>,
+    next_target: Option<u64>,
+) -> bool {
+    if previous_target == next_target {
+        return false;
+    }
+
+    let previous_path = hover_path_for_target(roots, previous_target);
+    let next_path = hover_path_for_target(roots, next_target);
+
+    let mut common_prefix_len = 0;
+    while common_prefix_len < previous_path.len()
+        && common_prefix_len < next_path.len()
+        && previous_path[common_prefix_len] == next_path[common_prefix_len]
+    {
+        common_prefix_len += 1;
+    }
+
+    let mut dispatched = false;
+
+    for &node_id in previous_path[common_prefix_len..].iter().rev() {
+        for root in roots.iter_mut() {
+            if dispatch_mouse_leave_to_target(root.as_mut(), node_id) {
+                dispatched = true;
+                break;
+            }
+        }
+    }
+
+    for &node_id in &next_path[common_prefix_len..] {
+        for root in roots.iter_mut() {
+            if dispatch_mouse_enter_to_target(root.as_mut(), node_id) {
+                dispatched = true;
+                break;
+            }
+        }
+    }
+
+    dispatched
+}
+
 pub fn cancel_pointer_interactions(root: &mut dyn ElementTrait) -> bool {
     fn walk(node: &mut dyn ElementTrait) -> bool {
         let mut changed = node.cancel_pointer_interaction();
@@ -1223,7 +1337,10 @@ pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch_click_from_hit_test, dispatch_mouse_down_from_hit_test, hit_test};
+    use super::{
+        dispatch_click_from_hit_test, dispatch_hover_transition, dispatch_mouse_down_from_hit_test,
+        hit_test,
+    };
     use crate::AnchorName;
     use crate::style::{
         ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
@@ -1236,7 +1353,7 @@ mod tests {
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::{Viewport, ViewportControl};
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     #[test]
@@ -1418,6 +1535,59 @@ mod tests {
         let _ = root.set_hovered(true);
 
         assert_eq!(hit_test(&root, 115.0, 60.0), Some(root_id));
+    }
+
+    #[test]
+    fn hover_transition_dispatches_enter_leave_on_changed_ancestors_only() {
+        let order = Rc::new(RefCell::new(Vec::new()));
+
+        let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+        let root_id = root.id();
+        let root_order = order.clone();
+        root.on_mouse_enter(move |_event| root_order.borrow_mut().push("root-enter"));
+        let root_order = order.clone();
+        root.on_mouse_leave(move |_event| root_order.borrow_mut().push("root-leave"));
+
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let parent_id = parent.id();
+        let parent_order = order.clone();
+        parent.on_mouse_enter(move |_event| parent_order.borrow_mut().push("parent-enter"));
+        let parent_order = order.clone();
+        parent.on_mouse_leave(move |_event| parent_order.borrow_mut().push("parent-leave"));
+
+        let mut child = Element::new(0.0, 0.0, 60.0, 60.0);
+        let child_id = child.id();
+        let child_order = order.clone();
+        child.on_mouse_enter(move |_event| child_order.borrow_mut().push("child-enter"));
+        let child_order = order.clone();
+        child.on_mouse_leave(move |_event| child_order.borrow_mut().push("child-leave"));
+
+        parent.add_child(Box::new(child));
+        root.add_child(Box::new(parent));
+
+        let mut roots: Vec<Box<dyn crate::view::base_component::ElementTrait>> = vec![Box::new(root)];
+
+        assert!(dispatch_hover_transition(&mut roots, None, Some(child_id)));
+        assert_eq!(
+            order.borrow().as_slice(),
+            &["root-enter", "parent-enter", "child-enter"]
+        );
+
+        order.borrow_mut().clear();
+        assert!(dispatch_hover_transition(
+            &mut roots,
+            Some(child_id),
+            Some(parent_id),
+        ));
+        assert_eq!(order.borrow().as_slice(), &["child-leave"]);
+
+        order.borrow_mut().clear();
+        assert!(dispatch_hover_transition(&mut roots, Some(parent_id), None));
+        assert_eq!(order.borrow().as_slice(), &["parent-leave", "root-leave"]);
+
+        order.borrow_mut().clear();
+        assert!(!dispatch_hover_transition(&mut roots, Some(root_id), Some(root_id)));
+        assert!(order.borrow().is_empty());
     }
 
     #[test]

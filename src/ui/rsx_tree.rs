@@ -3,7 +3,8 @@ use crate::Style;
 use crate::TextAlign;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
-    MouseDownHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp,
+    MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
+    MouseUpHandlerProp,
 };
 use std::any::Any;
 use std::fmt;
@@ -202,6 +203,8 @@ pub enum PropValue {
     OnMouseDown(MouseDownHandlerProp),
     OnMouseUp(MouseUpHandlerProp),
     OnMouseMove(MouseMoveHandlerProp),
+    OnMouseEnter(MouseEnterHandlerProp),
+    OnMouseLeave(MouseLeaveHandlerProp),
     OnClick(ClickHandlerProp),
     OnKeyDown(KeyDownHandlerProp),
     OnKeyUp(KeyUpHandlerProp),
@@ -294,6 +297,18 @@ impl From<MouseUpHandlerProp> for PropValue {
 impl From<MouseMoveHandlerProp> for PropValue {
     fn from(value: MouseMoveHandlerProp) -> Self {
         PropValue::OnMouseMove(value)
+    }
+}
+
+impl From<MouseEnterHandlerProp> for PropValue {
+    fn from(value: MouseEnterHandlerProp) -> Self {
+        PropValue::OnMouseEnter(value)
+    }
+}
+
+impl From<MouseLeaveHandlerProp> for PropValue {
+    fn from(value: MouseLeaveHandlerProp) -> Self {
+        PropValue::OnMouseLeave(value)
     }
 }
 
@@ -414,6 +429,18 @@ impl IntoPropValue for MouseUpHandlerProp {
 impl IntoPropValue for MouseMoveHandlerProp {
     fn into_prop_value(self) -> PropValue {
         PropValue::OnMouseMove(self)
+    }
+}
+
+impl IntoPropValue for MouseEnterHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnMouseEnter(self)
+    }
+}
+
+impl IntoPropValue for MouseLeaveHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnMouseLeave(self)
     }
 }
 
