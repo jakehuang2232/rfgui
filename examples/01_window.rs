@@ -1,9 +1,9 @@
+use rfd::FileDialog;
 use rfgui::{ColorLike, JustifyContent, Transition, TransitionProperty};
 use rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme, Window,
     WindowProps, init_theme, on_move, set_theme, use_theme,
 };
-use rfd::FileDialog;
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -299,6 +299,10 @@ fn MainScene() -> RsxNode {
                         variant={Some(ButtonVariant::Outlined)}
                         on_click={move |_| { component_test_count.set(0); }}
                     />
+                    <Button
+                        label="Nothing"
+                        variant={Some(ButtonVariant::Text)}
+                    />
                 </Element>
                 <Checkbox
                     label="Enable flag"
@@ -430,7 +434,7 @@ fn MainScene() -> RsxNode {
                         .top_right(Length::px(10.0))
                         .bottom_left(Length::percent(90.0)),
                     box_shadow: vec![
-                        theme.shadow.level_2,
+                        theme.shadow.level_3,
                     ],
                 }}>
                     Border Radius + Border + Shadow

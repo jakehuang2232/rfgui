@@ -20,19 +20,19 @@ use crate::transition::{
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    MouseDownEvent, MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent,
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{DepHandle, FrameGraph, RenderPass, TextureDesc};
-use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
+use crate::view::render_pass::draw_rect_pass::DrawRectInput;
+use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::{
     ClearPass, DrawRectPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowParams, ShadowPass,
-    TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput,
-    TextureCompositeParams, TextureCompositePass, TextureCompositeSourceIn,
+    TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
+    TextureCompositePass, TextureCompositeSourceIn,
 };
 use crate::view::viewport::ViewportControl;
-use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -422,26 +422,34 @@ pub trait EventTarget {
         &mut self,
         _event: &mut MouseDownEvent,
         _control: &mut ViewportControl<'_>,
-    ) {}
-    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {}
+    ) {
+    }
+    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
+    }
     fn dispatch_mouse_move(
         &mut self,
         _event: &mut MouseMoveEvent,
         _control: &mut ViewportControl<'_>,
-    ) {}
+    ) {
+    }
+    fn dispatch_mouse_enter(&mut self, _event: &mut MouseEnterEvent) {}
+    fn dispatch_mouse_leave(&mut self, _event: &mut MouseLeaveEvent) {}
     fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
-    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
+    }
     fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_text_input(
         &mut self,
         _event: &mut crate::ui::TextInputEvent,
         _control: &mut ViewportControl<'_>,
-    ) {}
+    ) {
+    }
     fn dispatch_ime_preedit(
         &mut self,
         _event: &mut crate::ui::ImePreeditEvent,
         _control: &mut ViewportControl<'_>,
-    ) {}
+    ) {
+    }
     fn dispatch_focus(&mut self, _event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_blur(&mut self, _event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {}
     fn cancel_pointer_interaction(&mut self) -> bool {
@@ -523,6 +531,8 @@ pub struct BoxModelSnapshot {
 type MouseDownHandler = Box<dyn FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>)>;
 type MouseUpHandler = Box<dyn FnMut(&mut MouseUpEvent, &mut ViewportControl<'_>)>;
 type MouseMoveHandler = Box<dyn FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>)>;
+type MouseEnterHandler = Box<dyn FnMut(&mut MouseEnterEvent)>;
+type MouseLeaveHandler = Box<dyn FnMut(&mut MouseLeaveEvent)>;
 type ClickHandler = Box<dyn FnMut(&mut ClickEvent, &mut ViewportControl<'_>)>;
 type KeyDownHandler = Box<dyn FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>)>;
 type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>)>;
@@ -611,6 +621,8 @@ pub struct Element {
     mouse_down_handlers: Vec<MouseDownHandler>,
     mouse_up_handlers: Vec<MouseUpHandler>,
     mouse_move_handlers: Vec<MouseMoveHandler>,
+    mouse_enter_handlers: Vec<MouseEnterHandler>,
+    mouse_leave_handlers: Vec<MouseLeaveHandler>,
     click_handlers: Vec<ClickHandler>,
     key_down_handlers: Vec<KeyDownHandler>,
     key_up_handlers: Vec<KeyUpHandler>,
@@ -834,6 +846,18 @@ impl EventTarget for Element {
         }
         self.recompute_style();
         true
+    }
+
+    fn dispatch_mouse_enter(&mut self, event: &mut MouseEnterEvent) {
+        for handler in &mut self.mouse_enter_handlers {
+            handler(event);
+        }
+    }
+
+    fn dispatch_mouse_leave(&mut self, event: &mut MouseLeaveEvent) {
+        for handler in &mut self.mouse_leave_handlers {
+            handler(event);
+        }
     }
 
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
@@ -1313,56 +1337,56 @@ impl Element {
         let tl = inner_radii.top_left.max(0.0);
         if tl > 0.0
             && Self::intersects_rect(
-            child_rect,
-            Rect {
-                x: inner.x,
-                y: inner.y,
-                width: tl,
-                height: tl,
-            },
-        )
+                child_rect,
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: tl,
+                    height: tl,
+                },
+            )
         {
             return true;
         }
         let tr = inner_radii.top_right.max(0.0);
         if tr > 0.0
             && Self::intersects_rect(
-            child_rect,
-            Rect {
-                x: inner.x + inner.width - tr,
-                y: inner.y,
-                width: tr,
-                height: tr,
-            },
-        )
+                child_rect,
+                Rect {
+                    x: inner.x + inner.width - tr,
+                    y: inner.y,
+                    width: tr,
+                    height: tr,
+                },
+            )
         {
             return true;
         }
         let br = inner_radii.bottom_right.max(0.0);
         if br > 0.0
             && Self::intersects_rect(
-            child_rect,
-            Rect {
-                x: inner.x + inner.width - br,
-                y: inner.y + inner.height - br,
-                width: br,
-                height: br,
-            },
-        )
+                child_rect,
+                Rect {
+                    x: inner.x + inner.width - br,
+                    y: inner.y + inner.height - br,
+                    width: br,
+                    height: br,
+                },
+            )
         {
             return true;
         }
         let bl = inner_radii.bottom_left.max(0.0);
         bl > 0.0
             && Self::intersects_rect(
-            child_rect,
-            Rect {
-                x: inner.x,
-                y: inner.y + inner.height - bl,
-                width: bl,
-                height: bl,
-            },
-        )
+                child_rect,
+                Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height - bl,
+                    width: bl,
+                    height: bl,
+                },
+            )
     }
 
     fn should_clip_children(
@@ -1597,6 +1621,8 @@ impl Element {
             mouse_down_handlers: Vec::new(),
             mouse_up_handlers: Vec::new(),
             mouse_move_handlers: Vec::new(),
+            mouse_enter_handlers: Vec::new(),
+            mouse_leave_handlers: Vec::new(),
             click_handlers: Vec::new(),
             key_down_handlers: Vec::new(),
             key_up_handlers: Vec::new(),
@@ -2280,14 +2306,14 @@ impl Element {
             .vertical_track
             .is_some_and(|track| track.contains(local_x, local_y))
             || geometry
-            .vertical_thumb
-            .is_some_and(|thumb| thumb.contains(local_x, local_y))
+                .vertical_thumb
+                .is_some_and(|thumb| thumb.contains(local_x, local_y))
             || geometry
-            .horizontal_track
-            .is_some_and(|track| track.contains(local_x, local_y))
+                .horizontal_track
+                .is_some_and(|track| track.contains(local_x, local_y))
             || geometry
-            .horizontal_thumb
-            .is_some_and(|thumb| thumb.contains(local_x, local_y))
+                .horizontal_thumb
+                .is_some_and(|thumb| thumb.contains(local_x, local_y))
     }
 
     fn handle_scrollbar_mouse_down(
@@ -2431,8 +2457,8 @@ impl Element {
             .vertical_thumb
             .is_some_and(|thumb| thumb.contains(local_x, local_y))
             || geometry
-            .horizontal_thumb
-            .is_some_and(|thumb| thumb.contains(local_x, local_y))
+                .horizontal_thumb
+                .is_some_and(|thumb| thumb.contains(local_x, local_y))
         {
             self.note_scrollbar_interaction();
         }
@@ -2633,6 +2659,20 @@ impl Element {
         F: FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.mouse_move_handlers.push(Box::new(handler));
+    }
+
+    pub fn on_mouse_enter<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut MouseEnterEvent) + 'static,
+    {
+        self.mouse_enter_handlers.push(Box::new(handler));
+    }
+
+    pub fn on_mouse_leave<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut MouseLeaveEvent) + 'static,
+    {
+        self.mouse_leave_handlers.push(Box::new(handler));
     }
 
     pub fn on_click<F>(&mut self, handler: F)
@@ -3195,15 +3235,18 @@ impl Element {
         if layout_w <= 0.0 || layout_h <= 0.0 {
             return ctx.into_state();
         }
+        let outer_radii = normalize_corner_radii(self.border_radii, layout_w, layout_h);
         let shadows = self.box_shadows.clone();
         for shadow in shadows {
             let spread = shadow.spread;
-            let mesh = ShadowMesh::rounded_rect(
+            let shadow_radii =
+                expand_corner_radii_for_spread(outer_radii, spread, layout_w, layout_h);
+            let mesh = ShadowMesh::rounded_rect_with_radii(
                 layout_x - spread,
                 layout_y - spread,
                 layout_w + spread * 2.0,
                 layout_h + spread * 2.0,
-                (self.border_radius + spread).max(0.0),
+                shadow_radii.to_array(),
             );
             let params = ShadowParams {
                 offset_x: shadow.offset_x,
@@ -3327,12 +3370,17 @@ impl Element {
                 dep: DepOut::with_handle(prepare_dep),
             },
         );
-        
+
         graph.add_pass(pass);
         let composite_dep = graph.declare_dep_token();
         let mut composite_pass = TextureCompositePass::new(
             TextureCompositeParams {
-                bounds: [bx / scale, by / scale, layer_w as f32 / scale, layer_h as f32 / scale],
+                bounds: [
+                    bx / scale,
+                    by / scale,
+                    layer_w as f32 / scale,
+                    layer_h as f32 / scale,
+                ],
                 use_mask: clip_to_geometry,
                 opacity: 1.0,
                 ..Default::default()
@@ -3417,14 +3465,14 @@ impl Element {
             proposal.viewport_width,
             proposal.viewport_height,
         )
-            .unwrap_or(0.0);
+        .unwrap_or(0.0);
         let min_height = Self::resolve_size_constraint(
             self.computed_style.min_height,
             proposal.percent_base_height,
             proposal.viewport_width,
             proposal.viewport_height,
         )
-            .unwrap_or(0.0);
+        .unwrap_or(0.0);
 
         let mut max_width = Self::resolve_size_constraint(
             self.computed_style.max_width,
@@ -4544,6 +4592,24 @@ impl Default for Element {
     }
 }
 
+fn expand_corner_radii_for_spread(
+    base_radii: CornerRadii,
+    spread: f32,
+    width: f32,
+    height: f32,
+) -> CornerRadii {
+    normalize_corner_radii(
+        CornerRadii {
+            top_left: (base_radii.top_left + spread).max(0.0),
+            top_right: (base_radii.top_right + spread).max(0.0),
+            bottom_right: (base_radii.bottom_right + spread).max(0.0),
+            bottom_left: (base_radii.bottom_left + spread).max(0.0),
+        },
+        width + spread * 2.0,
+        height + spread * 2.0,
+    )
+}
+
 fn normalize_corner_radii(mut radii: CornerRadii, width: f32, height: f32) -> CornerRadii {
     radii.top_left = radii.top_left.max(0.0);
     radii.top_right = radii.top_right.max(0.0);
@@ -4822,7 +4888,8 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
             CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
             CHANNEL_STYLE_BORDER_LEFT_COLOR,
         ]),
-        TransitionProperty::Gap | TransitionProperty::Padding | TransitionProperty::BorderWidth => {}
+        TransitionProperty::Gap | TransitionProperty::Padding | TransitionProperty::BorderWidth => {
+        }
     }
 }
 
@@ -4830,8 +4897,8 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
 mod tests {
     use super::{
         Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
-        Renderable, UiBuildContext, main_axis_start_and_gap, normalize_corner_radii,
-        resolve_px_with_base, resolve_signed_px_with_base,
+        Renderable, UiBuildContext, expand_corner_radii_for_spread, main_axis_start_and_gap,
+        normalize_corner_radii, resolve_px_with_base, resolve_signed_px_with_base,
     };
     use crate::Display;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
@@ -4888,6 +4955,27 @@ mod tests {
         assert_eq!(snapshot.y, 38.0);
         assert_eq!(snapshot.width, 300.0);
         assert_eq!(snapshot.height, 300.0);
+    }
+
+    #[test]
+    fn box_shadow_spread_keeps_per_corner_radii() {
+        let base = normalize_corner_radii(
+            super::CornerRadii {
+                top_left: 4.0,
+                top_right: 12.0,
+                bottom_right: 20.0,
+                bottom_left: 8.0,
+            },
+            120.0,
+            80.0,
+        );
+        let spread = 6.0;
+        let shadow = expand_corner_radii_for_spread(base, spread, 120.0, 80.0);
+
+        assert!((shadow.top_left - 10.0).abs() < 0.001);
+        assert!((shadow.top_right - 18.0).abs() < 0.001);
+        assert!((shadow.bottom_right - 26.0).abs() < 0.001);
+        assert!((shadow.bottom_left - 14.0).abs() < 0.001);
     }
 
     #[test]

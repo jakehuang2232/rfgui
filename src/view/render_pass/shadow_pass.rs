@@ -29,13 +29,23 @@ impl ShadowMesh {
     }
 
     pub fn rounded_rect(x: f32, y: f32, width: f32, height: f32, radius: f32) -> Self {
+        Self::rounded_rect_with_radii(x, y, width, height, [radius, radius, radius, radius])
+    }
+
+    pub fn rounded_rect_with_radii(
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radii: [f32; 4],
+    ) -> Self {
         let w = width.max(0.0);
         let h = height.max(0.0);
         if w <= 0.0 || h <= 0.0 {
             return Self::default();
         }
-        let r = radius.max(0.0).min(w * 0.5).min(h * 0.5);
-        if r <= 0.001 {
+        let [tl, tr, br, bl] = normalize_corner_radii(radii, w, h);
+        if tl <= 0.001 && tr <= 0.001 && br <= 0.001 && bl <= 0.001 {
             return Self {
                 vertices: vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
                 indices: vec![0, 1, 2, 0, 2, 3],
@@ -45,32 +55,32 @@ impl ShadowMesh {
         let mut ring = Vec::with_capacity(ARC_SEGMENTS * 4 + 4);
         append_arc(
             &mut ring,
-            [x + w - r, y + r],
-            r,
+            [x + w - tr, y + tr],
+            tr,
             -std::f32::consts::FRAC_PI_2,
             0.0,
             ARC_SEGMENTS,
         );
         append_arc(
             &mut ring,
-            [x + w - r, y + h - r],
-            r,
+            [x + w - br, y + h - br],
+            br,
             0.0,
             std::f32::consts::FRAC_PI_2,
             ARC_SEGMENTS,
         );
         append_arc(
             &mut ring,
-            [x + r, y + h - r],
-            r,
+            [x + bl, y + h - bl],
+            bl,
             std::f32::consts::FRAC_PI_2,
             std::f32::consts::PI,
             ARC_SEGMENTS,
         );
         append_arc(
             &mut ring,
-            [x + r, y + r],
-            r,
+            [x + tl, y + tl],
+            tl,
             std::f32::consts::PI,
             std::f32::consts::PI * 1.5,
             ARC_SEGMENTS,
@@ -102,11 +112,51 @@ fn append_arc(
     end: f32,
     segments: usize,
 ) {
+    if radius <= 0.001 {
+        out.push(center);
+        return;
+    }
     for i in 0..=segments {
         let t = i as f32 / segments as f32;
         let a = start + (end - start) * t;
         out.push([center[0] + radius * a.cos(), center[1] + radius * a.sin()]);
     }
+}
+
+fn normalize_corner_radii(radii: [f32; 4], width: f32, height: f32) -> [f32; 4] {
+    let mut tl = radii[0].max(0.0);
+    let mut tr = radii[1].max(0.0);
+    let mut br = radii[2].max(0.0);
+    let mut bl = radii[3].max(0.0);
+    let w = width.max(0.0);
+    let h = height.max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+    let top = tl + tr;
+    let bottom = bl + br;
+    let left = tl + bl;
+    let right = tr + br;
+    let mut scale = 1.0_f32;
+    if top > w {
+        scale = scale.min(w / top);
+    }
+    if bottom > w {
+        scale = scale.min(w / bottom);
+    }
+    if left > h {
+        scale = scale.min(h / left);
+    }
+    if right > h {
+        scale = scale.min(h / right);
+    }
+    if scale < 1.0 {
+        tl *= scale;
+        tr *= scale;
+        br *= scale;
+        bl *= scale;
+    }
+    [tl, tr, br, bl]
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -636,12 +686,12 @@ impl RenderPass for ShadowPass {
                             &sampler,
                             &quad_vertex_buffer,
                             &quad_index_buffer,
-                        quad_index_count,
-                        &shadow_tex_a_view.view,
-                        &ds_a.view,
-                        BlurParamsUniform {
-                            texel_size: [1.0 / ds_w.max(1) as f32, 1.0 / ds_h.max(1) as f32],
-                            direction: [1.0, 0.0],
+                            quad_index_count,
+                            &shadow_tex_a_view.view,
+                            &ds_a.view,
+                            BlurParamsUniform {
+                                texel_size: [1.0 / ds_w.max(1) as f32, 1.0 / ds_h.max(1) as f32],
+                                direction: [1.0, 0.0],
                                 radius: 0.0,
                                 sigma: 0.001,
                                 _pad: [0.0, 0.0],
@@ -747,9 +797,10 @@ impl RenderPass for ShadowPass {
             },
             None,
         );
-        if let (Some(mask_handle), Some(mask_surface)) =
-            (self.output.mask_render_target.handle(), mask_output_surface.as_ref())
-        {
+        if let (Some(mask_handle), Some(mask_surface)) = (
+            self.output.mask_render_target.handle(),
+            mask_output_surface.as_ref(),
+        ) {
             if let Some(mask_view) = render_target_view(ctx, mask_handle) {
                 blur_texture(
                     ctx,
@@ -1361,9 +1412,9 @@ fn blur_texture(
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        eprintln!(
-            "[warn] Shadow fallback: using temporary blur params buffer (framegraph buffer unavailable)"
-        );
+        // eprintln!(
+        //     "[warn] Shadow fallback: using temporary blur params buffer (framegraph buffer unavailable)"
+        // );
         fallback_params_buffer.as_entire_binding()
     };
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1409,7 +1460,6 @@ fn blur_texture(
     pass.set_index_buffer(quad_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
     pass.draw_indexed(0..quad_index_count, 0, 0..1);
 }
-
 
 fn fullscreen_quad() -> ([QuadVertex; 4], [u16; 6]) {
     (
@@ -1477,5 +1527,32 @@ fn apply_spread(vertices: &mut [[f32; 2]], spread: f32) {
         }
         v[0] += (dx / len) * spread;
         v[1] += (dy / len) * spread;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShadowMesh;
+
+    #[test]
+    fn rounded_rect_uniform_matches_per_corner_api() {
+        let uniform = ShadowMesh::rounded_rect(10.0, 20.0, 120.0, 70.0, 14.0);
+        let per_corner =
+            ShadowMesh::rounded_rect_with_radii(10.0, 20.0, 120.0, 70.0, [14.0, 14.0, 14.0, 14.0]);
+        assert_eq!(uniform.vertices, per_corner.vertices);
+        assert_eq!(uniform.indices, per_corner.indices);
+    }
+
+    #[test]
+    fn rounded_rect_per_corner_uses_distinct_corner_radii() {
+        let mesh =
+            ShadowMesh::rounded_rect_with_radii(0.0, 0.0, 100.0, 60.0, [30.0, 10.0, 20.0, 5.0]);
+        assert!(mesh.vertices.len() > 4);
+        let first_ring = mesh.vertices[1];
+        let last_ring = mesh.vertices[mesh.vertices.len() - 1];
+        assert!((first_ring[0] - 90.0).abs() < 0.001);
+        assert!((first_ring[1] - 0.0).abs() < 0.001);
+        assert!((last_ring[0] - 30.0).abs() < 0.001);
+        assert!((last_ring[1] - 0.0).abs() < 0.001);
     }
 }

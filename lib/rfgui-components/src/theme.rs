@@ -2,7 +2,6 @@ use rfgui::ui::{GlobalState, global_state};
 use rfgui::{
     Border, BorderRadius, BoxShadow, Color, ColorLike, FontSize, Length, Padding, TransitionTiming,
 };
-
 #[derive(Clone)]
 pub struct Theme {
     pub color: ColorTheme,
@@ -53,6 +52,7 @@ pub struct TextColorSet {
 pub struct StateColorSet {
     pub hover: Box<dyn ColorLike>,
     pub active: Box<dyn ColorLike>,
+    pub pressed: Box<dyn ColorLike>,
     pub focus: Box<dyn ColorLike>,
     pub disabled: Box<dyn ColorLike>,
 }
@@ -142,6 +142,8 @@ pub struct ComponentTheme {
     pub card: CardTheme,
     pub select: SelectTheme,
     pub slider: SliderTheme,
+    pub checkbox: CheckboxTheme,
+    pub switch: SwitchTheme,
 }
 
 #[derive(Clone)]
@@ -193,6 +195,24 @@ pub struct SliderTheme {
     pub grab_disabled_background: Box<dyn ColorLike>,
 }
 
+#[derive(Clone)]
+pub struct CheckboxTheme {
+    pub size: Length,
+    pub radius: BorderRadius,
+    pub border_width: Length,
+}
+
+#[derive(Clone)]
+pub struct SwitchTheme {
+    pub track_width: Length,
+    pub track_height: Length,
+    pub track_padding: Padding,
+    pub track_radius: BorderRadius,
+    pub thumb_width: Length,
+    pub thumb_height: Length,
+    pub thumb_radius: BorderRadius,
+}
+
 impl Theme {
     pub fn light() -> Self {
         let border_color = Color::rgb(220, 223, 230);
@@ -232,6 +252,7 @@ impl Theme {
                 state: StateColorSet {
                     hover: rgba(56, 58, 66, 16),
                     active: rgba(56, 58, 66, 28),
+                    pressed: rgba(56, 58, 66, 44),
                     focus: rgb(64, 120, 242),
                     disabled: rgba(160, 161, 167, 128),
                 },
@@ -338,6 +359,20 @@ impl Theme {
                     grab_active_background: rgb(48, 103, 227),
                     grab_disabled_background: rgba(160, 161, 167, 192),
                 },
+                checkbox: CheckboxTheme {
+                    size: Length::px(18.0),
+                    radius: BorderRadius::uniform(Length::px(4.0)),
+                    border_width: Length::px(1.0),
+                },
+                switch: SwitchTheme {
+                    track_width: Length::px(44.0),
+                    track_height: Length::px(18.0),
+                    track_padding: Padding::uniform(Length::px(2.0)),
+                    track_radius: BorderRadius::uniform(Length::px(8.0)),
+                    thumb_width: Length::px(20.0),
+                    thumb_height: Length::px(14.0),
+                    thumb_radius: BorderRadius::uniform(Length::px(10.0)),
+                },
             },
         }
     }
@@ -380,6 +415,7 @@ impl Theme {
                 state: StateColorSet {
                     hover: rgba(171, 178, 191, 26),
                     active: rgba(171, 178, 191, 44),
+                    pressed: rgba(171, 178, 191, 66),
                     focus: rgb(97, 175, 239),
                     disabled: rgba(92, 99, 112, 128),
                 },
@@ -485,6 +521,20 @@ impl Theme {
                     grab_hover_background: rgb(78, 131, 174),
                     grab_active_background: rgb(55, 121, 178),
                     grab_disabled_background: rgba(92, 99, 112, 192),
+                },
+                checkbox: CheckboxTheme {
+                    size: Length::px(18.0),
+                    radius: BorderRadius::uniform(Length::px(4.0)),
+                    border_width: Length::px(1.0),
+                },
+                switch: SwitchTheme {
+                    track_width: Length::px(44.0),
+                    track_height: Length::px(18.0),
+                    track_padding: Padding::uniform(Length::px(2.0)),
+                    track_radius: BorderRadius::uniform(Length::px(8.0)),
+                    thumb_width: Length::px(20.0),
+                    thumb_height: Length::px(14.0),
+                    thumb_radius: BorderRadius::uniform(Length::px(10.0)),
                 },
             },
         }

@@ -53,7 +53,8 @@ pub type TextureCompositeMaskIn = InSlot<TextureResource, TextureCompositeMaskTa
 
 #[derive(Clone, Copy)]
 pub struct TextureCompositeUniformBufferTag;
-pub type TextureCompositeUniformBufferOut = OutSlot<BufferResource, TextureCompositeUniformBufferTag>;
+pub type TextureCompositeUniformBufferOut =
+    OutSlot<BufferResource, TextureCompositeUniformBufferTag>;
 #[derive(Clone, Copy)]
 pub struct TextureCompositeVertexBufferTag;
 pub type TextureCompositeVertexBufferOut = OutSlot<BufferResource, TextureCompositeVertexBufferTag>;
@@ -163,7 +164,8 @@ impl RenderPass for TextureCompositePass {
             builder.read_texture(&mut self.input.source, &source);
         }
         if let Some(handle) = self.input.mask.handle() {
-            let source: OutSlot<TextureResource, TextureCompositeMaskTag> = OutSlot::with_handle(handle);
+            let source: OutSlot<TextureResource, TextureCompositeMaskTag> =
+                OutSlot::with_handle(handle);
             builder.read_texture(&mut self.input.mask, &source);
         }
         if self.output.render_target.handle().is_some() {
@@ -185,12 +187,7 @@ impl RenderPass for TextureCompositePass {
         }
 
         let scale = ctx.viewport.scale_factor();
-        let bounds = resolve_bounds(
-            self.params.bounds,
-            scale,
-            target_w as f32,
-            target_h as f32,
-        );
+        let bounds = resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
 
         let uniform = TextureCompositeUniform {
             use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
@@ -250,15 +247,16 @@ impl RenderPass for TextureCompositePass {
         let uniform_binding = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
             buffer.as_entire_binding()
         } else {
-            fallback_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("TextureComposite Uniform (Fallback)"),
-                contents: bytemuck::bytes_of(&TextureCompositeUniform {
-                    use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
-                    opacity: self.params.opacity.clamp(0.0, 1.0),
-                    _pad: [0.0, 0.0],
-                }),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+            fallback_uniform_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("TextureComposite Uniform (Fallback)"),
+                    contents: bytemuck::bytes_of(&TextureCompositeUniform {
+                        use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
+                        opacity: self.params.opacity.clamp(0.0, 1.0),
+                        _pad: [0.0, 0.0],
+                    }),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
             fallback_uniform_buffer.as_entire_binding()
         };
 
@@ -272,7 +270,9 @@ impl RenderPass for TextureCompositePass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(mask_view.as_ref().unwrap_or(&source_view)),
+                    resource: wgpu::BindingResource::TextureView(
+                        mask_view.as_ref().unwrap_or(&source_view),
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -285,28 +285,33 @@ impl RenderPass for TextureCompositePass {
             ],
         });
 
-        let acquired_vertex_buffer = self.vertex_buffer.handle().and_then(|h| ctx.acquire_buffer(h));
-        let acquired_index_buffer = self.index_buffer.handle().and_then(|h| ctx.acquire_buffer(h));
+        let acquired_vertex_buffer = self
+            .vertex_buffer
+            .handle()
+            .and_then(|h| ctx.acquire_buffer(h));
+        let acquired_index_buffer = self
+            .index_buffer
+            .handle()
+            .and_then(|h| ctx.acquire_buffer(h));
         let fallback_vertex_buffer;
         let fallback_index_buffer;
-        let (vertex_buffer, index_buffer): (&wgpu::Buffer, &wgpu::Buffer) =
-            if let (Some(vb), Some(ib)) =
-                (acquired_vertex_buffer.as_ref(), acquired_index_buffer.as_ref())
-            {
-                (vb, ib)
-            } else {
+        let (vertex_buffer, index_buffer): (&wgpu::Buffer, &wgpu::Buffer) = if let (
+            Some(vb),
+            Some(ib),
+        ) = (
+            acquired_vertex_buffer.as_ref(),
+            acquired_index_buffer.as_ref(),
+        ) {
+            (vb, ib)
+        } else {
             let surface_size = ctx.viewport.surface_size();
             let (target_w, target_h) = match self.output.render_target.handle() {
                 Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
                 None => surface_size,
             };
             let scale = ctx.viewport.scale_factor();
-            let bounds = resolve_bounds(
-                self.params.bounds,
-                scale,
-                target_w as f32,
-                target_h as f32,
-            );
+            let bounds =
+                resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
             let (vertices, indices) = quad_for_bounds(bounds, target_w as f32, target_h as f32);
             fallback_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("TextureComposite Vertex (Fallback)"),
@@ -370,11 +375,12 @@ impl RenderPass for TextureCompositePass {
         } else {
             None
         };
-        let (color_view, resolve_target) = match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
-            (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-            (Some(resolve_view), None) => (resolve_view, None),
-            (None, _) => (parts.view, surface_resolve),
-        };
+        let (color_view, resolve_target) =
+            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
+                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+                (Some(resolve_view), None) => (resolve_view, None),
+                (None, _) => (parts.view, surface_resolve),
+            };
 
         let mut pass = parts
             .encoder
@@ -507,7 +513,11 @@ pub(crate) fn composite_immediate(
     let Some(parts) = ctx.viewport.frame_parts() else {
         return;
     };
-    let surface_resolve = if msaa_enabled { parts.resolve_view } else { None };
+    let surface_resolve = if msaa_enabled {
+        parts.resolve_view
+    } else {
+        None
+    };
     let (color_view, resolve_target) = match (offscreen_view, offscreen_msaa_view) {
         (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
         (Some(resolve_view), None) => (resolve_view, None),
@@ -741,7 +751,9 @@ fn create_pipeline(
     })
 }
 
-fn texture_composite_depth_stencil_state(mode: TextureCompositeStencilMode) -> wgpu::DepthStencilState {
+fn texture_composite_depth_stencil_state(
+    mode: TextureCompositeStencilMode,
+) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth24PlusStencil8,
         depth_write_enabled: false,
@@ -769,7 +781,11 @@ fn texture_composite_depth_stencil_state(mode: TextureCompositeStencilMode) -> w
     }
 }
 
-fn quad_for_bounds(bounds: [f32; 4], target_w: f32, target_h: f32) -> ([CompositeVertex; 4], [u16; 6]) {
+fn quad_for_bounds(
+    bounds: [f32; 4],
+    target_w: f32,
+    target_h: f32,
+) -> ([CompositeVertex; 4], [u16; 6]) {
     let x = bounds[0];
     let y = bounds[1];
     let w = bounds[2].max(0.0);

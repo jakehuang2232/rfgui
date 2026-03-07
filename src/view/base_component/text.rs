@@ -3,9 +3,9 @@ use std::collections::HashMap;
 
 use crate::view::frame_graph::FrameGraph;
 use crate::view::frame_graph::{DepIn, DepOut};
+use crate::view::render_pass::TextPass;
 use crate::view::render_pass::text_pass::TextPassParams;
 use crate::view::render_pass::text_pass::{TextInput, TextOutput};
-use crate::view::render_pass::TextPass;
 use crate::{ColorLike, Cursor, HexColor, Style, TextAlign};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};

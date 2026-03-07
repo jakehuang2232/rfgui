@@ -8,6 +8,7 @@ use crate::view::render_pass::render_target::{
     render_target_bundle, render_target_msaa_view, render_target_size, render_target_view,
 };
 use crate::view::render_pass::{RenderPass, RenderPassBatchKey};
+use std::collections::HashSet;
 use std::num::NonZeroU64;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -327,6 +328,28 @@ impl DrawRectPass {
             target_w as f32,
             target_h as f32,
         );
+        if ctx.viewport.debug_geometry_overlay() {
+            let (debug_vertices, debug_indices) = build_rect_debug_overlay_geometry(
+                params,
+                target_w as f32,
+                target_h as f32,
+                [0.95, 0.2, 0.95, 0.95],
+                [1.0, 0.9, 0.25, 0.95],
+            );
+            if !debug_vertices.is_empty() && !debug_indices.is_empty() {
+                let overlay_vertices: Vec<
+                    crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex,
+                > = debug_vertices
+                    .into_iter()
+                    .map(|vertex| crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
+                        position: vertex.position,
+                        color: vertex.color,
+                    })
+                    .collect();
+                ctx.viewport
+                    .push_debug_overlay_geometry(&overlay_vertices, &debug_indices);
+            }
+        }
         let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&params));
 
         let Some(device) = ctx.viewport.device().cloned() else {
@@ -389,7 +412,6 @@ impl DrawRectPass {
             }],
         }));
     }
-
 }
 
 impl OpaqueRectPass {
@@ -439,7 +461,6 @@ impl OpaqueRectPass {
             ),
         }
     }
-
 }
 
 impl RenderTargetPass for DrawRectPass {
@@ -852,6 +873,7 @@ fn encode_draw_rect_into_existing_pass(
         pass.set_scissor_rect(0, 0, target_w, target_h);
     }
     pass.draw_indexed(0..index_count, 0, 0..1);
+
 }
 
 pub(crate) fn execute_draw_rect_batch(
@@ -1147,6 +1169,13 @@ struct QuadVertex {
     uv: [f32; 2],
 }
 
+#[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct DebugVertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct RectParams {
@@ -1427,22 +1456,142 @@ fn create_draw_rect_resources(
     }
 }
 
-struct DrawRectResourcesCache {
-    entries: std::collections::HashMap<u64, DrawRectResources>,
+fn build_rect_debug_overlay_geometry(
+    params: RectParams,
+    screen_w: f32,
+    screen_h: f32,
+    edge_color: [f32; 4],
+    point_color: [f32; 4],
+) -> (Vec<DebugVertex>, Vec<u32>) {
+    let mut out_vertices = Vec::new();
+    let mut out_indices = Vec::new();
+    let [left, top, right, bottom] = params.outer_rect;
+    if right <= left || bottom <= top {
+        return (out_vertices, out_indices);
+    }
+
+    let corners = [[left, top], [right, top], [right, bottom], [left, bottom]];
+    let mut edges = HashSet::new();
+    for (u, v) in [(0_u32, 1_u32), (1, 2), (2, 3), (3, 0)] {
+        edges.insert((u, v));
+    }
+
+    for (u, v) in edges {
+        append_debug_line_quad(
+            &mut out_vertices,
+            &mut out_indices,
+            corners[u as usize],
+            corners[v as usize],
+            1.5,
+            edge_color,
+            screen_w,
+            screen_h,
+        );
+    }
+
+    for corner in corners {
+        append_debug_point_quad(
+            &mut out_vertices,
+            &mut out_indices,
+            corner,
+            4.0,
+            point_color,
+            screen_w,
+            screen_h,
+        );
+    }
+
+    (out_vertices, out_indices)
 }
 
-impl DrawRectResourcesCache {
+fn append_debug_line_quad(
+    vertices: &mut Vec<DebugVertex>,
+    indices: &mut Vec<u32>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    thickness_px: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 1e-5 {
+        return;
+    }
+    let nx = -dy / len;
+    let ny = dx / len;
+    let hw = thickness_px * 0.5;
+    let offset = [nx * hw, ny * hw];
+    let quad = [
+        [p0[0] + offset[0], p0[1] + offset[1]],
+        [p0[0] - offset[0], p0[1] - offset[1]],
+        [p1[0] - offset[0], p1[1] - offset[1]],
+        [p1[0] + offset[0], p1[1] + offset[1]],
+    ];
+    append_debug_quad(vertices, indices, quad, color, screen_w, screen_h);
+}
+
+fn append_debug_point_quad(
+    vertices: &mut Vec<DebugVertex>,
+    indices: &mut Vec<u32>,
+    center: [f32; 2],
+    size_px: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let h = size_px * 0.5;
+    let quad = [
+        [center[0] - h, center[1] - h],
+        [center[0] + h, center[1] - h],
+        [center[0] + h, center[1] + h],
+        [center[0] - h, center[1] + h],
+    ];
+    append_debug_quad(vertices, indices, quad, color, screen_w, screen_h);
+}
+
+fn append_debug_quad(
+    vertices: &mut Vec<DebugVertex>,
+    indices: &mut Vec<u32>,
+    quad: [[f32; 2]; 4],
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let base = vertices.len() as u32;
+    for point in quad {
+        vertices.push(DebugVertex {
+            position: pixel_to_ndc(point[0], point[1], screen_w, screen_h),
+            color,
+        });
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
+    let nx = x / screen_w.max(1.0);
+    let ny = y / screen_h.max(1.0);
+    [nx * 2.0 - 1.0, 1.0 - ny * 2.0]
+}
+
+struct DrawRectResourcesCache<T> {
+    entries: std::collections::HashMap<u64, T>,
+}
+
+impl<T> DrawRectResourcesCache<T> {
     fn new() -> Self {
         Self {
             entries: std::collections::HashMap::new(),
         }
     }
 
-    fn get_or_insert_with<F: FnOnce() -> DrawRectResources>(
+    fn get_or_insert_with<F: FnOnce() -> T>(
         &mut self,
         key: u64,
         create: F,
-    ) -> &mut DrawRectResources {
+    ) -> &mut T {
         self.entries.entry(key).or_insert_with(create)
     }
 
@@ -1455,8 +1604,8 @@ impl DrawRectResourcesCache {
     }
 }
 
-fn draw_rect_resources_cache() -> &'static Mutex<DrawRectResourcesCache> {
-    static CACHE: OnceLock<Mutex<DrawRectResourcesCache>> = OnceLock::new();
+fn draw_rect_resources_cache() -> &'static Mutex<DrawRectResourcesCache<DrawRectResources>> {
+    static CACHE: OnceLock<Mutex<DrawRectResourcesCache<DrawRectResources>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(DrawRectResourcesCache::new()))
 }
 

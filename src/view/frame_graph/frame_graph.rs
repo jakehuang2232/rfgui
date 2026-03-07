@@ -486,7 +486,6 @@ impl FrameGraph {
             detail_ordered: ctx.take_detail_timings(),
         })
     }
-
 }
 
 impl FrameGraph {
@@ -519,7 +518,8 @@ impl FrameGraph {
                 end += 1;
             }
             if end > cursor + 1 {
-                self.execute_steps.push(ExecuteStep::SharedRun { start: cursor, end });
+                self.execute_steps
+                    .push(ExecuteStep::SharedRun { start: cursor, end });
                 cursor = end;
             } else {
                 self.execute_steps.push(ExecuteStep::Single { index });
@@ -586,24 +586,26 @@ impl FrameGraph {
         } else {
             None
         };
-        let (color_view, resolve_target) = match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
-            (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-            (Some(resolve_view), None) => (resolve_view, None),
-            (None, _) => (&surface_view, surface_resolve),
-        };
-        let depth_attachment = depth_view
-            .as_ref()
-            .map(|view| wgpu::RenderPassDepthStencilAttachment {
-                view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            });
+        let (color_view, resolve_target) =
+            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
+                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+                (Some(resolve_view), None) => (resolve_view, None),
+                (None, _) => (&surface_view, surface_resolve),
+            };
+        let depth_attachment =
+            depth_view
+                .as_ref()
+                .map(|view| wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                });
         let encoder = unsafe { &mut *encoder_ptr };
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("FrameGraph ShareRun"),
@@ -624,9 +626,7 @@ impl FrameGraph {
             let index = self.order[offset];
             let pass_name = self.passes[index].pass.name().to_string();
             let pass_started_at = Instant::now();
-            self.passes[index]
-                .pass
-                .execute(ctx, Some(&mut render_pass));
+            self.passes[index].pass.execute(ctx, Some(&mut render_pass));
             let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
             if !pass_timings.contains_key(&pass_name) {
                 pass_first_seen_order.push(pass_name.clone());
