@@ -681,9 +681,10 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
     }
     let style_value_tokens = match key.as_str() {
         "border" => match &entry.value {
-            StyleValueExpr::Expr(value) => {
-                expand_maybe_none_style_expr(value, |inner| quote! { __rsx_style.set_border(#inner); })
-            }
+            StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(
+                value,
+                |inner| quote! { __rsx_style.set_border(#inner); },
+            ),
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.border requires an expression value");
             },
@@ -797,9 +798,10 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
             },
         },
         "padding" => match &entry.value {
-            StyleValueExpr::Expr(value) => {
-                expand_maybe_none_style_expr(value, |inner| quote! { __rsx_style.set_padding(#inner); })
-            }
+            StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(
+                value,
+                |inner| quote! { __rsx_style.set_padding(#inner); },
+            ),
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
                 compile_error!("style.padding requires an expression value");
             },
@@ -895,17 +897,17 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.max_height requires an expression value");
             },
         },
-        "display" => match &entry.value {
+        "layout" => match &entry.value {
             StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
                 quote! {
                     __rsx_style.insert(
-                        ::rfgui::PropertyId::Display,
-                        ::rfgui::ParsedValue::Display(#inner),
+                        ::rfgui::PropertyId::Layout,
+                        ::rfgui::ParsedValue::Layout(#inner),
                     );
                 }
             }),
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.display requires an expression value");
+                compile_error!("style.layout requires an expression value");
             },
         },
         "align_items" => match &entry.value {
@@ -1028,7 +1030,10 @@ where
         return quote! {};
     }
 
-    fn expand_conditional_style_expr<F>(expr: &Expr, expand_insert: &F) -> Option<proc_macro2::TokenStream>
+    fn expand_conditional_style_expr<F>(
+        expr: &Expr,
+        expand_insert: &F,
+    ) -> Option<proc_macro2::TokenStream>
     where
         F: Fn(&Expr) -> proc_macro2::TokenStream,
     {

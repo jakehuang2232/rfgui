@@ -5,7 +5,7 @@ use crate::ui::{
     MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, props,
 };
 use crate::{
-    AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Display, FontFamily, FontSize,
+    AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Layout, FontFamily, FontSize,
     FontWeight, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign, Transitions,
 };
 
@@ -38,7 +38,7 @@ pub struct ElementStylePropSchema {
     pub max_width: Length,
     pub min_height: Length,
     pub max_height: Length,
-    pub display: Display,
+    pub layout: Layout,
     pub align_items: AlignItems,
     pub gap: Length,
     pub scroll_direction: ScrollDirection,

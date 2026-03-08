@@ -1,6 +1,6 @@
 use crate::style::color::Color;
 use crate::style::parsed_style::{
-    AlignItems, BoxShadow, Cursor, Display, FontSize, Length, ParsedValue, Position, PropertyId,
+    AlignItems, BoxShadow, Cursor, Layout, FontSize, Length, ParsedValue, Position, PropertyId,
     ScrollDirection, Style, Transitions,
 };
 
@@ -28,7 +28,7 @@ pub struct CornerRadii<T> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
-    pub display: Display,
+    pub layout: Layout,
     pub align_items: AlignItems,
     pub position: Position,
     pub width: SizeValue,
@@ -62,7 +62,7 @@ pub struct ComputedStyle {
 impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
-            display: Display::Block,
+            layout: Layout::Block,
             align_items: AlignItems::Start,
             position: Position::static_(),
             width: SizeValue::Auto,
@@ -121,32 +121,40 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
-    pub const fn display_flow_direction(&self) -> crate::FlowDirection {
-        match self.display {
-            Display::Flow { direction, .. } => direction,
+    pub const fn layout_flow_direction(&self) -> crate::FlowDirection {
+        match self.layout {
+            Layout::Flow { direction, .. } => direction,
             _ => crate::FlowDirection::Row,
         }
     }
 
-    pub const fn display_flow_wrap(&self) -> crate::FlowWrap {
-        match self.display {
-            Display::Flow { wrap, .. } => wrap,
+    pub const fn layout_flow_wrap(&self) -> crate::FlowWrap {
+        match self.layout {
+            Layout::Flow { wrap, .. } => wrap,
             _ => crate::FlowWrap::NoWrap,
         }
     }
 
-    pub const fn display_flow_justify_content(&self) -> crate::JustifyContent {
-        match self.display {
-            Display::Flow {
+    pub const fn layout_flow_justify_content(&self) -> crate::JustifyContent {
+        match self.layout {
+            Layout::Flow {
                 justify_content, ..
             } => justify_content,
             _ => crate::JustifyContent::Start,
+        }
+    }
+
+    pub const fn layout_flow_align_item(&self) -> crate::AlignItems {
+        match self.layout {
+            Layout::Flow { align_items, .. } => align_items,
+            _ => self.align_items,
         }
     }
 }
 
 pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> ComputedStyle {
     let mut computed = ComputedStyle::default();
+    let mut has_explicit_align_items = false;
 
     if let Some(parent) = parent {
         computed.color = parent.color;
@@ -158,14 +166,15 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
 
     for declaration in parsed.declarations() {
         match declaration.property {
-            PropertyId::Display => {
-                if let ParsedValue::Display(value) = &declaration.value {
-                    computed.display = *value;
+            PropertyId::Layout => {
+                if let ParsedValue::Layout(value) = &declaration.value {
+                    computed.layout = *value;
                 }
             }
             PropertyId::AlignItems => {
                 if let ParsedValue::AlignItems(value) = &declaration.value {
                     computed.align_items = *value;
+                    has_explicit_align_items = true;
                 }
             }
             PropertyId::Position => {
@@ -368,6 +377,9 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
         resolve_length_px(computed.border_radii.bottom_left),
     )
     .max(0.0);
+    if !has_explicit_align_items {
+        computed.align_items = computed.layout_flow_align_item();
+    }
 
     computed
 }
@@ -412,7 +424,7 @@ fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
 mod tests {
     use super::compute_style;
     use crate::style::{BoxShadow, Color, FontSize, ParsedValue, PropertyId, Style};
-    use crate::{Display, FlowDirection, FlowWrap, JustifyContent};
+    use crate::{AlignItems, Layout, FlowDirection, FlowWrap, JustifyContent};
 
     #[test]
     fn compute_style_applies_box_shadow_list() {
@@ -456,26 +468,45 @@ mod tests {
     }
 
     #[test]
-    fn compute_style_reads_justify_content_from_display_flow() {
+    fn compute_style_reads_justify_content_from_layput_flow() {
         let mut style = Style::new();
         style.insert(
-            PropertyId::Display,
-            ParsedValue::Display(
-                Display::flow()
+            PropertyId::Layout,
+            ParsedValue::Layout(
+                Layout::flow()
                     .column()
                     .wrap()
-                    .justify_content(JustifyContent::SpaceEvenly),
+                    .justify_content(JustifyContent::SpaceEvenly)
+                    .align_items(AlignItems::Center),
             ),
         );
 
         let computed = compute_style(&style, None);
         assert_eq!(
-            computed.display,
-            Display::Flow {
+            computed.layout,
+            Layout::Flow {
                 direction: FlowDirection::Column,
                 wrap: FlowWrap::Wrap,
                 justify_content: JustifyContent::SpaceEvenly,
+                align_items: AlignItems::Center,
             }
         );
+        assert_eq!(computed.align_items, AlignItems::Center);
+    }
+
+    #[test]
+    fn explicit_align_items_overrides_flow_align_item() {
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().align_items(AlignItems::End)),
+        );
+        style.insert(
+            PropertyId::AlignItems,
+            ParsedValue::AlignItems(AlignItems::Stretch),
+        );
+
+        let computed = compute_style(&style, None);
+        assert_eq!(computed.align_items, AlignItems::Stretch);
     }
 }

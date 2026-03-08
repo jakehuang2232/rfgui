@@ -89,7 +89,7 @@ Key files:
 ```rust
 use rfgui::ui::{component, rsx, RsxNode};
 use rfgui::ui::host::Element;
-use rfgui::{Display, Length};
+use rfgui::{Layout, Length};
 
 #[component]
 fn Card() -> RsxNode {
@@ -97,7 +97,7 @@ fn Card() -> RsxNode {
         <Element style={{
             width: Length::px(180.0),
             height: Length::px(100.0),
-            display: Display::flow().column(),
+            display: Layout::flow().column(),
         }}>
             Hello Component
         </Element>

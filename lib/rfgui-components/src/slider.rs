@@ -8,7 +8,7 @@ use rfgui::ui::{
     rsx, use_state,
 };
 use rfgui::{
-    AlignItems, Cursor, Display, JustifyContent, Length, Position, Transition, TransitionProperty,
+    AlignItems, Cursor, JustifyContent, Layout, Length, Position, Transition, TransitionProperty,
 };
 
 pub struct Slider;
@@ -121,8 +121,11 @@ fn SliderView(
         <Element style={{
             width: Length::px(width),
             height: Length::px(height),
-            display: Display::flow().row().no_wrap().justify_content(JustifyContent::Center),
-            align_items: AlignItems::Center,
+            layout: Layout::flow()
+                .row()
+                .no_wrap()
+                .justify_content(JustifyContent::Center)
+                .align_items(AlignItems::Center),
             cursor: if disabled {
                 Cursor::Default
             } else if is_dragging {
