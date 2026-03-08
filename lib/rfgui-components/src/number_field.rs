@@ -3,7 +3,7 @@ use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
     Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
-use rfgui::{AlignItems, Border, Display, JustifyContent, Length};
+use rfgui::{AlignItems, Border, JustifyContent, Layout, Length};
 
 pub struct NumberField;
 
@@ -86,8 +86,7 @@ fn NumberFieldView(
 
     let mut root = rsx! {
         <Element style={{
-            display: Display::flow().row().no_wrap(),
-            align_items: AlignItems::Center,
+            layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
             width: Length::px(width),
             height: Length::px(height),
             border_radius: theme.component.input.radius,
@@ -99,11 +98,11 @@ fn NumberFieldView(
             },
         }}>
             <Element style={{
-                display: Display::flow()
+                layout: Layout::flow()
                     .row()
                     .no_wrap()
-                    .justify_content(JustifyContent::Center),
-                align_items: AlignItems::Center,
+                    .justify_content(JustifyContent::Center)
+                    .align_items(AlignItems::Center),
                 width: Length::px(button_size),
                 height: Length::px(button_size),
                 background: if disabled {
@@ -123,11 +122,11 @@ fn NumberFieldView(
                 </Text>
             </Element>
             <Element style={{
-                display: Display::flow()
+                layout: Layout::flow()
                     .row()
                     .no_wrap()
-                    .justify_content(JustifyContent::Center),
-                align_items: AlignItems::Center,
+                    .justify_content(JustifyContent::Center)
+                    .align_items(AlignItems::Center),
                 width: Length::px(value_width),
                 height: Length::px(button_size),
             }}>
@@ -141,11 +140,11 @@ fn NumberFieldView(
                 </Text>
             </Element>
             <Element style={{
-                display: Display::flow()
+                layout: Layout::flow()
                     .row()
                     .no_wrap()
-                    .justify_content(JustifyContent::Center),
-                align_items: AlignItems::Center,
+                    .justify_content(JustifyContent::Center)
+                    .align_items(AlignItems::Center),
                 width: Length::px(button_size),
                 height: Length::px(button_size),
                 background: if disabled {

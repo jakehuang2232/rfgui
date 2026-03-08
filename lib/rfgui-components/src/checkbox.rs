@@ -4,7 +4,7 @@ use rfgui::ui::{
     Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxComponent, RsxNode,
     component, props, rsx, use_state,
 };
-use rfgui::{AlignItems, Border, Color, Display, Transition, TransitionProperty};
+use rfgui::{AlignItems, Border, Color, Layout, Transition, TransitionProperty};
 
 pub struct Checkbox;
 
@@ -62,15 +62,12 @@ fn CheckboxView(
         checked_binding.set(!checked_binding.get());
     });
 
-    let on_mouse_enter =
-        MouseEnterHandlerProp::new(move |_event| hover_state_for_enter.set(true));
-    let on_mouse_leave =
-        MouseLeaveHandlerProp::new(move |_event| hover_state_for_leave.set(false));
+    let on_mouse_enter = MouseEnterHandlerProp::new(move |_event| hover_state_for_enter.set(true));
+    let on_mouse_leave = MouseLeaveHandlerProp::new(move |_event| hover_state_for_leave.set(false));
 
     rsx! {
         <Element style={{
-            display: Display::flow().row().no_wrap(),
-            align_items: AlignItems::Center,
+            layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
             gap: theme.spacing.md,
         }}
         on_click={click}

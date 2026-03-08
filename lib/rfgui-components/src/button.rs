@@ -3,7 +3,7 @@ use rfgui::TextAlign::Center;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, props, rsx};
 use rfgui::{
-    AlignItems, Border, Color, ColorLike, Cursor, Display, JustifyContent, Length, Transition,
+    AlignItems, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition,
     TransitionProperty, Transitions,
 };
 
@@ -49,11 +49,11 @@ impl RsxComponent<ButtonProps> for Button {
         let mut root = rsx! {
             <Element
                 style={{
-                    display: Display::flow()
+                    layout: Layout::flow()
                         .row()
                         .no_wrap()
-                        .justify_content(JustifyContent::Center),
-                    align_items: AlignItems::Center,
+                        .justify_content(JustifyContent::Center)
+                        .align_items(AlignItems::Center),
                     padding: theme.component.button.padding,
                     border_radius: theme.component.button.radius,
                     border: if disabled {

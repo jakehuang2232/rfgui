@@ -8,7 +8,7 @@ use rfgui::ui::{
     MouseDownHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
 use rfgui::{
-    AlignItems, ClipMode, Collision, CollisionBoundary, Color, ColorLike, Display, JustifyContent,
+    AlignItems, ClipMode, Collision, CollisionBoundary, Color, ColorLike, JustifyContent, Layout,
     Length, Operator, Position, ScrollDirection,
 };
 
@@ -147,11 +147,11 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                 style={{
                     color: theme.color.background.on,
                     max_width: Length::percent(100.0),
-                    display: Display::flow()
+                    layout: Layout::flow()
                         .row()
                         .no_wrap()
-                        .justify_content(JustifyContent::SpaceBetween),
-                    align_items: AlignItems::Center,
+                        .justify_content(JustifyContent::SpaceBetween)
+                        .align_items(AlignItems::Center),
                     border_radius: theme.component.input.radius,
                     border: theme.component.input.border.clone(),
                     background: theme.color.background.base,
@@ -206,8 +206,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
             rsx! {
                 <Element
                     style={{
-                        display: Display::flow().row().no_wrap(),
-                        align_items: AlignItems::Center,
+                        layout: Layout::flow().row().no_wrap(),
                         padding: theme.component.input.padding,
                         background: if item.disabled {
                             theme.component.select.option_disabled_background.clone()
@@ -251,7 +250,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
                     .collision(Collision::FlipFit, CollisionBoundary::Viewport)
                     .clip(ClipMode::Viewport),
                 max_height: Length::vh(50.0),
-                display: Display::flow().column().no_wrap(),
+                layout: Layout::flow().column().no_wrap().align_items(AlignItems::Stretch),
                 border_radius: theme.component.input.radius,
                 border: theme.component.input.border.clone(),
                 background: theme.color.background.base,
@@ -262,7 +261,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
         </Element>
     }
 }
-
+ 
 fn resolve_option_text<DataType>(
     data: &[DataType],
     selected_index: usize,

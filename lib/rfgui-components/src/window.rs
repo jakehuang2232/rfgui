@@ -11,8 +11,8 @@ use rfgui::ui::{
     ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
 };
 use rfgui::{
-    AlignItems, Border, BorderRadius, Color, ColorLike, Cursor, Display, FontWeight,
-    JustifyContent, Length, Padding, Position, ScrollDirection,
+    AlignItems, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout,
+    Length, Padding, Position, ScrollDirection,
 };
 
 const MIN_WIDTH: f32 = 220.0;
@@ -560,7 +560,7 @@ fn WindowView(
                 position: Position::absolute().left(Length::px(x)).top(Length::px(y)).anchor("root").clip(Viewport),
                 width: Length::px(width),
                 height: Length::px(height),
-                display: Display::flow().column().no_wrap(),
+                layout: Layout::flow().column().no_wrap(),
                 background: root_background,
                 border: root_border,
                 border_radius: root_border_radius,
@@ -575,11 +575,11 @@ fn WindowView(
                 style={{
                     height: title_bar_height_length,
                     width: Length::percent(100.0),
-                    display: Display::flow()
+                    layout: Layout::flow()
                         .row()
                         .no_wrap()
-                        .justify_content(JustifyContent::SpaceBetween),
-                    align_items: AlignItems::Center,
+                        .justify_content(JustifyContent::SpaceBetween)
+                        .align_items(AlignItems::Center),
                     padding: title_bar_padding,
                     background: title_bar_background,
                     border_radius: BorderRadius::uniform(Length::px(0.0)).top(theme.radius.lg),
@@ -593,7 +593,7 @@ fn WindowView(
                     width: Length::percent(100.0),
                     height: Length::px(content_height),
                     padding: content_padding,
-                    display: Display::flow().column(),
+                    layout: Layout::flow().column(),
                     background: content_background,
                     color: content_text_color,
                     scroll_direction: ScrollDirection::Both,

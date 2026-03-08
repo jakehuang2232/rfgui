@@ -1,7 +1,7 @@
 use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
-use rfgui::{AlignItems, Display, Length, Operator, Transition, TransitionProperty};
+use rfgui::{AlignItems, Layout, Length, Operator, Transition, TransitionProperty};
 
 pub struct Switch;
 
@@ -71,13 +71,11 @@ fn SwitchView(
 
     rsx! {
         <Element style={{
-            display: Display::flow().row().no_wrap(),
-            align_items: AlignItems::Center,
+            layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
             gap: theme.spacing.md,
         }} on_click={click}>
             <Element style={{
-                display: Display::flow().row().no_wrap(),
-                align_items: AlignItems::Center,
+                layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
                 width: switch_theme.track_width,
                 height: switch_theme.track_height,
                 padding: switch_theme.track_padding,

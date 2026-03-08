@@ -1,5 +1,5 @@
 use rfd::FileDialog;
-use rfgui::{ColorLike, JustifyContent, Transition, TransitionProperty};
+use rfgui::{ColorLike, JustifyContent, Transition, TransitionProperty, AlignItems};
 use rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme, Window,
     WindowProps, init_theme, on_move, set_theme, use_theme,
@@ -15,8 +15,8 @@ use rfgui::ui::{
     take_state_dirty, use_state,
 };
 use rfgui::{
-    Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Cursor, Display,
-    FontFamily, Length, Padding, Position, ScrollDirection, Viewport,
+    Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Cursor, FontFamily,
+    Layout, Length, Padding, Position, ScrollDirection, Viewport,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -239,7 +239,7 @@ fn MainScene() -> RsxNode {
         vec![rsx! {
             <Element style={{
                 gap: theme.spacing.xs,
-                display: Display::flow().column().no_wrap(),
+                layout: Layout::flow().column().no_wrap(),
                 width: Length::percent(100.0),
             }}>
                 <Switch
@@ -278,7 +278,7 @@ fn MainScene() -> RsxNode {
             <Element style={{
                 width: Length::percent(100.0),
                 height: Length::percent(100.0),
-                display: Display::flow().column().no_wrap(),
+                layout: Layout::flow().column().no_wrap(),
                 gap: theme.spacing.md,
                 padding: Padding::uniform(theme.spacing.md),
                 color: theme.color.text.secondary.clone(),
@@ -286,7 +286,7 @@ fn MainScene() -> RsxNode {
             }}>
                 <Element style={{
                     width: Length::percent(100.0),
-                    display: Display::flow().row().wrap(),
+                    layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.sm,
                 }}>
                     <Button
@@ -353,6 +353,12 @@ fn MainScene() -> RsxNode {
     let justify_content_space_around = justify_content.clone();
     let justify_content_space_evenly = justify_content.clone();
 
+    let align_items = use_state(|| AlignItems::Start);
+    let align_items_start = align_items.clone();
+    let align_items_center = align_items.clone();
+    let align_items_stretch = align_items.clone();
+    let align_items_end = align_items.clone();
+
     window_manager.push(
         "Render test",
         vec![rsx! {
@@ -360,7 +366,7 @@ fn MainScene() -> RsxNode {
                 width: Length::percent(100.0),
                 height: Length::percent(100.0),
                 background: Color::transparent(),
-                display: Display::flow().row().wrap().justify_content(justify_content.get()),
+                layout: Layout::flow().row().wrap().justify_content(justify_content.get()).align_items(align_items.get()),
                 gap: theme.spacing.md,
                 padding: Padding::uniform(theme.spacing.xl),
                 scroll_direction: ScrollDirection::Vertical,
@@ -370,7 +376,7 @@ fn MainScene() -> RsxNode {
             }} anchor="root">
                 <Element style={{
                     width: Length::percent(100.0),
-                    display: Display::flow().row().wrap(),
+                    layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.md,
                 }}>
                     <Button label="Start" on_click={move |_| {justify_content_start.set(JustifyContent::Start);}} />
@@ -379,6 +385,16 @@ fn MainScene() -> RsxNode {
                     <Button label="SpaceBetween" on_click={move |_| {justify_content_space_between.set(JustifyContent::SpaceBetween);}} />
                     <Button label="SpaceAround" on_click={move |_| {justify_content_space_around.set(JustifyContent::SpaceAround);}} />
                     <Button label="SpaceEvenly" on_click={move |_| {justify_content_space_evenly.set(JustifyContent::SpaceEvenly);}} />
+                </Element>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    layout: Layout::flow().row().wrap(),
+                    gap: theme.spacing.md,
+                }}>
+                    <Button label="Start" on_click={move |_| {align_items_start.set(AlignItems::Start);}} />
+                    <Button label="Center" on_click={move |_| {align_items_center.set(AlignItems::Center);}} />
+                    <Button label="Stretch" on_click={move |_| {align_items_stretch.set(AlignItems::Stretch);}} />
+                    <Button label="End" on_click={move |_| {align_items_end.set(AlignItems::End);}} />
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),
@@ -479,7 +495,7 @@ fn MainScene() -> RsxNode {
                     color: theme.color.primary.on.clone(),
                     border: Border::uniform(theme.spacing.sm, theme.color.border.as_ref()),
                     border_radius: 50,
-                    display: Display::flow().row().wrap(),
+                    layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.sm,
                     padding: Padding::uniform(theme.spacing.sm),
                 }}>
@@ -495,7 +511,7 @@ fn MainScene() -> RsxNode {
                     background: theme.color.layer.surface.clone(),
                     border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
                     border_radius: theme.radius.lg,
-                    display: Display::flow().row().wrap(),
+                    layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.sm,
                     padding: Padding::uniform(theme.spacing.sm),
                     color: theme.color.text.primary.clone(),
@@ -517,7 +533,7 @@ fn MainScene() -> RsxNode {
                     border: Border::uniform(Length::px(3.0), theme.color.border.as_ref()),
                     border_radius: theme.radius.lg,
                     opacity: 0.5,
-                    display: Display::flow().column(),
+                    layout: Layout::flow().column(),
                     color: theme.color.primary.on.clone(),
                 }}>
                     <Text>
@@ -538,7 +554,7 @@ fn MainScene() -> RsxNode {
                     background: theme.color.primary.base.clone(),
                     border: Border::uniform(Length::px(3.0), theme.color.border.as_ref()),
                     border_radius: theme.radius.lg,
-                    display: Display::flow().column(),
+                    layout: Layout::flow().column(),
                     color: theme.color.primary.on.clone(),
                 }}>
                     <Text>
@@ -560,7 +576,7 @@ fn MainScene() -> RsxNode {
                     border: Border::uniform(Length::px(3.0), theme.color.border.as_ref()),
                     border_radius: theme.radius.lg,
                     scroll_direction: ScrollDirection::Vertical,
-                    display: Display::flow().column(),
+                    layout: Layout::flow().column(),
                     color: theme.color.primary.on.clone(),
                 }}>
                     <Text>Scroll down to see more content 1</Text>
@@ -584,7 +600,7 @@ fn MainScene() -> RsxNode {
                     background: theme.color.layer.raised.clone(),
                     border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
                     border_radius: theme.radius.lg,
-                    display: Display::flow().column().no_wrap(),
+                    layout: Layout::flow().column().no_wrap(),
                     color: theme.color.text.primary.clone(),
                     font_size: theme.typography.size.sm,
                 }}>
@@ -605,7 +621,7 @@ fn MainScene() -> RsxNode {
                     border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()),
                     border_radius: theme.radius.lg,
                     padding: Padding::uniform(theme.spacing.md),
-                    display: Display::flow().column().no_wrap(),
+                    layout: Layout::flow().column().no_wrap(),
                     gap: theme.spacing.sm,
                     color: theme.color.text.primary.clone(),
                     font_size: theme.typography.size.sm,
@@ -626,7 +642,7 @@ fn MainScene() -> RsxNode {
                     <Element style={{
                         width: Length::percent(100.0),
                         height: Length::px(110.0),
-                        display: Display::flow().row().no_wrap(),
+                        layout: Layout::flow().row().no_wrap(),
                         gap: theme.spacing.sm,
                     }}>
                         <Element style={{
@@ -683,7 +699,7 @@ fn MainScene() -> RsxNode {
                             border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                             border_radius: theme.radius.md,
                             padding: Padding::uniform(theme.spacing.sm),
-                            display: Display::flow().column().no_wrap(),
+                            layout: Layout::flow().column().no_wrap(),
                             gap: theme.spacing.xs,
                             color: theme.color.text.primary.clone(),
                         }}>
@@ -725,7 +741,7 @@ fn MainScene() -> RsxNode {
                         border: Border::uniform(Length::px(1.0), theme.color.primary.base.as_ref()),
                         border_radius: theme.radius.md,
                         padding: Padding::uniform(theme.spacing.sm),
-                        display: Display::flow().column(),
+                        layout: Layout::flow().column(),
                         gap: theme.spacing.xs,
                         color: theme.color.layer.on_inverse.clone(),
                     }}>
@@ -772,7 +788,7 @@ fn MainScene() -> RsxNode {
             <Element style={{
                 width: Length::percent(100.0),
                 height: Length::percent(100.0),
-                display: Display::flow().column().no_wrap(),
+                layout: Layout::flow().column().no_wrap(),
                 gap: theme.spacing.md,
                 padding: Padding::uniform(theme.spacing.md),
                 color: theme.color.text.primary.clone(),
@@ -784,7 +800,7 @@ fn MainScene() -> RsxNode {
                     {"How to verify: click Start Animation first, then click Remove Transition during playback. Expected: jump to the end value immediately."}
                 </Text>
                 <Element style={{
-                    display: Display::flow().row().wrap(),
+                    layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.md,
                     width: Length::percent(100.0),
                 }}>
@@ -794,7 +810,7 @@ fn MainScene() -> RsxNode {
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         border_radius: theme.radius.md,
                         padding: Padding::uniform(theme.spacing.sm),
-                        display: Display::flow().column().no_wrap(),
+                        layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                     }}>
                         <Text>StyleTransitionPlugin</Text>
@@ -812,7 +828,7 @@ fn MainScene() -> RsxNode {
                                 Vec::<Transition>::new()
                             },
                         }} />
-                        <Element style={{ display: Display::flow().row().wrap(), gap: theme.spacing.xs }}>
+                        <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
                             <Button label="Start Animation" on_click={move |_| { style_start.set(true); style_toggle_target.update(|v| *v = !*v); }} />
                             <Button label="Remove Transition" on_click={move |_| { style_remove.set(false); }} />
                             <Button label="Reset" on_click={move |_| { style_reset_enable.set(true); style_reset_target.set(false); }} />
@@ -824,7 +840,7 @@ fn MainScene() -> RsxNode {
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         border_radius: theme.radius.md,
                         padding: Padding::uniform(theme.spacing.sm),
-                        display: Display::flow().column().no_wrap(),
+                        layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                     }}>
                         <Text>LayoutTransitionPlugin</Text>
@@ -845,7 +861,7 @@ fn MainScene() -> RsxNode {
                                 Vec::<Transition>::new()
                             },
                         }} />
-                        <Element style={{ display: Display::flow().row().wrap(), gap: theme.spacing.xs }}>
+                        <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
                             <Button label="Start Animation" on_click={move |_| { layout_start_enable.set(true); layout_toggle_size.update(|v| *v = !*v); }} />
                             <Button label="Remove Transition" on_click={move |_| { layout_remove.set(false); }} />
                             <Button label="Reset" on_click={move |_| { layout_reset_enable.set(true); layout_reset_size.set(false); }} />
@@ -857,7 +873,7 @@ fn MainScene() -> RsxNode {
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         border_radius: theme.radius.md,
                         padding: Padding::uniform(theme.spacing.sm),
-                        display: Display::flow().column().no_wrap(),
+                        layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                     }}>
                         <Text>VisualTransitionPlugin</Text>
@@ -869,7 +885,7 @@ fn MainScene() -> RsxNode {
                             height: Length::px(58.0),
                             background: "#1f2937",
                             border_radius: theme.radius.md,
-                            display: Display::flow().row().no_wrap().justify_content(if visual_at_end_value { JustifyContent::End } else { JustifyContent::Start }),
+                            layout: Layout::flow().row().no_wrap().justify_content(if visual_at_end_value { JustifyContent::End } else { JustifyContent::Start }),
                             padding: Padding::uniform(theme.spacing.xs),
                         }}>
                             <Element style={{
@@ -884,7 +900,7 @@ fn MainScene() -> RsxNode {
                                 },
                             }} />
                         </Element>
-                        <Element style={{ display: Display::flow().row().wrap(), gap: theme.spacing.xs }}>
+                        <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
                             <Button label="Start Animation" on_click={move |_| { visual_start_enable.set(true); visual_toggle_pos.update(|v| *v = !*v); }} />
                             <Button label="Remove Transition" on_click={move |_| { visual_remove.set(false); }} />
                             <Button label="Reset" on_click={move |_| { visual_reset_enable.set(true); visual_reset_pos.set(false); }} />
@@ -898,7 +914,7 @@ fn MainScene() -> RsxNode {
                     border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                     border_radius: theme.radius.md,
                     padding: Padding::uniform(theme.spacing.sm),
-                    display: Display::flow().column().no_wrap(),
+                    layout: Layout::flow().column().no_wrap(),
                     gap: theme.spacing.xs,
                 }}>
                     <Text>ScrollTransitionPlugin</Text>
@@ -912,7 +928,7 @@ fn MainScene() -> RsxNode {
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         border_radius: theme.radius.md,
                         scroll_direction: ScrollDirection::Vertical,
-                        display: Display::flow().column().no_wrap(),
+                        layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                         padding: Padding::uniform(theme.spacing.sm),
                         color: theme.color.layer.on_inverse.clone(),

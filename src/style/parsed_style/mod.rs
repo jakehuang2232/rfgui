@@ -1,10 +1,11 @@
 use crate::style::color::{Color, ColorLike};
+
 use std::collections::HashMap;
 use std::ops::Add;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropertyId {
-    Display,
+    Layout,
     AlignItems,
     Position,
     Width,
@@ -163,25 +164,27 @@ impl<const N: usize> From<[Transition; N]> for Transitions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Display {
+pub enum Layout {
     Block,
     Inline,
     Flow {
         direction: FlowDirection,
         wrap: FlowWrap,
         justify_content: JustifyContent,
+        align_items: AlignItems,
     },
     InlineFlex,
     Grid,
     None,
 }
 
-impl Display {
+impl Layout {
     pub const fn flow() -> Self {
         Self::Flow {
             direction: FlowDirection::Row,
             wrap: FlowWrap::NoWrap,
             justify_content: JustifyContent::Start,
+            align_items: AlignItems::Start,
         }
     }
 
@@ -220,6 +223,16 @@ impl Display {
         } = &mut self
         {
             *value = justify_content;
+        }
+        self
+    }
+
+    pub const fn align_items(mut self, align_items: AlignItems) -> Self {
+        if let Self::Flow {
+            align_items: value, ..
+        } = &mut self
+        {
+            *value = align_items;
         }
         self
     }
@@ -1516,7 +1529,7 @@ impl Opacity {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedValue {
-    Display(Display),
+    Layout(Layout),
     AlignItems(AlignItems),
     ScrollDirection(ScrollDirection),
     Cursor(Cursor),

@@ -1041,7 +1041,7 @@ mod tests {
     use crate::ui::{PropValue, RsxNode};
     use crate::view::base_component::{ElementTrait, Text, TextArea, get_cursor_by_id, hit_test};
     use crate::{
-        Border, BorderRadius, Color, Cursor, Display, FontSize, IntoColor, Length, ParsedValue,
+        Border, BorderRadius, Color, Cursor, Layout, FontSize, IntoColor, Length, ParsedValue,
         PropertyId, Style, Unit,
     };
     fn style_bg(hex: &str) -> Style {
@@ -1311,8 +1311,8 @@ mod tests {
     fn flow_row_without_explicit_size_uses_children_content_size() {
         let mut row_style = Style::new();
         row_style.insert(
-            PropertyId::Display,
-            ParsedValue::Display(Display::flow().row().no_wrap()),
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap()),
         );
         row_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
 

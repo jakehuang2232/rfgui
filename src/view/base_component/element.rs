@@ -6,7 +6,7 @@ use crate::render_pass::render_target::RenderTargetPass;
 use crate::render_pass::shadow_pass::{ShadowInput, ShadowOutput};
 use crate::style::{
     AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-    ComputedStyle, Cursor, Display, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
+    ComputedStyle, Cursor, Layout, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
     ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
@@ -967,8 +967,8 @@ impl Layoutable for Element {
         // We should always measure children because they might be Auto or use Percent units
         // that depend on our inner size.
         let is_flex = matches!(
-            self.computed_style.display,
-            Display::Flow { .. } | Display::InlineFlex
+            self.computed_style.layout,
+            Layout::Flow { .. } | Layout::InlineFlex
         );
         if is_flex {
             self.measure_flex_children(proposal);
@@ -2876,7 +2876,7 @@ impl Element {
             proposal.viewport_height,
         );
         let is_row = matches!(
-            self.computed_style.display_flow_direction(),
+            self.computed_style.layout_flow_direction(),
             FlowDirection::Row
         );
 
@@ -2920,10 +2920,10 @@ impl Element {
         viewport_height: f32,
     ) -> FlexLayoutInfo {
         let is_row = matches!(
-            self.computed_style.display_flow_direction(),
+            self.computed_style.layout_flow_direction(),
             FlowDirection::Row
         );
-        let wrap = matches!(self.computed_style.display_flow_wrap(), FlowWrap::Wrap);
+        let wrap = matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
         let gap_base = if is_row { inner_w } else { inner_h };
         let gap = resolve_px(
@@ -4398,8 +4398,8 @@ impl Element {
         });
         let (child_available_width, child_available_height) = self.child_layout_limits();
         let is_flex = matches!(
-            self.computed_style.display,
-            Display::Flow { .. } | Display::InlineFlex
+            self.computed_style.layout,
+            Layout::Flow { .. } | Layout::InlineFlex
         );
         if is_flex {
             self.place_flex_children(
@@ -4483,7 +4483,7 @@ impl Element {
         };
 
         let is_row = matches!(
-            self.computed_style.display_flow_direction(),
+            self.computed_style.layout_flow_direction(),
             FlowDirection::Row
         );
         let main_limit = if is_row {
@@ -4513,8 +4513,8 @@ impl Element {
         let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
 
         let total_cross = info.total_cross;
-        let mut cross_cursor =
-            cross_start_offset(cross_limit, total_cross, self.computed_style.align_items);
+        let align_item = self.computed_style.layout_flow_align_item();
+        let mut cross_cursor = cross_start_offset(cross_limit, total_cross, align_item);
 
         for (line_idx, line) in info.lines.iter().enumerate() {
             let line_main = info.line_main_sum[line_idx];
@@ -4524,13 +4524,12 @@ impl Element {
                 line_main,
                 gap,
                 line.len(),
-                self.computed_style.display_flow_justify_content(),
+                self.computed_style.layout_flow_justify_content(),
             );
 
             for &child_idx in line {
                 let (item_main, item_cross) = info.child_sizes[child_idx];
-                let cross_offset =
-                    cross_item_offset(line_cross, item_cross, self.computed_style.align_items);
+                let cross_offset = cross_item_offset(line_cross, item_cross, align_item);
                 let (offset_x, offset_y) = if is_row {
                     (main_cursor, cross_cursor + cross_offset)
                 } else {
@@ -4538,7 +4537,7 @@ impl Element {
                 };
 
                 // Implement Stretch
-                if self.computed_style.align_items == AlignItems::Stretch {
+                if align_item == AlignItems::Stretch {
                     if is_row {
                         self.children[child_idx].set_layout_height(line_cross);
                     } else {
@@ -4900,12 +4899,12 @@ mod tests {
         Renderable, UiBuildContext, expand_corner_radii_for_spread, main_axis_start_and_gap,
         normalize_corner_radii, resolve_px_with_base, resolve_signed_px_with_base,
     };
-    use crate::Display;
+    use crate::Layout;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
     use crate::view::frame_graph::FrameGraph;
     use crate::{
-        AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
+        AlignItems, AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
         JustifyContent, Length, Operator, Position, Style,
     };
 
@@ -5437,8 +5436,8 @@ mod tests {
         let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
         let mut parent_style = Style::new();
         parent_style.insert(
-            PropertyId::Display,
-            ParsedValue::Display(Display::flow().column().no_wrap()),
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().column().no_wrap()),
         );
         parent_style.insert(PropertyId::Width, ParsedValue::Auto);
         parent_style.insert(PropertyId::Height, ParsedValue::Auto);
@@ -5471,6 +5470,51 @@ mod tests {
         let snapshot = parent.box_model_snapshot();
         assert_eq!(snapshot.width, 120.0);
         assert_eq!(snapshot.height, 40.0);
+    }
+
+    #[test]
+    fn flow_align_item_centers_children_on_cross_axis() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(
+                Layout::flow()
+                    .row()
+                    .no_wrap()
+                    .align_items(AlignItems::Center),
+            ),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
+        parent.apply_style(parent_style);
+
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 80.0, 40.0)));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(snapshot.x, 0.0);
+        assert_eq!(snapshot.y, 40.0);
     }
 
     #[test]
