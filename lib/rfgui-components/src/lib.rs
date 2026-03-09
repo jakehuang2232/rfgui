@@ -138,7 +138,11 @@ mod tests {
         let RsxNode::Element(root) = second_tree else {
             panic!("select should render element root");
         };
-        assert_eq!(root.children.len(), 2, "select menu should remain open after rerender");
+        assert_eq!(
+            root.children.len(),
+            2,
+            "select menu should remain open after rerender"
+        );
     }
 
     fn click_once(

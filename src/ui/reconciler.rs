@@ -4,12 +4,32 @@ use std::collections::{HashMap, VecDeque};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
     ReplaceRoot(RsxNode),
-    ReplaceNode { path: Vec<usize>, node: RsxNode },
-    UpdateElementProps { path: Vec<usize>, props: Vec<(String, PropValue)> },
-    SetText { path: Vec<usize>, text: String },
-    InsertChild { parent_path: Vec<usize>, index: usize, node: RsxNode },
-    RemoveChild { parent_path: Vec<usize>, index: usize },
-    MoveChild { parent_path: Vec<usize>, from: usize, to: usize },
+    ReplaceNode {
+        path: Vec<usize>,
+        node: RsxNode,
+    },
+    UpdateElementProps {
+        path: Vec<usize>,
+        props: Vec<(String, PropValue)>,
+    },
+    SetText {
+        path: Vec<usize>,
+        text: String,
+    },
+    InsertChild {
+        parent_path: Vec<usize>,
+        index: usize,
+        node: RsxNode,
+    },
+    RemoveChild {
+        parent_path: Vec<usize>,
+        index: usize,
+    },
+    MoveChild {
+        parent_path: Vec<usize>,
+        from: usize,
+        to: usize,
+    },
 }
 
 pub fn reconcile(old: Option<&RsxNode>, new: &RsxNode) -> Vec<Patch> {
@@ -48,7 +68,12 @@ fn reconcile_node(old: &RsxNode, new: &RsxNode, path: &[usize], patches: &mut Ve
             }
         }
         (RsxNode::Fragment(old_fragment), RsxNode::Fragment(new_fragment)) => {
-            reconcile_children(&old_fragment.children, &new_fragment.children, path, patches);
+            reconcile_children(
+                &old_fragment.children,
+                &new_fragment.children,
+                path,
+                patches,
+            );
         }
         _ => {
             if path.is_empty() {
@@ -132,7 +157,12 @@ fn reconcile_children(
         if let Some(old_index) = maybe_old_index {
             let mut child_path = parent_path.to_vec();
             child_path.push(*old_index);
-            reconcile_node(&old_children[*old_index], &new_children[new_index], &child_path, patches);
+            reconcile_node(
+                &old_children[*old_index],
+                &new_children[new_index],
+                &child_path,
+                patches,
+            );
         }
     }
 
@@ -154,7 +184,8 @@ fn reconcile_children(
     for (new_index, maybe_old_index) in matches.iter().enumerate() {
         match maybe_old_index {
             Some(old_index) => {
-                let Some(current_pos) = current_order.iter().position(|value| value == old_index) else {
+                let Some(current_pos) = current_order.iter().position(|value| value == old_index)
+                else {
                     continue;
                 };
                 if current_pos != new_index {

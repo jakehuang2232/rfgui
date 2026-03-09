@@ -341,9 +341,11 @@ impl DrawRectPass {
                     crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex,
                 > = debug_vertices
                     .into_iter()
-                    .map(|vertex| crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
-                        position: vertex.position,
-                        color: vertex.color,
+                    .map(|vertex| {
+                        crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
+                            position: vertex.position,
+                            color: vertex.color,
+                        }
                     })
                     .collect();
                 ctx.viewport
@@ -873,7 +875,6 @@ fn encode_draw_rect_into_existing_pass(
         pass.set_scissor_rect(0, 0, target_w, target_h);
     }
     pass.draw_indexed(0..index_count, 0, 0..1);
-
 }
 
 pub(crate) fn execute_draw_rect_batch(
@@ -1587,11 +1588,7 @@ impl<T> DrawRectResourcesCache<T> {
         }
     }
 
-    fn get_or_insert_with<F: FnOnce() -> T>(
-        &mut self,
-        key: u64,
-        create: F,
-    ) -> &mut T {
+    fn get_or_insert_with<F: FnOnce() -> T>(&mut self, key: u64, create: F) -> &mut T {
         self.entries.entry(key).or_insert_with(create)
     }
 

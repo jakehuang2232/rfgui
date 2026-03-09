@@ -131,6 +131,19 @@ impl Rect {
     }
 }
 
+fn intersect_rect(a: Rect, b: Rect) -> Rect {
+    let left = a.x.max(b.x);
+    let top = a.y.max(b.y);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    Rect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct AnchorSnapshot {
     x: f32,
@@ -147,6 +160,7 @@ struct PlacementRuntime {
     viewport_height: f32,
     anchors: std::collections::HashMap<String, AnchorSnapshot>,
     child_clip_stack: Vec<Rect>,
+    hit_test_clip_stack: Vec<Rect>,
 }
 
 thread_local! {
@@ -515,6 +529,10 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
     fn intercepts_pointer_at(&self, _viewport_x: f32, _viewport_y: f32) -> bool {
         false
     }
+
+    fn hit_test_visible_at(&self, _viewport_x: f32, _viewport_y: f32) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -635,6 +653,7 @@ pub struct Element {
     has_absolute_descendant_for_hit_test: bool,
     absolute_clip_rect: Option<Rect>,
     anchor_parent_clip_rect: Option<Rect>,
+    hit_test_clip_rect: Option<Rect>,
     children: Vec<Box<dyn ElementTrait>>,
 }
 
@@ -684,6 +703,11 @@ impl ElementTrait for Element {
         let local_x = viewport_x - self.core.layout_position.x;
         let local_y = viewport_y - self.core.layout_position.y;
         self.is_scrollbar_hit(local_x, local_y)
+    }
+
+    fn hit_test_visible_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
+        self.hit_test_clip_rect
+            .map_or(true, |rect| rect.contains(viewport_x, viewport_y))
     }
 
     fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
@@ -1643,6 +1667,7 @@ impl Element {
             has_absolute_descendant_for_hit_test: false,
             absolute_clip_rect: None,
             anchor_parent_clip_rect: None,
+            hit_test_clip_rect: None,
             children: Vec::new(),
         };
         el.recompute_style();
@@ -4060,6 +4085,19 @@ impl Element {
         } else {
             None
         };
+        let inherited_hit_test_clip = self
+            .current_parent_hit_test_clip_rect()
+            .unwrap_or(parent_rect);
+        self.hit_test_clip_rect = Some(if is_absolute {
+            match self.computed_style.position.clip_mode() {
+                ClipMode::Viewport => absolute_clip_rect.unwrap_or(inherited_hit_test_clip),
+                ClipMode::Parent | ClipMode::AnchorParent => absolute_clip_rect
+                    .map(|rect| intersect_rect(rect, inherited_hit_test_clip))
+                    .unwrap_or(inherited_hit_test_clip),
+            }
+        } else {
+            inherited_hit_test_clip
+        });
         let cull_rect = if is_absolute {
             absolute_clip_rect.unwrap_or(parent_rect)
         } else {
@@ -4264,6 +4302,7 @@ impl Element {
             if runtime.depth == 0 {
                 runtime.anchors.clear();
                 runtime.child_clip_stack.clear();
+                runtime.hit_test_clip_stack.clear();
                 runtime.viewport_width = placement.viewport_width.max(0.0);
                 runtime.viewport_height = placement.viewport_height.max(0.0);
             }
@@ -4280,6 +4319,7 @@ impl Element {
             if runtime.depth == 0 {
                 runtime.anchors.clear();
                 runtime.child_clip_stack.clear();
+                runtime.hit_test_clip_stack.clear();
             }
         });
     }
@@ -4298,6 +4338,22 @@ impl Element {
 
     fn current_parent_child_clip_rect(&self) -> Option<Rect> {
         PLACEMENT_RUNTIME.with(|runtime| runtime.borrow().child_clip_stack.last().copied())
+    }
+
+    fn push_hit_test_clip_scope(&self, rect: Rect) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().hit_test_clip_stack.push(rect);
+        });
+    }
+
+    fn pop_hit_test_clip_scope(&self) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().hit_test_clip_stack.pop();
+        });
+    }
+
+    fn current_parent_hit_test_clip_rect(&self) -> Option<Rect> {
+        PLACEMENT_RUNTIME.with(|runtime| runtime.borrow().hit_test_clip_stack.last().copied())
     }
 
     fn register_anchor_snapshot(&self) {
@@ -4398,6 +4454,16 @@ impl Element {
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
     ) {
+        let inherited_hit_test_clip = self.hit_test_clip_rect.unwrap_or(Rect {
+            x: self.core.layout_position.x,
+            y: self.core.layout_position.y,
+            width: self.core.layout_size.width.max(0.0),
+            height: self.core.layout_size.height.max(0.0),
+        });
+        self.push_hit_test_clip_scope(intersect_rect(
+            inherited_hit_test_clip,
+            self.inner_clip_rect(),
+        ));
         let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
         self.push_child_clip_scope(Rect {
             x: self.layout_inner_position.x - overscan,
@@ -4465,6 +4531,7 @@ impl Element {
         self.clamp_scroll_offset();
         self.recompute_absolute_descendant_for_hit_test();
         self.pop_child_clip_scope();
+        self.pop_hit_test_clip_scope();
     }
 
     fn place_flex_children(
@@ -5530,7 +5597,12 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(Layout::flow().row().no_wrap().cross_size(CrossSize::Stretch)),
+            ParsedValue::Layout(
+                Layout::flow()
+                    .row()
+                    .no_wrap()
+                    .cross_size(CrossSize::Stretch),
+            ),
         );
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));

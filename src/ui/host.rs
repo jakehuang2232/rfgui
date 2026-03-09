@@ -5,9 +5,8 @@ use crate::ui::{
     MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, props,
 };
 use crate::{
-    Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Layout, FontFamily, FontSize,
-    FontWeight, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign,
-    Transitions,
+    Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, FontFamily, FontSize, FontWeight,
+    Layout, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign, Transitions,
 };
 
 pub struct Element;

@@ -295,7 +295,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
         </Element>
     }
 }
- 
+
 fn resolve_option_text<DataType>(
     data: &[DataType],
     selected_index: usize,

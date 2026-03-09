@@ -3,7 +3,9 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{DepIn, DepOut, PassContext, ResourceCache};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{render_target_bundle, render_target_size, render_target_view};
+use crate::view::render_pass::render_target::{
+    render_target_bundle, render_target_size, render_target_view,
+};
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -150,23 +152,23 @@ impl RenderPass for DebugOverlayPass {
                 }
             };
 
-        let mut pass = parts.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Debug Overlay"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target,
-            })],
-            depth_stencil_attachment: parts.depth_stencil_attachment(
-                wgpu::LoadOp::Load,
-                wgpu::LoadOp::Load,
-            ),
-            ..Default::default()
-        });
+        let mut pass = parts
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Debug Overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                    resolve_target,
+                })],
+                depth_stencil_attachment: parts
+                    .depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load),
+                ..Default::default()
+            });
         pass.set_pipeline(&resources.pipeline);
         pass.set_scissor_rect(0, 0, target_w, target_h);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
