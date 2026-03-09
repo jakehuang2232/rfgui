@@ -8,20 +8,81 @@ use crate::ui::{
 };
 use std::any::Any;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlobalKey {
+    id: u64,
+}
+
+impl GlobalKey {
+    pub fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+
+    pub fn from<T: Hash>(value: T) -> Self {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value.hash(&mut hasher);
+        Self {
+            id: hasher.finish(),
+        }
+    }
+
+    pub fn id(self) -> u64 {
+        self.id
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RsxKey {
+    Local(u64),
+    Global(GlobalKey),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RsxNodeIdentity {
+    pub invocation_type: String,
+    pub key: Option<RsxKey>,
+}
+
+impl RsxNodeIdentity {
+    pub fn new(invocation_type: impl Into<String>, key: Option<RsxKey>) -> Self {
+        Self {
+            invocation_type: invocation_type.into(),
+            key,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RsxNode {
     Element(RsxElementNode),
-    Text(String),
-    Fragment(Vec<RsxNode>),
+    Text(RsxTextNode),
+    Fragment(RsxFragmentNode),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RsxElementNode {
+    pub identity: RsxNodeIdentity,
     pub tag: String,
     pub props: Vec<(String, PropValue)>,
+    pub children: Vec<RsxNode>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RsxTextNode {
+    pub identity: RsxNodeIdentity,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RsxFragmentNode {
+    pub identity: RsxNodeIdentity,
     pub children: Vec<RsxNode>,
 }
 
@@ -134,19 +195,62 @@ impl RsxProps {
 
 impl RsxNode {
     pub fn element(tag: impl Into<String>) -> Self {
+        let tag = tag.into();
         Self::Element(RsxElementNode {
-            tag: tag.into(),
+            identity: RsxNodeIdentity::new(tag.clone(), None),
+            tag,
             props: Vec::new(),
             children: Vec::new(),
         })
     }
 
     pub fn text(content: impl Into<String>) -> Self {
-        Self::Text(content.into())
+        Self::Text(RsxTextNode {
+            identity: RsxNodeIdentity::new("Text", None),
+            content: content.into(),
+        })
     }
 
     pub fn fragment(children: Vec<RsxNode>) -> Self {
-        Self::Fragment(children)
+        Self::Fragment(RsxFragmentNode {
+            identity: RsxNodeIdentity::new("Fragment", None),
+            children,
+        })
+    }
+
+    pub fn identity(&self) -> &RsxNodeIdentity {
+        match self {
+            Self::Element(node) => &node.identity,
+            Self::Text(node) => &node.identity,
+            Self::Fragment(node) => &node.identity,
+        }
+    }
+
+    pub fn set_identity(&mut self, identity: RsxNodeIdentity) {
+        match self {
+            Self::Element(node) => node.identity = identity,
+            Self::Text(node) => node.identity = identity,
+            Self::Fragment(node) => node.identity = identity,
+        }
+    }
+
+    pub fn with_identity(mut self, identity: RsxNodeIdentity) -> Self {
+        self.set_identity(identity);
+        self
+    }
+
+    pub fn with_invocation_type(mut self, invocation_type: impl Into<String>) -> Self {
+        let mut identity = self.identity().clone();
+        identity.invocation_type = invocation_type.into();
+        self.set_identity(identity);
+        self
+    }
+
+    pub fn with_key(mut self, key: impl Into<RsxKey>) -> Self {
+        let mut identity = self.identity().clone();
+        identity.key = Some(key.into());
+        self.set_identity(identity);
+        self
     }
 
     pub fn with_prop(mut self, key: impl Into<String>, value: impl Into<PropValue>) -> Self {
@@ -161,6 +265,22 @@ impl RsxNode {
             node.children.push(child.into_rsx_node());
         }
         self
+    }
+
+    pub fn children(&self) -> Option<&[RsxNode]> {
+        match self {
+            Self::Element(node) => Some(&node.children),
+            Self::Fragment(node) => Some(&node.children),
+            Self::Text(_) => None,
+        }
+    }
+
+    pub fn children_mut(&mut self) -> Option<&mut Vec<RsxNode>> {
+        match self {
+            Self::Element(node) => Some(&mut node.children),
+            Self::Fragment(node) => Some(&mut node.children),
+            Self::Text(_) => None,
+        }
     }
 }
 
@@ -518,28 +638,107 @@ impl FromPropValue for FontSize {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
             PropValue::FontSize(v) => Ok(v),
-            PropValue::I64(v) => Ok(FontSize::px(v as f32)),
-            PropValue::F64(v) => Ok(FontSize::px(v as f32)),
             _ => Err("expected FontSize value".to_string()),
         }
     }
 }
 
-impl FromPropValue for f32 {
+impl FromPropValue for Style {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
-        Ok(f64::from_prop_value(value)? as f32)
+        match value {
+            PropValue::Style(v) => Ok(v),
+            _ => Err("expected style value".to_string()),
+        }
     }
 }
 
-impl FromPropValue for i64 {
+impl FromPropValue for MouseDownHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
-        Ok(f64::from_prop_value(value)? as i64)
+        match value {
+            PropValue::OnMouseDown(v) => Ok(v),
+            _ => Err("expected mouse down handler value".to_string()),
+        }
     }
 }
 
-impl FromPropValue for i32 {
+impl FromPropValue for MouseUpHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
-        Ok(f64::from_prop_value(value)? as i32)
+        match value {
+            PropValue::OnMouseUp(v) => Ok(v),
+            _ => Err("expected mouse up handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for MouseMoveHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnMouseMove(v) => Ok(v),
+            _ => Err("expected mouse move handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for MouseEnterHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnMouseEnter(v) => Ok(v),
+            _ => Err("expected mouse enter handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for MouseLeaveHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnMouseLeave(v) => Ok(v),
+            _ => Err("expected mouse leave handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for ClickHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnClick(v) => Ok(v),
+            _ => Err("expected click handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for KeyDownHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnKeyDown(v) => Ok(v),
+            _ => Err("expected key down handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for KeyUpHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnKeyUp(v) => Ok(v),
+            _ => Err("expected key up handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for FocusHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnFocus(v) => Ok(v),
+            _ => Err("expected focus handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for BlurHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnBlur(v) => Ok(v),
+            _ => Err("expected blur handler value".to_string()),
+        }
     }
 }
 
@@ -552,23 +751,26 @@ impl FromPropValue for TextAlign {
     }
 }
 
-impl<T: Clone + 'static> IntoPropValue for Vec<T> {
+impl<T> IntoPropValue for Rc<T>
+where
+    T: Any + 'static,
+{
     fn into_prop_value(self) -> PropValue {
-        let erased: Rc<dyn Any> = Rc::new(self);
-        PropValue::Shared(SharedPropValue::new(erased))
+        PropValue::Shared(SharedPropValue::new(self))
     }
 }
 
-impl<T: Clone + 'static> FromPropValue for Vec<T> {
+impl<T> FromPropValue for Rc<T>
+where
+    T: Any + 'static,
+{
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
-            PropValue::Shared(shared) => {
-                let erased = shared.value();
-                let vec = Rc::downcast::<Vec<T>>(erased)
-                    .map_err(|_| "expected Vec value with matching type".to_string())?;
-                Ok((*vec).clone())
-            }
-            _ => Err("expected Vec value".to_string()),
+            PropValue::Shared(shared) => shared
+                .value()
+                .downcast::<T>()
+                .map_err(|_| "expected shared prop value of requested type".to_string()),
+            _ => Err("expected shared prop value".to_string()),
         }
     }
 }

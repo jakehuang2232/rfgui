@@ -19,9 +19,12 @@ pub use window::*;
 #[cfg(test)]
 mod tests {
     use crate::{Button, ButtonVariant, Checkbox, Select, Switch, Window};
+    use rfgui::ui::host::{Element, ElementPropSchema, Text, TextPropSchema};
     use rfgui::ui::{
-        EventMeta, MouseButton, MouseEventData, RsxNode, global_state, rsx, take_state_dirty,
+        EventMeta, MouseButton, MouseEventData, RsxNode, create_element, global_state, rsx,
+        take_state_dirty,
     };
+    use std::marker::PhantomData;
 
     fn select_label(item: &String, _: usize) -> String {
         item.clone()
@@ -107,6 +110,37 @@ mod tests {
         assert!(take_state_dirty());
     }
 
+    #[test]
+    fn select_open_state_persists_across_rerender() {
+        let selected = global_state(|| String::from("Option A"));
+
+        let build_tree = || {
+            rsx! {
+                <Select
+                    data={vec![
+                        String::from("Option A"),
+                        String::from("Option B"),
+                        String::from("Option C"),
+                    ]}
+                    to_label={select_label}
+                    value={selected.binding()}
+                />
+            }
+        };
+
+        let first_tree = build_tree();
+        let mut roots = rfgui::rsx_to_elements(&first_tree).expect("convert select");
+        let mut viewport = rfgui::view::Viewport::new();
+        click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
+        assert!(take_state_dirty());
+
+        let second_tree = build_tree();
+        let RsxNode::Element(root) = second_tree else {
+            panic!("select should render element root");
+        };
+        assert_eq!(root.children.len(), 2, "select menu should remain open after rerender");
+    }
+
     fn click_once(
         root: &mut dyn rfgui::view::base_component::ElementTrait,
         viewport: &mut rfgui::view::Viewport,
@@ -173,19 +207,19 @@ mod tests {
         let Some(RsxNode::Text(content)) = text_node.children.first() else {
             panic!("text should carry string child");
         };
-        assert_eq!(content, "Click Me");
+        assert_eq!(content.content, "Click Me");
     }
 
     fn collect_text_nodes(node: &RsxNode, out: &mut Vec<String>) {
         match node {
-            RsxNode::Text(content) => out.push(content.clone()),
+            RsxNode::Text(content) => out.push(content.content.clone()),
             RsxNode::Element(element) => {
                 for child in &element.children {
                     collect_text_nodes(child, out);
                 }
             }
-            RsxNode::Fragment(children) => {
-                for child in children {
+            RsxNode::Fragment(fragment) => {
+                for child in &fragment.children {
                     collect_text_nodes(child, out);
                 }
             }
@@ -288,6 +322,84 @@ mod tests {
                 />
             </Window>
         };
+        let RsxNode::Element(root) = tree else {
+            panic!("window should render element root");
+        };
+        assert_eq!(root.tag, "Element");
+        assert!(!root.children.is_empty());
+    }
+
+    #[test]
+    fn create_element_supports_multiple_children() {
+        let tree = create_element(
+            PhantomData::<Element>,
+            ElementPropSchema {
+                anchor: None,
+                style: None,
+                on_mouse_down: None,
+                on_mouse_up: None,
+                on_mouse_move: None,
+                on_mouse_enter: None,
+                on_mouse_leave: None,
+                on_click: None,
+                on_key_down: None,
+                on_key_up: None,
+                on_focus: None,
+                on_blur: None,
+            },
+            (
+                create_element(
+                    PhantomData::<Text>,
+                    TextPropSchema {
+                        style: None,
+                        align: None,
+                        font_size: None,
+                        line_height: None,
+                        font: None,
+                        opacity: None,
+                    },
+                    "A",
+                ),
+                create_element(
+                    PhantomData::<Text>,
+                    TextPropSchema {
+                        style: None,
+                        align: None,
+                        font_size: None,
+                        line_height: None,
+                        font: None,
+                        opacity: None,
+                    },
+                    "B",
+                ),
+            ),
+        );
+
+        let RsxNode::Element(root) = tree else {
+            panic!("create_element should produce an element root");
+        };
+        assert_eq!(root.tag, "Element");
+        assert_eq!(root.children.len(), 2);
+    }
+
+    #[test]
+    fn window_supports_nested_optional_object_props() {
+        let tree = rsx! {
+            <Window
+                title="Panel"
+                window_slots={{
+                    root_style: {
+                        background: rfgui::Color::hex("#ffffff"),
+                    },
+                    title_bar_style: {
+                        height: rfgui::Length::px(28.0),
+                    },
+                }}
+            >
+                <Button label="Inside" />
+            </Window>
+        };
+
         let RsxNode::Element(root) = tree else {
             panic!("window should render element root");
         };

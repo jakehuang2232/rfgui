@@ -458,6 +458,14 @@ impl Layoutable for Text {
         self.element.set_height(height);
     }
 
+    fn allows_cross_stretch(&self, is_row: bool) -> bool {
+        if is_row {
+            self.auto_height
+        } else {
+            self.auto_width
+        }
+    }
+
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);

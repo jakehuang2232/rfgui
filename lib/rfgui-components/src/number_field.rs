@@ -1,9 +1,10 @@
 use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
-    Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
+    Binding, ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,
+    use_state,
 };
-use rfgui::{AlignItems, Border, JustifyContent, Layout, Length};
+use rfgui::{Align, Border, JustifyContent, Layout, Length};
 
 pub struct NumberField;
 
@@ -18,7 +19,7 @@ pub struct NumberFieldProps {
 }
 
 impl RsxComponent<NumberFieldProps> for NumberField {
-    fn render(props: NumberFieldProps) -> RsxNode {
+    fn render(props: NumberFieldProps, _children: Vec<RsxNode>) -> RsxNode {
         let value = props.value.unwrap_or(0.0);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(value));
@@ -37,6 +38,10 @@ impl RsxComponent<NumberFieldProps> for NumberField {
             />
         }
     }
+}
+
+impl RsxChildrenPolicy for NumberField {
+    const ACCEPTS_CHILDREN: bool = false;
 }
 
 #[component]
@@ -86,7 +91,7 @@ fn NumberFieldView(
 
     let mut root = rsx! {
         <Element style={{
-            layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
+            layout: Layout::flow().row().no_wrap().align(Align::Center),
             width: Length::px(width),
             height: Length::px(height),
             border_radius: theme.component.input.radius,
@@ -102,7 +107,7 @@ fn NumberFieldView(
                     .row()
                     .no_wrap()
                     .justify_content(JustifyContent::Center)
-                    .align_items(AlignItems::Center),
+                    .align(Align::Center),
                 width: Length::px(button_size),
                 height: Length::px(button_size),
                 background: if disabled {
@@ -126,7 +131,7 @@ fn NumberFieldView(
                     .row()
                     .no_wrap()
                     .justify_content(JustifyContent::Center)
-                    .align_items(AlignItems::Center),
+                    .align(Align::Center),
                 width: Length::px(value_width),
                 height: Length::px(button_size),
             }}>
@@ -144,7 +149,7 @@ fn NumberFieldView(
                     .row()
                     .no_wrap()
                     .justify_content(JustifyContent::Center)
-                    .align_items(AlignItems::Center),
+                    .align(Align::Center),
                 width: Length::px(button_size),
                 height: Length::px(button_size),
                 background: if disabled {

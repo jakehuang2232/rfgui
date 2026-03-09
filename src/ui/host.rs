@@ -5,8 +5,9 @@ use crate::ui::{
     MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, props,
 };
 use crate::{
-    AlignItems, BorderRadius, BoxShadow, ColorLike, Cursor, Layout, FontFamily, FontSize,
-    FontWeight, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign, Transitions,
+    Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Layout, FontFamily, FontSize,
+    FontWeight, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign,
+    Transitions,
 };
 
 pub struct Element;
@@ -27,7 +28,6 @@ pub struct ElementPropSchema {
     pub on_key_up: Option<KeyUpHandlerProp>,
     pub on_focus: Option<FocusHandlerProp>,
     pub on_blur: Option<BlurHandlerProp>,
-    pub children: Vec<RsxNode>,
 }
 
 pub struct ElementStylePropSchema {
@@ -39,7 +39,8 @@ pub struct ElementStylePropSchema {
     pub min_height: Length,
     pub max_height: Length,
     pub layout: Layout,
-    pub align_items: AlignItems,
+    pub cross_size: CrossSize,
+    pub align: Align,
     pub gap: Length,
     pub scroll_direction: ScrollDirection,
     pub cursor: Cursor,
@@ -71,7 +72,6 @@ pub struct TextPropSchema {
     pub line_height: Option<f64>,
     pub font: Option<String>,
     pub opacity: Option<f64>,
-    pub children: Vec<RsxNode>,
 }
 
 #[props]
@@ -90,11 +90,10 @@ pub struct TextAreaPropSchema {
     pub multiline: Option<bool>,
     pub read_only: Option<bool>,
     pub max_length: Option<i64>,
-    pub children: Vec<RsxNode>,
 }
 
 impl RsxComponent<ElementPropSchema> for Element {
-    fn render(props: ElementPropSchema) -> RsxNode {
+    fn render(props: ElementPropSchema, children: Vec<RsxNode>) -> RsxNode {
         let mut node = RsxNode::element("Element");
         if let Some(anchor) = props.anchor {
             node = node.with_prop("anchor", anchor);
@@ -132,7 +131,7 @@ impl RsxComponent<ElementPropSchema> for Element {
         if let Some(handler) = props.on_blur {
             node = node.with_prop("on_blur", handler);
         }
-        for child in props.children {
+        for child in children {
             node = node.with_child(child);
         }
         node
@@ -140,7 +139,7 @@ impl RsxComponent<ElementPropSchema> for Element {
 }
 
 impl RsxComponent<TextPropSchema> for Text {
-    fn render(props: TextPropSchema) -> RsxNode {
+    fn render(props: TextPropSchema, children: Vec<RsxNode>) -> RsxNode {
         let mut node = RsxNode::element("Text");
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
@@ -168,7 +167,7 @@ impl RsxComponent<TextPropSchema> for Text {
         {
             node = node.with_prop("opacity", opacity);
         }
-        for child in props.children {
+        for child in children {
             node = node.with_child(child);
         }
         node
@@ -176,7 +175,7 @@ impl RsxComponent<TextPropSchema> for Text {
 }
 
 impl RsxComponent<TextAreaPropSchema> for TextArea {
-    fn render(props: TextAreaPropSchema) -> RsxNode {
+    fn render(props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
         let mut node = RsxNode::element("TextArea");
         if let Some(content) = props.content
             && !content.is_empty()
@@ -245,7 +244,7 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         {
             node = node.with_prop("max_length", max_length);
         }
-        for child in props.children {
+        for child in children {
             node = node.with_child(child);
         }
         node

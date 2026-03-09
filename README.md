@@ -105,44 +105,81 @@ fn Card() -> RsxNode {
 }
 ```
 
-### 2) Extend from `Element` via composition
+### 2) Hand-written typed `create_element(...)`
 
 ```rust
-use rfgui::ui::host::Element;
-use rfgui::ui::{RsxChildrenPolicy, RsxNode, RsxPropSchema, RsxProps, RsxTag};
+use std::marker::PhantomData;
+
+use rfgui::ui::host::{Element, ElementPropSchema};
+use rfgui::ui::{create_element, RsxChildrenPolicy, RsxComponent, RsxNode, props};
 use rfgui::{Border, BorderRadius, Color, Length, Padding, Style};
 
 pub struct Card;
 
+#[props]
 pub struct CardProps {
-    pub style: Style,
-    pub children: Vec<RsxNode>,
+    pub style: Option<Style>,
 }
 
-impl RsxTag for Card {
-    fn rsx_render(mut props: RsxProps, children: Vec<RsxNode>) -> Result<RsxNode, String> {
-        let mut style = props.remove_t::<Style>("style")?.unwrap_or_else(Style::new);
+impl RsxComponent<CardProps> for Card {
+    fn render(props: CardProps, children: Vec<RsxNode>) -> RsxNode {
+        let mut style = props.style.unwrap_or_else(Style::new);
         style = style
             .with_padding(Padding::uniform(Length::px(12.0)))
             .with_border(Border::uniform(Length::px(2.0), &Color::hex("#1f2937")))
             .with_border_radius(BorderRadius::uniform(Length::px(10.0)));
 
-        let mut element_props = RsxProps::new();
-        element_props.push("style", style);
-
-        props.reject_remaining("Card")?;
-        Element::rsx_render(element_props, children)
+        create_element(
+            PhantomData::<Element>,
+            ElementPropSchema {
+                anchor: None,
+                style: Some(style),
+                on_mouse_down: None,
+                on_mouse_up: None,
+                on_mouse_move: None,
+                on_mouse_enter: None,
+                on_mouse_leave: None,
+                on_click: None,
+                on_key_down: None,
+                on_key_up: None,
+                on_focus: None,
+                on_blur: None,
+            },
+            children,
+        )
     }
-}
-
-impl RsxPropSchema for Card {
-    type PropsSchema = CardProps;
 }
 
 impl RsxChildrenPolicy for Card {
     const ACCEPTS_CHILDREN: bool = true;
 }
 ```
+
+## Key Semantics
+
+RSX 的 `key` 目前分成兩種：
+
+- local key：只影響同層 sibling 的 identity
+- global key：要求同一輪 build 全域唯一，並可在跨 parent 搬移時保留 component state
+
+```rust
+use rfgui::ui::{GlobalKey, rsx};
+use rfgui::ui::host::Element;
+
+let tree = rsx! {
+    <Element style={{}}>
+        <Element key="item-1" style={{}} />
+        <Element key={GlobalKey::from("dialog-root")} style={{}} />
+    </Element>
+};
+```
+
+注意：
+
+- 字串或數字 `key` 會走 local key，例如 `key="item-1"`
+- `GlobalKey` 必須寫成 Rust expression，所以要用 `key={GlobalKey::from("dialog-root")}`
+- `GlobalKey` 若在同一輪 build 重複出現，會直接報錯
+- reconciliation identity 以 `type + key` 為準；`<Button key={...} />` 與 `<Element key={...} />` 不會視為同一個節點
 
 ## Development
 
