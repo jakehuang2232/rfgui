@@ -92,6 +92,7 @@ struct Prop {
 enum PropValueExpr {
     Expr(Expr),
     StyleObject(Vec<StyleEntry>),
+    Object(Vec<ObjectEntry>),
 }
 
 #[derive(Clone)]
@@ -104,6 +105,19 @@ enum StyleValueExpr {
 struct StyleEntry {
     key: Ident,
     value: StyleValueExpr,
+}
+
+#[derive(Clone)]
+struct ObjectEntry {
+    key: Ident,
+    value: ObjectValueExpr,
+}
+
+#[derive(Clone)]
+enum ObjectValueExpr {
+    Expr(Expr),
+    StyleObject(Vec<StyleEntry>),
+    Object(Vec<ObjectEntry>),
 }
 
 #[derive(Clone)]
@@ -136,50 +150,7 @@ impl Parse for ElementNode {
             let value: PropValueExpr = if input.peek(syn::token::Brace) {
                 let content;
                 braced!(content in input);
-                if key == "style" && content.peek(syn::token::Brace) {
-                    let style_content;
-                    braced!(style_content in content);
-                    let entries = parse_style_entries(&style_content)?;
-                    if !content.is_empty() {
-                        return Err(syn::Error::new(content.span(), "style object syntax error"));
-                    }
-                    PropValueExpr::StyleObject(entries)
-                } else {
-                    let expr_tokens: proc_macro2::TokenStream = content.parse()?;
-                    match syn::parse2::<Expr>(expr_tokens.clone()) {
-                        Ok(expr) => PropValueExpr::Expr(expr),
-                        Err(parse_err) => {
-                            if let Some(object_span) = rsx_object_assignment_span(&expr_tokens) {
-                                let key_name = key.to_string();
-                                return Err(syn::Error::new(
-                                    object_span,
-                                    format!(
-                                        "invalid RSX object syntax on prop `{}`: use a Rust expression (for example `{0}=Some(Type {{ ... }})`). RSX object syntax `{{{{ key: value }}}}` is only for `style`.",
-                                        key_name
-                                    ),
-                                ));
-                            }
-                            if let Some(assign_span) = prop_assignment_like_span(&expr_tokens) {
-                                return Err(syn::Error::new(
-                                    assign_span,
-                                    format!(
-                                        "syntax error inside prop `{}`: `{{...}}` must be a valid Rust expression. It looks like field assignment (`name=...`). Use a Rust value such as `Some(Type {{ name: value }})`.",
-                                        key
-                                    ),
-                                ));
-                            }
-                            let mut err = syn::Error::new(
-                                parse_err.span(),
-                                format!(
-                                    "invalid Rust expression for prop `{}` inside `{{...}}`",
-                                    key
-                                ),
-                            );
-                            err.combine(parse_err);
-                            return Err(err);
-                        }
-                    }
-                }
+                parse_prop_value_expr(&key, &content)?
             } else {
                 let lit: Lit = input.parse()?;
                 PropValueExpr::Expr(parse_quote!(#lit))
@@ -238,19 +209,70 @@ impl Parse for ElementNode {
     }
 }
 
-fn rsx_object_assignment_span(tokens: &proc_macro2::TokenStream) -> Option<Span> {
-    let mut iter = tokens.clone().into_iter();
-    let Some(TokenTree::Group(group)) = iter.next() else {
-        return None;
-    };
-    if group.delimiter() != Delimiter::Brace || iter.next().is_some() {
-        return None;
+fn parse_prop_value_expr(key: &Ident, input: ParseStream) -> Result<PropValueExpr> {
+    if key == "style" && input.peek(syn::token::Brace) {
+        let style_content;
+        braced!(style_content in input);
+        let entries = parse_style_entries(&style_content)?;
+        if !input.is_empty() {
+            return Err(syn::Error::new(input.span(), "style object syntax error"));
+        }
+        return Ok(PropValueExpr::StyleObject(entries));
     }
-    let inner = group.stream().to_string();
-    if inner.contains('=') && inner.contains(',') {
-        return Some(group.span());
+
+    let object_tokens: proc_macro2::TokenStream = input.fork().parse()?;
+    if let Some(inner_tokens) = unwrap_single_brace_group(&object_tokens)
+        && let Ok(entries) = parse_object_entries_from_tokens(inner_tokens)
+    {
+        let _: proc_macro2::TokenStream = input.parse()?;
+        return Ok(PropValueExpr::Object(entries));
     }
-    None
+
+    if let Ok(entries) = parse_object_entries_from_tokens(object_tokens.clone()) {
+        let _: proc_macro2::TokenStream = input.parse()?;
+        return Ok(PropValueExpr::Object(entries));
+    }
+
+    if input.peek(syn::token::Brace) {
+        let fork = input.fork();
+        let nested;
+        braced!(nested in fork);
+        let nested_tokens: proc_macro2::TokenStream = nested.parse()?;
+        if let Ok(_entries) = parse_object_entries_from_tokens(nested_tokens)
+            && fork.is_empty()
+        {
+            let object_content;
+            braced!(object_content in input);
+            let object_tokens: proc_macro2::TokenStream = object_content.parse()?;
+            let entries = parse_object_entries_from_tokens(object_tokens)?;
+            if !input.is_empty() {
+                return Err(syn::Error::new(input.span(), "object syntax error"));
+            }
+            return Ok(PropValueExpr::Object(entries));
+        }
+    }
+
+    let expr_tokens: proc_macro2::TokenStream = input.parse()?;
+    match syn::parse2::<Expr>(expr_tokens.clone()) {
+        Ok(expr) => Ok(PropValueExpr::Expr(expr)),
+        Err(parse_err) => {
+            if let Some(assign_span) = prop_assignment_like_span(&expr_tokens) {
+                return Err(syn::Error::new(
+                    assign_span,
+                    format!(
+                        "syntax error inside prop `{}`: `{{...}}` must be a valid Rust expression or RSX object. It looks like field assignment (`name=...`). Use `name: value` for RSX objects.",
+                        key
+                    ),
+                ));
+            }
+            let mut err = syn::Error::new(
+                parse_err.span(),
+                format!("invalid Rust expression for prop `{}` inside `{{...}}`", key),
+            );
+            err.combine(parse_err);
+            Err(err)
+        }
+    }
 }
 
 fn prop_assignment_like_span(tokens: &proc_macro2::TokenStream) -> Option<Span> {
@@ -269,6 +291,72 @@ fn prop_assignment_like_span(tokens: &proc_macro2::TokenStream) -> Option<Span> 
         }
     }
     None
+}
+
+fn parse_object_entries(input: ParseStream) -> Result<Vec<ObjectEntry>> {
+    let mut entries = Vec::new();
+    while !input.is_empty() {
+        let key: Ident = input.parse()?;
+        if input.peek(Token![=]) {
+            let eq: Token![=] = input.parse()?;
+            return Err(syn::Error::new(
+                eq.spans[0],
+                format!(
+                    "invalid object syntax on `{}`: use `:` inside RSX objects (for example `{}: value`).",
+                    key, key
+                ),
+            ));
+        }
+        input.parse::<Token![:]>()?;
+        let value = if key == "style" && input.peek(syn::token::Brace) {
+            let nested;
+            braced!(nested in input);
+            ObjectValueExpr::StyleObject(parse_style_entries(&nested)?)
+        } else if input.peek(syn::token::Brace) {
+            let nested;
+            braced!(nested in input);
+            let nested_tokens: proc_macro2::TokenStream = nested.parse()?;
+            ObjectValueExpr::Object(parse_object_entries_from_tokens(nested_tokens)?)
+        } else {
+            ObjectValueExpr::Expr(input.parse()?)
+        };
+        entries.push(ObjectEntry { key, value });
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+    }
+    Ok(entries)
+}
+
+fn parse_object_entries_from_tokens(
+    tokens: proc_macro2::TokenStream,
+) -> Result<Vec<ObjectEntry>> {
+    struct ObjectEntries {
+        entries: Vec<ObjectEntry>,
+    }
+
+    impl Parse for ObjectEntries {
+        fn parse(input: ParseStream) -> Result<Self> {
+            Ok(Self {
+                entries: parse_object_entries(input)?,
+            })
+        }
+    }
+
+    syn::parse2::<ObjectEntries>(tokens).map(|parsed| parsed.entries)
+}
+
+fn unwrap_single_brace_group(
+    tokens: &proc_macro2::TokenStream,
+) -> Option<proc_macro2::TokenStream> {
+    let mut iter = tokens.clone().into_iter();
+    let TokenTree::Group(group) = iter.next()? else {
+        return None;
+    };
+    if group.delimiter() != Delimiter::Brace || iter.next().is_some() {
+        return None;
+    }
+    Some(group.stream())
 }
 
 fn parse_style_entries(input: ParseStream) -> Result<Vec<StyleEntry>> {
@@ -331,12 +419,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     let tag = &element.tag;
     let close_tag = &element.close_tag;
     let has_children = !element.children.is_empty();
-    let child_statements = element.children.iter().map(|c| {
-        let child_expr = expand_node(c);
-        quote! {
-            __rsx_children.push(#child_expr);
-        }
-    });
+    let child_exprs = element.children.iter().map(expand_node);
 
     let prop_schema_checks = element
         .props
@@ -349,23 +432,21 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         .filter(|p| p.key != "key")
         .map(expand_builder_assignment);
     let component_key = component_key_tokens(element);
-    let children_assignment = if has_children {
-        quote! { __rsx_props_builder.children = ::core::option::Option::Some(__rsx_children); }
-    } else {
-        quote! {}
-    };
     let children_schema_check = if has_children {
         quote! {
-            let _ = &__rsx_props_builder.children;
+            let _: [(); 1] = [(); <#tag as ::rfgui::ui::RsxChildrenPolicy>::ACCEPTS_CHILDREN as usize];
         }
     } else {
         quote! {}
     };
+    let children_value = if has_children {
+        quote! { (#(#child_exprs),*) }
+    } else {
+        quote! { () }
+    };
     quote! {
         {
             let _ = ::core::marker::PhantomData::<#close_tag>;
-            let mut __rsx_children = Vec::<::rfgui::ui::RsxNode>::new();
-            #(#child_statements)*
             fn __rsx_builder_for_props<__RsxComponentProps>() -> <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::Builder
             where
                 __RsxComponentProps: ::rfgui::ui::RsxPropsBuilder,
@@ -382,24 +463,18 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
             {
                 <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::build(builder)
             }
-            fn __rsx_render_props<__RsxComponentProps>(props: __RsxComponentProps) -> ::rfgui::ui::RsxNode
-            where
-                #tag: ::rfgui::ui::RsxComponent<__RsxComponentProps>,
-            {
-                <#tag as ::rfgui::ui::RsxComponent<__RsxComponentProps>>::render(props)
-            }
             let mut __rsx_props_builder = __rsx_builder_for_props::<_>();
             #(#prop_schema_checks)*
             #children_schema_check
             #(#builder_assignments)*
-            #children_assignment
             let __rsx_props = __rsx_build_props(__rsx_props_builder)
                 .expect(concat!("rsx build error on <", stringify!(#tag), ">"));
-            ::rfgui::ui::with_component_key(#component_key, || {
-                ::rfgui::ui::render_component::<#tag, _>(|| {
-                    __rsx_render_props(__rsx_props)
-                })
-            })
+            ::rfgui::ui::create_element_with_key(
+                ::core::marker::PhantomData::<#tag>,
+                __rsx_props,
+                #children_value,
+                #component_key,
+            )
         }
     }
 }
@@ -410,10 +485,10 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
     };
     match &prop.value {
         PropValueExpr::Expr(expr) => {
-            quote! { ::core::option::Option::Some(::rfgui::ui::component_key_token(&(#expr))) }
+            quote! { ::core::option::Option::Some(::rfgui::ui::classify_component_key(&(#expr))) }
         }
-        PropValueExpr::StyleObject(_) => quote_spanned! {prop.key.span()=>
-            compile_error!("`key` must be a Rust expression, not a style object")
+        PropValueExpr::StyleObject(_) | PropValueExpr::Object(_) => quote_spanned! {prop.key.span()=>
+            compile_error!("`key` must be a Rust expression")
         },
     }
 }
@@ -440,6 +515,7 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
     let mut all_optional = true;
     let mut builder_fields = Vec::new();
     let mut builder_setters = Vec::new();
+    let mut builder_prop_type_methods = Vec::new();
     let mut build_fields = Vec::new();
     for field in fields {
         let field_ident = match &field.ident {
@@ -450,6 +526,13 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
             }
         };
         let field_ty = &field.ty;
+        if is_children_field(field_ident, field_ty) {
+            return syn::Error::new(
+                field.span(),
+                "`children` is no longer a props field; declare it only as a #[component] function parameter",
+            )
+            .to_compile_error();
+        }
         builder_fields.push(quote! {
             pub #field_ident: ::core::option::Option<#field_ty>,
         });
@@ -457,6 +540,12 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
             #field_ident: ::core::option::Option::None,
         });
         if let Some(inner_ty) = option_inner_type(field_ty) {
+            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            builder_prop_type_methods.push(quote! {
+                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#inner_ty> {
+                    ::core::marker::PhantomData
+                }
+            });
             default_fields.push(quote! { #field_ident: ::core::option::Option::None, });
             if is_fn_pointer_type(inner_ty) {
                 builder_setters.push(quote! {
@@ -477,17 +566,13 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
             build_fields.push(quote! {
                 #field_ident: builder.#field_ident.unwrap_or(::core::option::Option::None),
             });
-        } else if is_children_field(field_ident, field_ty) {
-            all_optional = false;
-            builder_setters.push(quote! {
-                pub fn #field_ident(&mut self, value: #field_ty) {
-                    self.#field_ident = ::core::option::Option::Some(value);
+        } else {
+            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            builder_prop_type_methods.push(quote! {
+                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#field_ty> {
+                    ::core::marker::PhantomData
                 }
             });
-            build_fields.push(quote! {
-                #field_ident: builder.#field_ident.unwrap_or_default(),
-            });
-        } else {
             all_optional = false;
             if is_fn_pointer_type(field_ty) {
                 builder_setters.push(quote! {
@@ -544,6 +629,7 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
 
         impl #impl_generics #builder_ident #ty_generics #where_clause {
             #(#builder_setters)*
+            #(#builder_prop_type_methods)*
         }
 
         impl #impl_generics ::rfgui::ui::RsxPropsBuilder for #struct_ident #ty_generics #where_clause {
@@ -612,14 +698,17 @@ fn is_fn_pointer_type(ty: &Type) -> bool {
 
 fn expand_builder_assignment(prop: &Prop) -> proc_macro2::TokenStream {
     let key_ident = &prop.key;
-    let value = expand_builder_value_expr(prop);
+    let value = expand_builder_value_expr(prop, quote!(__rsx_props_builder));
     quote! {
         __rsx_props_builder.#key_ident(#value);
     }
 }
 
-fn expand_builder_value_expr(prop: &Prop) -> proc_macro2::TokenStream {
-    let value = expand_prop_value_expr(&prop.value);
+fn expand_builder_value_expr(
+    prop: &Prop,
+    builder_ident: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let value = expand_prop_value_expr_for_builder(&prop.key, &prop.value, builder_ident);
     let is_closure = matches!(&prop.value, PropValueExpr::Expr(Expr::Closure(_)));
     if !is_closure {
         return value;
@@ -654,7 +743,11 @@ fn expand_builder_prop_schema_check(prop: &Prop) -> proc_macro2::TokenStream {
     }
 }
 
-fn expand_prop_value_expr(value: &PropValueExpr) -> proc_macro2::TokenStream {
+fn expand_prop_value_expr_for_builder(
+    key: &Ident,
+    value: &PropValueExpr,
+    builder_ident: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     match value {
         PropValueExpr::Expr(value) => quote! { #value },
         PropValueExpr::StyleObject(entries) => {
@@ -663,6 +756,75 @@ fn expand_prop_value_expr(value: &PropValueExpr) -> proc_macro2::TokenStream {
                 let mut __rsx_style = ::rfgui::Style::new();
                 #(#style_inserts)*
                 __rsx_style
+            }}
+        }
+        PropValueExpr::Object(entries) => expand_object_value_for_builder(key, entries, builder_ident),
+    }
+}
+
+fn expand_object_value_for_builder(
+    key: &Ident,
+    entries: &[ObjectEntry],
+    builder_ident: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
+    let assignments = entries
+        .iter()
+        .map(|entry| expand_object_assignment(entry, quote!(__rsx_object_builder)));
+    quote! {{
+        ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_object_builder| {
+            #(#assignments)*
+        })
+    }}
+}
+
+fn expand_object_assignment(
+    entry: &ObjectEntry,
+    builder_ident: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let key_ident = &entry.key;
+    let value = expand_object_value_expr(key_ident, &entry.value, builder_ident.clone());
+    quote! {
+        let _ = &#builder_ident.#key_ident;
+        #builder_ident.#key_ident(#value);
+    }
+}
+
+fn expand_object_value_expr(
+    key: &Ident,
+    value: &ObjectValueExpr,
+    builder_ident: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    match value {
+        ObjectValueExpr::Expr(value) => {
+            let raw = quote! { #value };
+            if matches!(value, Expr::Closure(_)) {
+                if let Some(wrapper_fn) = event_closure_wrapper(&key.to_string()) {
+                    quote! { #wrapper_fn(#raw) }
+                } else {
+                    raw
+                }
+            } else {
+                raw
+            }
+        }
+        ObjectValueExpr::StyleObject(entries) => {
+            let style_inserts = entries.iter().map(expand_style_entry);
+            quote! {{
+                let mut __rsx_style = ::rfgui::Style::new();
+                #(#style_inserts)*
+                __rsx_style
+            }}
+        }
+        ObjectValueExpr::Object(entries) => {
+            let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
+            let assignments = entries
+                .iter()
+                .map(|entry| expand_object_assignment(entry, quote!(__rsx_nested_builder)));
+            quote! {{
+                ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_nested_builder| {
+                    #(#assignments)*
+                })
             }}
         }
     }
@@ -910,17 +1072,30 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.layout requires an expression value");
             },
         },
-        "align_items" => match &entry.value {
+        "cross_size" => match &entry.value {
             StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
                 quote! {
                     __rsx_style.insert(
-                        ::rfgui::PropertyId::AlignItems,
-                        ::rfgui::ParsedValue::AlignItems(#inner),
+                        ::rfgui::PropertyId::CrossSize,
+                        ::rfgui::ParsedValue::CrossSize(#inner),
                     );
                 }
             }),
             StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.align_items requires an expression value");
+                compile_error!("style.cross_size requires an expression value");
+            },
+        },
+        "align" => match &entry.value {
+            StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
+                quote! {
+                    __rsx_style.insert(
+                        ::rfgui::PropertyId::Align,
+                        ::rfgui::ParsedValue::Align(#inner),
+                    );
+                }
+            }),
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.align requires an expression value");
             },
         },
         "gap" => match &entry.value {
@@ -1161,12 +1336,14 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     let mut prop_fields = Vec::new();
     let mut builder_fields = Vec::new();
     let mut builder_setters = Vec::new();
+    let mut builder_prop_type_methods = Vec::new();
     let mut builder_default_fields = Vec::new();
     let mut build_fields = Vec::new();
     let mut optional_default_fields = Vec::new();
     let mut all_optional = true;
     let mut helper_args = Punctuated::<FnArg, Token![,]>::new();
     let mut helper_call_args = Vec::new();
+    let mut accepts_children = false;
 
     for arg in &input_fn.sig.inputs {
         let FnArg::Typed(pat_ty) = arg else {
@@ -1191,7 +1368,10 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
                 return syn::Error::new(ty.span(), "children type must be Vec<RsxNode>")
                     .to_compile_error();
             }
-            parse_quote!(Vec<::rfgui::ui::RsxNode>)
+            accepts_children = true;
+            helper_args.push(parse_quote!(#field_ident: #ty));
+            helper_call_args.push(quote!(children));
+            continue;
         } else {
             ty.clone()
         };
@@ -1203,6 +1383,12 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             #field_ident: ::core::option::Option::None,
         });
         if let Some(inner_ty) = option_inner_type(&props_field_ty) {
+            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            builder_prop_type_methods.push(quote! {
+                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#inner_ty> {
+                    ::core::marker::PhantomData
+                }
+            });
             optional_default_fields.push(quote! {
                 #field_ident: ::core::option::Option::None,
             });
@@ -1225,17 +1411,13 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             build_fields.push(quote! {
                 #field_ident: builder.#field_ident.unwrap_or(::core::option::Option::None),
             });
-        } else if is_children_field(&field_ident, &props_field_ty) {
-            all_optional = false;
-            builder_setters.push(quote! {
-                pub fn #field_ident(&mut self, value: #props_field_ty) {
-                    self.#field_ident = ::core::option::Option::Some(value);
+        } else {
+            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            builder_prop_type_methods.push(quote! {
+                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#props_field_ty> {
+                    ::core::marker::PhantomData
                 }
             });
-            build_fields.push(quote! {
-                #field_ident: builder.#field_ident.unwrap_or_default(),
-            });
-        } else {
             all_optional = false;
             if is_fn_pointer_type(&props_field_ty) {
                 builder_setters.push(quote! {
@@ -1334,6 +1516,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
 
         impl #impl_generics #builder_name #ty_generics #where_clause {
             #(#builder_setters)*
+            #(#builder_prop_type_methods)*
         }
 
         impl #impl_generics ::rfgui::ui::RsxPropsBuilder for #props_name #ty_generics #where_clause {
@@ -1351,11 +1534,14 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         }
 
         impl #impl_generics ::rfgui::ui::RsxComponent<#props_name #ty_generics> for #comp_name #ty_generics #where_clause {
-            fn render(props: #props_name #ty_generics) -> ::rfgui::ui::RsxNode {
-                ::rfgui::ui::render_component::<Self, _>(|| {
-                    #helper_name(#(#helper_call_args),*)
-                })
+            fn render(props: #props_name #ty_generics, children: ::std::vec::Vec<::rfgui::ui::RsxNode>) -> ::rfgui::ui::RsxNode {
+                let _ = &children;
+                #helper_name(#(#helper_call_args),*)
             }
+        }
+
+        impl #impl_generics ::rfgui::ui::RsxChildrenPolicy for #comp_name #ty_generics #where_clause {
+            const ACCEPTS_CHILDREN: bool = #accepts_children;
         }
 
         #[allow(non_snake_case)]

@@ -1,10 +1,10 @@
 use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
-    Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxComponent, RsxNode,
-    component, props, rsx, use_state,
+    Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxChildrenPolicy,
+    RsxComponent, RsxNode, component, props, rsx, use_state,
 };
-use rfgui::{AlignItems, Border, Color, Layout, Transition, TransitionProperty};
+use rfgui::{Align, Border, Color, Layout, Transition, TransitionProperty};
 
 pub struct Checkbox;
 
@@ -17,7 +17,7 @@ pub struct CheckboxProps {
 }
 
 impl RsxComponent<CheckboxProps> for Checkbox {
-    fn render(props: CheckboxProps) -> RsxNode {
+    fn render(props: CheckboxProps, _children: Vec<RsxNode>) -> RsxNode {
         let checked = props.checked.unwrap_or(false);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
@@ -32,6 +32,10 @@ impl RsxComponent<CheckboxProps> for Checkbox {
             />
         }
     }
+}
+
+impl RsxChildrenPolicy for Checkbox {
+    const ACCEPTS_CHILDREN: bool = false;
 }
 
 #[component]
@@ -67,7 +71,7 @@ fn CheckboxView(
 
     rsx! {
         <Element style={{
-            layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
+            layout: Layout::flow().row().no_wrap().align(Align::Center),
             gap: theme.spacing.md,
         }}
         on_click={click}

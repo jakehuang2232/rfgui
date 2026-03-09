@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use crate::ui::{FromPropValue, IntoPropValue, PropValue, SharedPropValue};
+use crate::ui::{FromPropValue, GlobalKey, IntoPropValue, PropValue, RsxKey, SharedPropValue};
 
 #[derive(Clone)]
 pub struct Binding<T: 'static> {
@@ -127,6 +127,9 @@ struct StateStore {
     build_depth: usize,
     root_cursor: usize,
     live_keys: HashSet<ComponentKey>,
+    live_global_keys: HashSet<GlobalKey>,
+    global_component_keys: HashMap<GlobalKey, ComponentKey>,
+    active_build_global_keys: HashSet<GlobalKey>,
     components_rendered_in_build: bool,
 }
 
@@ -134,7 +137,7 @@ thread_local! {
     static STORE: RefCell<StateStore> = RefCell::new(StateStore::default());
     static GLOBAL_STORE: RefCell<HashMap<TypeId, Box<dyn Any>>> = RefCell::new(HashMap::new());
     static CONTEXT: RefCell<RenderContext> = RefCell::new(RenderContext::default());
-    static COMPONENT_KEY_STACK: RefCell<Vec<Option<u64>>> = const { RefCell::new(Vec::new()) };
+    static COMPONENT_KEY_STACK: RefCell<Vec<Option<RsxKey>>> = const { RefCell::new(Vec::new()) };
     static REDRAW_CALLBACK: RefCell<Option<Rc<dyn Fn()>>> = RefCell::new(None);
     static STATE_DIRTY: Cell<bool> = const { Cell::new(false) };
 }
@@ -182,6 +185,8 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
         if store.build_depth == 0 {
             store.root_cursor = 0;
             store.live_keys.clear();
+            store.live_global_keys.clear();
+            store.active_build_global_keys.clear();
             store.components_rendered_in_build = false;
         }
         store.build_depth += 1;
@@ -194,7 +199,11 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
         store.build_depth = store.build_depth.saturating_sub(1);
         if store.build_depth == 0 && store.components_rendered_in_build {
             let live = store.live_keys.clone();
+            let live_global = store.live_global_keys.clone();
             store.slots.retain(|k, _| live.contains(k));
+            store
+                .global_component_keys
+                .retain(|key, _| live_global.contains(key));
         }
     });
 
@@ -207,7 +216,24 @@ pub fn component_key_token<T: ?Sized + Hash>(value: &T) -> u64 {
     hasher.finish()
 }
 
-pub fn with_component_key<R>(key: Option<u64>, f: impl FnOnce() -> R) -> R {
+pub fn classify_component_key<T: Hash + Any>(value: &T) -> RsxKey {
+    let any = value as &dyn Any;
+    if let Some(global_key) = any.downcast_ref::<GlobalKey>() {
+        return RsxKey::Global(*global_key);
+    }
+    RsxKey::Local(component_key_token(value))
+}
+
+pub fn register_global_key(global_key: GlobalKey) {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        if !store.active_build_global_keys.insert(global_key) {
+            panic!("duplicate GlobalKey detected in the same build");
+        }
+    });
+}
+
+pub fn with_component_key<R>(key: Option<RsxKey>, f: impl FnOnce() -> R) -> R {
     struct StackGuard;
     impl Drop for StackGuard {
         fn drop(&mut self) {
@@ -224,32 +250,39 @@ pub fn with_component_key<R>(key: Option<u64>, f: impl FnOnce() -> R) -> R {
     f()
 }
 
-fn current_component_key() -> Option<u64> {
-    COMPONENT_KEY_STACK.with(|stack| stack.borrow().last().copied().flatten())
+fn current_rsx_key() -> Option<RsxKey> {
+    COMPONENT_KEY_STACK.with(|stack| stack.borrow().last().cloned().flatten())
 }
 
 pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
     const KEYED_PATH_MARKER: usize = usize::MAX;
+    const GLOBAL_KEYED_PATH_MARKER: usize = usize::MAX - 1;
     let path = CONTEXT.with(|context| {
         let mut context = context.borrow_mut();
-        let component_key = current_component_key();
+        let component_key = current_rsx_key();
         if let Some(parent) = context.frames.last_mut() {
             let child_index = parent.child_cursor;
             parent.child_cursor += 1;
-            let mut path = parent.path.clone();
-            if let Some(key) = component_key {
-                path.push(KEYED_PATH_MARKER);
-                path.push(key as usize);
+            if let Some(RsxKey::Global(global_key)) = component_key {
+                vec![GLOBAL_KEYED_PATH_MARKER, global_key.id() as usize]
             } else {
-                path.push(child_index);
+                let mut path = parent.path.clone();
+                if let Some(RsxKey::Local(key)) = component_key {
+                    path.push(KEYED_PATH_MARKER);
+                    path.push(key as usize);
+                } else {
+                    path.push(child_index);
+                }
+                path
             }
-            path
         } else {
             STORE.with(|store| {
                 let mut store = store.borrow_mut();
                 let root_index = store.root_cursor;
                 store.root_cursor += 1;
-                if let Some(key) = component_key {
+                if let Some(RsxKey::Global(global_key)) = component_key {
+                    vec![GLOBAL_KEYED_PATH_MARKER, global_key.id() as usize]
+                } else if let Some(RsxKey::Local(key)) = component_key {
                     vec![KEYED_PATH_MARKER, key as usize]
                 } else {
                     vec![root_index]
@@ -267,6 +300,10 @@ pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
         let mut store = store.borrow_mut();
         store.components_rendered_in_build = true;
         store.live_keys.insert(key.clone());
+        if let Some(RsxKey::Global(global_key)) = current_rsx_key() {
+            store.live_global_keys.insert(global_key);
+            store.global_component_keys.insert(global_key, key.clone());
+        }
     });
 
     CONTEXT.with(|context| {
@@ -373,7 +410,7 @@ pub fn use_global_state<T: Clone + 'static>() -> GlobalState<T> {
 #[cfg(test)]
 mod tests {
     use super::{build_scope, take_state_dirty, use_state, with_component_key};
-    use crate::ui::RsxNode;
+    use crate::ui::{GlobalKey, RsxKey, RsxNode};
 
     #[test]
     fn non_component_scope_does_not_reset_use_state_slots() {
@@ -401,13 +438,13 @@ mod tests {
     #[test]
     fn keyed_component_keeps_state_when_order_changes() {
         let first = build_scope(|| {
-            let a = with_component_key(Some(1), || {
+            let a = with_component_key(Some(RsxKey::Local(1)), || {
                 crate::ui::render_component::<u32, _>(|| {
                     let state = use_state(|| 10_i32);
                     state.get()
                 })
             });
-            let b = with_component_key(Some(2), || {
+            let b = with_component_key(Some(RsxKey::Local(2)), || {
                 crate::ui::render_component::<u32, _>(|| {
                     let state = use_state(|| 20_i32);
                     state.get()
@@ -418,13 +455,13 @@ mod tests {
         assert_eq!(first, (10, 20));
 
         let second = build_scope(|| {
-            let b = with_component_key(Some(2), || {
+            let b = with_component_key(Some(RsxKey::Local(2)), || {
                 crate::ui::render_component::<u32, _>(|| {
                     let state = use_state(|| 999_i32);
                     state.get()
                 })
             });
-            let a = with_component_key(Some(1), || {
+            let a = with_component_key(Some(RsxKey::Local(1)), || {
                 crate::ui::render_component::<u32, _>(|| {
                     let state = use_state(|| 999_i32);
                     state.get()
@@ -433,6 +470,39 @@ mod tests {
             (b, a)
         });
         assert_eq!(second, (20, 10));
+    }
+
+    #[test]
+    fn global_key_component_keeps_state_when_parent_changes() {
+        let global_key = GlobalKey::from("shared-child");
+
+        let first = build_scope(|| {
+            let left = crate::ui::render_component::<u8, _>(|| {
+                with_component_key(Some(RsxKey::Global(global_key)), || {
+                    crate::ui::render_component::<u32, _>(|| {
+                        let state = use_state(|| 5_i32);
+                        state.set(42);
+                        state.get()
+                    })
+                })
+            });
+            let _right = crate::ui::render_component::<u16, _>(|| 0_i32);
+            left
+        });
+        assert_eq!(first, 42);
+
+        let second = build_scope(|| {
+            let _left = crate::ui::render_component::<u8, _>(|| 0_i32);
+            crate::ui::render_component::<u16, _>(|| {
+                with_component_key(Some(RsxKey::Global(global_key)), || {
+                    crate::ui::render_component::<u32, _>(|| {
+                        let state = use_state(|| 999_i32);
+                        state.get()
+                    })
+                })
+            })
+        });
+        assert_eq!(second, 42);
     }
 }
 

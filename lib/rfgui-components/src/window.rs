@@ -7,11 +7,11 @@ use crate::use_theme;
 use rfgui::ClipMode::Viewport;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
-    BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp, RsxComponent, RsxNode,
-    ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
+    BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp, RsxChildrenPolicy,
+    RsxComponent, RsxNode, ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
 };
 use rfgui::{
-    AlignItems, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout,
+    Align, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout,
     Length, Padding, Position, ScrollDirection,
 };
 
@@ -190,7 +190,6 @@ pub struct WindowProps {
     pub on_focus: Option<FocusHandlerProp>,
     pub on_blur: Option<BlurHandlerProp>,
     pub window_slots: Option<WindowSlotsProp>,
-    pub children: Vec<RsxNode>,
 }
 
 #[props]
@@ -231,7 +230,7 @@ pub struct WindowContentStyleSlot {
 }
 
 impl RsxComponent<WindowProps> for Window {
-    fn render(props: WindowProps) -> RsxNode {
+    fn render(props: WindowProps, children: Vec<RsxNode>) -> RsxNode {
         let width = props.width.unwrap_or(360.0).max(MIN_WIDTH as f64) as f32;
         let height = props.height.unwrap_or(240.0).max(MIN_HEIGHT as f64) as f32;
 
@@ -247,10 +246,15 @@ impl RsxComponent<WindowProps> for Window {
                 on_focus={props.on_focus}
                 on_blur={props.on_blur}
                 window_slots={props.window_slots}
-                children={props.children}
-            />
+            >
+                {children}
+            </WindowView>
         }
     }
+}
+
+impl RsxChildrenPolicy for Window {
+    const ACCEPTS_CHILDREN: bool = true;
 }
 
 #[rfgui::ui::component]
@@ -579,7 +583,7 @@ fn WindowView(
                         .row()
                         .no_wrap()
                         .justify_content(JustifyContent::SpaceBetween)
-                        .align_items(AlignItems::Center),
+                        .align(Align::Center),
                     padding: title_bar_padding,
                     background: title_bar_background,
                     border_radius: BorderRadius::uniform(Length::px(0.0)).top(theme.radius.lg),

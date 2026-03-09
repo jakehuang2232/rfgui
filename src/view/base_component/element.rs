@@ -5,8 +5,8 @@ use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::render_pass::shadow_pass::{ShadowInput, ShadowOutput};
 use crate::style::{
-    AlignItems, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-    ComputedStyle, Cursor, Layout, FlowDirection, FlowWrap, JustifyContent, Length, PositionMode,
+    Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
+    CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
     ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
@@ -414,6 +414,7 @@ pub trait Layoutable {
     fn measured_size(&self) -> (f32, f32);
     fn set_layout_width(&mut self, width: f32);
     fn set_layout_height(&mut self, height: f32);
+    fn allows_cross_stretch(&self, is_row: bool) -> bool;
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
 }
 
@@ -1159,6 +1160,14 @@ impl Layoutable for Element {
 
     fn set_layout_height(&mut self, height: f32) {
         self.core.set_height(height);
+    }
+
+    fn allows_cross_stretch(&self, is_row: bool) -> bool {
+        if is_row {
+            self.computed_style.height == SizeValue::Auto
+        } else {
+            self.computed_style.width == SizeValue::Auto
+        }
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {
@@ -4513,8 +4522,9 @@ impl Element {
         let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
 
         let total_cross = info.total_cross;
-        let align_item = self.computed_style.layout_flow_align_item();
-        let mut cross_cursor = cross_start_offset(cross_limit, total_cross, align_item);
+        let cross_size = self.computed_style.layout_flow_cross_size();
+        let align = self.computed_style.layout_flow_align();
+        let mut cross_cursor = cross_start_offset(cross_limit, total_cross, align);
 
         for (line_idx, line) in info.lines.iter().enumerate() {
             let line_main = info.line_main_sum[line_idx];
@@ -4529,7 +4539,7 @@ impl Element {
 
             for &child_idx in line {
                 let (item_main, item_cross) = info.child_sizes[child_idx];
-                let cross_offset = cross_item_offset(line_cross, item_cross, align_item);
+                let cross_offset = cross_item_offset(line_cross, item_cross, align);
                 let (offset_x, offset_y) = if is_row {
                     (main_cursor, cross_cursor + cross_offset)
                 } else {
@@ -4537,7 +4547,9 @@ impl Element {
                 };
 
                 // Implement Stretch
-                if align_item == AlignItems::Stretch {
+                if cross_size == CrossSize::Stretch
+                    && self.children[child_idx].allows_cross_stretch(is_row)
+                {
                     if is_row {
                         self.children[child_idx].set_layout_height(line_cross);
                     } else {
@@ -4784,21 +4796,21 @@ fn main_axis_start_and_gap(
     }
 }
 
-fn cross_start_offset(limit: f32, occupied: f32, align: AlignItems) -> f32 {
+fn cross_start_offset(limit: f32, occupied: f32, align: Align) -> f32 {
     let free = (limit - occupied).max(0.0);
     match align {
-        AlignItems::Start | AlignItems::Stretch => 0.0,
-        AlignItems::Center => free * 0.5,
-        AlignItems::End => free,
+        Align::Start => 0.0,
+        Align::Center => free * 0.5,
+        Align::End => free,
     }
 }
 
-fn cross_item_offset(line_cross: f32, item_cross: f32, align: AlignItems) -> f32 {
+fn cross_item_offset(line_cross: f32, item_cross: f32, align: Align) -> f32 {
     let free = (line_cross - item_cross).max(0.0);
     match align {
-        AlignItems::Start | AlignItems::Stretch => 0.0,
-        AlignItems::Center => free * 0.5,
-        AlignItems::End => free,
+        Align::Start => 0.0,
+        Align::Center => free * 0.5,
+        Align::End => free,
     }
 }
 
@@ -4904,8 +4916,8 @@ mod tests {
     use crate::transition::{LayoutField, VisualField};
     use crate::view::frame_graph::FrameGraph;
     use crate::{
-        AlignItems, AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-        JustifyContent, Length, Operator, Position, Style,
+        Align, AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
+        CrossSize, JustifyContent, Length, Operator, Position, Style,
     };
 
     #[test]
@@ -5473,17 +5485,12 @@ mod tests {
     }
 
     #[test]
-    fn flow_align_item_centers_children_on_cross_axis() {
+    fn flow_align_centers_children_on_cross_axis() {
         let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
         let mut parent_style = Style::new();
         parent_style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(
-                Layout::flow()
-                    .row()
-                    .no_wrap()
-                    .align_items(AlignItems::Center),
-            ),
+            ParsedValue::Layout(Layout::flow().row().no_wrap().align(Align::Center)),
         );
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
@@ -5515,6 +5522,61 @@ mod tests {
         let snapshot = parent.children().expect("child")[0].box_model_snapshot();
         assert_eq!(snapshot.x, 0.0);
         assert_eq!(snapshot.y, 40.0);
+    }
+
+    #[test]
+    fn flow_cross_size_stretch_skips_children_with_explicit_cross_size() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap().cross_size(CrossSize::Stretch)),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
+        parent.apply_style(parent_style);
+
+        let mut explicit_child = Element::new(0.0, 0.0, 80.0, 10.0);
+        let mut explicit_child_style = Style::new();
+        explicit_child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        explicit_child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(10.0)));
+        explicit_child.apply_style(explicit_child_style);
+
+        let mut auto_child = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut auto_child_style = Style::new();
+        auto_child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        auto_child.apply_style(auto_child_style);
+
+        parent.add_child(Box::new(explicit_child));
+        parent.add_child(Box::new(auto_child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let explicit_snapshot = children[0].box_model_snapshot();
+        let auto_snapshot = children[1].box_model_snapshot();
+
+        assert_eq!(explicit_snapshot.height, 10.0);
+        assert_eq!(auto_snapshot.height, 40.0);
     }
 
     #[test]

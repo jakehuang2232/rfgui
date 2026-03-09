@@ -1,7 +1,9 @@
 use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
-use rfgui::{AlignItems, Layout, Length, Operator, Transition, TransitionProperty};
+use rfgui::ui::{
+    Binding, RsxChildrenPolicy, RsxComponent, RsxNode, component, on_click, props, rsx, use_state,
+};
+use rfgui::{Align, Layout, Length, Operator, Transition, TransitionProperty};
 
 pub struct Switch;
 
@@ -14,7 +16,7 @@ pub struct SwitchProps {
 }
 
 impl RsxComponent<SwitchProps> for Switch {
-    fn render(props: SwitchProps) -> RsxNode {
+    fn render(props: SwitchProps, _children: Vec<RsxNode>) -> RsxNode {
         let checked = props.checked.unwrap_or(false);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
@@ -29,6 +31,10 @@ impl RsxComponent<SwitchProps> for Switch {
             />
         }
     }
+}
+
+impl RsxChildrenPolicy for Switch {
+    const ACCEPTS_CHILDREN: bool = false;
 }
 
 #[component]
@@ -71,11 +77,11 @@ fn SwitchView(
 
     rsx! {
         <Element style={{
-            layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
+            layout: Layout::flow().row().no_wrap().align(Align::Center),
             gap: theme.spacing.md,
         }} on_click={click}>
             <Element style={{
-                layout: Layout::flow().row().no_wrap().align_items(AlignItems::Center),
+                layout: Layout::flow().row().no_wrap().align(Align::Center),
                 width: switch_theme.track_width,
                 height: switch_theme.track_height,
                 padding: switch_theme.track_padding,

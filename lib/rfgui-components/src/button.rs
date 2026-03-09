@@ -1,9 +1,9 @@
 use crate::use_theme;
 use rfgui::TextAlign::Center;
 use rfgui::ui::host::{Element, Text};
-use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, props, rsx};
+use rfgui::ui::{ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, props, rsx};
 use rfgui::{
-    AlignItems, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition,
+    Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition,
     TransitionProperty, Transitions,
 };
 
@@ -42,7 +42,7 @@ pub struct ButtonProps {
 }
 
 impl RsxComponent<ButtonProps> for Button {
-    fn render(props: ButtonProps) -> RsxNode {
+    fn render(props: ButtonProps, _children: Vec<RsxNode>) -> RsxNode {
         let theme = use_theme().get();
         let variant = props.variant.unwrap_or(ButtonVariant::Contained);
         let disabled = props.disabled.unwrap_or(false);
@@ -53,7 +53,7 @@ impl RsxComponent<ButtonProps> for Button {
                         .row()
                         .no_wrap()
                         .justify_content(JustifyContent::Center)
-                        .align_items(AlignItems::Center),
+                        .align(Align::Center),
                     padding: theme.component.button.padding,
                     border_radius: theme.component.button.radius,
                     border: if disabled {
@@ -124,4 +124,8 @@ impl RsxComponent<ButtonProps> for Button {
 
         root
     }
+}
+
+impl RsxChildrenPolicy for Button {
+    const ACCEPTS_CHILDREN: bool = false;
 }

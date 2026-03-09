@@ -6,7 +6,8 @@ use std::ops::Add;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropertyId {
     Layout,
-    AlignItems,
+    CrossSize,
+    Align,
     Position,
     Width,
     Height,
@@ -171,7 +172,7 @@ pub enum Layout {
         direction: FlowDirection,
         wrap: FlowWrap,
         justify_content: JustifyContent,
-        align_items: AlignItems,
+        cross_axis: CrossAxis,
     },
     InlineFlex,
     Grid,
@@ -184,7 +185,7 @@ impl Layout {
             direction: FlowDirection::Row,
             wrap: FlowWrap::NoWrap,
             justify_content: JustifyContent::Start,
-            align_items: AlignItems::Start,
+            cross_axis: CrossAxis::new(CrossSize::Fit, Align::Start),
         }
     }
 
@@ -227,12 +228,16 @@ impl Layout {
         self
     }
 
-    pub const fn align_items(mut self, align_items: AlignItems) -> Self {
-        if let Self::Flow {
-            align_items: value, ..
-        } = &mut self
-        {
-            *value = align_items;
+    pub const fn cross_size(mut self, cross_size: CrossSize) -> Self {
+        if let Self::Flow { cross_axis, .. } = &mut self {
+            cross_axis.size = cross_size;
+        }
+        self
+    }
+
+    pub const fn align(mut self, align: Align) -> Self {
+        if let Self::Flow { cross_axis, .. } = &mut self {
+            cross_axis.align = align;
         }
         self
     }
@@ -261,11 +266,28 @@ pub enum JustifyContent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlignItems {
+pub struct CrossAxis {
+    pub size: CrossSize,
+    pub align: Align,
+}
+
+impl CrossAxis {
+    pub const fn new(size: CrossSize, align: Align) -> Self {
+        Self { size, align }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossSize {
+    Fit,
+    Stretch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
     Start,
     Center,
     End,
-    Stretch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1530,7 +1552,8 @@ impl Opacity {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedValue {
     Layout(Layout),
-    AlignItems(AlignItems),
+    CrossSize(CrossSize),
+    Align(Align),
     ScrollDirection(ScrollDirection),
     Cursor(Cursor),
     Position(Position),

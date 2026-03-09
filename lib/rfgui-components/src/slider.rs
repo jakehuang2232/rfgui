@@ -4,11 +4,11 @@ use std::rc::Rc;
 
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
-    Binding, RsxComponent, RsxNode, component, on_mouse_down, on_mouse_move, on_mouse_up, props,
-    rsx, use_state,
+    Binding, RsxChildrenPolicy, RsxComponent, RsxNode, component, on_mouse_down, on_mouse_move,
+    on_mouse_up, props, rsx, use_state,
 };
 use rfgui::{
-    AlignItems, Cursor, JustifyContent, Layout, Length, Position, Transition, TransitionProperty,
+    Align, Cursor, JustifyContent, Layout, Length, Position, Transition, TransitionProperty,
 };
 
 pub struct Slider;
@@ -23,7 +23,7 @@ pub struct SliderProps {
 }
 
 impl RsxComponent<SliderProps> for Slider {
-    fn render(props: SliderProps) -> RsxNode {
+    fn render(props: SliderProps, _children: Vec<RsxNode>) -> RsxNode {
         let value = props.value.unwrap_or(30.0);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(value));
@@ -39,6 +39,10 @@ impl RsxComponent<SliderProps> for Slider {
             />
         }
     }
+}
+
+impl RsxChildrenPolicy for Slider {
+    const ACCEPTS_CHILDREN: bool = false;
 }
 
 #[component]
@@ -125,7 +129,7 @@ fn SliderView(
                 .row()
                 .no_wrap()
                 .justify_content(JustifyContent::Center)
-                .align_items(AlignItems::Center),
+                .align(Align::Center),
             cursor: if disabled {
                 Cursor::Default
             } else if is_dragging {

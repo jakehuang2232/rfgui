@@ -5,11 +5,12 @@ use crate::use_theme;
 use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
-    MouseDownHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
+    MouseDownHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,
+    use_state,
 };
 use rfgui::{
-    AlignItems, ClipMode, Collision, CollisionBoundary, Color, ColorLike, JustifyContent, Layout,
-    Length, Operator, Position, ScrollDirection,
+    Align, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, JustifyContent,
+    Layout, Length, Operator, Position, ScrollDirection,
 };
 
 pub struct Select;
@@ -36,7 +37,7 @@ where
     DataType: Clone + 'static,
     ValueType: Clone + PartialEq + 'static,
 {
-    fn render(props: SelectProps<DataType, ValueType>) -> RsxNode {
+    fn render(props: SelectProps<DataType, ValueType>, _children: Vec<RsxNode>) -> RsxNode {
         let selected_value = props.value.get();
         let selected_index =
             resolve_selected_index(&props.data, &selected_value, props.to_value, props.to_label);
@@ -81,25 +82,38 @@ where
     }
 }
 
+impl RsxChildrenPolicy for Select {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
 #[component]
 fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNode {
     const SELECT_TRIGGER_ANCHOR: &str = "__rfgui_select_trigger_anchor";
 
     let fallback_open = use_state(|| false);
     let open_binding = fallback_open.binding();
+    let fallback_focused = use_state(|| false);
+    let focused_binding = fallback_focused.binding();
+    let was_focused_on_pointer_down = use_state(|| false);
+    let was_focused_on_pointer_down_binding = was_focused_on_pointer_down.binding();
     let is_open = open_binding.get();
+    let is_focused = focused_binding.get();
     let theme = use_theme().get();
 
     let pseudo_focus = {
         let open_binding = open_binding.clone();
+        let focused_binding = focused_binding.clone();
         FocusHandlerProp::new(move |event| {
+            focused_binding.set(true);
             open_binding.set(true);
             event.meta.stop_propagation();
         })
     };
     let pseudo_blur = {
         let open_binding = open_binding.clone();
+        let focused_binding = focused_binding.clone();
         BlurHandlerProp::new(move |_| {
+            focused_binding.set(false);
             open_binding.set(false);
         })
     };
@@ -123,14 +137,30 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
             }
         })
     };
-    let pseudo_mouse_down = MouseDownHandlerProp::new(move |event| {
-        if event.meta.keep_focus_requested() {
-            return;
-        }
-        event
-            .viewport
-            .set_focus(Some(event.meta.current_target_id()));
-    });
+    let pseudo_mouse_down = {
+        let was_focused_on_pointer_down_binding = was_focused_on_pointer_down_binding.clone();
+        MouseDownHandlerProp::new(move |event| {
+            was_focused_on_pointer_down_binding.set(is_focused);
+            if event.meta.keep_focus_requested() {
+                return;
+            }
+            event
+                .viewport
+                .set_focus(Some(event.meta.current_target_id()));
+        })
+    };
+    let trigger_click = {
+        let was_focused_on_pointer_down_binding = was_focused_on_pointer_down_binding.clone();
+        let open_binding = open_binding.clone();
+        ClickHandlerProp::new(move |event| {
+            if was_focused_on_pointer_down_binding.get() {
+                event.meta.viewport().set_focus(None);
+            } else {
+                open_binding.set(true);
+            }
+            event.meta.stop_propagation();
+        })
+    };
 
     let mut root = rsx! {
         <Element
@@ -151,7 +181,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                         .row()
                         .no_wrap()
                         .justify_content(JustifyContent::SpaceBetween)
-                        .align_items(AlignItems::Center),
+                        .align(Align::Center),
                     border_radius: theme.component.input.radius,
                     border: theme.component.input.border.clone(),
                     background: theme.color.background.base,
@@ -161,6 +191,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                     }
                 }}
                 anchor={SELECT_TRIGGER_ANCHOR}
+                on_click={trigger_click}
             >
                 <Element style={{
                     width: Length::calc(Length::percent(100.0), Operator::subtract, Length::px(24.0)),
@@ -250,7 +281,10 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
                     .collision(Collision::FlipFit, CollisionBoundary::Viewport)
                     .clip(ClipMode::Viewport),
                 max_height: Length::vh(50.0),
-                layout: Layout::flow().column().no_wrap().align_items(AlignItems::Stretch),
+                layout: Layout::flow()
+                    .column()
+                    .no_wrap()
+                    .cross_size(CrossSize::Stretch),
                 border_radius: theme.component.input.radius,
                 border: theme.component.input.border.clone(),
                 background: theme.color.background.base,

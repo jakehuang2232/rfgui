@@ -1,5 +1,5 @@
 use rfd::FileDialog;
-use rfgui::{ColorLike, JustifyContent, Transition, TransitionProperty, AlignItems};
+use rfgui::{Align, ColorLike, CrossSize, JustifyContent, Transition, TransitionProperty};
 use rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme, Window,
     WindowProps, init_theme, on_move, set_theme, use_theme,
@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rfgui::ui::host::{Element, Text, TextArea};
 use rfgui::ui::{
-    Binding, FocusHandlerProp, RsxNode, component, globalState, on_click, on_focus, rsx,
-    take_state_dirty, use_state,
+    Binding, RsxNode, component, globalState, on_click, on_focus, rsx, take_state_dirty,
+    use_state,
 };
 use rfgui::{
     Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, Cursor, FontFamily,
@@ -33,6 +33,7 @@ static REQUEST_DUMP_FRAME_GRAPH_DOT: AtomicBool = AtomicBool::new(false);
 struct ManagedWindow {
     id: usize,
     props: WindowProps,
+    children: Vec<RsxNode>,
 }
 
 struct WindowManager {
@@ -86,8 +87,8 @@ impl WindowManager {
                 on_focus: None,
                 on_blur: None,
                 window_slots: None,
-                children,
             },
+            children,
         });
     }
 
@@ -119,13 +120,13 @@ impl WindowManager {
                         position={props.position}
                         on_move={props.on_move.clone()}
                         on_resize={props.on_resize.clone()}
+                        on_focus={focus}
                         on_blur={props.on_blur.clone()}
                     >
-                        {props.children.clone()}
+                        {window_entry.children.clone()}
                     </Window>
                 };
-                let window = with_stable_key(window, window_entry.id);
-                ordered_windows.push(with_focus_handler(window, focus));
+                ordered_windows.push(window);
             }
         }
         ordered_windows
@@ -151,24 +152,6 @@ fn bring_window_to_front(order: &mut Vec<usize>, index: usize) {
         return;
     }
     order.push(index);
-}
-
-fn with_focus_handler(mut node: RsxNode, handler: FocusHandlerProp) -> RsxNode {
-    if let RsxNode::Element(element) = &mut node {
-        element.props.retain(|(key, _)| key != "on_focus");
-        element.props.push(("on_focus".to_string(), handler.into()));
-    }
-    node
-}
-
-fn with_stable_key(mut node: RsxNode, id: usize) -> RsxNode {
-    if let RsxNode::Element(element) = &mut node {
-        element.props.retain(|(key, _)| key != "key");
-        element
-            .props
-            .push(("key".to_string(), format!("wm-window-{id}").into()));
-    }
-    node
 }
 
 #[component]
@@ -353,11 +336,13 @@ fn MainScene() -> RsxNode {
     let justify_content_space_around = justify_content.clone();
     let justify_content_space_evenly = justify_content.clone();
 
-    let align_items = use_state(|| AlignItems::Start);
-    let align_items_start = align_items.clone();
-    let align_items_center = align_items.clone();
-    let align_items_stretch = align_items.clone();
-    let align_items_end = align_items.clone();
+    let align = use_state(|| Align::Start);
+    let align_start = align.clone();
+    let align_center = align.clone();
+    let align_end = align.clone();
+    let cross_size = use_state(|| CrossSize::Fit);
+    let cross_size_fit = cross_size.clone();
+    let cross_size_stretch = cross_size.clone();
 
     window_manager.push(
         "Render test",
@@ -366,7 +351,12 @@ fn MainScene() -> RsxNode {
                 width: Length::percent(100.0),
                 height: Length::percent(100.0),
                 background: Color::transparent(),
-                layout: Layout::flow().row().wrap().justify_content(justify_content.get()).align_items(align_items.get()),
+                layout: Layout::flow()
+                    .row()
+                    .wrap()
+                    .justify_content(justify_content.get())
+                    .align(align.get())
+                    .cross_size(cross_size.get()),
                 gap: theme.spacing.md,
                 padding: Padding::uniform(theme.spacing.xl),
                 scroll_direction: ScrollDirection::Vertical,
@@ -379,6 +369,7 @@ fn MainScene() -> RsxNode {
                     layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.md,
                 }}>
+                    Justify Content:
                     <Button label="Start" on_click={move |_| {justify_content_start.set(JustifyContent::Start);}} />
                     <Button label="Center" on_click={move |_| {justify_content_center.set(JustifyContent::Center);}} />
                     <Button label="End" on_click={move |_| {justify_content_end.set(JustifyContent::End);}} />
@@ -391,14 +382,17 @@ fn MainScene() -> RsxNode {
                     layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.md,
                 }}>
-                    <Button label="Start" on_click={move |_| {align_items_start.set(AlignItems::Start);}} />
-                    <Button label="Center" on_click={move |_| {align_items_center.set(AlignItems::Center);}} />
-                    <Button label="Stretch" on_click={move |_| {align_items_stretch.set(AlignItems::Stretch);}} />
-                    <Button label="End" on_click={move |_| {align_items_end.set(AlignItems::End);}} />
+                    Cross Align:
+                    <Button label="Start" on_click={move |_| {align_start.set(Align::Start);}} />
+                    <Button label="Center" on_click={move |_| {align_center.set(Align::Center);}} />
+                    <Button label="End" on_click={move |_| {align_end.set(Align::End);}} />
+                    Cross Size:
+                    <Button label="Fit" on_click={move |_| {cross_size_fit.set(CrossSize::Fit);}} />
+                    <Button label="Stretch" on_click={move |_| {cross_size_stretch.set(CrossSize::Stretch);}} />
                 </Element>
                 <Element style={{
-                    width: Length::px(150.0),
-                    height: Length::px(150.0),
+                    width: Length::px(100.0),
+                    height: Length::px(100.0),
                     background: theme.color.primary.base.clone(),
                     color: theme.color.primary.on.clone(),
                     padding: Padding::uniform(theme.spacing.md),
@@ -407,12 +401,12 @@ fn MainScene() -> RsxNode {
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),
-                    height: Length::px(150.0),
                     background: theme.color.primary.base.clone(),
                     color: theme.color.primary.on.clone(),
                     border: Border::uniform(theme.spacing.md, theme.color.border.as_ref()),
+                    transition: [Transition::new(TransitionProperty::Height, theme.motion.duration.slow).ease_in_out().delay(1000)],
                 }}>
-                    Border
+                    Border + Auto Height + Delay Transition
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),
@@ -443,6 +437,7 @@ fn MainScene() -> RsxNode {
                     width: Length::px(150.0),
                     height: Length::px(150.0),
                     background: theme.color.primary.base.clone(),
+                    color: theme.color.primary.on.clone(),
                     border: Border::uniform(Length::px(10.0), &Color::hex("#274f8b"))
                         .top(Some(Length::px(20.0)), Some(&Color::hex("#e06c75")))
                         .left(Some(Length::px(15.0)), Some(&Color::hex("#2db353"))),
@@ -499,11 +494,16 @@ fn MainScene() -> RsxNode {
                     gap: theme.spacing.sm,
                     padding: Padding::uniform(theme.spacing.sm),
                 }}>
-                    <Element style={{ width: Length::px(72.0), height: Length::px(48.0), background: "#d19a66", border: Border::uniform(Length::px(3.0), theme.color.state.active.as_ref()) }}>
+                    <Element style={{
+                        width: Length::px(72.0),
+                        height: Length::px(48.0),
+                        background: "#d19a66",
+                        border: Border::uniform(theme.spacing.sm, theme.color.state.active.as_ref())
+                    }}>
                         Clip Test
                     </Element>
-                    <Element style={{ width: Length::px(56.0), height: Length::px(56.0), background: "#61ef9c" }} />
-                    <Element style={{ width: Length::px(120.0), height: Length::px(64.0), background: "#c678dd", border: Border::uniform(Length::px(4.0), theme.color.state.focus.as_ref()) }} />
+                        <Element style={{ width: Length::px(56.0), height: Length::px(56.0), background: "#61ef9c" }} />
+                        <Element style={{ width: Length::px(120.0), height: Length::px(64.0), background: "#c678dd", border: Border::uniform(Length::px(4.0), theme.color.state.focus.as_ref()) }} />
                 </Element>
                 <Element style={{
                     width: Length::px(150.0),

@@ -1,6 +1,10 @@
 use crate::HexColor;
 use crate::Style;
-use crate::ui::{Binding, FromPropValue, PropValue, RenderBackend, RsxElementNode, RsxNode};
+use crate::ui::{
+    Binding, FromPropValue, GlobalKey, Patch, PropValue, RenderBackend, RsxElementNode, RsxKey,
+    RsxNode,
+    RsxNodeIdentity,
+};
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
 use crate::{AnchorName, Color, Cursor, Length, ParsedValue, PropertyId};
@@ -129,6 +133,14 @@ impl InheritedTextStyle {
 pub struct ViewportRenderBackend<'a> {
     viewport: &'a mut Viewport,
     current_root: Option<RsxNode>,
+    global_key_registry: HashMap<GlobalKey, RenderedGlobalKeyEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RenderedGlobalKeyEntry {
+    path: Vec<u64>,
+    node_id: Option<u64>,
+    invocation_type: String,
 }
 
 impl<'a> ViewportRenderBackend<'a> {
@@ -136,6 +148,7 @@ impl<'a> ViewportRenderBackend<'a> {
         Self {
             viewport,
             current_root: None,
+            global_key_registry: HashMap::new(),
         }
     }
 
@@ -147,6 +160,44 @@ impl<'a> ViewportRenderBackend<'a> {
             .as_mut()
             .ok_or_else(|| "root is not initialized".to_string())
     }
+
+    fn node_mut_by_path<'b>(node: &'b mut RsxNode, path: &[usize]) -> Result<&'b mut RsxNode, String> {
+        if path.is_empty() {
+            return Ok(node);
+        }
+        let Some(children) = node.children_mut() else {
+            return Err("path traverses through a leaf node".to_string());
+        };
+        let index = path[0];
+        let child = children
+            .get_mut(index)
+            .ok_or_else(|| format!("invalid node path index: {index}"))?;
+        Self::node_mut_by_path(child, &path[1..])
+    }
+
+    fn children_mut_by_path<'b>(
+        node: &'b mut RsxNode,
+        path: &[usize],
+    ) -> Result<&'b mut Vec<RsxNode>, String> {
+        let target = Self::node_mut_by_path(node, path)?;
+        target
+            .children_mut()
+            .ok_or_else(|| "target node does not accept children".to_string())
+    }
+
+    fn rebuild_global_key_registry(&mut self) -> Result<(), String> {
+        self.global_key_registry = if let Some(root) = self.current_root.as_ref() {
+            collect_global_key_registry(root)?
+        } else {
+            HashMap::new()
+        };
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn rendered_global_key(&self, key: GlobalKey) -> Option<&RenderedGlobalKeyEntry> {
+        self.global_key_registry.get(&key)
+    }
 }
 
 impl<'a> RenderBackend for ViewportRenderBackend<'a> {
@@ -154,6 +205,7 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
 
     fn create_root(&mut self, node: &RsxNode) -> Result<Self::NodeId, String> {
         self.current_root = Some(node.clone());
+        self.rebuild_global_key_registry()?;
         Ok(0)
     }
 
@@ -162,39 +214,66 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
             return Err(format!("invalid root id: {root}"));
         }
         self.current_root = Some(node.clone());
+        self.rebuild_global_key_registry()?;
         Ok(())
     }
 
-    fn update_root_props(
-        &mut self,
-        root: Self::NodeId,
-        props: &[(String, PropValue)],
-    ) -> Result<(), String> {
+    fn apply_patch(&mut self, root: Self::NodeId, patch: &Patch) -> Result<(), String> {
         let root_node = self.root_mut(root)?;
-        let RsxNode::Element(element) = root_node else {
-            return Err("cannot update props on non-element root".to_string());
-        };
-        element.props = props.to_vec();
-        Ok(())
-    }
-
-    fn replace_root_children(
-        &mut self,
-        root: Self::NodeId,
-        children: &[RsxNode],
-    ) -> Result<(), String> {
-        let root_node = self.root_mut(root)?;
-        match root_node {
-            RsxNode::Element(element) => {
-                element.children = children.to_vec();
+        match patch {
+            Patch::ReplaceRoot(node) => {
+                *root_node = node.clone();
             }
-            RsxNode::Fragment(fragment_children) => {
-                *fragment_children = children.to_vec();
+            Patch::ReplaceNode { path, node } => {
+                let target = Self::node_mut_by_path(root_node, path)?;
+                *target = node.clone();
             }
-            RsxNode::Text(_) => {
-                return Err("cannot replace children on text root".to_string());
+            Patch::UpdateElementProps { path, props } => {
+                let target = Self::node_mut_by_path(root_node, path)?;
+                let RsxNode::Element(element) = target else {
+                    return Err("cannot update props on non-element node".to_string());
+                };
+                element.props = props.clone();
+            }
+            Patch::SetText { path, text } => {
+                let target = Self::node_mut_by_path(root_node, path)?;
+                let RsxNode::Text(node) = target else {
+                    return Err("cannot set text on non-text node".to_string());
+                };
+                node.content = text.clone();
+            }
+            Patch::InsertChild {
+                parent_path,
+                index,
+                node,
+            } => {
+                let children = Self::children_mut_by_path(root_node, parent_path)?;
+                if *index > children.len() {
+                    return Err(format!("invalid child insert index: {index}"));
+                }
+                children.insert(*index, node.clone());
+            }
+            Patch::RemoveChild { parent_path, index } => {
+                let children = Self::children_mut_by_path(root_node, parent_path)?;
+                if *index >= children.len() {
+                    return Err(format!("invalid child remove index: {index}"));
+                }
+                children.remove(*index);
+            }
+            Patch::MoveChild {
+                parent_path,
+                from,
+                to,
+            } => {
+                let children = Self::children_mut_by_path(root_node, parent_path)?;
+                if *from >= children.len() || *to > children.len() {
+                    return Err("invalid child move indices".to_string());
+                }
+                let node = children.remove(*from);
+                children.insert(*to, node);
             }
         }
+        self.rebuild_global_key_registry()?;
         Ok(())
     }
 
@@ -224,6 +303,52 @@ fn append_nodes(
     append_nodes_with_path(node, out, &mut path, &inherited)
 }
 
+fn collect_global_key_registry(
+    root: &RsxNode,
+) -> Result<HashMap<GlobalKey, RenderedGlobalKeyEntry>, String> {
+    let mut registry = HashMap::new();
+    let mut path = Vec::new();
+    collect_global_key_registry_with_path(root, &mut path, &mut registry)?;
+    Ok(registry)
+}
+
+fn collect_global_key_registry_with_path(
+    node: &RsxNode,
+    path: &mut Vec<u64>,
+    registry: &mut HashMap<GlobalKey, RenderedGlobalKeyEntry>,
+) -> Result<(), String> {
+    if let Some(RsxKey::Global(global_key)) = node.identity().key {
+        let entry = RenderedGlobalKeyEntry {
+            path: path.clone(),
+            node_id: rendered_node_id(node, path),
+            invocation_type: node.identity().invocation_type.clone(),
+        };
+        if registry.insert(global_key, entry).is_some() {
+            return Err("duplicate GlobalKey detected in renderer registry".to_string());
+        }
+    }
+
+    if let Some(children) = node.children() {
+        let mut ordinals = HashMap::<String, usize>::new();
+        for child in children {
+            let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+            path.push(child_identity_token(child, ordinal));
+            collect_global_key_registry_with_path(child, path, registry)?;
+            path.pop();
+        }
+    }
+
+    Ok(())
+}
+
+fn rendered_node_id(node: &RsxNode, path: &[u64]) -> Option<u64> {
+    match node {
+        RsxNode::Element(element) => Some(stable_node_id(path, element.tag.as_str())),
+        RsxNode::Text(_) => Some(stable_node_id(path, "TextNode")),
+        RsxNode::Fragment(_) => None,
+    }
+}
+
 fn append_nodes_with_path(
     node: &RsxNode,
     out: &mut Vec<Box<dyn ElementTrait>>,
@@ -231,9 +356,11 @@ fn append_nodes_with_path(
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<(), String> {
     match node {
-        RsxNode::Fragment(children) => {
-            for (index, child) in children.iter().enumerate() {
-                path.push(child_identity_token(child, index));
+        RsxNode::Fragment(fragment) => {
+            let mut ordinals = HashMap::<String, usize>::new();
+            for child in &fragment.children {
+                let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+                path.push(child_identity_token(child, ordinal));
                 append_nodes_with_path(child, out, path, inherited_text_style)?;
                 path.pop();
             }
@@ -254,9 +381,11 @@ fn append_nodes_with_path_lossy(
     errors: &mut Vec<String>,
 ) {
     match node {
-        RsxNode::Fragment(children) => {
-            for (index, child) in children.iter().enumerate() {
-                path.push(child_identity_token(child, index));
+        RsxNode::Fragment(fragment) => {
+            let mut ordinals = HashMap::<String, usize>::new();
+            for child in &fragment.children {
+                let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+                path.push(child_identity_token(child, ordinal));
                 append_nodes_with_path_lossy(child, out, path, inherited_text_style, errors);
                 path.pop();
             }
@@ -276,7 +405,7 @@ fn convert_node(
     match node {
         RsxNode::Text(text) => {
             let mut text_node =
-                Text::from_content_with_id(stable_node_id(path, "TextNode"), text.clone());
+                Text::from_content_with_id(stable_node_id(path, "TextNode"), text.content.clone());
             if !inherited_text_style.font_families.is_empty() {
                 text_node.set_fonts(inherited_text_style.font_families.clone());
             }
@@ -442,8 +571,10 @@ fn convert_container_element(
     // Reuse a single path buffer for all children to avoid per-child path allocations.
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
     child_path.extend_from_slice(path);
-    for (index, child) in node.children.iter().enumerate() {
-        child_path.push(child_identity_token(child, index));
+    let mut ordinals = HashMap::<String, usize>::new();
+    for child in &node.children {
+        let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+        child_path.push(child_identity_token(child, ordinal));
         append_child_nodes_flattening_fragments(
             &mut element,
             child,
@@ -463,11 +594,13 @@ fn append_child_nodes_flattening_fragments(
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<(), String> {
     match node {
-        RsxNode::Fragment(children) => {
+        RsxNode::Fragment(fragment) => {
             let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
             child_path.extend_from_slice(path);
-            for (index, child) in children.iter().enumerate() {
-                child_path.push(child_identity_token(child, index));
+            let mut ordinals = HashMap::<String, usize>::new();
+            for child in &fragment.children {
+                let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+                child_path.push(child_identity_token(child, ordinal));
                 append_child_nodes_flattening_fragments(
                     parent,
                     child,
@@ -659,11 +792,11 @@ fn resolve_font_size_parsed_value(
 fn append_text_children(out: &mut String, node: &RsxNode) -> Result<(), String> {
     match node {
         RsxNode::Text(content) => {
-            out.push_str(content);
+            out.push_str(&content.content);
             Ok(())
         }
-        RsxNode::Fragment(children) => {
-            for child in children {
+        RsxNode::Fragment(fragment) => {
+            for child in &fragment.children {
                 append_text_children(out, child)?;
             }
             Ok(())
@@ -765,7 +898,7 @@ fn convert_text_area_element(
         if text_content.is_empty() {
             for child in &node.children {
                 match child {
-                    RsxNode::Text(content) => text_content.push_str(content),
+                    RsxNode::Text(content) => text_content.push_str(&content.content),
                     _ => return Err("<TextArea> children must be text".to_string()),
                 }
             }
@@ -809,53 +942,57 @@ fn stable_node_id(path: &[u64], kind: &str) -> u64 {
     if hash == 0 { 1 } else { hash }
 }
 
-fn child_identity_token(node: &RsxNode, fallback_index: usize) -> u64 {
-    const KEYED_BIT: u64 = 1_u64 << 63;
-    let keyed = match node {
-        RsxNode::Element(el) => identity_token_from_keyed_props(&el.props),
-        _ => None,
-    };
-    keyed.unwrap_or(fallback_index as u64 | KEYED_BIT)
+fn next_identity_ordinal(
+    ordinals: &mut HashMap<String, usize>,
+    identity: &RsxNodeIdentity,
+) -> usize {
+    let entry = ordinals
+        .entry(identity.invocation_type.clone())
+        .or_insert(0);
+    let ordinal = *entry;
+    *entry += 1;
+    ordinal
 }
 
-fn identity_token_from_keyed_props(props: &[(String, PropValue)]) -> Option<u64> {
+fn child_identity_token(node: &RsxNode, fallback_ordinal: usize) -> u64 {
+    identity_token_from_node_identity(node.identity(), fallback_ordinal)
+}
+
+fn identity_token_from_node_identity(identity: &RsxNodeIdentity, fallback_ordinal: usize) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
-    for (key, value) in props {
-        if key.as_str() != "key" {
-            continue;
-        }
-        let mut hash = FNV_OFFSET_BASIS;
-        hash ^= 0x42;
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in identity.invocation_type.as_bytes() {
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(FNV_PRIME);
-        match value {
-            PropValue::String(v) => {
-                for &byte in v.as_bytes() {
-                    hash ^= u64::from(byte);
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                }
-            }
-            PropValue::I64(v) => {
-                for byte in v.to_le_bytes() {
-                    hash ^= u64::from(byte);
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                }
-            }
-            PropValue::F64(v) => {
-                for byte in v.to_le_bytes() {
-                    hash ^= u64::from(byte);
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                }
-            }
-            PropValue::Bool(v) => {
-                hash ^= if *v { 1 } else { 0 };
+    }
+    match &identity.key {
+        Some(crate::ui::RsxKey::Local(key)) => {
+            hash ^= 0x4c;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in key.to_le_bytes() {
+                hash ^= u64::from(byte);
                 hash = hash.wrapping_mul(FNV_PRIME);
             }
-            _ => return None,
         }
-        return Some(hash & !(1_u64 << 63));
+        Some(crate::ui::RsxKey::Global(global_key)) => {
+            hash ^= 0x47;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in global_key.id().to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+        None => {
+            hash ^= 0x55;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in (fallback_ordinal as u64).to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
     }
-    None
+    hash
 }
 
 fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
@@ -1035,11 +1172,13 @@ fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandle
 #[cfg(test)]
 mod tests {
     use super::{
-        identity_token_from_keyed_props, rsx_to_elements, rsx_to_elements_lossy,
+        RenderedGlobalKeyEntry, ViewportRenderBackend, identity_token_from_node_identity,
+        rendered_node_id, rsx_to_elements, rsx_to_elements_lossy,
         rsx_to_elements_with_context,
     };
-    use crate::ui::{PropValue, RsxNode};
+    use crate::ui::{GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity};
     use crate::view::base_component::{ElementTrait, Text, TextArea, get_cursor_by_id, hit_test};
+    use crate::view::Viewport;
     use crate::{
         Border, BorderRadius, Color, Cursor, Layout, FontSize, IntoColor, Length, ParsedValue,
         PropertyId, Style, Unit,
@@ -1054,18 +1193,25 @@ mod tests {
     }
 
     #[test]
-    fn identity_token_uses_key_value_stably() {
-        let props_a = vec![
-            ("key".to_string(), PropValue::String("item-a".to_string())),
-            ("label".to_string(), PropValue::String("A".to_string())),
-        ];
-        let props_b = vec![
-            ("label".to_string(), PropValue::String("A".to_string())),
-            ("key".to_string(), PropValue::String("item-a".to_string())),
-        ];
-        let token_a = identity_token_from_keyed_props(&props_a).expect("token should exist");
-        let token_b = identity_token_from_keyed_props(&props_b).expect("token should exist");
+    fn identity_token_uses_type_and_local_key_stably() {
+        let identity_a =
+            RsxNodeIdentity::new("Button", Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))));
+        let identity_b =
+            RsxNodeIdentity::new("Button", Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))));
+        let token_a = identity_token_from_node_identity(&identity_a, 0);
+        let token_b = identity_token_from_node_identity(&identity_b, 0);
         assert_eq!(token_a, token_b);
+    }
+
+    #[test]
+    fn identity_token_distinguishes_local_and_global_key() {
+        let local =
+            RsxNodeIdentity::new("Button", Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))));
+        let global = RsxNodeIdentity::new("Button", Some(RsxKey::Global(GlobalKey::from("item-a"))));
+        assert_ne!(
+            identity_token_from_node_identity(&local, 0),
+            identity_token_from_node_identity(&global, 0)
+        );
     }
 
     #[test]
@@ -1075,6 +1221,89 @@ mod tests {
             .with_prop("style", Style::new());
         let converted = rsx_to_elements(&node);
         assert!(converted.is_ok());
+    }
+
+    #[test]
+    fn metadata_key_is_accepted_for_element_node() {
+        let node = RsxNode::element("Element")
+            .with_key(GlobalKey::from("feature-1"))
+            .with_invocation_type("Button")
+            .with_prop("style", Style::new());
+        let converted = rsx_to_elements(&node);
+        assert!(converted.is_ok());
+    }
+
+    #[test]
+    fn global_key_registry_keeps_fragment_path_without_node_id() {
+        let global_key = GlobalKey::from("fragment-root");
+        let node = RsxNode::fragment(vec![RsxNode::element("Element").with_prop("style", Style::new())])
+            .with_key(global_key)
+            .with_invocation_type("Button");
+
+        let registry = super::collect_global_key_registry(&node).expect("registry should build");
+        let entry = registry.get(&global_key).expect("global key entry");
+        assert_eq!(
+            entry,
+            &RenderedGlobalKeyEntry {
+                path: Vec::new(),
+                node_id: None,
+                invocation_type: "Button".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn backend_rebuilds_global_key_registry_after_replace_root() {
+        let global_key = GlobalKey::from("moving-root");
+        let first_root = RsxNode::element("Element")
+            .with_prop("style", Style::new())
+            .with_child(
+                RsxNode::element("Element")
+                    .with_prop("style", Style::new())
+                    .with_child(
+                        RsxNode::element("Element")
+                            .with_key(global_key)
+                            .with_invocation_type("Button")
+                            .with_prop("style", Style::new()),
+                    ),
+            );
+        let second_root = RsxNode::element("Element")
+            .with_prop("style", Style::new())
+            .with_child(RsxNode::element("Element").with_prop("style", Style::new()))
+            .with_child(
+                RsxNode::element("Element")
+                    .with_prop("style", Style::new())
+                    .with_child(
+                        RsxNode::element("Element")
+                            .with_key(global_key)
+                            .with_invocation_type("Button")
+                            .with_prop("style", Style::new()),
+                    ),
+            );
+
+        let mut viewport = Viewport::new();
+        let mut backend = ViewportRenderBackend::new(&mut viewport);
+        backend.create_root(&first_root).expect("create root");
+        let first = backend
+            .rendered_global_key(global_key)
+            .expect("first registry entry")
+            .clone();
+        backend
+            .replace_root(0, &second_root)
+            .expect("replace root should rebuild registry");
+        let second = backend
+            .rendered_global_key(global_key)
+            .expect("second registry entry")
+            .clone();
+        let second_global_node = &second_root.children().unwrap()[1].children().unwrap()[0];
+
+        assert_ne!(first.path, second.path);
+        assert_eq!(first.invocation_type, "Button");
+        assert_eq!(second.invocation_type, "Button");
+        assert_eq!(
+            second.node_id,
+            rendered_node_id(second_global_node, &second.path)
+        );
     }
 
     #[test]

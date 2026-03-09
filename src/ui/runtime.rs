@@ -43,10 +43,7 @@ impl<B: RenderBackend> UiRuntime<B> {
         for patch in patches {
             match patch {
                 Patch::ReplaceRoot(node) => self.backend.replace_root(root_id, node)?,
-                Patch::UpdateProps(props) => self.backend.update_root_props(root_id, props)?,
-                Patch::ReplaceChildren(children) => {
-                    self.backend.replace_root_children(root_id, children)?
-                }
+                _ => self.backend.apply_patch(root_id, patch)?,
             }
         }
 
