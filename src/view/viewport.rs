@@ -1625,9 +1625,10 @@ impl Viewport {
                         dep: super::frame_graph::DepIn::with_handle(ctx.current_dep_token()),
                     },
                     super::render_pass::debug_overlay_pass::DebugOverlayOutput {
-                        render_target: super::render_pass::draw_rect_pass::RenderTargetOut::with_handle(
-                            dep_handle,
-                        ),
+                        render_target:
+                            super::render_pass::draw_rect_pass::RenderTargetOut::with_handle(
+                                dep_handle,
+                            ),
                         dep: super::frame_graph::DepOut::with_handle(debug_dep_out),
                     },
                 );
@@ -1826,7 +1827,8 @@ impl Viewport {
         self.sync_focus_dispatch();
         let mut roots = std::mem::take(&mut self.ui_roots);
         let next_hover_target = self.mouse_position_viewport().and_then(|(x, y)| {
-            roots.iter()
+            roots
+                .iter()
                 .rev()
                 .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y))
         });
@@ -2075,8 +2077,11 @@ impl Viewport {
     pub fn clear_mouse_position_viewport(&mut self) {
         self.input_state.mouse_position_viewport = None;
         self.input_state.pointer_capture_node_id = None;
-        let (hover_changed, hover_event_dispatched) =
-            Self::sync_hover_target(&mut self.ui_roots, &mut self.input_state.hovered_node_id, None);
+        let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
+            &mut self.ui_roots,
+            &mut self.input_state.hovered_node_id,
+            None,
+        );
         let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
@@ -2147,8 +2152,11 @@ impl Viewport {
         self.viewport_mouse_move_listeners.clear();
         self.viewport_mouse_up_listeners.clear();
         self.dispatched_focus_node_id = None;
-        let (hover_changed, hover_event_dispatched) =
-            Self::sync_hover_target(&mut self.ui_roots, &mut self.input_state.hovered_node_id, None);
+        let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
+            &mut self.ui_roots,
+            &mut self.input_state.hovered_node_id,
+            None,
+        );
         let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();

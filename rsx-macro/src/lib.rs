@@ -267,7 +267,10 @@ fn parse_prop_value_expr(key: &Ident, input: ParseStream) -> Result<PropValueExp
             }
             let mut err = syn::Error::new(
                 parse_err.span(),
-                format!("invalid Rust expression for prop `{}` inside `{{...}}`", key),
+                format!(
+                    "invalid Rust expression for prop `{}` inside `{{...}}`",
+                    key
+                ),
             );
             err.combine(parse_err);
             Err(err)
@@ -328,9 +331,7 @@ fn parse_object_entries(input: ParseStream) -> Result<Vec<ObjectEntry>> {
     Ok(entries)
 }
 
-fn parse_object_entries_from_tokens(
-    tokens: proc_macro2::TokenStream,
-) -> Result<Vec<ObjectEntry>> {
+fn parse_object_entries_from_tokens(tokens: proc_macro2::TokenStream) -> Result<Vec<ObjectEntry>> {
     struct ObjectEntries {
         entries: Vec<ObjectEntry>,
     }
@@ -487,9 +488,11 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
         PropValueExpr::Expr(expr) => {
             quote! { ::core::option::Option::Some(::rfgui::ui::classify_component_key(&(#expr))) }
         }
-        PropValueExpr::StyleObject(_) | PropValueExpr::Object(_) => quote_spanned! {prop.key.span()=>
-            compile_error!("`key` must be a Rust expression")
-        },
+        PropValueExpr::StyleObject(_) | PropValueExpr::Object(_) => {
+            quote_spanned! {prop.key.span()=>
+                compile_error!("`key` must be a Rust expression")
+            }
+        }
     }
 }
 
@@ -758,7 +761,9 @@ fn expand_prop_value_expr_for_builder(
                 __rsx_style
             }}
         }
-        PropValueExpr::Object(entries) => expand_object_value_for_builder(key, entries, builder_ident),
+        PropValueExpr::Object(entries) => {
+            expand_object_value_for_builder(key, entries, builder_ident)
+        }
     }
 }
 

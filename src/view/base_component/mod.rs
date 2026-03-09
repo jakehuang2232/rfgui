@@ -204,6 +204,9 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
             if !point_in_box_model(&snapshot, x, y) {
                 return None;
             }
+            if !node.hit_test_visible_at(x, y) {
+                return None;
+            }
             if node.intercepts_pointer_at(x, y) {
                 return Some(snapshot.node_id);
             }
@@ -255,7 +258,7 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
         if !snapshot.should_render && !has_absolute_descendant {
             return None;
         }
-        let in_self = point_in_box_model(&snapshot, x, y);
+        let in_self = point_in_box_model(&snapshot, x, y) && node.hit_test_visible_at(x, y);
         if in_self && node.intercepts_pointer_at(x, y) {
             return Some(snapshot.node_id);
         }
@@ -660,11 +663,7 @@ pub fn update_hover_state(root: &mut dyn ElementTrait, target_id: Option<u64>) -
     walk(root, target_id).1
 }
 
-fn append_path_to_target(
-    node: &dyn ElementTrait,
-    target_id: u64,
-    path: &mut Vec<u64>,
-) -> bool {
+fn append_path_to_target(node: &dyn ElementTrait, target_id: u64, path: &mut Vec<u64>) -> bool {
     path.push(node.id());
     if node.id() == target_id {
         return true;
@@ -1538,6 +1537,114 @@ mod tests {
     }
 
     #[test]
+    fn overflow_child_hit_bubbles_but_parent_is_not_targetable_outside_clip() {
+        let mut root = Element::new(0.0, 0.0, 200.0, 160.0);
+        let mut clip_parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let parent_clicks = Rc::new(Cell::new(0));
+        let parent_clicks_binding = parent_clicks.clone();
+        parent.on_click(move |_event, _control| {
+            parent_clicks_binding.set(parent_clicks_binding.get() + 1);
+        });
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(50.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::Parent),
+            ),
+        );
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let child_id = child.id();
+        let child_clicks = Rc::new(Cell::new(0));
+        let child_clicks_binding = child_clicks.clone();
+        child.on_click(move |_event, _control| {
+            child_clicks_binding.set(child_clicks_binding.get() + 1);
+        });
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(60.0))
+                    .top(Length::px(10.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        child.apply_style(child_style);
+
+        parent.add_child(Box::new(child));
+        clip_parent.add_child(Box::new(parent));
+        root.add_child(Box::new(clip_parent));
+
+        root.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 160.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(160.0),
+            viewport_height: 160.0,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 160.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(160.0),
+            viewport_height: 160.0,
+        });
+
+        assert_eq!(hit_test(&root, 115.0, 15.0), Some(child_id));
+        assert_eq!(hit_test(&root, 145.0, 15.0), Some(root.id()));
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut click_child = ClickEvent {
+            meta: EventMeta::new(0),
+            mouse: MouseEventData {
+                viewport_x: 115.0,
+                viewport_y: 15.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(MouseButton::Left),
+                buttons: MouseButtons::default(),
+                modifiers: KeyModifiers::default(),
+            },
+        };
+        assert!(dispatch_click_from_hit_test(
+            &mut root,
+            &mut click_child,
+            &mut control
+        ));
+        assert_eq!(child_clicks.get(), 1);
+        assert_eq!(parent_clicks.get(), 1);
+
+        let mut click_outside = ClickEvent {
+            meta: EventMeta::new(0),
+            mouse: MouseEventData {
+                viewport_x: 145.0,
+                viewport_y: 15.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(MouseButton::Left),
+                buttons: MouseButtons::default(),
+                modifiers: KeyModifiers::default(),
+            },
+        };
+        let _ = dispatch_click_from_hit_test(&mut root, &mut click_outside, &mut control);
+        assert_eq!(child_clicks.get(), 1);
+        assert_eq!(parent_clicks.get(), 1);
+    }
+
+    #[test]
     fn hover_transition_dispatches_enter_leave_on_changed_ancestors_only() {
         let order = Rc::new(RefCell::new(Vec::new()));
 
@@ -1565,7 +1672,8 @@ mod tests {
         parent.add_child(Box::new(child));
         root.add_child(Box::new(parent));
 
-        let mut roots: Vec<Box<dyn crate::view::base_component::ElementTrait>> = vec![Box::new(root)];
+        let mut roots: Vec<Box<dyn crate::view::base_component::ElementTrait>> =
+            vec![Box::new(root)];
 
         assert!(dispatch_hover_transition(&mut roots, None, Some(child_id)));
         assert_eq!(
@@ -1586,7 +1694,11 @@ mod tests {
         assert_eq!(order.borrow().as_slice(), &["parent-leave", "root-leave"]);
 
         order.borrow_mut().clear();
-        assert!(!dispatch_hover_transition(&mut roots, Some(root_id), Some(root_id)));
+        assert!(!dispatch_hover_transition(
+            &mut roots,
+            Some(root_id),
+            Some(root_id)
+        ));
         assert!(order.borrow().is_empty());
     }
 

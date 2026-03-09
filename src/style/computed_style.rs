@@ -1,6 +1,6 @@
 use crate::style::color::Color;
 use crate::style::parsed_style::{
-    Align, BoxShadow, CrossSize, Cursor, Layout, FontSize, Length, ParsedValue, Position,
+    Align, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
     PropertyId, ScrollDirection, Style, Transitions,
 };
 
@@ -520,17 +520,13 @@ mod tests {
         let mut style = Style::new();
         style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(
-                Layout::flow()
-                    .align(Align::End)
-                    .cross_size(CrossSize::Fit),
-            ),
+            ParsedValue::Layout(Layout::flow().align(Align::End).cross_size(CrossSize::Fit)),
         );
+        style.insert(PropertyId::Align, ParsedValue::Align(Align::Center));
         style.insert(
-            PropertyId::Align,
-            ParsedValue::Align(Align::Center),
+            PropertyId::CrossSize,
+            ParsedValue::CrossSize(CrossSize::Stretch),
         );
-        style.insert(PropertyId::CrossSize, ParsedValue::CrossSize(CrossSize::Stretch));
 
         let computed = compute_style(&style, None);
         assert_eq!(computed.align, Align::Center);

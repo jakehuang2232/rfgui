@@ -260,9 +260,11 @@ impl RenderPass for TextPass {
                 > = overlay
                     .vertices
                     .iter()
-                    .map(|vertex| crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
-                        position: vertex.position,
-                        color: vertex.color,
+                    .map(|vertex| {
+                        crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
+                            position: vertex.position,
+                            color: vertex.color,
+                        }
                     })
                     .collect();
                 viewport.push_debug_overlay_geometry(&overlay_vertices, &overlay.indices);
@@ -334,8 +336,11 @@ impl RenderPass for TextPass {
                 }
                 None => ctx.viewport.surface_size(),
             };
-            let scissor_rect =
-                physical_scissor_rect(self.params.scissor_rect, ctx.viewport.scale_factor(), target_size);
+            let scissor_rect = physical_scissor_rect(
+                self.params.scissor_rect,
+                ctx.viewport.scale_factor(),
+                target_size,
+            );
             if let Some([x, y, width, height]) = scissor_rect {
                 pass.set_scissor_rect(x, y, width, height);
             } else {
@@ -924,11 +929,7 @@ mod tests {
         buffer
     }
 
-    fn overlay_rects(
-        overlay: &TextDebugOverlay,
-        screen_w: f32,
-        screen_h: f32,
-    ) -> Vec<[f32; 4]> {
+    fn overlay_rects(overlay: &TextDebugOverlay, screen_w: f32, screen_h: f32) -> Vec<[f32; 4]> {
         overlay
             .vertices
             .chunks_exact(4)
@@ -969,10 +970,7 @@ mod tests {
         assert!(!rects.is_empty());
         assert!(
             rects.iter().all(|rect| {
-                rect[0] >= -2.0
-                    && rect[1] >= -2.0
-                    && rect[2] <= 82.0
-                    && rect[3] <= 24.0
+                rect[0] >= -2.0 && rect[1] >= -2.0 && rect[2] <= 82.0 && rect[3] <= 24.0
             }),
             "all overlay quads should stay near the resolved text bounds"
         );
@@ -984,7 +982,10 @@ mod tests {
             physical_scissor_rect(Some([10, 5, 40, 20]), 2.0, (90, 40)),
             Some([20, 10, 70, 30])
         );
-        assert_eq!(physical_scissor_rect(Some([200, 0, 10, 10]), 1.0, (50, 50)), None);
+        assert_eq!(
+            physical_scissor_rect(Some([200, 0, 10, 10]), 1.0, (50, 50)),
+            None
+        );
     }
 
     #[test]

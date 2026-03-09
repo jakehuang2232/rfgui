@@ -2,8 +2,7 @@ use crate::HexColor;
 use crate::Style;
 use crate::ui::{
     Binding, FromPropValue, GlobalKey, Patch, PropValue, RenderBackend, RsxElementNode, RsxKey,
-    RsxNode,
-    RsxNodeIdentity,
+    RsxNode, RsxNodeIdentity,
 };
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
@@ -38,7 +37,7 @@ pub fn rsx_to_element_scoped(
     scope_path: &[u64],
 ) -> Result<Box<dyn ElementTrait>, String> {
     let inherited = InheritedTextStyle::from_viewport_style(&Style::new(), 0.0, 0.0);
-    convert_node(root, scope_path, &inherited)
+    convert_node(root, scope_path, None, &inherited)
 }
 
 pub fn rsx_to_elements(root: &RsxNode) -> Result<Vec<Box<dyn ElementTrait>>, String> {
@@ -77,7 +76,15 @@ pub fn rsx_to_elements_lossy_with_context(
     let mut path = Vec::new();
     let inherited =
         InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
-    append_nodes_with_path_lossy(root, &mut out, &mut path, &inherited, &mut errors);
+    let global_path = current_global_node_path(root, None);
+    append_nodes_with_path_lossy(
+        root,
+        &mut out,
+        &mut path,
+        global_path,
+        &inherited,
+        &mut errors,
+    );
     (out, errors)
 }
 
@@ -143,6 +150,24 @@ struct RenderedGlobalKeyEntry {
     invocation_type: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GlobalNodePath {
+    key: GlobalKey,
+    local_path: Vec<u64>,
+}
+
+enum NodeIdSeed<'a> {
+    Local {
+        kind: &'a str,
+        path: &'a [u64],
+    },
+    Global {
+        global_key: GlobalKey,
+        kind: &'a str,
+        local_path: &'a [u64],
+    },
+}
+
 impl<'a> ViewportRenderBackend<'a> {
     pub fn new(viewport: &'a mut Viewport) -> Self {
         Self {
@@ -161,7 +186,10 @@ impl<'a> ViewportRenderBackend<'a> {
             .ok_or_else(|| "root is not initialized".to_string())
     }
 
-    fn node_mut_by_path<'b>(node: &'b mut RsxNode, path: &[usize]) -> Result<&'b mut RsxNode, String> {
+    fn node_mut_by_path<'b>(
+        node: &'b mut RsxNode,
+        path: &[usize],
+    ) -> Result<&'b mut RsxNode, String> {
         if path.is_empty() {
             return Ok(node);
         }
@@ -300,7 +328,8 @@ fn append_nodes(
     let mut path = Vec::new();
     let inherited =
         InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
-    append_nodes_with_path(node, out, &mut path, &inherited)
+    let global_path = current_global_node_path(node, None);
+    append_nodes_with_path(node, out, &mut path, global_path, &inherited)
 }
 
 fn collect_global_key_registry(
@@ -308,19 +337,22 @@ fn collect_global_key_registry(
 ) -> Result<HashMap<GlobalKey, RenderedGlobalKeyEntry>, String> {
     let mut registry = HashMap::new();
     let mut path = Vec::new();
-    collect_global_key_registry_with_path(root, &mut path, &mut registry)?;
+    let global_path = current_global_node_path(root, None);
+    collect_global_key_registry_with_path(root, &mut path, global_path, &mut registry)?;
     Ok(registry)
 }
 
 fn collect_global_key_registry_with_path(
     node: &RsxNode,
     path: &mut Vec<u64>,
+    global_path: Option<GlobalNodePath>,
     registry: &mut HashMap<GlobalKey, RenderedGlobalKeyEntry>,
 ) -> Result<(), String> {
+    let current_global_path = current_global_node_path(node, global_path.as_ref());
     if let Some(RsxKey::Global(global_key)) = node.identity().key {
         let entry = RenderedGlobalKeyEntry {
             path: path.clone(),
-            node_id: rendered_node_id(node, path),
+            node_id: rendered_node_id(node, path, current_global_path.as_ref()),
             invocation_type: node.identity().invocation_type.clone(),
         };
         if registry.insert(global_key, entry).is_some() {
@@ -332,8 +364,11 @@ fn collect_global_key_registry_with_path(
         let mut ordinals = HashMap::<String, usize>::new();
         for child in children {
             let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-            path.push(child_identity_token(child, ordinal));
-            collect_global_key_registry_with_path(child, path, registry)?;
+            let token = child_identity_token(child, ordinal);
+            path.push(token);
+            let child_global_path =
+                child_global_node_path(current_global_path.as_ref(), child, token);
+            collect_global_key_registry_with_path(child, path, child_global_path, registry)?;
             path.pop();
         }
     }
@@ -341,10 +376,18 @@ fn collect_global_key_registry_with_path(
     Ok(())
 }
 
-fn rendered_node_id(node: &RsxNode, path: &[u64]) -> Option<u64> {
+fn rendered_node_id(
+    node: &RsxNode,
+    path: &[u64],
+    global_path: Option<&GlobalNodePath>,
+) -> Option<u64> {
     match node {
-        RsxNode::Element(element) => Some(stable_node_id(path, element.tag.as_str())),
-        RsxNode::Text(_) => Some(stable_node_id(path, "TextNode")),
+        RsxNode::Element(element) => Some(stable_node_id_from_parts(
+            element.tag.as_str(),
+            path,
+            global_path,
+        )),
+        RsxNode::Text(_) => Some(stable_node_id_from_parts("TextNode", path, global_path)),
         RsxNode::Fragment(_) => None,
     }
 }
@@ -353,21 +396,32 @@ fn append_nodes_with_path(
     node: &RsxNode,
     out: &mut Vec<Box<dyn ElementTrait>>,
     path: &mut Vec<u64>,
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<(), String> {
     match node {
         RsxNode::Fragment(fragment) => {
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
             let mut ordinals = HashMap::<String, usize>::new();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-                path.push(child_identity_token(child, ordinal));
-                append_nodes_with_path(child, out, path, inherited_text_style)?;
+                let token = child_identity_token(child, ordinal);
+                path.push(token);
+                let child_global_path =
+                    child_global_node_path(current_global_path.as_ref(), child, token);
+                append_nodes_with_path(child, out, path, child_global_path, inherited_text_style)?;
                 path.pop();
             }
             Ok(())
         }
         _ => {
-            out.push(convert_node(node, path, inherited_text_style)?);
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
+            out.push(convert_node(
+                node,
+                path,
+                current_global_path,
+                inherited_text_style,
+            )?);
             Ok(())
         }
     }
@@ -377,35 +431,53 @@ fn append_nodes_with_path_lossy(
     node: &RsxNode,
     out: &mut Vec<Box<dyn ElementTrait>>,
     path: &mut Vec<u64>,
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
     errors: &mut Vec<String>,
 ) {
     match node {
         RsxNode::Fragment(fragment) => {
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
             let mut ordinals = HashMap::<String, usize>::new();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-                path.push(child_identity_token(child, ordinal));
-                append_nodes_with_path_lossy(child, out, path, inherited_text_style, errors);
+                let token = child_identity_token(child, ordinal);
+                path.push(token);
+                let child_global_path =
+                    child_global_node_path(current_global_path.as_ref(), child, token);
+                append_nodes_with_path_lossy(
+                    child,
+                    out,
+                    path,
+                    child_global_path,
+                    inherited_text_style,
+                    errors,
+                );
                 path.pop();
             }
         }
-        _ => match convert_node(node, path, inherited_text_style) {
-            Ok(element) => out.push(element),
-            Err(err) => errors.push(format!("node_path={path:?}: {err}")),
-        },
+        _ => {
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
+            match convert_node(node, path, current_global_path, inherited_text_style) {
+                Ok(element) => out.push(element),
+                Err(err) => errors.push(format!("node_path={path:?}: {err}")),
+            }
+        }
     }
 }
 
 fn convert_node(
     node: &RsxNode,
     path: &[u64],
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
     match node {
         RsxNode::Text(text) => {
-            let mut text_node =
-                Text::from_content_with_id(stable_node_id(path, "TextNode"), text.content.clone());
+            let mut text_node = Text::from_content_with_id(
+                stable_node_id_from_parts("TextNode", path, global_path.as_ref()),
+                text.content.clone(),
+            );
             if !inherited_text_style.font_families.is_empty() {
                 text_node.set_fonts(inherited_text_style.font_families.clone());
             }
@@ -424,25 +496,26 @@ fn convert_node(
             Ok(Box::new(text_node))
         }
         RsxNode::Fragment(_) => Err("fragment must be flattened before conversion".to_string()),
-        RsxNode::Element(el) => convert_element(el, path, inherited_text_style),
+        RsxNode::Element(el) => convert_element(el, path, global_path, inherited_text_style),
     }
 }
 
 fn convert_element(
     node: &RsxElementNode,
     path: &[u64],
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
     match node.tag.as_str() {
-        "Text" => convert_text_element(node, path, inherited_text_style),
-        "TextArea" => convert_text_area_element(node, path, inherited_text_style),
+        "Text" => convert_text_element(node, path, global_path, inherited_text_style),
+        "TextArea" => convert_text_area_element(node, path, global_path, inherited_text_style),
         _ => {
             if let Ok(map) = element_factories().read() {
                 if let Some(factory) = map.get(&node.tag) {
                     return factory(node, path);
                 }
             }
-            convert_container_element(node, path, inherited_text_style)
+            convert_container_element(node, path, global_path, inherited_text_style)
         }
     }
 }
@@ -450,10 +523,11 @@ fn convert_element(
 fn convert_container_element(
     node: &RsxElementNode,
     path: &[u64],
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut element = Element::new_with_id(
-        stable_node_id(path, node.tag.as_str()),
+        stable_node_id_from_parts(node.tag.as_str(), path, global_path.as_ref()),
         0.0,
         0.0,
         10_000.0,
@@ -571,14 +645,19 @@ fn convert_container_element(
     // Reuse a single path buffer for all children to avoid per-child path allocations.
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
     child_path.extend_from_slice(path);
+    let current_global_path =
+        current_global_node_path(&RsxNode::Element(node.clone()), global_path.as_ref());
     let mut ordinals = HashMap::<String, usize>::new();
     for child in &node.children {
         let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-        child_path.push(child_identity_token(child, ordinal));
+        let token = child_identity_token(child, ordinal);
+        child_path.push(token);
+        let child_global_path = child_global_node_path(current_global_path.as_ref(), child, token);
         append_child_nodes_flattening_fragments(
             &mut element,
             child,
             &child_path,
+            child_global_path,
             &child_inherited_text_style,
         )?;
         child_path.pop();
@@ -591,20 +670,26 @@ fn append_child_nodes_flattening_fragments(
     parent: &mut Element,
     node: &RsxNode,
     path: &[u64],
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<(), String> {
     match node {
         RsxNode::Fragment(fragment) => {
             let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
             child_path.extend_from_slice(path);
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
             let mut ordinals = HashMap::<String, usize>::new();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-                child_path.push(child_identity_token(child, ordinal));
+                let token = child_identity_token(child, ordinal);
+                child_path.push(token);
+                let child_global_path =
+                    child_global_node_path(current_global_path.as_ref(), child, token);
                 append_child_nodes_flattening_fragments(
                     parent,
                     child,
                     &child_path,
+                    child_global_path,
                     inherited_text_style,
                 )?;
                 child_path.pop();
@@ -612,7 +697,7 @@ fn append_child_nodes_flattening_fragments(
             Ok(())
         }
         _ => {
-            parent.add_child(convert_node(node, path, inherited_text_style)?);
+            parent.add_child(convert_node(node, path, global_path, inherited_text_style)?);
             Ok(())
         }
     }
@@ -621,10 +706,14 @@ fn append_child_nodes_flattening_fragments(
 fn convert_text_element(
     node: &RsxElementNode,
     path: &[u64],
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut text_content = String::new();
-    let mut text = Text::from_content_with_id(stable_node_id(path, "Text"), "");
+    let mut text = Text::from_content_with_id(
+        stable_node_id_from_parts("Text", path, global_path.as_ref()),
+        "",
+    );
     let mut style: Option<Style> = None;
     let mut width: Option<f32> = None;
     let mut height: Option<f32> = None;
@@ -808,12 +897,16 @@ fn append_text_children(out: &mut String, node: &RsxNode) -> Result<(), String> 
 fn convert_text_area_element(
     node: &RsxElementNode,
     path: &[u64],
+    global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut text_content = String::new();
     let mut placeholder = String::new();
     let mut binding: Option<Binding<String>> = None;
-    let mut text_area = TextArea::from_content_with_id(stable_node_id(path, "TextArea"), "");
+    let mut text_area = TextArea::from_content_with_id(
+        stable_node_id_from_parts("TextArea", path, global_path.as_ref()),
+        "",
+    );
     let mut x: Option<f32> = None;
     let mut y: Option<f32> = None;
     let mut width: Option<f32> = None;
@@ -917,29 +1010,118 @@ fn convert_text_area_element(
     Ok(Box::new(text_area))
 }
 
-fn stable_node_id(path: &[u64], kind: &str) -> u64 {
+fn stable_node_id(seed: NodeIdSeed<'_>) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
 
     let mut hash = FNV_OFFSET_BASIS;
-    for &byte in kind.as_bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-
-    hash ^= 0xff;
-    hash = hash.wrapping_mul(FNV_PRIME);
-
-    for &index in path {
-        for byte in index.to_le_bytes() {
-            hash ^= u64::from(byte);
+    match seed {
+        NodeIdSeed::Local { kind, path } => {
+            hash ^= 0x01;
             hash = hash.wrapping_mul(FNV_PRIME);
+            for &byte in kind.as_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for &index in path {
+                for byte in index.to_le_bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(FNV_PRIME);
+                }
+                hash ^= 0xfe;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
         }
-        hash ^= 0xfe;
-        hash = hash.wrapping_mul(FNV_PRIME);
+        NodeIdSeed::Global {
+            global_key,
+            kind,
+            local_path,
+        } => {
+            hash ^= 0x02;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in global_key.id().to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= 0xfd;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for &byte in kind.as_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for &index in local_path {
+                for byte in index.to_le_bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(FNV_PRIME);
+                }
+                hash ^= 0xfe;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
     }
 
     if hash == 0 { 1 } else { hash }
+}
+
+fn stable_node_id_from_parts(
+    kind: &str,
+    path: &[u64],
+    global_path: Option<&GlobalNodePath>,
+) -> u64 {
+    stable_node_id(node_id_seed(kind, path, global_path))
+}
+
+fn node_id_seed<'a>(
+    kind: &'a str,
+    path: &'a [u64],
+    global_path: Option<&'a GlobalNodePath>,
+) -> NodeIdSeed<'a> {
+    if let Some(global_path) = global_path {
+        NodeIdSeed::Global {
+            global_key: global_path.key,
+            kind,
+            local_path: &global_path.local_path,
+        }
+    } else {
+        NodeIdSeed::Local { kind, path }
+    }
+}
+
+fn current_global_node_path(
+    node: &RsxNode,
+    inherited: Option<&GlobalNodePath>,
+) -> Option<GlobalNodePath> {
+    if let Some(RsxKey::Global(global_key)) = node.identity().key {
+        return Some(GlobalNodePath {
+            key: global_key,
+            local_path: Vec::new(),
+        });
+    }
+    inherited.cloned()
+}
+
+fn child_global_node_path(
+    current: Option<&GlobalNodePath>,
+    child: &RsxNode,
+    token: u64,
+) -> Option<GlobalNodePath> {
+    if let Some(RsxKey::Global(global_key)) = child.identity().key {
+        return Some(GlobalNodePath {
+            key: global_key,
+            local_path: Vec::new(),
+        });
+    }
+    let current = current?;
+    let mut local_path = current.local_path.clone();
+    local_path.push(token);
+    Some(GlobalNodePath {
+        key: current.key,
+        local_path,
+    })
 }
 
 fn next_identity_ordinal(
@@ -1173,14 +1355,13 @@ fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandle
 mod tests {
     use super::{
         RenderedGlobalKeyEntry, ViewportRenderBackend, identity_token_from_node_identity,
-        rendered_node_id, rsx_to_elements, rsx_to_elements_lossy,
-        rsx_to_elements_with_context,
+        rendered_node_id, rsx_to_elements, rsx_to_elements_lossy, rsx_to_elements_with_context,
     };
     use crate::ui::{GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity};
-    use crate::view::base_component::{ElementTrait, Text, TextArea, get_cursor_by_id, hit_test};
     use crate::view::Viewport;
+    use crate::view::base_component::{ElementTrait, Text, TextArea, get_cursor_by_id, hit_test};
     use crate::{
-        Border, BorderRadius, Color, Cursor, Layout, FontSize, IntoColor, Length, ParsedValue,
+        Border, BorderRadius, Color, Cursor, FontSize, IntoColor, Layout, Length, ParsedValue,
         PropertyId, Style, Unit,
     };
     fn style_bg(hex: &str) -> Style {
@@ -1194,10 +1375,14 @@ mod tests {
 
     #[test]
     fn identity_token_uses_type_and_local_key_stably() {
-        let identity_a =
-            RsxNodeIdentity::new("Button", Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))));
-        let identity_b =
-            RsxNodeIdentity::new("Button", Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))));
+        let identity_a = RsxNodeIdentity::new(
+            "Button",
+            Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))),
+        );
+        let identity_b = RsxNodeIdentity::new(
+            "Button",
+            Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))),
+        );
         let token_a = identity_token_from_node_identity(&identity_a, 0);
         let token_b = identity_token_from_node_identity(&identity_b, 0);
         assert_eq!(token_a, token_b);
@@ -1205,9 +1390,12 @@ mod tests {
 
     #[test]
     fn identity_token_distinguishes_local_and_global_key() {
-        let local =
-            RsxNodeIdentity::new("Button", Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))));
-        let global = RsxNodeIdentity::new("Button", Some(RsxKey::Global(GlobalKey::from("item-a"))));
+        let local = RsxNodeIdentity::new(
+            "Button",
+            Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))),
+        );
+        let global =
+            RsxNodeIdentity::new("Button", Some(RsxKey::Global(GlobalKey::from("item-a"))));
         assert_ne!(
             identity_token_from_node_identity(&local, 0),
             identity_token_from_node_identity(&global, 0)
@@ -1236,9 +1424,11 @@ mod tests {
     #[test]
     fn global_key_registry_keeps_fragment_path_without_node_id() {
         let global_key = GlobalKey::from("fragment-root");
-        let node = RsxNode::fragment(vec![RsxNode::element("Element").with_prop("style", Style::new())])
-            .with_key(global_key)
-            .with_invocation_type("Button");
+        let node = RsxNode::fragment(vec![
+            RsxNode::element("Element").with_prop("style", Style::new()),
+        ])
+        .with_key(global_key)
+        .with_invocation_type("Button");
 
         let registry = super::collect_global_key_registry(&node).expect("registry should build");
         let entry = registry.get(&global_key).expect("global key entry");
@@ -1300,10 +1490,63 @@ mod tests {
         assert_ne!(first.path, second.path);
         assert_eq!(first.invocation_type, "Button");
         assert_eq!(second.invocation_type, "Button");
+        assert_eq!(first.node_id, second.node_id);
         assert_eq!(
             second.node_id,
-            rendered_node_id(second_global_node, &second.path)
+            rendered_node_id(
+                second_global_node,
+                &second.path,
+                super::current_global_node_path(second_global_node, None).as_ref(),
+            )
         );
+    }
+
+    #[test]
+    fn global_key_subtree_node_id_is_stable_across_parent_move() {
+        let global_key = GlobalKey::from("stable-subtree");
+        let first_root = RsxNode::element("Element")
+            .with_prop("style", Style::new())
+            .with_child(
+                RsxNode::element("Element")
+                    .with_prop("style", Style::new())
+                    .with_child(
+                        RsxNode::element("Element")
+                            .with_key(global_key)
+                            .with_invocation_type("Card")
+                            .with_prop("style", Style::new())
+                            .with_child(
+                                RsxNode::element("Element").with_prop("style", Style::new()),
+                            ),
+                    ),
+            );
+        let second_root = RsxNode::element("Element")
+            .with_prop("style", Style::new())
+            .with_child(RsxNode::element("Element").with_prop("style", Style::new()))
+            .with_child(
+                RsxNode::element("Element")
+                    .with_prop("style", Style::new())
+                    .with_child(
+                        RsxNode::element("Element")
+                            .with_key(global_key)
+                            .with_invocation_type("Card")
+                            .with_prop("style", Style::new())
+                            .with_child(
+                                RsxNode::element("Element").with_prop("style", Style::new()),
+                            ),
+                    ),
+            );
+
+        let first_registry =
+            super::collect_global_key_registry(&first_root).expect("first registry");
+        let second_registry =
+            super::collect_global_key_registry(&second_root).expect("second registry");
+        let first_entry = first_registry.get(&global_key).expect("first global entry");
+        let second_entry = second_registry
+            .get(&global_key)
+            .expect("second global entry");
+
+        assert_ne!(first_entry.path, second_entry.path);
+        assert_eq!(first_entry.node_id, second_entry.node_id);
     }
 
     #[test]
