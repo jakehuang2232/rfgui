@@ -22,7 +22,7 @@ use crate::ui::{
     MouseDownEvent, MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent,
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
-use crate::view::frame_graph::{FrameGraph, RenderPass, TextureDesc};
+use crate::view::frame_graph::{AttachmentTarget, FrameGraph, RenderPass, TextureDesc};
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
@@ -34,6 +34,7 @@ use crate::view::render_pass::{
 use crate::view::viewport::ViewportControl;
 use crate::ColorLike;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 include!("event_target.rs");
 include!("layout_trait.rs");
@@ -233,6 +234,7 @@ struct ChildClipScope {
 #[derive(Clone, Copy)]
 pub struct ViewportContext {
     color_target: Option<TextureHandle>,
+    depth_stencil_target: Option<AttachmentTarget>,
     target_width: u32,
     target_height: u32,
     target_format: wgpu::TextureFormat,
@@ -242,6 +244,8 @@ pub struct ViewportContext {
 #[derive(Clone)]
 pub struct BuildState {
     target: Option<RenderTargetOut>,
+    depth_stencil_target: Option<AttachmentTarget>,
+    target_pairs: HashMap<u32, AttachmentTarget>,
     scissor_rect: Option<[u32; 4]>,
     clip_id_stack: Vec<u8>,
     deferred_node_ids: Vec<u64>,
@@ -263,6 +267,7 @@ impl UiBuildContext {
         Self {
             viewport: ViewportContext {
                 color_target: None,
+                depth_stencil_target: Some(AttachmentTarget::Surface),
                 target_width: viewport_width.max(1),
                 target_height: viewport_height.max(1),
                 target_format: viewport_format,
@@ -270,6 +275,8 @@ impl UiBuildContext {
             },
             state: BuildState {
                 target: None,
+                depth_stencil_target: Some(AttachmentTarget::Surface),
+                target_pairs: HashMap::new(),
                 scissor_rect: None,
                 clip_id_stack: Vec::new(),
                 deferred_node_ids: Vec::new(),
@@ -303,6 +310,10 @@ impl UiBuildContext {
     }
 
     pub fn set_current_target(&mut self, target: RenderTargetOut) {
+        self.state.depth_stencil_target = target
+            .handle()
+            .and_then(|handle| self.state.target_pairs.get(&handle.0).copied())
+            .or(Some(AttachmentTarget::Surface));
         self.state.target = Some(target);
     }
 
@@ -311,16 +322,35 @@ impl UiBuildContext {
     }
 
     fn next_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
-        graph.declare_texture::<RenderTargetTag>(TextureDesc::new(
+        let color = graph.declare_texture::<RenderTargetTag>(TextureDesc::new(
             self.viewport.target_width,
             self.viewport.target_height,
             self.viewport.target_format,
             wgpu::TextureDimension::D2,
-        ))
+        ));
+        let depth_stencil = graph.declare_texture::<RenderTargetTag>(
+            TextureDesc::new(
+                self.viewport.target_width,
+                self.viewport.target_height,
+                wgpu::TextureFormat::Depth24PlusStencil8,
+                wgpu::TextureDimension::D2,
+            )
+            .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT),
+        );
+        if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
+            self.state
+                .target_pairs
+                .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
+        }
+        color
     }
 
     fn color_target(&self) -> Option<TextureHandle> {
         self.viewport.color_target
+    }
+
+    fn depth_stencil_target(&self) -> Option<AttachmentTarget> {
+        self.state.depth_stencil_target.or(self.viewport.depth_stencil_target)
     }
 
     pub(crate) fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
@@ -383,6 +413,7 @@ impl UiBuildContext {
         pass.apply_clip(self.scissor_rect());
         pass.apply_stencil_clip(self.active_clip_id());
         pass.set_color_target(self.color_target());
+        pass.set_depth_stencil_target(self.depth_stencil_target());
     }
 }
 

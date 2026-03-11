@@ -1,8 +1,6 @@
 use crate::ui::MouseButton as UiMouseButton;
 use crate::view::frame_graph::FrameGraph;
-use crate::view::render_pass::draw_rect_pass::{
-    DrawRectInput, DrawRectOutput, RectPassParams, RenderTargetIn,
-};
+use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, RectPassParams};
 use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPassParams};
 use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::{ColorLike, Cursor as UiCursor, HexColor, Style};
@@ -1949,17 +1947,13 @@ fn push_draw_rect_pass_explicit(
     ctx: &mut UiBuildContext,
     mut pass: DrawRectPass,
 ) {
-    ctx.configure_pass(&mut pass);
     let Some(input_target) = ctx.current_target() else {
         return;
     };
-    let output_target = ctx.allocate_target(graph);
-    if let Some(handle) = input_target.handle() {
-        pass.set_input(RenderTargetIn::with_handle(handle));
-    }
-    pass.set_output(output_target);
+    pass.set_output(input_target);
+    ctx.configure_pass(&mut pass);
     graph.add_pass(pass);
-    ctx.set_current_target(output_target);
+    ctx.set_current_target(input_target);
 }
 
 fn push_text_pass_explicit(

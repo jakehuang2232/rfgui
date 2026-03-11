@@ -5,10 +5,12 @@ use crate::view::frame_graph::{
     GraphicsRecordContext, GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
 };
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
+use crate::view::frame_graph::AttachmentTarget;
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::render_target::{
-    render_target_bundle, render_target_msaa_view, render_target_size, render_target_view,
+    render_target_attachment_view, render_target_bundle, render_target_msaa_view,
+    render_target_size, render_target_view,
 };
 use crate::view::render_pass::{RenderPass, RenderPassBatchKey};
 use std::collections::HashSet;
@@ -80,6 +82,7 @@ pub struct DrawRectPass {
     scissor_rect: Option<[u32; 4]>,
     stencil_mode: RectStencilMode,
     color_write_enabled: bool,
+    depth_stencil_target: Option<AttachmentTarget>,
     render_mode: RectRenderMode,
     uniform_buffer: RectUniformBufferOut,
     prepared_bind_group: Option<wgpu::BindGroup>,
@@ -141,6 +144,7 @@ impl DrawRectPass {
             scissor_rect: None,
             stencil_mode: RectStencilMode::Disabled,
             color_write_enabled: true,
+            depth_stencil_target: None,
             render_mode: RectRenderMode::Combined,
             uniform_buffer: RectUniformBufferOut::default(),
             prepared_bind_group: None,
@@ -167,6 +171,10 @@ impl DrawRectPass {
 
     pub fn set_color_write_enabled(&mut self, enabled: bool) {
         self.color_write_enabled = enabled;
+    }
+
+    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.depth_stencil_target = depth_stencil_target;
     }
 
     pub fn set_render_mode(&mut self, mode: RectRenderMode) {
@@ -262,6 +270,7 @@ impl DrawRectPass {
         RenderPassBatchKey {
             color_target: self.output.render_target.handle(),
             uses_depth_stencil: draw_requires_depth_stencil(
+                self.depth_stencil_target,
                 RectShaderVariant::Alpha,
                 self.stencil_mode,
             ),
@@ -284,6 +293,7 @@ impl DrawRectPass {
             stencil_mode: self.stencil_mode,
             color_write_enabled: self.color_write_enabled,
             color_target: self.output.render_target.handle(),
+            depth_stencil_target: self.depth_stencil_target,
             render_mode: self.render_mode,
         }
     }
@@ -460,6 +470,7 @@ impl OpaqueRectPass {
         RenderPassBatchKey {
             color_target: self.inner.output.render_target.handle(),
             uses_depth_stencil: draw_requires_depth_stencil(
+                self.inner.depth_stencil_target,
                 RectShaderVariant::Opaque,
                 self.inner.stencil_mode,
             ),
@@ -480,6 +491,10 @@ impl RenderTargetPass for DrawRectPass {
             self.set_stencil_test(clip_id);
         }
     }
+
+    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.depth_stencil_target = depth_stencil_target;
+    }
 }
 
 impl RenderTargetPass for OpaqueRectPass {
@@ -489,6 +504,10 @@ impl RenderTargetPass for OpaqueRectPass {
 
     fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
         self.inner.apply_stencil_clip(clip_id);
+    }
+
+    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.inner.set_depth_stencil_target(depth_stencil_target);
     }
 }
 
@@ -556,6 +575,7 @@ pub struct DrawRectDraw {
     stencil_mode: RectStencilMode,
     color_write_enabled: bool,
     color_target: Option<TextureHandle>,
+    depth_stencil_target: Option<AttachmentTarget>,
     render_mode: RectRenderMode,
 }
 
@@ -583,11 +603,13 @@ impl RenderPass for DrawRectPass {
                 builder.surface_target(),
             ));
         }
-        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-            target: builder.surface_target(),
-            depth: Some(GraphicsDepthAspectDescriptor::read()),
-            stencil: Some(GraphicsStencilAspectDescriptor::read()),
-        });
+        if let Some(target) = self.depth_stencil_target {
+            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+                target,
+                depth: Some(GraphicsDepthAspectDescriptor::read()),
+                stencil: Some(GraphicsStencilAspectDescriptor::read()),
+            });
+        }
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
@@ -628,11 +650,13 @@ impl RenderPass for OpaqueRectPass {
                 builder.surface_target(),
             ));
         }
-        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-            target: builder.surface_target(),
-            depth: Some(GraphicsDepthAspectDescriptor::read()),
-            stencil: Some(GraphicsStencilAspectDescriptor::read()),
-        });
+        if let Some(target) = self.inner.depth_stencil_target {
+            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+                target,
+                depth: Some(GraphicsDepthAspectDescriptor::read()),
+                stencil: Some(GraphicsStencilAspectDescriptor::read()),
+            });
+        }
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
@@ -691,9 +715,13 @@ fn stencil_class_and_reference(stencil_mode: RectStencilMode) -> (RectStencilCla
     }
 }
 
-fn draw_requires_depth_stencil(variant: RectShaderVariant, stencil_mode: RectStencilMode) -> bool {
+fn draw_requires_depth_stencil(
+    depth_stencil_target: Option<AttachmentTarget>,
+    variant: RectShaderVariant,
+    stencil_mode: RectStencilMode,
+) -> bool {
     let _ = (variant, stencil_mode);
-    true
+    depth_stencil_target.is_some()
 }
 
 fn execute_draw_rect_pass(
@@ -864,10 +892,19 @@ pub(crate) fn execute_draw_rect_batch(
         }
         return false;
     }
-    let first_uses_depth = draw_requires_depth_stencil(entries[0].variant, first_draw.stencil_mode);
+    let first_uses_depth = draw_requires_depth_stencil(
+        first_draw.depth_stencil_target,
+        entries[0].variant,
+        first_draw.stencil_mode,
+    );
     if entries.iter().any(|entry| {
-        let uses_depth = draw_requires_depth_stencil(entry.variant, entry.draw.stencil_mode);
+        let uses_depth = draw_requires_depth_stencil(
+            entry.draw.depth_stencil_target,
+            entry.variant,
+            entry.draw.stencil_mode,
+        );
         uses_depth != first_uses_depth
+            || entry.draw.depth_stencil_target != first_draw.depth_stencil_target
     }) {
         if batch_trace_enabled() {
             eprintln!(
@@ -902,6 +939,10 @@ pub(crate) fn execute_draw_rect_batch(
         "execute/draw_rect/resources/target_lookup",
         lookup_started_at.elapsed().as_secs_f64() * 1000.0,
     );
+    let depth_stencil_view = match first_draw.depth_stencil_target {
+        Some(AttachmentTarget::Texture(handle)) => render_target_attachment_view(ctx, handle),
+        Some(AttachmentTarget::Surface) | None => None,
+    };
 
     let scale = ctx.viewport.scale_factor();
     let device = match ctx.viewport.device() {
@@ -1073,6 +1114,25 @@ pub(crate) fn execute_draw_rect_batch(
                 (Some(resolve_view), None) => (resolve_view, None),
                 (None, _) => (parts.view, surface_resolve),
             };
+        let depth_stencil_attachment = match first_draw.depth_stencil_target {
+            Some(AttachmentTarget::Surface) if uses_depth_stencil => {
+                parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+            }
+            Some(AttachmentTarget::Texture(_)) if uses_depth_stencil => depth_stencil_view
+                .as_ref()
+                .map(|view| wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }),
+            _ => None,
+        };
         let mut pass = parts
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1086,11 +1146,7 @@ pub(crate) fn execute_draw_rect_batch(
                     depth_slice: None,
                     resolve_target,
                 })],
-                depth_stencil_attachment: if uses_depth_stencil {
-                    parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-                } else {
-                    None
-                },
+                depth_stencil_attachment,
                 ..Default::default()
             });
         for draw in &encoded_draws {

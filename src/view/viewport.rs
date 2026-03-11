@@ -14,8 +14,8 @@ use crate::ui::{
     MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
     ViewportListenerAction, ViewportListenerHandle, take_state_dirty,
 };
-use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
-use crate::view::frame_graph::{BufferDesc, BufferHandle, FrameGraph};
+use crate::view::frame_graph::texture_resource::TextureDesc;
+use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 use crate::{ColorLike, Cursor, HexColor, Style};
 use arboard::Clipboard;
@@ -1570,7 +1570,8 @@ impl Viewport {
 
         let output = ctx.allocate_target(&mut graph);
         let output_handle = output.handle();
-        let clear_pass = super::frame_graph::ClearPass::new(
+        ctx.set_current_target(output.clone());
+        let mut clear_pass = super::frame_graph::ClearPass::new(
             super::render_pass::clear_pass::ClearParams::new(clear_rgba),
             super::render_pass::clear_pass::ClearInput::default(),
             super::render_pass::clear_pass::ClearOutput {
@@ -1578,6 +1579,7 @@ impl Viewport {
                 ..Default::default()
             },
         );
+        ctx.configure_pass(&mut clear_pass);
         if let Some(handle) = output_handle {
             ctx.set_color_target(Some(handle));
         }
@@ -1870,21 +1872,21 @@ impl Viewport {
 
     pub(crate) fn acquire_offscreen_render_target(
         &mut self,
-        handle: TextureHandle,
+        allocation_id: AllocationId,
         desc: TextureDesc,
     ) -> Option<RenderTargetBundle> {
         let device = self.device.as_ref()?;
         self.offscreen_render_target_pool
-            .acquire(device, handle, desc, self.msaa_sample_count)
+            .acquire(device, allocation_id, desc, self.msaa_sample_count)
     }
 
     pub(crate) fn acquire_frame_buffer(
         &mut self,
-        handle: BufferHandle,
+        allocation_id: AllocationId,
         desc: BufferDesc,
     ) -> Option<wgpu::Buffer> {
         let device = self.device.as_ref()?;
-        let key = handle.0;
+        let key = allocation_id.0;
         let recreate = self
             .frame_buffer_pool
             .get(&key)
@@ -1913,7 +1915,7 @@ impl Viewport {
 
     pub(crate) fn upload_frame_buffer(
         &mut self,
-        handle: BufferHandle,
+        allocation_id: AllocationId,
         desc: BufferDesc,
         offset: u64,
         data: &[u8],
@@ -1924,7 +1926,7 @@ impl Viewport {
         if offset % wgpu::COPY_BUFFER_ALIGNMENT != 0 {
             return false;
         }
-        let Some(buffer) = self.acquire_frame_buffer(handle, desc) else {
+        let Some(buffer) = self.acquire_frame_buffer(allocation_id, desc) else {
             return false;
         };
         if self.upload_staging_belt.is_none() {

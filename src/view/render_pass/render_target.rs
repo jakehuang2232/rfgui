@@ -1,4 +1,4 @@
-use crate::view::frame_graph::FrameResourceContext;
+use crate::view::frame_graph::{AllocationId, AttachmentTarget, FrameResourceContext};
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
 use std::collections::HashMap;
 
@@ -6,6 +6,7 @@ pub(crate) trait RenderTargetPass {
     fn apply_clip(&mut self, _scissor_rect: Option<[u32; 4]>) {}
     fn apply_stencil_clip(&mut self, _clip_id: Option<u8>) {}
     fn set_color_target(&mut self, _color_target: Option<TextureHandle>) {}
+    fn set_depth_stencil_target(&mut self, _depth_stencil_target: Option<AttachmentTarget>) {}
 }
 
 struct RenderTargetEntry {
@@ -65,11 +66,11 @@ impl OffscreenRenderTargetPool {
     pub fn acquire(
         &mut self,
         device: &wgpu::Device,
-        handle: TextureHandle,
+        allocation_id: AllocationId,
         desc: TextureDesc,
         msaa_sample_count: u32,
     ) -> Option<RenderTargetBundle> {
-        if let Some(entry_id) = self.frame_bindings.get(&handle.0).copied() {
+        if let Some(entry_id) = self.frame_bindings.get(&allocation_id.0).copied() {
             return self.bundle_for_entry(entry_id);
         }
 
@@ -113,7 +114,7 @@ impl OffscreenRenderTargetPool {
             entry.frame_busy_epoch = self.frame_epoch;
             entry.last_used_epoch = self.frame_epoch;
         }
-        self.frame_bindings.insert(handle.0, entry_id);
+        self.frame_bindings.insert(allocation_id.0, entry_id);
         self.evict();
         self.bundle_for_entry(entry_id)
     }
@@ -277,12 +278,20 @@ pub(crate) fn render_target_msaa_view(
     Some(render_target_bundle(ctx, handle)?.msaa_view?)
 }
 
+pub(crate) fn render_target_attachment_view(
+    ctx: &mut impl FrameResourceContext,
+    handle: TextureHandle,
+) -> Option<wgpu::TextureView> {
+    render_target_msaa_view(ctx, handle).or_else(|| render_target_view(ctx, handle))
+}
+
 pub(crate) fn render_target_bundle(
     ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<RenderTargetBundle> {
     let desc = texture_desc_for_handle(ctx, handle)?;
-    ctx.viewport().acquire_offscreen_render_target(handle, desc)
+    let allocation_id = ctx.texture_allocation_id(handle)?;
+    ctx.viewport().acquire_offscreen_render_target(allocation_id, desc)
 }
 
 pub(crate) fn render_target_size(

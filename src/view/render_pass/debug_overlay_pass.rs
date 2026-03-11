@@ -1,4 +1,5 @@
 use crate::view::frame_graph::{
+    AttachmentTarget,
     GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
     GraphicsDepthStencilAttachmentDescriptor, GraphicsStencilAspectDescriptor, PassBuilder,
 };
@@ -6,7 +7,7 @@ use crate::view::frame_graph::{GraphicsRecordContext, ResourceCache};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    render_target_bundle, render_target_size, render_target_view,
+    render_target_attachment_view, render_target_bundle, render_target_size, render_target_view,
 };
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
@@ -21,6 +22,7 @@ pub struct DebugOverlayVertex {
 }
 
 pub struct DebugOverlayPass {
+    depth_stencil_target: Option<AttachmentTarget>,
     output: DebugOverlayOutput,
 }
 
@@ -35,7 +37,14 @@ pub struct DebugOverlayOutput {
 impl DebugOverlayPass {
     pub fn new(input: DebugOverlayInput, output: DebugOverlayOutput) -> Self {
         let _ = input;
-        Self { output }
+        Self {
+            depth_stencil_target: None,
+            output,
+        }
+    }
+
+    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.depth_stencil_target = depth_stencil_target;
     }
 }
 
@@ -51,11 +60,13 @@ impl RenderPass for DebugOverlayPass {
                 builder.surface_target(),
             ));
         }
-        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-            target: builder.surface_target(),
-            depth: Some(GraphicsDepthAspectDescriptor::read()),
-            stencil: Some(GraphicsStencilAspectDescriptor::read()),
-        });
+        if let Some(target) = self.depth_stencil_target {
+            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+                target,
+                depth: Some(GraphicsDepthAspectDescriptor::read()),
+                stencil: Some(GraphicsStencilAspectDescriptor::read()),
+            });
+        }
     }
 
     fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
@@ -116,6 +127,10 @@ impl RenderPass for DebugOverlayPass {
                 None => (None, None, surface_size.0, surface_size.1),
             };
 
+        let depth_stencil_view = match self.depth_stencil_target {
+            Some(AttachmentTarget::Texture(handle)) => render_target_attachment_view(ctx, handle),
+            Some(AttachmentTarget::Surface) | None => None,
+        };
         let Some(parts) = ctx.viewport.frame_parts() else {
             return;
         };
@@ -132,7 +147,25 @@ impl RenderPass for DebugOverlayPass {
                     (parts.view, surface_resolve)
                 }
             };
-
+        let depth_stencil_attachment = match self.depth_stencil_target {
+            Some(AttachmentTarget::Surface) => {
+                parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+            }
+            Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
+                wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }
+            }),
+            None => None,
+        };
         let mut pass = parts
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -146,8 +179,7 @@ impl RenderPass for DebugOverlayPass {
                     depth_slice: None,
                     resolve_target,
                 })],
-                depth_stencil_attachment: parts
-                    .depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load),
+                depth_stencil_attachment,
                 ..Default::default()
             });
         pass.set_pipeline(&resources.pipeline);

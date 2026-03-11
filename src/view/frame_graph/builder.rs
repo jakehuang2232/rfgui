@@ -2,7 +2,8 @@ use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
 use super::frame_graph::{
     AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
     GraphicsDepthStencilAttachmentDescriptor, PassDescriptor, PassResourceUsage, ResourceHandle,
-    ResourceUsage, SampleCountPolicy, ScissorPolicy, ViewportPolicy,
+    ResourceLifetime, ResourceMetadata, ResourceUsage, SampleCountPolicy, ScissorPolicy,
+    ViewportPolicy,
 };
 use super::slot::{InSlot, OutSlot};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
@@ -11,6 +12,8 @@ pub struct PassBuilder<'a> {
     pub(crate) descriptor: &'a mut PassDescriptor,
     pub(crate) textures: &'a mut Vec<TextureDesc>,
     pub(crate) buffers: &'a mut Vec<BufferDesc>,
+    pub(crate) texture_metadata: &'a mut Vec<ResourceMetadata>,
+    pub(crate) buffer_metadata: &'a mut Vec<ResourceMetadata>,
     pub(crate) usages: &'a mut Vec<PassResourceUsage>,
     pub(crate) build_errors: &'a mut Vec<FrameGraphError>,
 }
@@ -48,15 +51,45 @@ impl<'a> PassBuilder<'a> {
     }
 
     pub fn create_texture<Tag>(&mut self, desc: TextureDesc) -> OutSlot<TextureResource, Tag> {
+        self.create_texture_internal(desc, ResourceLifetime::Transient, None)
+    }
+
+    pub(crate) fn create_texture_internal<Tag>(
+        &mut self,
+        desc: TextureDesc,
+        lifetime: ResourceLifetime,
+        stable_key: Option<u64>,
+    ) -> OutSlot<TextureResource, Tag> {
         let handle = TextureHandle(self.textures.len() as u32);
         self.textures.push(desc);
+        self.texture_metadata.push(ResourceMetadata {
+            stable_key,
+            kind: super::frame_graph::ResourceKind::Texture,
+            allocation_class: super::frame_graph::AllocationClass::Texture,
+            lifetime,
+        });
         self.push_usage(ResourceHandle::Texture(handle), ResourceUsage::Produced);
         OutSlot::with_handle(handle)
     }
 
     pub fn create_buffer<Tag>(&mut self, desc: BufferDesc) -> OutSlot<BufferResource, Tag> {
+        self.create_buffer_internal(desc, ResourceLifetime::Transient, None)
+    }
+
+    pub(crate) fn create_buffer_internal<Tag>(
+        &mut self,
+        desc: BufferDesc,
+        lifetime: ResourceLifetime,
+        stable_key: Option<u64>,
+    ) -> OutSlot<BufferResource, Tag> {
         let handle = BufferHandle(self.buffers.len() as u32);
         self.buffers.push(desc);
+        self.buffer_metadata.push(ResourceMetadata {
+            stable_key,
+            kind: super::frame_graph::ResourceKind::Buffer,
+            allocation_class: super::frame_graph::AllocationClass::Buffer,
+            lifetime,
+        });
         self.push_usage(ResourceHandle::Buffer(handle), ResourceUsage::Produced);
         OutSlot::with_handle(handle)
     }
