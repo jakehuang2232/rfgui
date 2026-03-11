@@ -1,14 +1,18 @@
-use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, PrepareContext, SampleCountPolicy,
+    BufferDesc, BufferReadUsage, BufferResource, FrameGraph, FrameResourceContext,
 };
+use crate::view::frame_graph::{
+    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext, ResourceCache, SampleCountPolicy, TextureDesc,
+};
+use crate::view::render_pass::ClearPass;
+use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    render_target_format, render_target_size, render_target_view,
+    GraphicsPassContext as RenderPassContext, render_target_format, render_target_size,
+    render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
@@ -16,39 +20,56 @@ use wgpu::util::DeviceExt;
 
 const BLUR_RESOURCES: u64 = 202;
 
-pub struct BlurPass {
-    params: BlurPassParams,
-    upload_buffer: BlurBufferOut,
-    input: BlurInput,
-    output: BlurOutput,
-}
-
-pub struct BlurPassParams {
+pub struct BlurModuleParams {
     pub blur_radius: f32,
-    pub scissor_rect: Option<[u32; 4]>,
+    pub intermediate_format: wgpu::TextureFormat,
 }
 
-impl BlurPassParams {
+impl BlurModuleParams {
     pub fn new(blur_radius: f32) -> Self {
         Self {
-            blur_radius,
-            scissor_rect: None,
+            blur_radius: blur_radius.max(0.0),
+            intermediate_format: wgpu::TextureFormat::Rgba16Float,
         }
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct BlurBufferTag;
-pub type BlurBufferOut = OutSlot<BufferResource, BlurBufferTag>;
-
 #[derive(Default)]
-pub struct BlurInput {
+pub struct BlurModuleInput {
     pub layer: LayerIn,
+    pub pass_context: RenderPassContext,
 }
 
 #[derive(Default)]
-pub struct BlurOutput {
+pub struct BlurModuleOutput {
     pub render_target: RenderTargetOut,
+}
+
+struct BlurStagePass {
+    params: BlurStageParams,
+    upload_buffer: BlurBufferOut,
+    input: BlurStageInput,
+    output: BlurStageOutput,
+}
+
+struct BlurStageParams {
+    blur_radius: f32,
+    direction: [f32; 2],
+    sigma: f32,
+}
+
+#[derive(Clone, Copy)]
+struct BlurBufferTag;
+type BlurBufferOut = OutSlot<BufferResource, BlurBufferTag>;
+
+#[derive(Default)]
+struct BlurStageInput {
+    layer: LayerIn,
+}
+
+#[derive(Default)]
+struct BlurStageOutput {
+    render_target: RenderTargetOut,
 }
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -60,10 +81,12 @@ struct BlurVertex {
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
-struct BlurParams {
+struct BlurParamsUniform {
     texel_size: [f32; 2],
+    direction: [f32; 2],
     radius: f32,
-    _pad: f32,
+    sigma: f32,
+    _pad: [f32; 2],
 }
 
 struct BlurResources {
@@ -76,13 +99,10 @@ struct BlurResources {
     pipeline_format: wgpu::TextureFormat,
 }
 
-impl BlurPass {
-    pub fn new(params: BlurPassParams, input: BlurInput, output: BlurOutput) -> Self {
+impl BlurStagePass {
+    fn new(params: BlurStageParams, input: BlurStageInput, output: BlurStageOutput) -> Self {
         Self {
-            params: BlurPassParams {
-                blur_radius: params.blur_radius.max(0.0),
-                scissor_rect: params.scissor_rect,
-            },
+            params,
             upload_buffer: BlurBufferOut::default(),
             input,
             output,
@@ -90,27 +110,28 @@ impl BlurPass {
     }
 }
 
-impl GraphicsPass for BlurPass {
+impl GraphicsPass for BlurStagePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         builder.set_sample_count(SampleCountPolicy::Fixed(1));
-        self.upload_buffer = builder.create_buffer(BufferDesc {
-            size: 64 * 1024,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-            label: Some("BlurPass Upload Buffer"),
-        });
-        builder.read_buffer(&self.upload_buffer, BufferReadUsage::Uniform);
         if let Some(source) = self.input.layer.handle().map(OutSlot::with_handle) {
             builder.read_texture(&mut self.input.layer, &source);
         }
+        self.upload_buffer = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<BlurParamsUniform>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("BlurModule Params"),
+        });
+        builder.read_buffer(&self.upload_buffer, BufferReadUsage::Uniform);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             builder.write_color(
                 &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
+                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
             );
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
                 builder.surface_target(),
+                [0.0, 0.0, 0.0, 0.0],
             ));
         }
     }
@@ -124,10 +145,12 @@ impl GraphicsPass for BlurPass {
         if layer_w == 0 || layer_h == 0 {
             return;
         }
-        let params = BlurParams {
+        let params = BlurParamsUniform {
             texel_size: [1.0 / layer_w as f32, 1.0 / layer_h as f32],
-            radius: self.params.blur_radius.max(0.0),
-            _pad: 0.0,
+            direction: self.params.direction,
+            radius: self.params.blur_radius,
+            sigma: self.params.sigma,
+            _pad: [0.0, 0.0],
         };
         if let Some(handle) = self.upload_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&params));
@@ -141,43 +164,29 @@ impl GraphicsPass for BlurPass {
         let Some(layer_view) = render_target_view(ctx.frame_resources(), layer_handle) else {
             return;
         };
-        let surface_size = ctx.viewport().surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size),
-            None => surface_size,
-        };
-        let (layer_w, layer_h) = render_target_size(ctx.frame_resources(), layer_handle)
-            .unwrap_or(surface_size);
-        if layer_w == 0 || layer_h == 0 {
-            return;
-        }
         let Some(params_handle) = self.upload_buffer.handle() else {
             return;
         };
         let Some(params_buffer) = ctx.frame_resources().acquire_buffer(params_handle) else {
             return;
         };
-
-        let device = match ctx.viewport().device() {
-            Some(device) => device,
-            None => return,
+        let Some(device) = ctx.viewport().device().cloned() else {
+            return;
         };
         let format = match self.output.render_target.handle() {
-            Some(handle) => {
-                render_target_format(ctx.frame_resources(), handle).unwrap_or(ctx.viewport().surface_format())
-            }
+            Some(handle) => render_target_format(ctx.frame_resources(), handle)
+                .unwrap_or(ctx.viewport().surface_format()),
             None => ctx.viewport().surface_format(),
         };
         let cache = blur_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources =
-            cache.get_or_insert_with(BLUR_RESOURCES, || create_resources(device, format));
+            cache.get_or_insert_with(BLUR_RESOURCES, || create_resources(&device, format));
         if resources.pipeline_format != format {
-            *resources = create_resources(device, format);
+            *resources = create_resources(&device, format);
         }
-
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blur Bind Group"),
+            label: Some("BlurModule Bind Group"),
             layout: &resources.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -194,15 +203,6 @@ impl GraphicsPass for BlurPass {
                 },
             ],
         });
-
-        let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport()
-                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
-        });
-
-        if let Some([x, y, width, height]) = scissor_rect_physical {
-            ctx.set_scissor_rect(x, y, width, height);
-        }
         ctx.set_pipeline(&resources.pipeline);
         ctx.set_bind_group(0, &bind_group, &[]);
         ctx.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
@@ -211,14 +211,147 @@ impl GraphicsPass for BlurPass {
     }
 }
 
+pub fn build_blur_module(
+    graph: &mut FrameGraph,
+    params: BlurModuleParams,
+    input: BlurModuleInput,
+    output: BlurModuleOutput,
+) -> bool {
+    let Some(source_handle) = input.layer.handle() else {
+        return false;
+    };
+    let Some(source_desc) = graph.texture_desc(source_handle) else {
+        return false;
+    };
+    let source_w = source_desc.width().max(1);
+    let source_h = source_desc.height().max(1);
+    let blur_radius = params.blur_radius.max(0.0);
+    if blur_radius <= 0.001 {
+        graph.add_graphics_pass(BlurStagePass::new(
+            BlurStageParams {
+                blur_radius: 0.0,
+                direction: [1.0, 0.0],
+                sigma: 0.001,
+            },
+            BlurStageInput { layer: input.layer },
+            BlurStageOutput {
+                render_target: output.render_target,
+            },
+        ));
+        return true;
+    }
+
+    let downsample = if blur_radius >= 28.0 {
+        4_u32
+    } else if blur_radius >= 12.0 {
+        2_u32
+    } else {
+        1_u32
+    };
+    let effective_radius = if downsample > 1 {
+        blur_radius / downsample as f32
+    } else {
+        blur_radius
+    };
+    let sigma = (effective_radius * 0.5).max(0.001);
+
+    let mut blur_source = input.layer;
+    let mut blur_width = source_w;
+    let mut blur_height = source_h;
+    if downsample > 1 {
+        let ds_w = (source_w / downsample).max(1);
+        let ds_h = (source_h / downsample).max(1);
+        let downsampled = graph.declare_texture(TextureDesc::new(
+            ds_w,
+            ds_h,
+            params.intermediate_format,
+            wgpu::TextureDimension::D2,
+        ));
+        graph.add_graphics_pass(ClearPass::new(
+            ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+            ClearInput {
+                pass_context: input.pass_context,
+                clear_depth_stencil: false,
+            },
+            ClearOutput {
+                render_target: downsampled,
+                ..Default::default()
+            },
+        ));
+        graph.add_graphics_pass(BlurStagePass::new(
+            BlurStageParams {
+                blur_radius: 0.0,
+                direction: [1.0, 0.0],
+                sigma: 0.001,
+            },
+            BlurStageInput { layer: blur_source },
+            BlurStageOutput {
+                render_target: downsampled,
+            },
+        ));
+        blur_source = downsampled
+            .handle()
+            .map(LayerIn::with_handle)
+            .unwrap_or_default();
+        blur_width = ds_w;
+        blur_height = ds_h;
+    }
+
+    let blur_h_target = graph.declare_texture(TextureDesc::new(
+        blur_width,
+        blur_height,
+        params.intermediate_format,
+        wgpu::TextureDimension::D2,
+    ));
+    graph.add_graphics_pass(ClearPass::new(
+        ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+        ClearInput {
+            pass_context: input.pass_context,
+            clear_depth_stencil: false,
+        },
+        ClearOutput {
+            render_target: blur_h_target,
+            ..Default::default()
+        },
+    ));
+    graph.add_graphics_pass(BlurStagePass::new(
+        BlurStageParams {
+            blur_radius: effective_radius,
+            direction: [1.0, 0.0],
+            sigma,
+        },
+        BlurStageInput { layer: blur_source },
+        BlurStageOutput {
+            render_target: blur_h_target,
+        },
+    ));
+    graph.add_graphics_pass(BlurStagePass::new(
+        BlurStageParams {
+            blur_radius: effective_radius,
+            direction: [0.0, 1.0],
+            sigma,
+        },
+        BlurStageInput {
+            layer: blur_h_target
+                .handle()
+                .map(LayerIn::with_handle)
+                .unwrap_or_default(),
+        },
+        BlurStageOutput {
+            render_target: output.render_target,
+        },
+    ));
+    true
+}
+
 fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurResources {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Blur Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/layer_blur.wgsl").into()),
+        label: Some("Blur Module Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/shadow_blur.wgsl").into()),
     });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Blur Bind Group Layout"),
+        label: Some("Blur Module Bind Group Layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -248,9 +381,8 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
             },
         ],
     });
-
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("Blur Sampler"),
+        label: Some("Blur Module Sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -259,15 +391,13 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
-
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Blur Pipeline Layout"),
+        label: Some("Blur Module Pipeline Layout"),
         bind_group_layouts: &[&bind_group_layout],
         immediate_size: 0,
     });
-
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Blur Pipeline"),
+        label: Some("Blur Module Pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
@@ -300,15 +430,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        },
+        primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: wgpu::MultisampleState {
             count: 1,
@@ -318,20 +440,35 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
         multiview_mask: None,
         cache: None,
     });
-
-    let vertices = fullscreen_quad_vertices();
-    let indices = fullscreen_quad_indices();
+    let vertices = [
+        BlurVertex {
+            position: [-1.0, -1.0],
+            uv: [0.0, 1.0],
+        },
+        BlurVertex {
+            position: [1.0, -1.0],
+            uv: [1.0, 1.0],
+        },
+        BlurVertex {
+            position: [1.0, 1.0],
+            uv: [1.0, 0.0],
+        },
+        BlurVertex {
+            position: [-1.0, 1.0],
+            uv: [0.0, 0.0],
+        },
+    ];
+    let indices = [0_u16, 1, 2, 0, 2, 3];
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Blur Vertex Buffer"),
+        label: Some("Blur Module Vertex Buffer"),
         contents: bytemuck::cast_slice(&vertices),
         usage: wgpu::BufferUsages::VERTEX,
     });
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Blur Index Buffer"),
+        label: Some("Blur Module Index Buffer"),
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX,
     });
-
     BlurResources {
         pipeline,
         bind_group_layout,
@@ -352,29 +489,4 @@ pub fn clear_blur_resources_cache() {
     let cache = blur_resources_cache();
     let mut cache = cache.lock().unwrap();
     cache.clear();
-}
-
-fn fullscreen_quad_vertices() -> [BlurVertex; 4] {
-    [
-        BlurVertex {
-            position: [-1.0, -1.0],
-            uv: [0.0, 1.0],
-        },
-        BlurVertex {
-            position: [1.0, -1.0],
-            uv: [1.0, 1.0],
-        },
-        BlurVertex {
-            position: [1.0, 1.0],
-            uv: [1.0, 0.0],
-        },
-        BlurVertex {
-            position: [-1.0, 1.0],
-            uv: [0.0, 0.0],
-        },
-    ]
-}
-
-fn fullscreen_quad_indices() -> [u16; 6] {
-    [0, 1, 2, 0, 2, 3]
 }

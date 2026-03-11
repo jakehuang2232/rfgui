@@ -1,12 +1,12 @@
+use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
 };
-use crate::view::frame_graph::{GraphicsRecordContext, ResourceCache};
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext, render_target_bundle, render_target_size,
+    GraphicsPassContext as RenderPassContext, render_target_bundle, render_target_size,
 };
-use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
+use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -26,7 +26,7 @@ pub struct DebugOverlayPass {
 
 #[derive(Default)]
 pub struct DebugOverlayInput {
-    pub pass_context: GraphicsPassContext,
+    pub pass_context: RenderPassContext,
 }
 
 #[derive(Default)]
@@ -59,28 +59,21 @@ impl GraphicsPass for DebugOverlayPass {
         }
     }
 
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
-        let GraphicsEncodeScope::Render(pass) = scope else {
-            unreachable!("DebugOverlayPass requires render scope");
-        };
-        if !ctx.viewport.debug_geometry_overlay() {
-            let _ = ctx.viewport.take_debug_overlay_geometry();
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
+        if !ctx.viewport().debug_geometry_overlay() {
+            let _ = ctx.viewport().take_debug_overlay_geometry();
             return;
         }
-        let (vertices, indices) = ctx.viewport.take_debug_overlay_geometry();
+        let (vertices, indices) = ctx.viewport().take_debug_overlay_geometry();
         if vertices.is_empty() || indices.is_empty() {
             return;
         }
 
-        let Some(device) = ctx.viewport.device().cloned() else {
+        let Some(device) = ctx.viewport().device().cloned() else {
             return;
         };
-        let format = ctx.viewport.surface_format();
-        let sample_count = ctx.viewport.msaa_sample_count();
+        let format = ctx.viewport().surface_format();
+        let sample_count = ctx.viewport().msaa_sample_count();
         let cache = debug_overlay_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources = cache.get_or_insert_with(DEBUG_OVERLAY_RESOURCES, || {
@@ -101,22 +94,22 @@ impl GraphicsPass for DebugOverlayPass {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let surface_size = ctx.viewport.surface_size();
+        let surface_size = ctx.viewport().surface_size();
         let (target_w, target_h) = match self.output.render_target.handle() {
             Some(handle) => {
-                if let Some(bundle) = render_target_bundle(ctx, handle) {
+                if let Some(bundle) = render_target_bundle(ctx.frame_resources(), handle) {
                     bundle.size
                 } else {
-                    render_target_size(ctx, handle).unwrap_or(surface_size)
+                    render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
                 }
             }
             None => surface_size,
         };
-        pass.set_pipeline(&resources.pipeline);
-        pass.set_scissor_rect(0, 0, target_w, target_h);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+        ctx.set_pipeline(&resources.pipeline);
+        ctx.set_scissor_rect(0, 0, target_w, target_h);
+        ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+        ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        ctx.draw_indexed(0..indices.len() as u32, 0, 0..1);
     }
 }
 

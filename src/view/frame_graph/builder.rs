@@ -1,10 +1,10 @@
 use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
 use super::frame_graph::{
     AttachmentLoadOp, AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
-    GraphicsDepthAspectDescriptor,
-    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassMergePolicy, PassDescriptor,
-    PassResourceUsage, ResourceHandle, ResourceLifetime, ResourceMetadata, ResourceUsage,
-    SampleCountPolicy, ScissorPolicy, ViewportPolicy, GraphicsStencilAspectDescriptor,
+    GraphicsDepthAspectDescriptor, GraphicsDepthStencilAttachmentDescriptor,
+    GraphicsPassMergePolicy, GraphicsStencilAspectDescriptor, PassDescriptor, PassResourceUsage,
+    ResourceHandle, ResourceLifetime, ResourceMetadata, ResourceUsage, SampleCountPolicy,
+    ScissorPolicy, ViewportPolicy,
 };
 use super::slot::{InSlot, OutSlot, ResourceType};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
@@ -170,59 +170,6 @@ impl<'a> PassBuilderState<'a> {
         OutSlot::with_handle(handle)
     }
 
-    fn declare_sampled_texture<Tag>(
-        &mut self,
-        input: &mut InSlot<TextureResource, Tag>,
-        source: &OutSlot<TextureResource, Tag>,
-    ) {
-        self.read_texture(input, source);
-    }
-
-    fn declare_uniform_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        self.read_buffer(buffer, BufferReadUsage::Uniform);
-    }
-
-    fn declare_vertex_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        self.read_buffer(buffer, BufferReadUsage::Vertex);
-    }
-
-    fn declare_index_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        self.read_buffer(buffer, BufferReadUsage::Index);
-    }
-
-    fn declare_copy_src_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        self.copy_src(buffer);
-    }
-
-    fn declare_copy_dst_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        self.copy_dst(buffer);
-    }
-
-    fn declare_read_buffer<Tag>(
-        &mut self,
-        input: &mut InSlot<BufferResource, Tag>,
-        source: &OutSlot<BufferResource, Tag>,
-        usage: ResourceUsage,
-    ) {
-        self.bind_read_usage(input, source, usage);
-    }
-
-    fn declare_texture_usage<Tag>(
-        &mut self,
-        output: &OutSlot<TextureResource, Tag>,
-        usage: ResourceUsage,
-    ) {
-        self.declare_usage(output, usage);
-    }
-
-    fn declare_buffer_usage<Tag>(
-        &mut self,
-        output: &OutSlot<BufferResource, Tag>,
-        usage: ResourceUsage,
-    ) {
-        self.declare_usage(output, usage);
-    }
-
     fn read_texture<Tag>(
         &mut self,
         input: &mut InSlot<TextureResource, Tag>,
@@ -255,7 +202,7 @@ impl<'a> PassBuilderState<'a> {
         self.declare_usage(resource, ResourceUsage::StorageWrite);
     }
 
-    fn declare_color_attachment<Tag>(
+    fn write_color_attachment<Tag>(
         &mut self,
         output: &OutSlot<TextureResource, Tag>,
         attachment: GraphicsColorAttachmentDescriptor,
@@ -284,7 +231,7 @@ impl<'a> PassBuilderState<'a> {
             .push(attachment);
     }
 
-    fn declare_surface_color_attachment(&mut self, attachment: GraphicsColorAttachmentDescriptor) {
+    fn write_surface_color_attachment(&mut self, attachment: GraphicsColorAttachmentDescriptor) {
         if attachment.target != AttachmentTarget::Surface {
             self.build_errors.push(FrameGraphError::MissingOutput(
                 "surface color attachment must target the surface",
@@ -299,13 +246,6 @@ impl<'a> PassBuilderState<'a> {
             .graphics_mut()
             .color_attachments
             .push(attachment);
-    }
-
-    fn declare_depth_stencil_attachment(
-        &mut self,
-        attachment: GraphicsDepthStencilAttachmentDescriptor,
-    ) {
-        self.merge_depth_stencil_attachment(attachment.target, attachment.depth, attachment.stencil);
     }
 
     fn merge_depth_stencil_attachment(
@@ -356,7 +296,11 @@ impl<'a> PassBuilderState<'a> {
     }
 
     fn read_depth(&mut self, target: AttachmentTarget) {
-        self.merge_depth_stencil_attachment(target, Some(GraphicsDepthAspectDescriptor::read()), None);
+        self.merge_depth_stencil_attachment(
+            target,
+            Some(GraphicsDepthAspectDescriptor::read()),
+            None,
+        );
     }
 
     fn write_depth(
@@ -389,7 +333,10 @@ impl<'a> PassBuilderState<'a> {
         self.merge_depth_stencil_attachment(
             target,
             None,
-            Some(GraphicsStencilAspectDescriptor::write(load_op, clear_stencil)),
+            Some(GraphicsStencilAspectDescriptor::write(
+                load_op,
+                clear_stencil,
+            )),
         );
     }
 
@@ -449,49 +396,12 @@ macro_rules! impl_shared_builder_api {
                     .create_buffer_internal(desc, lifetime, stable_key)
             }
 
-            pub fn declare_sampled_texture<Tag>(
-                &mut self,
-                input: &mut InSlot<TextureResource, Tag>,
-                source: &OutSlot<TextureResource, Tag>,
-            ) {
-                self.state.declare_sampled_texture(input, source);
-            }
-
             pub fn read_texture<Tag>(
                 &mut self,
                 input: &mut InSlot<TextureResource, Tag>,
                 source: &OutSlot<TextureResource, Tag>,
             ) {
                 self.state.read_texture(input, source);
-            }
-
-            pub fn declare_uniform_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-                self.state.declare_uniform_buffer(buffer);
-            }
-
-            pub fn declare_vertex_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-                self.state.declare_vertex_buffer(buffer);
-            }
-
-            pub fn declare_index_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-                self.state.declare_index_buffer(buffer);
-            }
-
-            pub fn declare_copy_src_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-                self.state.declare_copy_src_buffer(buffer);
-            }
-
-            pub fn declare_copy_dst_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-                self.state.declare_copy_dst_buffer(buffer);
-            }
-
-            pub fn declare_read_buffer<Tag>(
-                &mut self,
-                input: &mut InSlot<BufferResource, Tag>,
-                source: &OutSlot<BufferResource, Tag>,
-                usage: ResourceUsage,
-            ) {
-                self.state.declare_read_buffer(input, source, usage);
             }
 
             pub fn read_buffer<Tag>(
@@ -526,22 +436,6 @@ macro_rules! impl_shared_builder_api {
                 resource: &OutSlot<R, Tag>,
             ) {
                 self.state.write_storage(resource);
-            }
-
-            pub fn declare_texture_usage<Tag>(
-                &mut self,
-                output: &OutSlot<TextureResource, Tag>,
-                usage: ResourceUsage,
-            ) {
-                self.state.declare_texture_usage(output, usage);
-            }
-
-            pub fn declare_buffer_usage<Tag>(
-                &mut self,
-                output: &OutSlot<BufferResource, Tag>,
-                usage: ResourceUsage,
-            ) {
-                self.state.declare_buffer_usage(output, usage);
             }
 
             pub fn surface_target(&self) -> AttachmentTarget {
@@ -591,38 +485,16 @@ impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
         self.state.descriptor.graphics_mut().merge_policy = policy;
     }
 
-    pub fn declare_color_attachment<Tag>(
-        &mut self,
-        output: &OutSlot<TextureResource, Tag>,
-        attachment: GraphicsColorAttachmentDescriptor,
-    ) {
-        self.state.declare_color_attachment(output, attachment);
-    }
-
     pub fn write_color<Tag>(
         &mut self,
         output: &OutSlot<TextureResource, Tag>,
         attachment: GraphicsColorAttachmentDescriptor,
     ) {
-        self.state.declare_color_attachment(output, attachment);
-    }
-
-    pub fn declare_surface_color_attachment(
-        &mut self,
-        attachment: GraphicsColorAttachmentDescriptor,
-    ) {
-        self.state.declare_surface_color_attachment(attachment);
+        self.state.write_color_attachment(output, attachment);
     }
 
     pub fn write_surface_color(&mut self, attachment: GraphicsColorAttachmentDescriptor) {
-        self.state.declare_surface_color_attachment(attachment);
-    }
-
-    pub fn declare_depth_stencil_attachment(
-        &mut self,
-        attachment: GraphicsDepthStencilAttachmentDescriptor,
-    ) {
-        self.state.declare_depth_stencil_attachment(attachment);
+        self.state.write_surface_color_attachment(attachment);
     }
 
     pub fn read_depth(&mut self, target: AttachmentTarget) {

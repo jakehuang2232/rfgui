@@ -11,8 +11,8 @@ use crate::view::render_pass::render_target::{
     render_target_attachment_view, render_target_msaa_view, render_target_view,
 };
 use crate::view::render_pass::{
-    ComputeEncodeScope, ComputePass, ComputePassWrapper, GraphicsEncodeScope, GraphicsPass,
-    GraphicsPassWrapper, PassNodeDyn, TransferEncodeScope, TransferPass, TransferPassWrapper,
+    ComputeCtx, ComputeEncodeScope, ComputePass, ComputePassWrapper, GraphicsCtx, GraphicsPass,
+    GraphicsPassWrapper, PassNodeDyn, TransferCtx, TransferPass, TransferPassWrapper,
 };
 use crate::view::viewport::Viewport;
 
@@ -172,9 +172,81 @@ impl ResourceUsage {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureAspectState {
+    Read,
+    Write,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureResourceState {
+    Undefined,
+    Sampled,
+    ColorAttachment,
+    DepthStencilAttachment {
+        depth: Option<TextureAspectState>,
+        stencil: Option<TextureAspectState>,
+    },
+    StorageRead,
+    StorageWrite,
+    CopySrc,
+    CopyDst,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BufferResourceState {
+    Undefined,
+    Written,
+    UniformRead,
+    VertexRead,
+    IndexRead,
+    StorageRead,
+    StorageWrite,
+    CopySrc,
+    CopyDst,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceState {
+    Texture(TextureResourceState),
+    Buffer(BufferResourceState),
+}
+
+impl ResourceState {
+    fn undefined(kind: ResourceKind) -> Self {
+        match kind {
+            ResourceKind::Texture => Self::Texture(TextureResourceState::Undefined),
+            ResourceKind::Buffer => Self::Buffer(BufferResourceState::Undefined),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PassResourceUsage {
     pub resource: ResourceHandle,
     pub usage: ResourceUsage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPassResourceTransition {
+    pub resource: ResourceHandle,
+    pub before: ResourceState,
+    pub after: ResourceState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledResourceTransition {
+    pub resource: ResourceHandle,
+    pub pass_index: usize,
+    pub execution_index: usize,
+    pub before: ResourceState,
+    pub after: ResourceState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledResourceTimeline {
+    pub resource: ResourceHandle,
+    pub initial_state: ResourceState,
+    pub transitions: Vec<CompiledResourceTransition>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -433,6 +505,7 @@ pub struct CompiledPass {
     pub descriptor: PassDescriptor,
     pub dependencies: Vec<usize>,
     pub resource_usages: Vec<PassResourceUsage>,
+    pub resource_transitions: Vec<CompiledPassResourceTransition>,
     pub is_root: bool,
 }
 
@@ -502,7 +575,7 @@ pub struct RenderPassCompatibleStencilAspect {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RenderPassCompatibilityKey {
+pub(crate) struct RenderPassCompatibilityKey {
     pub color_attachments: Vec<RenderPassCompatibleColorAttachment>,
     pub depth_stencil_attachment: Option<(
         AttachmentTarget,
@@ -513,13 +586,13 @@ pub struct RenderPassCompatibilityKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RenderPassGroup {
+pub(crate) struct RenderPassGroup {
     pub pass_indices: Vec<usize>,
     pub compatibility: RenderPassCompatibilityKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CompiledExecuteStep {
+pub(crate) enum CompiledExecuteStep {
     GraphicsPass { pass_index: usize },
     GraphicsPassGroup(RenderPassGroup),
     ComputePass { pass_index: usize },
@@ -527,7 +600,7 @@ pub enum CompiledExecuteStep {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ExecutionPlan {
+pub(crate) struct ExecutionPlan {
     pub ordered_passes: Vec<usize>,
     pub steps: Vec<CompiledExecuteStep>,
 }
@@ -539,7 +612,9 @@ pub struct CompiledGraph {
     pub external_sinks: Vec<ExternalSink>,
     pub allocation_plan: AllocationPlan,
     pub culled_passes: Vec<usize>,
-    pub execution_plan: ExecutionPlan,
+    pub(crate) execution_plan: ExecutionPlan,
+    pub resource_transitions: Vec<CompiledResourceTransition>,
+    pub resource_timelines: Vec<CompiledResourceTimeline>,
     texture_allocation_ids: HashMap<TextureHandle, AllocationId>,
     buffer_allocation_ids: HashMap<BufferHandle, AllocationId>,
 }
@@ -717,6 +792,10 @@ impl FrameGraph {
         self.declare_texture_internal(desc, ResourceLifetime::Transient, None)
     }
 
+    pub(crate) fn texture_desc(&self, handle: TextureHandle) -> Option<TextureDesc> {
+        self.textures.get(handle.0 as usize).copied()
+    }
+
     pub(crate) fn declare_texture_internal<Tag>(
         &mut self,
         desc: TextureDesc,
@@ -874,6 +953,8 @@ impl FrameGraph {
             self.build_live_dependency_graph(&live_passes, &pass_summaries)?;
         let ordered_passes = self.toposort_live_passes(&live_passes, &graph_edges, indegree)?;
         let execution_steps = self.build_execution_plan(&ordered_passes);
+        let (pass_state_transitions, resource_transitions, resource_timelines) =
+            self.build_resource_state_timelines(&ordered_passes)?;
         let (resources, allocation_plan, texture_allocation_ids, buffer_allocation_ids) =
             self.build_compiled_resources(&live_passes, &ordered_passes, &pass_summaries);
         let culled_passes = (0..self.passes.len())
@@ -891,6 +972,10 @@ impl FrameGraph {
                     descriptor: self.passes[index].descriptor.clone(),
                     dependencies,
                     resource_usages: self.passes[index].usages.clone(),
+                    resource_transitions: pass_state_transitions
+                        .get(&index)
+                        .cloned()
+                        .unwrap_or_default(),
                     is_root: sink_passes.contains(&index),
                 }
             })
@@ -907,6 +992,8 @@ impl FrameGraph {
                 ordered_passes,
                 steps: execution_steps,
             },
+            resource_transitions,
+            resource_timelines,
             texture_allocation_ids,
             buffer_allocation_ids,
         })
@@ -1320,6 +1407,72 @@ impl FrameGraph {
         )
     }
 
+    fn build_resource_state_timelines(
+        &self,
+        ordered_passes: &[usize],
+    ) -> Result<
+        (
+            HashMap<usize, Vec<CompiledPassResourceTransition>>,
+            Vec<CompiledResourceTransition>,
+            Vec<CompiledResourceTimeline>,
+        ),
+        FrameGraphError,
+    > {
+        let mut current_states = HashMap::<ResourceHandle, ResourceState>::new();
+        let mut pass_transitions = HashMap::<usize, Vec<CompiledPassResourceTransition>>::new();
+        let mut resource_transitions = Vec::<CompiledResourceTransition>::new();
+        let mut timeline_map = HashMap::<ResourceHandle, Vec<CompiledResourceTransition>>::new();
+
+        for (execution_index, &pass_index) in ordered_passes.iter().enumerate() {
+            let per_resource = group_pass_usages_by_resource(&self.passes[pass_index].usages);
+            let mut pass_entries = Vec::with_capacity(per_resource.len());
+
+            for (resource, usages) in per_resource {
+                let before = current_states.get(&resource).copied().unwrap_or_else(|| {
+                    ResourceState::undefined(self.resource_metadata(resource).kind)
+                });
+                let after = derive_resource_state(
+                    self.passes[pass_index].descriptor.name,
+                    resource,
+                    &usages,
+                )?;
+                let pass_transition = CompiledPassResourceTransition {
+                    resource,
+                    before,
+                    after,
+                };
+                let resource_transition = CompiledResourceTransition {
+                    resource,
+                    pass_index,
+                    execution_index,
+                    before,
+                    after,
+                };
+                pass_entries.push(pass_transition);
+                resource_transitions.push(resource_transition);
+                timeline_map
+                    .entry(resource)
+                    .or_default()
+                    .push(resource_transition);
+                current_states.insert(resource, after);
+            }
+
+            pass_transitions.insert(pass_index, pass_entries);
+        }
+
+        let mut resource_timelines = timeline_map
+            .into_iter()
+            .map(|(resource, transitions)| CompiledResourceTimeline {
+                resource,
+                initial_state: ResourceState::undefined(self.resource_metadata(resource).kind),
+                transitions,
+            })
+            .collect::<Vec<_>>();
+        resource_timelines.sort_by_key(|timeline| resource_sort_key(timeline.resource));
+
+        Ok((pass_transitions, resource_transitions, resource_timelines))
+    }
+
     fn resource_metadata(&self, handle: ResourceHandle) -> ResourceMetadata {
         match handle {
             ResourceHandle::Texture(handle) => self
@@ -1550,9 +1703,6 @@ impl FrameGraph {
         pass_counts: &mut HashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
-        let pass_name = self.passes[index].pass.name().to_string();
-        let pass_started_at = Instant::now();
-        let mut recorded_inside_graphics_scope = false;
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
@@ -1561,40 +1711,19 @@ impl FrameGraph {
         };
         let result = catch_unwind(AssertUnwindSafe(|| {
             let encoder = unsafe { &mut *encoder_ptr };
-            match &self.passes[index].descriptor.details {
-                PassDetails::Graphics(graphics)
-                    if graphics.merge_policy == GraphicsPassMergePolicy::Mergeable =>
-                {
-                    let compatibility = render_pass_compatibility_for_graphics(graphics);
-                    self.execute_graphics_passes(
-                        &[index],
-                        &compatibility,
-                        ctx,
-                        encoder,
-                        pass_timings,
-                        pass_counts,
-                        pass_first_seen_order,
-                    );
-                    recorded_inside_graphics_scope = true;
-                    return;
-                }
-                _ => {
-                    let mut graphics_ctx = GraphicsRecordContext::new(ctx);
-                    self.passes[index]
-                        .pass
-                        .encode_graphics(&mut graphics_ctx, GraphicsEncodeScope::Command(encoder))
-                }
-            }
-        }));
-        if !recorded_inside_graphics_scope {
-            record_pass_timing(
-                pass_name,
-                pass_started_at,
+            let compatibility =
+                render_pass_descriptor_compatibility(&self.passes[index].descriptor)
+                    .expect("graphics pass descriptor should produce render-pass compatibility");
+            self.execute_graphics_passes(
+                &[index],
+                &compatibility,
+                ctx,
+                encoder,
                 pass_timings,
                 pass_counts,
                 pass_first_seen_order,
             );
-        }
+        }));
         if let Err(payload) = result {
             let detail = if let Some(message) = payload.downcast_ref::<&str>() {
                 *message
@@ -1635,10 +1764,11 @@ impl FrameGraph {
                 ..Default::default()
             });
             let mut compute_ctx = ComputeRecordContext::new(ctx);
-            self.passes[index].pass.encode_compute(
+            let mut compute_ctx = ComputeCtx::new(
                 &mut compute_ctx,
                 ComputeEncodeScope::Compute(&mut compute_pass),
             );
+            self.passes[index].pass.execute_compute(&mut compute_ctx);
         }));
         record_pass_timing(
             pass_name,
@@ -1683,9 +1813,8 @@ impl FrameGraph {
         let result = catch_unwind(AssertUnwindSafe(|| {
             let encoder = unsafe { &mut *encoder_ptr };
             let mut transfer_ctx = TransferRecordContext::new(ctx);
-            self.passes[index]
-                .pass
-                .encode_transfer(&mut transfer_ctx, TransferEncodeScope::Command(encoder));
+            let mut transfer_ctx = TransferCtx::new(&mut transfer_ctx, encoder);
+            self.passes[index].pass.execute_transfer(&mut transfer_ctx);
         }));
         record_pass_timing(
             pass_name,
@@ -1822,10 +1951,8 @@ impl FrameGraph {
             let pass_name = self.passes[index].pass.name().to_string();
             let pass_started_at = Instant::now();
             let mut graphics_ctx = GraphicsRecordContext::new(ctx);
-            self.passes[index].pass.encode_graphics(
-                &mut graphics_ctx,
-                GraphicsEncodeScope::Render(&mut render_pass),
-            );
+            let mut pass_ctx = GraphicsCtx::new(&mut graphics_ctx, &mut render_pass);
+            self.passes[index].pass.execute_graphics(&mut pass_ctx);
             record_pass_timing(
                 pass_name,
                 pass_started_at,
@@ -1860,10 +1987,19 @@ fn resolve_color_attachment_views(
     surface_resolve_view: Option<&wgpu::TextureView>,
 ) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
     match target {
-        AttachmentTarget::Surface => (
-            Some(surface_view.clone()),
-            resolve_target.and_then(|_| surface_resolve_view.cloned()),
-        ),
+        AttachmentTarget::Surface => {
+            if resolve_target.is_some() {
+                (
+                    Some(surface_view.clone()),
+                    resolve_target.and_then(|_| surface_resolve_view.cloned()),
+                )
+            } else {
+                let attachment_view = surface_resolve_view
+                    .cloned()
+                    .unwrap_or_else(|| surface_view.clone());
+                (Some(attachment_view), None)
+            }
+        }
         AttachmentTarget::Texture(handle) => {
             let resolve_view = render_target_view(ctx, handle);
             let attachment_view = if resolve_target.is_some() {
@@ -2030,6 +2166,186 @@ fn matches_resource_target(resource: ResourceHandle, target: AttachmentTarget) -
         }
         _ => false,
     }
+}
+
+fn resource_sort_key(handle: ResourceHandle) -> (u8, u32) {
+    match handle {
+        ResourceHandle::Texture(h) => (0, h.0),
+        ResourceHandle::Buffer(h) => (1, h.0),
+    }
+}
+
+fn group_pass_usages_by_resource(
+    usages: &[PassResourceUsage],
+) -> Vec<(ResourceHandle, Vec<ResourceUsage>)> {
+    let mut grouped = HashMap::<ResourceHandle, Vec<ResourceUsage>>::new();
+    for usage in usages {
+        grouped.entry(usage.resource).or_default().push(usage.usage);
+    }
+    let mut grouped = grouped.into_iter().collect::<Vec<_>>();
+    grouped.sort_by_key(|(resource, _)| resource_sort_key(*resource));
+    grouped
+}
+
+fn derive_resource_state(
+    pass_name: &str,
+    resource: ResourceHandle,
+    usages: &[ResourceUsage],
+) -> Result<ResourceState, FrameGraphError> {
+    match resource {
+        ResourceHandle::Texture(_) => {
+            derive_texture_resource_state(pass_name, usages).map(ResourceState::Texture)
+        }
+        ResourceHandle::Buffer(_) => {
+            derive_buffer_resource_state(pass_name, usages).map(ResourceState::Buffer)
+        }
+    }
+}
+
+fn derive_texture_resource_state(
+    pass_name: &str,
+    usages: &[ResourceUsage],
+) -> Result<TextureResourceState, FrameGraphError> {
+    let mut state: Option<TextureResourceState> = None;
+    let mut depth = None;
+    let mut stencil = None;
+
+    for usage in usages {
+        match usage {
+            ResourceUsage::Produced => {}
+            ResourceUsage::ColorAttachmentWrite => {
+                merge_texture_state_candidate(
+                    pass_name,
+                    &mut state,
+                    TextureResourceState::ColorAttachment,
+                )?;
+            }
+            ResourceUsage::DepthRead => {
+                depth = Some(TextureAspectState::Read);
+            }
+            ResourceUsage::DepthWrite => {
+                depth = Some(TextureAspectState::Write);
+            }
+            ResourceUsage::StencilRead => {
+                stencil = Some(TextureAspectState::Read);
+            }
+            ResourceUsage::StencilWrite => {
+                stencil = Some(TextureAspectState::Write);
+            }
+            ResourceUsage::SampledRead => {
+                merge_texture_state_candidate(
+                    pass_name,
+                    &mut state,
+                    TextureResourceState::Sampled,
+                )?;
+            }
+            ResourceUsage::CopySrc => {
+                merge_texture_state_candidate(
+                    pass_name,
+                    &mut state,
+                    TextureResourceState::CopySrc,
+                )?;
+            }
+            ResourceUsage::CopyDst => {
+                merge_texture_state_candidate(
+                    pass_name,
+                    &mut state,
+                    TextureResourceState::CopyDst,
+                )?;
+            }
+            ResourceUsage::StorageRead => {
+                merge_texture_state_candidate(
+                    pass_name,
+                    &mut state,
+                    TextureResourceState::StorageRead,
+                )?;
+            }
+            ResourceUsage::StorageWrite => {
+                merge_texture_state_candidate(
+                    pass_name,
+                    &mut state,
+                    TextureResourceState::StorageWrite,
+                )?;
+            }
+            ResourceUsage::BufferWrite
+            | ResourceUsage::UniformRead
+            | ResourceUsage::VertexRead
+            | ResourceUsage::IndexRead => {
+                return Err(FrameGraphError::Validation(format!(
+                    "{pass_name} declares buffer usage on a texture resource"
+                )));
+            }
+        }
+    }
+
+    if depth.is_some() || stencil.is_some() {
+        merge_texture_state_candidate(
+            pass_name,
+            &mut state,
+            TextureResourceState::DepthStencilAttachment { depth, stencil },
+        )?;
+    }
+
+    Ok(state.unwrap_or(TextureResourceState::Undefined))
+}
+
+fn merge_texture_state_candidate(
+    pass_name: &str,
+    current: &mut Option<TextureResourceState>,
+    next: TextureResourceState,
+) -> Result<(), FrameGraphError> {
+    match current {
+        None => {
+            *current = Some(next);
+            Ok(())
+        }
+        Some(existing) if *existing == next => Ok(()),
+        Some(existing) => Err(FrameGraphError::Validation(format!(
+            "{pass_name} declares incompatible texture states in one pass: {existing:?} vs {next:?}"
+        ))),
+    }
+}
+
+fn derive_buffer_resource_state(
+    pass_name: &str,
+    usages: &[ResourceUsage],
+) -> Result<BufferResourceState, FrameGraphError> {
+    let mut state: Option<BufferResourceState> = None;
+
+    for usage in usages {
+        let candidate = match usage {
+            ResourceUsage::Produced => continue,
+            ResourceUsage::BufferWrite => BufferResourceState::Written,
+            ResourceUsage::UniformRead => BufferResourceState::UniformRead,
+            ResourceUsage::VertexRead => BufferResourceState::VertexRead,
+            ResourceUsage::IndexRead => BufferResourceState::IndexRead,
+            ResourceUsage::StorageRead => BufferResourceState::StorageRead,
+            ResourceUsage::StorageWrite => BufferResourceState::StorageWrite,
+            ResourceUsage::CopySrc => BufferResourceState::CopySrc,
+            ResourceUsage::CopyDst => BufferResourceState::CopyDst,
+            ResourceUsage::SampledRead
+            | ResourceUsage::ColorAttachmentWrite
+            | ResourceUsage::DepthRead
+            | ResourceUsage::DepthWrite
+            | ResourceUsage::StencilRead
+            | ResourceUsage::StencilWrite => {
+                return Err(FrameGraphError::Validation(format!(
+                    "{pass_name} declares texture usage on a buffer resource"
+                )));
+            }
+        };
+        match state {
+            None => state = Some(candidate),
+            Some(existing) if existing == candidate => {}
+            Some(existing) => {
+                return Err(FrameGraphError::Validation(format!(
+                    "{pass_name} declares incompatible buffer states in one pass: {existing:?} vs {candidate:?}"
+                )));
+            }
+        }
+    }
+
+    Ok(state.unwrap_or(BufferResourceState::Undefined))
 }
 
 fn summary_to_access(summary: PassResourceSummary) -> Option<ResourceAccess> {
@@ -2238,6 +2554,15 @@ fn render_pass_compatibility_key(
         return None;
     }
 
+    Some(render_pass_compatibility_for_graphics(graphics))
+}
+
+fn render_pass_descriptor_compatibility(
+    descriptor: &PassDescriptor,
+) -> Option<RenderPassCompatibilityKey> {
+    let PassDetails::Graphics(graphics) = &descriptor.details else {
+        return None;
+    };
     Some(render_pass_compatibility_for_graphics(graphics))
 }
 
@@ -2902,13 +3227,15 @@ mod tests {
         BufferReadUsage, BufferResource, ComputePassBuilder, GraphicsPassBuilder,
         TransferPassBuilder,
     };
-    use crate::view::render_pass::draw_rect_pass::RenderTargetIn;
+    use crate::view::render_pass::draw_rect_pass::{
+        DrawRectInput, DrawRectOutput, DrawRectPass, OpaqueRectPass, RectPassParams,
+        RenderTargetIn, RenderTargetOut,
+    };
     use crate::view::render_pass::present_surface_pass::{
         PresentSurfaceInput, PresentSurfaceOutput, PresentSurfaceParams, PresentSurfacePass,
     };
     use crate::view::render_pass::{
-        ComputeEncodeScope, ComputePass, GraphicsEncodeScope, GraphicsPass, TransferEncodeScope,
-        TransferPass,
+        ComputeCtx, ComputePass, GraphicsCtx, GraphicsPass, TransferCtx, TransferPass,
     };
 
     #[derive(Default)]
@@ -2927,12 +3254,7 @@ mod tests {
             );
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     #[derive(Default)]
@@ -2947,12 +3269,7 @@ mod tests {
             }
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     #[derive(Default)]
@@ -2971,12 +3288,7 @@ mod tests {
             );
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     #[derive(Default)]
@@ -2990,12 +3302,7 @@ mod tests {
             ));
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     #[derive(Default)]
@@ -3022,6 +3329,16 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct DepthStencilWritePass {
+        target: OutSlot<TextureResource, ()>,
+    }
+
+    #[derive(Default)]
+    struct DepthStencilReadPass {
+        target: OutSlot<TextureResource, ()>,
+    }
+
+    #[derive(Default)]
     struct ComputeStubPass;
 
     #[derive(Default)]
@@ -3037,12 +3354,7 @@ mod tests {
             builder.read_buffer(&self.output, BufferReadUsage::Uniform);
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     impl GraphicsPass for ExistingBufferWritePass {
@@ -3050,12 +3362,7 @@ mod tests {
             builder.write_buffer(&self.output);
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     impl GraphicsPass for BufferReadPass {
@@ -3063,12 +3370,7 @@ mod tests {
             builder.read_buffer(&self.input, BufferReadUsage::Uniform);
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     impl GraphicsPass for InlineLoadPass {
@@ -3083,34 +3385,43 @@ mod tests {
             );
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
+    }
+
+    impl GraphicsPass for DepthStencilWritePass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            let target = builder
+                .texture_target(&self.target)
+                .expect("depth/stencil target should exist");
+            builder.write_depth(target, AttachmentLoadOp::Clear, Some(1.0));
+            builder.write_stencil(target, AttachmentLoadOp::Clear, Some(0));
         }
+
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
+    }
+
+    impl GraphicsPass for DepthStencilReadPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            let target = builder
+                .texture_target(&self.target)
+                .expect("depth/stencil target should exist");
+            builder.read_depth(target);
+            builder.read_stencil(target);
+        }
+
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     impl ComputePass for ComputeStubPass {
         fn setup(&mut self, _builder: &mut ComputePassBuilder<'_, '_>) {}
 
-        fn encode(
-            &mut self,
-            _ctx: &mut ComputeRecordContext<'_, '_>,
-            _scope: ComputeEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut ComputeCtx<'_, '_, '_, '_>) {}
     }
 
     impl TransferPass for TransferStubPass {
         fn setup(&mut self, _builder: &mut TransferPassBuilder<'_, '_>) {}
 
-        fn encode(
-            &mut self,
-            _ctx: &mut TransferRecordContext<'_, '_>,
-            _scope: TransferEncodeScope<'_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut TransferCtx<'_, '_, '_>) {}
     }
 
     impl GraphicsPass for PersistentInternalPass {
@@ -3129,12 +3440,7 @@ mod tests {
             );
         }
 
-        fn encode(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _scope: GraphicsEncodeScope<'_, '_>,
-        ) {
-        }
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
     }
 
     fn test_texture_desc() -> TextureDesc {
@@ -3142,6 +3448,15 @@ mod tests {
             1,
             1,
             wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        )
+    }
+
+    fn test_depth_stencil_texture_desc() -> TextureDesc {
+        TextureDesc::new(
+            1,
+            1,
+            wgpu::TextureFormat::Depth24PlusStencil8,
             wgpu::TextureDimension::D2,
         )
     }
@@ -3392,6 +3707,156 @@ mod tests {
             .expect("compiled resource should exist");
         assert_eq!(resource.first_use_pass_index, 0);
         assert_eq!(resource.last_use_pass_index, 2);
+    }
+
+    #[test]
+    fn compile_tracks_resource_state_transitions_per_pass() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        graph.add_graphics_pass(WritePass {
+            output: texture.clone(),
+        });
+        graph.add_graphics_pass(ReadPass {
+            input: InSlot::with_handle(
+                texture
+                    .handle()
+                    .expect("declared texture should have handle"),
+            ),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let transitions = compiled
+            .resource_transitions
+            .iter()
+            .filter(|transition| {
+                transition.resource == ResourceHandle::Texture(texture.handle().unwrap())
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transitions,
+            vec![
+                CompiledResourceTransition {
+                    resource: ResourceHandle::Texture(texture.handle().unwrap()),
+                    pass_index: 0,
+                    execution_index: 0,
+                    before: ResourceState::Texture(TextureResourceState::Undefined),
+                    after: ResourceState::Texture(TextureResourceState::ColorAttachment),
+                },
+                CompiledResourceTransition {
+                    resource: ResourceHandle::Texture(texture.handle().unwrap()),
+                    pass_index: 1,
+                    execution_index: 1,
+                    before: ResourceState::Texture(TextureResourceState::ColorAttachment),
+                    after: ResourceState::Texture(TextureResourceState::Sampled),
+                },
+            ]
+        );
+        assert_eq!(compiled.passes[0].resource_transitions.len(), 1);
+        assert_eq!(
+            compiled.passes[0].resource_transitions[0],
+            CompiledPassResourceTransition {
+                resource: ResourceHandle::Texture(texture.handle().unwrap()),
+                before: ResourceState::Texture(TextureResourceState::Undefined),
+                after: ResourceState::Texture(TextureResourceState::ColorAttachment),
+            }
+        );
+    }
+
+    #[test]
+    fn compile_tracks_depth_stencil_state_in_timeline() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_depth_stencil_texture_desc());
+        graph.add_graphics_pass(DepthStencilWritePass {
+            target: texture.clone(),
+        });
+        graph.add_graphics_pass(DepthStencilReadPass {
+            target: texture.clone(),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let timeline = compiled
+            .resource_timelines
+            .iter()
+            .find(|timeline| {
+                timeline.resource == ResourceHandle::Texture(texture.handle().unwrap())
+            })
+            .expect("resource timeline should exist");
+        assert_eq!(
+            timeline.transitions,
+            vec![
+                CompiledResourceTransition {
+                    resource: ResourceHandle::Texture(texture.handle().unwrap()),
+                    pass_index: 0,
+                    execution_index: 0,
+                    before: ResourceState::Texture(TextureResourceState::Undefined),
+                    after: ResourceState::Texture(TextureResourceState::DepthStencilAttachment {
+                        depth: Some(TextureAspectState::Write),
+                        stencil: Some(TextureAspectState::Write),
+                    }),
+                },
+                CompiledResourceTransition {
+                    resource: ResourceHandle::Texture(texture.handle().unwrap()),
+                    pass_index: 1,
+                    execution_index: 1,
+                    before: ResourceState::Texture(TextureResourceState::DepthStencilAttachment {
+                        depth: Some(TextureAspectState::Write),
+                        stencil: Some(TextureAspectState::Write),
+                    },),
+                    after: ResourceState::Texture(TextureResourceState::DepthStencilAttachment {
+                        depth: Some(TextureAspectState::Read),
+                        stencil: Some(TextureAspectState::Read),
+                    }),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compile_allows_opaque_rect_to_modify_same_render_target() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        graph.add_graphics_pass(WritePass {
+            output: texture.clone(),
+        });
+        graph.add_graphics_pass(OpaqueRectPass::from_draw_rect_pass(DrawRectPass::new(
+            RectPassParams::default(),
+            DrawRectInput {
+                render_target: RenderTargetIn::with_handle(
+                    texture
+                        .handle()
+                        .expect("declared texture should have handle"),
+                ),
+                ..Default::default()
+            },
+            DrawRectOutput {
+                render_target: RenderTargetOut::with_handle(
+                    texture
+                        .handle()
+                        .expect("declared texture should have handle"),
+                ),
+            },
+        )));
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let timeline = compiled
+            .resource_timelines
+            .iter()
+            .find(|timeline| {
+                timeline.resource == ResourceHandle::Texture(texture.handle().unwrap())
+            })
+            .expect("resource timeline should exist");
+        assert_eq!(timeline.transitions.len(), 2);
+        assert_eq!(
+            timeline.transitions[1].after,
+            ResourceState::Texture(TextureResourceState::ColorAttachment)
+        );
     }
 
     #[test]

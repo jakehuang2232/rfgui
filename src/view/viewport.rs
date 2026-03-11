@@ -1980,9 +1980,9 @@ impl Viewport {
 
     pub fn release_render_resource_caches(&mut self) {
         crate::view::render_pass::draw_rect_pass::clear_draw_rect_resources_cache();
-        crate::view::render_pass::shadow_pass::clear_shadow_resources_cache();
+        crate::view::render_pass::shadow_module::clear_shadow_resources_cache();
         crate::view::render_pass::text_pass::clear_text_resources_cache();
-        crate::view::render_pass::blur_pass::clear_blur_resources_cache();
+        crate::view::render_pass::blur_module::clear_blur_resources_cache();
         crate::view::render_pass::composite_layer_pass::clear_composite_layer_resources_cache();
         crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
         self.offscreen_render_target_pool.clear();
@@ -2872,7 +2872,7 @@ impl Viewport {
         }
         self.offscreen_render_target_pool.begin_frame();
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
-        crate::view::render_pass::shadow_pass::begin_shadow_resources_frame();
+        crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
 
         let surface = match &self.surface {
             Some(s) => s,

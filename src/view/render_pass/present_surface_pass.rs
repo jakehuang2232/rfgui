@@ -3,11 +3,11 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    GraphicsRecordContext,
+    SampleCountPolicy,
 };
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::render_target_view;
-use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
+use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
 
 const PRESENT_SURFACE_RESOURCES: u64 = 401;
@@ -42,6 +42,7 @@ impl PresentSurfacePass {
 impl GraphicsPass for PresentSurfacePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
+        builder.set_sample_count(SampleCountPolicy::Fixed(1));
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
             builder.read_texture(&mut self.input.source, &source);
@@ -52,29 +53,25 @@ impl GraphicsPass for PresentSurfacePass {
         ));
     }
 
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let _ = &self.params;
         let Some(input_handle) = self.input.source.handle() else {
             return;
         };
-        let Some(src_view) = render_target_view(ctx, input_handle) else {
+        let Some(src_view) = render_target_view(ctx.frame_resources(), input_handle) else {
             return;
         };
-        let Some(device) = ctx.viewport.device() else {
+        let Some(device) = ctx.viewport().device().cloned() else {
             return;
         };
-        let format = ctx.viewport.surface_format();
+        let format = ctx.viewport().surface_format();
         let cache = present_surface_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources = cache.get_or_insert_with(PRESENT_SURFACE_RESOURCES, || {
-            PresentSurfaceResources::new(device, format)
+            PresentSurfaceResources::new(&device, format)
         });
         if resources.pipeline_format != format {
-            *resources = PresentSurfaceResources::new(device, format);
+            *resources = PresentSurfaceResources::new(&device, format);
         }
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -91,41 +88,9 @@ impl GraphicsPass for PresentSurfacePass {
                 },
             ],
         });
-        match scope {
-            GraphicsEncodeScope::Render(pass) => {
-                pass.set_pipeline(&resources.pipeline);
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            }
-            GraphicsEncodeScope::Command(encoder) => {
-                let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
-                let Some(parts) = ctx.viewport.frame_parts() else {
-                    return;
-                };
-                let present_target = if msaa_enabled {
-                    parts.resolve_view.unwrap_or(parts.view)
-                } else {
-                    parts.view
-                };
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Present Surface"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: present_target,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                        resolve_target: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    ..Default::default()
-                });
-                pass.set_pipeline(&resources.pipeline);
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            }
-        }
+        ctx.set_pipeline(&resources.pipeline);
+        ctx.set_bind_group(0, &bind_group, &[]);
+        ctx.draw(0..3, 0..1);
     }
 }
 
