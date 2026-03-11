@@ -1,15 +1,14 @@
-use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
-use crate::view::frame_graph::{BufferDesc, BufferResource};
+use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
-    PrepareContext,
+    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext,
 };
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
+use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
@@ -98,8 +97,9 @@ impl CompositeLayerPass {
     }
 }
 
-impl RenderPass for CompositeLayerPass {
-    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+impl GraphicsPass for CompositeLayerPass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         self.vertex_buffer = builder.create_buffer(BufferDesc {
             size: 256 * 1024,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
@@ -110,18 +110,18 @@ impl RenderPass for CompositeLayerPass {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
             label: Some("CompositeLayer Index Buffer"),
         });
-        builder.declare_vertex_buffer(&self.vertex_buffer);
-        builder.declare_index_buffer(&self.index_buffer);
+        builder.read_buffer(&self.vertex_buffer, BufferReadUsage::Vertex);
+        builder.read_buffer(&self.index_buffer, BufferReadUsage::Index);
         if let Some(source) = self.input.layer.handle().map(OutSlot::with_handle) {
-            builder.declare_sampled_texture(&mut self.input.layer, &source);
+            builder.read_texture(&mut self.input.layer, &source);
         }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output.render_target,
                 GraphicsColorAttachmentDescriptor::load(target),
             );
         } else {
-            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
                 builder.surface_target(),
             ));
         }
@@ -167,22 +167,20 @@ impl RenderPass for CompositeLayerPass {
         }
     }
 
-    fn record_standalone(
+    fn encode(
         &mut self,
         ctx: &mut GraphicsRecordContext<'_, '_>,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: GraphicsEncodeScope<'_, '_>,
     ) {
+        let GraphicsEncodeScope::Render(pass) = scope else {
+            unreachable!("CompositeLayerPass requires render scope");
+        };
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };
         let Some(layer_view) = render_target_view(ctx, layer_handle) else {
             return;
         };
-        let offscreen_view = match self.output.render_target.handle() {
-            Some(handle) => render_target_view(ctx, handle),
-            None => None,
-        };
-
         let surface_size = ctx.viewport.surface_size();
         let (target_w, target_h) = match self.output.render_target.handle() {
             Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
@@ -240,32 +238,6 @@ impl RenderPass for CompositeLayerPass {
         });
 
         let debug_geometry_overlay = ctx.viewport.debug_geometry_overlay();
-        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
-        let parts = match ctx.viewport.frame_parts() {
-            Some(parts) => parts,
-            None => return,
-        };
-        let surface_color_view = if msaa_enabled {
-            parts.resolve_view.unwrap_or(parts.view)
-        } else {
-            parts.view
-        };
-        let color_view = offscreen_view.as_ref().unwrap_or(surface_color_view);
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("CompositeLayer"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target: None,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
         if let Some([x, y, width, height]) = scissor_rect_physical {
             pass.set_scissor_rect(x, y, width, height);
         }
@@ -306,32 +278,6 @@ impl RenderPass for CompositeLayerPass {
     }
 }
 
-impl RenderTargetPass for CompositeLayerPass {
-    fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.params.scissor_rect = intersect_scissor_rects(self.params.scissor_rect, scissor_rect);
-    }
-}
-
-fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(rect), None) | (None, Some(rect)) => Some(rect),
-        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
-            let a_right = ax.saturating_add(aw);
-            let a_bottom = ay.saturating_add(ah);
-            let b_right = bx.saturating_add(bw);
-            let b_bottom = by.saturating_add(bh);
-            let left = ax.max(bx);
-            let top = ay.max(by);
-            let right = a_right.min(b_right);
-            let bottom = a_bottom.min(b_bottom);
-            if right <= left || bottom <= top {
-                return None;
-            }
-            Some([left, top, right - left, bottom - top])
-        }
-    }
-}
 
 fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> CompositeLayerResources {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

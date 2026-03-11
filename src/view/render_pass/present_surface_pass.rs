@@ -2,11 +2,12 @@ use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
+    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    GraphicsRecordContext,
 };
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::render_target_view;
+use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
 
 const PRESENT_SURFACE_RESOURCES: u64 = 401;
@@ -38,22 +39,23 @@ impl PresentSurfacePass {
     }
 }
 
-impl RenderPass for PresentSurfacePass {
-    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+impl GraphicsPass for PresentSurfacePass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.declare_sampled_texture(&mut self.input.source, &source);
+            builder.read_texture(&mut self.input.source, &source);
         }
-        builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
+        builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
             builder.surface_target(),
             [0.0, 0.0, 0.0, 0.0],
         ));
     }
 
-    fn record_standalone(
+    fn encode(
         &mut self,
         ctx: &mut GraphicsRecordContext<'_, '_>,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: GraphicsEncodeScope<'_, '_>,
     ) {
         let _ = &self.params;
         let Some(input_handle) = self.input.source.handle() else {
@@ -89,32 +91,41 @@ impl RenderPass for PresentSurfacePass {
                 },
             ],
         });
-        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
-        let Some(parts) = ctx.viewport.frame_parts() else {
-            return;
-        };
-        let present_target = if msaa_enabled {
-            parts.resolve_view.unwrap_or(parts.view)
-        } else {
-            parts.view
-        };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Present Surface"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: present_target,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target: None,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
-        pass.set_pipeline(&resources.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        match scope {
+            GraphicsEncodeScope::Render(pass) => {
+                pass.set_pipeline(&resources.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            GraphicsEncodeScope::Command(encoder) => {
+                let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
+                let Some(parts) = ctx.viewport.frame_parts() else {
+                    return;
+                };
+                let present_target = if msaa_enabled {
+                    parts.resolve_view.unwrap_or(parts.view)
+                } else {
+                    parts.view
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Present Surface"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: present_target,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                        resolve_target: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    ..Default::default()
+                });
+                pass.set_pipeline(&resources.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
     }
 }
 

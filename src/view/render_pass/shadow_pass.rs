@@ -1,13 +1,12 @@
-use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{BufferDesc, BufferResource};
+use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
-    PrepareContext,
+    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    GraphicsRecordContext, PrepareContext,
 };
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
+use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -312,8 +311,8 @@ impl ShadowPass {
     }
 }
 
-impl RenderPass for ShadowPass {
-    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+impl GraphicsPass for ShadowPass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         let _ = &self.input;
         self.blur_downsample_params_buffer = builder.create_buffer(BufferDesc {
             size: std::mem::size_of::<BlurParamsUniform>() as u64,
@@ -330,22 +329,21 @@ impl RenderPass for ShadowPass {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
             label: Some("ShadowPass Blur V Params"),
         });
-        builder.declare_uniform_buffer(&self.blur_downsample_params_buffer);
-        builder.declare_uniform_buffer(&self.blur_h_params_buffer);
-        builder.declare_uniform_buffer(&self.blur_v_params_buffer);
+        builder.read_buffer(&self.blur_downsample_params_buffer, BufferReadUsage::Uniform);
+        builder.read_buffer(&self.blur_h_params_buffer, BufferReadUsage::Uniform);
+        builder.read_buffer(&self.blur_v_params_buffer, BufferReadUsage::Uniform);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+                GraphicsColorAttachmentDescriptor::load(target),
             );
         } else {
-            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
                 builder.surface_target(),
-                [0.0, 0.0, 0.0, 0.0],
             ));
         }
         if let Some(target) = builder.texture_target(&self.output.mask_render_target) {
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output.mask_render_target,
                 GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
             );
@@ -452,11 +450,14 @@ impl RenderPass for ShadowPass {
         }
     }
 
-    fn record_standalone(
+    fn encode(
         &mut self,
         ctx: &mut GraphicsRecordContext<'_, '_>,
-        _encoder: &mut wgpu::CommandEncoder,
+        scope: GraphicsEncodeScope<'_, '_>,
     ) {
+        let GraphicsEncodeScope::Command(_encoder) = scope else {
+            unreachable!("ShadowPass requires command scope");
+        };
         let target_handle = self.output.render_target.handle();
         let geometry_started_at = Instant::now();
         if self.mesh.vertices.len() < 3 || self.mesh.indices.len() < 3 {
@@ -819,10 +820,6 @@ impl RenderPass for ShadowPass {
             composite_started_at.elapsed().as_secs_f64() * 1000.0,
         );
     }
-}
-
-impl RenderTargetPass for ShadowPass {
-    fn apply_clip(&mut self, _scissor_rect: Option<[u32; 4]>) {}
 }
 
 fn create_resources(

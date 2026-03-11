@@ -1,17 +1,15 @@
-use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
-    AttachmentTarget, FrameResourceContext, GraphicsColorAttachmentDescriptor,
-    GraphicsDepthAspectDescriptor, GraphicsDepthStencilAttachmentDescriptor,
-    GraphicsPassRecordingMode, GraphicsRecordContext, GraphicsStencilAspectDescriptor, PassBuilder,
+    BufferReadUsage, FrameResourceContext, GraphicsColorAttachmentDescriptor,
+    GraphicsPassBuilder, GraphicsPassMergePolicy, GraphicsRecordContext,
 };
 use crate::view::frame_graph::{BufferDesc, BufferResource, PrepareContext, ResourceCache};
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    render_target_attachment_view, render_target_msaa_view, render_target_size, render_target_view,
+    GraphicsPassContext, render_target_size, render_target_view,
 };
+use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -19,8 +17,6 @@ const TEXTURE_COMPOSITE_RESOURCES: u64 = 205;
 
 pub struct TextureCompositePass {
     params: TextureCompositeParams,
-    stencil_clip_id: Option<u8>,
-    depth_stencil_target: Option<AttachmentTarget>,
     uniform_buffer: TextureCompositeUniformBufferOut,
     vertex_buffer: TextureCompositeVertexBufferOut,
     index_buffer: TextureCompositeIndexBufferOut,
@@ -69,6 +65,7 @@ pub type TextureCompositeIndexBufferOut = OutSlot<BufferResource, TextureComposi
 pub struct TextureCompositeInput {
     pub source: TextureCompositeSourceIn,
     pub mask: TextureCompositeMaskIn,
+    pub pass_context: GraphicsPassContext,
 }
 
 #[derive(Default)]
@@ -108,8 +105,6 @@ impl TextureCompositePass {
     ) -> Self {
         Self {
             params,
-            stencil_clip_id: None,
-            depth_stencil_target: None,
             uniform_buffer: TextureCompositeUniformBufferOut::default(),
             vertex_buffer: TextureCompositeVertexBufferOut::default(),
             index_buffer: TextureCompositeIndexBufferOut::default(),
@@ -118,14 +113,11 @@ impl TextureCompositePass {
         }
     }
 
-    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
-        self.depth_stencil_target = depth_stencil_target;
-    }
 }
 
-impl RenderPass for TextureCompositePass {
-    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
-        builder.set_graphics_recording_mode(GraphicsPassRecordingMode::InlineOrStandalone);
+impl GraphicsPass for TextureCompositePass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         self.uniform_buffer = builder.create_buffer(BufferDesc {
             size: std::mem::size_of::<TextureCompositeUniform>() as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
@@ -141,37 +133,38 @@ impl RenderPass for TextureCompositePass {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
             label: Some("TextureComposite Index"),
         });
-        builder.declare_uniform_buffer(&self.uniform_buffer);
-        builder.declare_vertex_buffer(&self.vertex_buffer);
-        builder.declare_index_buffer(&self.index_buffer);
+        builder.read_buffer(&self.uniform_buffer, BufferReadUsage::Uniform);
+        builder.read_buffer(&self.vertex_buffer, BufferReadUsage::Vertex);
+        builder.read_buffer(&self.index_buffer, BufferReadUsage::Index);
 
+        self.params.scissor_rect =
+            intersect_scissor_rects(self.input.pass_context.scissor_rect, self.params.scissor_rect);
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, TextureCompositeSourceTag> =
                 OutSlot::with_handle(handle);
-            builder.declare_sampled_texture(&mut self.input.source, &source);
+            builder.read_texture(&mut self.input.source, &source);
         }
         if let Some(handle) = self.input.mask.handle() {
             let source: OutSlot<TextureResource, TextureCompositeMaskTag> =
                 OutSlot::with_handle(handle);
-            builder.declare_sampled_texture(&mut self.input.mask, &source);
+            builder.read_texture(&mut self.input.mask, &source);
         }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output.render_target,
                 GraphicsColorAttachmentDescriptor::load(target),
             );
         } else {
-            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
                 builder.surface_target(),
             ));
         }
-        if let Some(target) = self.depth_stencil_target {
-            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-                target,
-                depth: Some(GraphicsDepthAspectDescriptor::read()),
-                stencil: Some(GraphicsStencilAspectDescriptor::read()),
-            });
+        let stencil_clip_id = self.input.pass_context.stencil_clip_id;
+        if let Some(target) = self.input.pass_context.depth_stencil_target {
+            builder.read_depth(target);
+            builder.read_stencil(target);
         }
+        let _ = stencil_clip_id;
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
@@ -205,11 +198,14 @@ impl RenderPass for TextureCompositePass {
         }
     }
 
-    fn record_standalone(
+    fn encode(
         &mut self,
         ctx: &mut GraphicsRecordContext<'_, '_>,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: GraphicsEncodeScope<'_, '_>,
     ) {
+        let GraphicsEncodeScope::Render(pass) = scope else {
+            unreachable!("TextureCompositePass requires render scope");
+        };
         let Some(source_handle) = self.input.source.handle() else {
             return;
         };
@@ -333,219 +329,7 @@ impl RenderPass for TextureCompositePass {
             ctx.viewport
                 .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
-
-        let pipeline = if self.stencil_clip_id.is_some() {
-            &resources.pipeline_stencil_test
-        } else {
-            &resources.pipeline_no_stencil
-        };
-
-        let offscreen_view = self
-            .output
-            .render_target
-            .handle()
-            .and_then(|h| render_target_view(ctx, h));
-        let offscreen_msaa_view = self
-            .output
-            .render_target
-            .handle()
-            .and_then(|h| render_target_msaa_view(ctx, h));
-        let depth_stencil_view = match self.depth_stencil_target {
-            Some(AttachmentTarget::Texture(handle)) => render_target_attachment_view(ctx, handle),
-            Some(AttachmentTarget::Surface) | None => None,
-        };
-        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
-        let Some(parts) = ctx.viewport.frame_parts() else {
-            return;
-        };
-        let surface_resolve = if msaa_enabled {
-            parts.resolve_view
-        } else {
-            None
-        };
-        let (color_view, resolve_target) =
-            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
-                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-                (Some(resolve_view), None) => (resolve_view, None),
-                (None, _) => (parts.view, surface_resolve),
-            };
-
-        let depth_stencil_attachment = match self.depth_stencil_target {
-            Some(AttachmentTarget::Surface) => {
-                parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-            }
-            Some(AttachmentTarget::Texture(_)) => {
-                depth_stencil_view
-                    .as_ref()
-                    .map(|view| wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    })
-            }
-            None => None,
-        };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("TextureComposite"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target,
-            })],
-            depth_stencil_attachment,
-            ..Default::default()
-        });
-        encode(
-            &mut pass,
-            pipeline,
-            &bind_group,
-            vertex_buffer,
-            index_buffer,
-            (target_w, target_h),
-            scissor_rect_physical,
-            self.stencil_clip_id,
-        );
-    }
-
-    fn record_inline(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        pass: &mut wgpu::RenderPass<'_>,
-    ) {
-        let Some(source_handle) = self.input.source.handle() else {
-            return;
-        };
-        let Some(source_view) = render_target_view(ctx, source_handle) else {
-            return;
-        };
-        let mask_view = self
-            .input
-            .mask
-            .handle()
-            .and_then(|h| render_target_view(ctx, h));
-
-        let device = match ctx.viewport.device() {
-            Some(device) => device.clone(),
-            None => return,
-        };
-        let format = ctx.viewport.surface_format();
-        let sample_count = ctx.viewport.msaa_sample_count();
-        let cache = texture_composite_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
-            create_resources(&device, format, sample_count)
-        });
-        if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
-            *resources = create_resources(&device, format, sample_count);
-        }
-
-        let acquired_uniform_buffer = self
-            .uniform_buffer
-            .handle()
-            .and_then(|h| ctx.acquire_buffer(h));
-        let fallback_uniform_buffer;
-        let uniform_binding = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
-            buffer.as_entire_binding()
-        } else {
-            fallback_uniform_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("TextureComposite Uniform (Fallback)"),
-                    contents: bytemuck::bytes_of(&TextureCompositeUniform {
-                        use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
-                        opacity: self.params.opacity.clamp(0.0, 1.0),
-                        _pad: [0.0, 0.0],
-                    }),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-            fallback_uniform_buffer.as_entire_binding()
-        };
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("TextureComposite Bind Group"),
-            layout: &resources.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&source_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        mask_view.as_ref().unwrap_or(&source_view),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&resources.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: uniform_binding,
-                },
-            ],
-        });
-
-        let acquired_vertex_buffer = self
-            .vertex_buffer
-            .handle()
-            .and_then(|h| ctx.acquire_buffer(h));
-        let acquired_index_buffer = self
-            .index_buffer
-            .handle()
-            .and_then(|h| ctx.acquire_buffer(h));
-        let fallback_vertex_buffer;
-        let fallback_index_buffer;
-        let (vertex_buffer, index_buffer): (&wgpu::Buffer, &wgpu::Buffer) = if let (
-            Some(vb),
-            Some(ib),
-        ) = (
-            acquired_vertex_buffer.as_ref(),
-            acquired_index_buffer.as_ref(),
-        ) {
-            (vb, ib)
-        } else {
-            let surface_size = ctx.viewport.surface_size();
-            let (target_w, target_h) = match self.output.render_target.handle() {
-                Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
-                None => surface_size,
-            };
-            let scale = ctx.viewport.scale_factor();
-            let bounds =
-                resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
-            let (vertices, indices) = quad_for_bounds(bounds, target_w as f32, target_h as f32);
-            fallback_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("TextureComposite Vertex (Fallback)"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            fallback_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("TextureComposite Index (Fallback)"),
-                contents: bytemuck::cast_slice(&indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-            (&fallback_vertex_buffer, &fallback_index_buffer)
-        };
-
-        let surface_size = ctx.viewport.surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
-            None => surface_size,
-        };
-        let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport
-                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
-        });
-        let pipeline = if self.stencil_clip_id.is_some() {
+        let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
             &resources.pipeline_stencil_test
         } else {
             &resources.pipeline_no_stencil
@@ -558,22 +342,8 @@ impl RenderPass for TextureCompositePass {
             index_buffer,
             (target_w, target_h),
             scissor_rect_physical,
-            self.stencil_clip_id,
+            self.input.pass_context.stencil_clip_id,
         );
-    }
-}
-
-impl RenderTargetPass for TextureCompositePass {
-    fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.params.scissor_rect = intersect_scissor_rects(self.params.scissor_rect, scissor_rect);
-    }
-
-    fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
-        self.stencil_clip_id = clip_id;
-    }
-
-    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
-        self.set_depth_stencil_target(depth_stencil_target);
     }
 }
 

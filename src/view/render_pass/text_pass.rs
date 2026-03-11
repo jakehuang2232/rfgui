@@ -1,16 +1,12 @@
-use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{
-    AttachmentTarget, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
-    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassRecordingMode, GraphicsRecordContext,
-    GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
+    BufferReadUsage, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext,
 };
 use crate::view::frame_graph::{BufferDesc, BufferResource};
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{
-    render_target_attachment_view, render_target_msaa_view, render_target_size, render_target_view,
-};
+use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_size};
+use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
@@ -22,7 +18,7 @@ pub struct TextPass {
     params: TextPassParams,
     staging_buffer: TextStagingBufferOut,
     prepared: Option<TextPreparedState>,
-    depth_stencil_target: Option<AttachmentTarget>,
+    input: TextInput,
     output: TextOutput,
 }
 
@@ -74,7 +70,9 @@ pub struct TextStagingBufferTag;
 pub type TextStagingBufferOut = OutSlot<BufferResource, TextStagingBufferTag>;
 
 #[derive(Default)]
-pub struct TextInput;
+pub struct TextInput {
+    pub pass_context: GraphicsPassContext,
+}
 
 #[derive(Default)]
 pub struct TextOutput {
@@ -83,18 +81,13 @@ pub struct TextOutput {
 
 impl TextPass {
     pub fn new(params: TextPassParams, input: TextInput, output: TextOutput) -> Self {
-        let _ = input;
         Self {
             params,
             staging_buffer: TextStagingBufferOut::default(),
             prepared: None,
-            depth_stencil_target: None,
+            input,
             output,
         }
-    }
-
-    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
-        self.depth_stencil_target = depth_stencil_target;
     }
 
     fn prepare_signature(&self, bounds: TextBounds, scale: f32, screen_size: (u32, u32)) -> u64 {
@@ -127,31 +120,38 @@ impl TextPass {
     }
 }
 
-impl RenderPass for TextPass {
-    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
-        builder.set_graphics_recording_mode(GraphicsPassRecordingMode::InlineOrStandalone);
+impl GraphicsPass for TextPass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         self.staging_buffer = builder.create_buffer(BufferDesc {
             size: (self.params.content.len().max(1) as u64).next_power_of_two(),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
             label: Some("TextPass Staging Buffer"),
         });
-        builder.declare_uniform_buffer(&self.staging_buffer);
+        builder.read_buffer(&self.staging_buffer, BufferReadUsage::Uniform);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output.render_target,
                 GraphicsColorAttachmentDescriptor::load(target),
             );
         } else {
-            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
                 builder.surface_target(),
             ));
         }
-        if self.params.stencil_clip_id.is_some() && self.depth_stencil_target.is_some() {
-            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-                target: self.depth_stencil_target.expect("checked is_some"),
-                depth: Some(GraphicsDepthAspectDescriptor::read()),
-                stencil: Some(GraphicsStencilAspectDescriptor::read()),
-            });
+        self.params.scissor_rect =
+            intersect_scissor_rects(self.input.pass_context.scissor_rect, self.params.scissor_rect);
+        if self.params.stencil_clip_id.is_none() {
+            self.params.stencil_clip_id = self.input.pass_context.stencil_clip_id;
+        }
+        if self.params.stencil_clip_id.is_some() && self.input.pass_context.depth_stencil_target.is_some() {
+            let target = self
+                .input
+                .pass_context
+                .depth_stencil_target
+                .expect("checked is_some");
+            builder.read_depth(target);
+            builder.read_stencil(target);
         }
     }
 
@@ -303,120 +303,14 @@ impl RenderPass for TextPass {
         });
     }
 
-    fn record_standalone(
+    fn encode(
         &mut self,
         ctx: &mut GraphicsRecordContext<'_, '_>,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: GraphicsEncodeScope<'_, '_>,
     ) {
-        let Some(prepared) = self.prepared.as_mut() else {
-            return;
+        let GraphicsEncodeScope::Render(pass) = scope else {
+            unreachable!("TextPass requires render scope");
         };
-        let device = match ctx.viewport.device().cloned() {
-            Some(device) => device,
-            None => return,
-        };
-        let queue = match ctx.viewport.queue().cloned() {
-            Some(queue) => queue,
-            None => return,
-        };
-        let format = ctx.viewport.surface_format();
-        let mut global = text_resources(&device, &queue, format);
-        let resources = global.resources.as_mut().unwrap();
-
-        let (offscreen_view, offscreen_msaa_view) = match self.output.render_target.handle() {
-            Some(handle) => (
-                render_target_view(ctx, handle),
-                render_target_msaa_view(ctx, handle),
-            ),
-            None => (None, None),
-        };
-        let target_size = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size()),
-            None => ctx.viewport.surface_size(),
-        };
-        let depth_stencil_view = match self.depth_stencil_target {
-            Some(AttachmentTarget::Texture(handle)) => render_target_attachment_view(ctx, handle),
-            Some(AttachmentTarget::Surface) | None => None,
-        };
-
-        let sample_count = ctx.viewport.msaa_sample_count();
-        let viewport = &mut *ctx.viewport;
-        let viewport_scale = viewport.scale_factor();
-        let msaa_enabled = sample_count > 1;
-        let parts = match viewport.frame_parts() {
-            Some(parts) => parts,
-            None => return,
-        };
-        let surface_resolve = if msaa_enabled {
-            parts.resolve_view
-        } else {
-            None
-        };
-        let (color_view, resolve_target) =
-            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
-                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-                (Some(resolve_view), None) => (resolve_view, None),
-                (None, _) => (parts.view, surface_resolve),
-            };
-        let depth_stencil_attachment =
-            if prepared.stencil_clip_id.is_some() {
-                match self.depth_stencil_target {
-                    Some(AttachmentTarget::Surface) => {
-                        parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-                    }
-                    Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
-                        wgpu::RenderPassDepthStencilAttachment {
-                            view,
-                            depth_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                        }
-                    }),
-                    None => None,
-                }
-            } else {
-                None
-            };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("TextPass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target,
-            })],
-            depth_stencil_attachment,
-            ..Default::default()
-        });
-        if let Some(stencil_clip_id) = prepared.stencil_clip_id {
-            pass.set_stencil_reference(stencil_clip_id as u32);
-        }
-        let scissor_rect =
-            physical_scissor_rect(self.params.scissor_rect, viewport_scale, target_size);
-        if let Some([x, y, width, height]) = scissor_rect {
-            pass.set_scissor_rect(x, y, width, height);
-        } else {
-            pass.set_scissor_rect(0, 0, target_size.0, target_size.1);
-        }
-        let Some(renderer) = prepared.renderer.as_mut() else {
-            return;
-        };
-        let _ = renderer.render(&resources.atlas, &resources.viewport, &mut pass);
-    }
-
-    fn record_inline(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        pass: &mut wgpu::RenderPass<'_>,
-    ) {
         let Some(prepared) = self.prepared.as_mut() else {
             return;
         };
@@ -451,20 +345,6 @@ impl RenderPass for TextPass {
         }
         pass.set_stencil_reference(stencil_reference);
         let _ = renderer.render(&resources.atlas, &resources.viewport, pass);
-    }
-}
-
-impl RenderTargetPass for TextPass {
-    fn apply_clip(&mut self, scissor_rect: Option<[u32; 4]>) {
-        self.params.scissor_rect = intersect_scissor_rects(self.params.scissor_rect, scissor_rect);
-    }
-
-    fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
-        self.params.stencil_clip_id = clip_id;
-    }
-
-    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
-        self.set_depth_stencil_target(depth_stencil_target);
     }
 }
 

@@ -1,7 +1,6 @@
 use super::{ElementCore, Position, Size};
 use crate::ColorLike;
 use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
-use crate::render_pass::render_target::RenderTargetPass;
 use crate::render_pass::shadow_pass::{ShadowInput, ShadowOutput};
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
@@ -22,14 +21,15 @@ use crate::ui::{
     MouseDownEvent, MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent,
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
-use crate::view::frame_graph::{AttachmentTarget, FrameGraph, RenderPass, TextureDesc};
+use crate::view::frame_graph::{AttachmentTarget, FrameGraph, TextureDesc};
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::render_target::GraphicsPassContext;
 use crate::view::render_pass::{
-    ClearPass, DrawRectPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowParams, ShadowPass,
-    TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
-    TextureCompositePass, TextureCompositeSourceIn,
+    ClearPass, DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowMesh,
+    ShadowParams, ShadowPass, TextureCompositeInput, TextureCompositeMaskIn,
+    TextureCompositeOutput, TextureCompositeParams, TextureCompositePass, TextureCompositeSourceIn,
 };
 use crate::view::viewport::ViewportControl;
 use std::cell::RefCell;
@@ -344,10 +344,6 @@ impl UiBuildContext {
         color
     }
 
-    fn color_target(&self) -> Option<TextureHandle> {
-        self.viewport.color_target
-    }
-
     pub(crate) fn depth_stencil_target(&self) -> Option<AttachmentTarget> {
         self.state
             .depth_stencil_target
@@ -410,11 +406,12 @@ impl UiBuildContext {
         order
     }
 
-    pub(crate) fn configure_pass<P: RenderTargetPass>(&self, pass: &mut P) {
-        pass.apply_clip(self.scissor_rect());
-        pass.apply_stencil_clip(self.active_clip_id());
-        pass.set_color_target(self.color_target());
-        pass.set_depth_stencil_target(self.depth_stencil_target());
+    pub(crate) fn graphics_pass_context(&self) -> GraphicsPassContext {
+        GraphicsPassContext {
+            scissor_rect: self.scissor_rect(),
+            stencil_clip_id: self.active_clip_id(),
+            depth_stencil_target: self.depth_stencil_target(),
+        }
     }
 }
 
