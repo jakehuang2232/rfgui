@@ -97,6 +97,9 @@ impl RenderPass for BlurPass {
             label: Some("BlurPass Upload Buffer"),
         });
         builder.declare_uniform_buffer(&self.upload_buffer);
+        if let Some(source) = self.input.layer.handle().map(OutSlot::with_handle) {
+            builder.declare_sampled_texture(&mut self.input.layer, &source);
+        }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             builder.declare_color_attachment(
                 &self.output.render_target,

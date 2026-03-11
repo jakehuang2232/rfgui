@@ -1,11 +1,13 @@
 use super::slot::ResourceType;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureDesc {
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
     dimension: wgpu::TextureDimension,
+    usage: wgpu::TextureUsages,
+    sample_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,7 +32,22 @@ impl TextureDesc {
             height,
             format,
             dimension,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            sample_count: 1,
         }
+    }
+
+    pub fn with_usage(mut self, usage: wgpu::TextureUsages) -> Self {
+        self.usage = usage;
+        self
+    }
+
+    pub fn with_sample_count(mut self, sample_count: u32) -> Self {
+        self.sample_count = sample_count.max(1);
+        self
     }
 
     pub fn width(&self) -> u32 {
@@ -47,5 +64,13 @@ impl TextureDesc {
 
     pub fn dimension(&self) -> wgpu::TextureDimension {
         self.dimension
+    }
+
+    pub fn usage(&self) -> wgpu::TextureUsages {
+        self.usage
+    }
+
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
     }
 }

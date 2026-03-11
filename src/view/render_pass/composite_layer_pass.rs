@@ -112,6 +112,9 @@ impl RenderPass for CompositeLayerPass {
         });
         builder.declare_vertex_buffer(&self.vertex_buffer);
         builder.declare_index_buffer(&self.index_buffer);
+        if let Some(source) = self.input.layer.handle().map(OutSlot::with_handle) {
+            builder.declare_sampled_texture(&mut self.input.layer, &source);
+        }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             builder.declare_color_attachment(
                 &self.output.render_target,

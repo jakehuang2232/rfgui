@@ -20,6 +20,58 @@ pub enum ResourceHandle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AllocationId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceKind {
+    Texture,
+    Buffer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AllocationClass {
+    Texture,
+    Buffer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceLifetime {
+    Imported,
+    Transient,
+    Persistent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AllocationOwner {
+    AllocatorManaged,
+    ExternalOwned,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalResource {
+    Surface,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResourceMetadata {
+    pub stable_key: Option<u64>,
+    pub kind: ResourceKind,
+    pub allocation_class: AllocationClass,
+    pub lifetime: ResourceLifetime,
+}
+
+impl ResourceMetadata {
+    fn transient(kind: ResourceKind, allocation_class: AllocationClass) -> Self {
+        Self {
+            stable_key: None,
+            kind,
+            allocation_class,
+            lifetime: ResourceLifetime::Transient,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceAccess {
     Read,
     Write,
@@ -308,10 +360,43 @@ pub struct CompiledPass {
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
     pub handle: ResourceHandle,
-    pub first_pass_order: usize,
-    pub last_pass_order: usize,
+    pub stable_key: Option<u64>,
+    pub kind: ResourceKind,
+    pub allocation_class: AllocationClass,
+    pub lifetime: ResourceLifetime,
+    pub first_use_pass_index: usize,
+    pub last_use_pass_index: usize,
     pub producer_passes: Vec<usize>,
     pub consumer_passes: Vec<usize>,
+    pub allocation_id: Option<AllocationId>,
+    pub allocation_owner: AllocationOwner,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureAllocationPlanEntry {
+    pub allocation_id: AllocationId,
+    pub owner: AllocationOwner,
+    pub resources: Vec<TextureHandle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BufferAllocationPlanEntry {
+    pub allocation_id: AllocationId,
+    pub owner: AllocationOwner,
+    pub resources: Vec<BufferHandle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalAllocationPlanEntry {
+    pub resource: ExternalResource,
+    pub owner: AllocationOwner,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AllocationPlan {
+    pub texture_allocations: Vec<TextureAllocationPlanEntry>,
+    pub buffer_allocations: Vec<BufferAllocationPlanEntry>,
+    pub external_resources: Vec<ExternalAllocationPlanEntry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,8 +415,11 @@ pub struct ExecutionPlan {
 pub struct CompiledGraph {
     pub passes: Vec<CompiledPass>,
     pub resources: Vec<CompiledResource>,
+    pub allocation_plan: AllocationPlan,
     pub culled_passes: Vec<usize>,
     pub execution_plan: ExecutionPlan,
+    texture_allocation_ids: HashMap<TextureHandle, AllocationId>,
+    buffer_allocation_ids: HashMap<BufferHandle, AllocationId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,6 +439,8 @@ pub struct FrameGraph {
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
     buffers: Vec<BufferDesc>,
+    texture_metadata: Vec<ResourceMetadata>,
+    buffer_metadata: Vec<ResourceMetadata>,
     compiled_graph: Option<CompiledGraph>,
     order: Vec<usize>,
     compiled: bool,
@@ -372,6 +462,8 @@ impl FrameGraph {
             passes: Vec::new(),
             textures: Vec::new(),
             buffers: Vec::new(),
+            texture_metadata: Vec::new(),
+            buffer_metadata: Vec::new(),
             compiled_graph: None,
             order: Vec::new(),
             compiled: false,
@@ -398,8 +490,41 @@ impl FrameGraph {
         &mut self,
         desc: TextureDesc,
     ) -> super::slot::OutSlot<super::texture_resource::TextureResource, Tag> {
+        self.declare_texture_internal(desc, ResourceLifetime::Transient, None)
+    }
+
+    pub(crate) fn declare_texture_internal<Tag>(
+        &mut self,
+        desc: TextureDesc,
+        lifetime: ResourceLifetime,
+        stable_key: Option<u64>,
+    ) -> super::slot::OutSlot<super::texture_resource::TextureResource, Tag> {
         let handle = TextureHandle(self.textures.len() as u32);
         self.textures.push(desc);
+        self.texture_metadata.push(ResourceMetadata {
+            stable_key,
+            kind: ResourceKind::Texture,
+            allocation_class: AllocationClass::Texture,
+            lifetime,
+        });
+        super::slot::OutSlot::with_handle(handle)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn declare_buffer_internal<Tag>(
+        &mut self,
+        desc: BufferDesc,
+        lifetime: ResourceLifetime,
+        stable_key: Option<u64>,
+    ) -> super::slot::OutSlot<super::buffer_resource::BufferResource, Tag> {
+        let handle = BufferHandle(self.buffers.len() as u32);
+        self.buffers.push(desc);
+        self.buffer_metadata.push(ResourceMetadata {
+            stable_key,
+            kind: ResourceKind::Buffer,
+            allocation_class: AllocationClass::Buffer,
+            lifetime,
+        });
         super::slot::OutSlot::with_handle(handle)
     }
 
@@ -414,6 +539,8 @@ impl FrameGraph {
 
         let mut textures = std::mem::take(&mut self.textures);
         let mut buffers = std::mem::take(&mut self.buffers);
+        let mut texture_metadata = std::mem::take(&mut self.texture_metadata);
+        let mut buffer_metadata = std::mem::take(&mut self.buffer_metadata);
         let mut build_errors: Vec<FrameGraphError> = Vec::new();
 
         for node in &mut self.passes {
@@ -421,6 +548,8 @@ impl FrameGraph {
                 descriptor: &mut node.descriptor,
                 textures: &mut textures,
                 buffers: &mut buffers,
+                texture_metadata: &mut texture_metadata,
+                buffer_metadata: &mut buffer_metadata,
                 usages: &mut node.usages,
                 build_errors: &mut build_errors,
             };
@@ -429,6 +558,8 @@ impl FrameGraph {
 
         self.textures = textures;
         self.buffers = buffers;
+        self.texture_metadata = texture_metadata;
+        self.buffer_metadata = buffer_metadata;
         self.build_errors = build_errors;
 
         if let Some(err) = self.build_errors.pop() {
@@ -470,7 +601,20 @@ impl FrameGraph {
         self.compile()?;
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
-        let mut ctx = PrepareContext::new(viewport, &textures, &buffers);
+        let (texture_allocations, buffer_allocations) = {
+            let compiled = self.compiled_graph.as_ref().expect("compiled graph should exist");
+            (
+                compiled.texture_allocation_ids.clone(),
+                compiled.buffer_allocation_ids.clone(),
+            )
+        };
+        let mut ctx = PrepareContext::new(
+            viewport,
+            &textures,
+            &buffers,
+            &texture_allocations,
+            &buffer_allocations,
+        );
         for &index in &self.order {
             self.passes[index].pass.prepare(&mut ctx);
         }
@@ -497,7 +641,8 @@ impl FrameGraph {
             self.build_live_dependency_graph(&live_passes, &pass_summaries)?;
         let ordered_passes = self.toposort_live_passes(&live_passes, &graph_edges, indegree)?;
         let execution_steps = self.build_execution_plan(&ordered_passes);
-        let resources = self.build_compiled_resources(&live_passes, &ordered_passes, &pass_summaries);
+        let (resources, allocation_plan, texture_allocation_ids, buffer_allocation_ids) =
+            self.build_compiled_resources(&live_passes, &ordered_passes, &pass_summaries);
         let culled_passes = (0..self.passes.len())
             .filter(|index| !live_passes.contains(index))
             .collect::<Vec<_>>();
@@ -522,11 +667,14 @@ impl FrameGraph {
         Ok(CompiledGraph {
             passes: compiled_passes,
             resources,
+            allocation_plan,
             culled_passes,
             execution_plan: ExecutionPlan {
                 ordered_passes,
                 steps: execution_steps,
             },
+            texture_allocation_ids,
+            buffer_allocation_ids,
         })
     }
 
@@ -824,7 +972,12 @@ impl FrameGraph {
         live_passes: &HashSet<usize>,
         ordered_passes: &[usize],
         pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
-    ) -> Vec<CompiledResource> {
+    ) -> (
+        Vec<CompiledResource>,
+        AllocationPlan,
+        HashMap<TextureHandle, AllocationId>,
+        HashMap<BufferHandle, AllocationId>,
+    ) {
         let ordered_positions = ordered_passes
             .iter()
             .enumerate()
@@ -840,15 +993,22 @@ impl FrameGraph {
                 continue;
             };
             for (&resource, summary) in summary_map {
+                let metadata = self.resource_metadata(resource);
                 let compiled = resources.entry(resource).or_insert(CompiledResource {
                     handle: resource,
-                    first_pass_order: order_index,
-                    last_pass_order: order_index,
+                    stable_key: metadata.stable_key,
+                    kind: metadata.kind,
+                    allocation_class: metadata.allocation_class,
+                    lifetime: metadata.lifetime,
+                    first_use_pass_index: order_index,
+                    last_use_pass_index: order_index,
                     producer_passes: Vec::new(),
                     consumer_passes: Vec::new(),
+                    allocation_id: None,
+                    allocation_owner: AllocationOwner::AllocatorManaged,
                 });
-                compiled.first_pass_order = compiled.first_pass_order.min(order_index);
-                compiled.last_pass_order = compiled.last_pass_order.max(order_index);
+                compiled.first_use_pass_index = compiled.first_use_pass_index.min(order_index);
+                compiled.last_use_pass_index = compiled.last_use_pass_index.max(order_index);
                 if summary.writes || summary.produced {
                     compiled.producer_passes.push(pass_index);
                 }
@@ -863,7 +1023,44 @@ impl FrameGraph {
             ResourceHandle::Texture(handle) => (0, handle.0),
             ResourceHandle::Buffer(handle) => (1, handle.0),
         });
-        ordered
+        let (allocation_plan, texture_allocation_ids, buffer_allocation_ids) =
+            build_allocation_plan(&ordered, ordered_passes, self);
+
+        for resource in &mut ordered {
+            match resource.handle {
+                ResourceHandle::Texture(handle) => {
+                    resource.allocation_id = texture_allocation_ids.get(&handle).copied();
+                }
+                ResourceHandle::Buffer(handle) => {
+                    resource.allocation_id = buffer_allocation_ids.get(&handle).copied();
+                }
+            }
+            if resource.lifetime == ResourceLifetime::Imported {
+                resource.allocation_owner = AllocationOwner::ExternalOwned;
+            }
+        }
+
+        (
+            ordered,
+            allocation_plan,
+            texture_allocation_ids,
+            buffer_allocation_ids,
+        )
+    }
+
+    fn resource_metadata(&self, handle: ResourceHandle) -> ResourceMetadata {
+        match handle {
+            ResourceHandle::Texture(handle) => self
+                .texture_metadata
+                .get(handle.0 as usize)
+                .copied()
+                .unwrap_or_else(|| ResourceMetadata::transient(ResourceKind::Texture, AllocationClass::Texture)),
+            ResourceHandle::Buffer(handle) => self
+                .buffer_metadata
+                .get(handle.0 as usize)
+                .copied()
+                .unwrap_or_else(|| ResourceMetadata::transient(ResourceKind::Buffer, AllocationClass::Buffer)),
+        }
     }
 
     pub fn to_dot(&self) -> String {
@@ -1015,7 +1212,20 @@ impl FrameGraph {
         let mut pass_first_seen_order: Vec<String> = Vec::new();
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
-        let mut ctx = RecordContext::new(viewport, &textures, &buffers);
+        let (texture_allocations, buffer_allocations) = {
+            let compiled = self.compiled_graph.as_ref().expect("compiled graph should exist");
+            (
+                compiled.texture_allocation_ids.clone(),
+                compiled.buffer_allocation_ids.clone(),
+            )
+        };
+        let mut ctx = RecordContext::new(
+            viewport,
+            &textures,
+            &buffers,
+            &texture_allocations,
+            &buffer_allocations,
+        );
         for step in self.execute_steps.clone() {
             match step {
                 ExecuteStep::Single { index } => {
@@ -1481,10 +1691,142 @@ fn batch_trace_enabled() -> bool {
     })
 }
 
+fn build_allocation_plan(
+    resources: &[CompiledResource],
+    ordered_passes: &[usize],
+    graph: &FrameGraph,
+) -> (
+    AllocationPlan,
+    HashMap<TextureHandle, AllocationId>,
+    HashMap<BufferHandle, AllocationId>,
+) {
+    #[derive(Clone, Copy)]
+    struct TextureSlot {
+        id: AllocationId,
+        desc: TextureDesc,
+        last_use_pass_index: usize,
+    }
+
+    let mut next_id = 0u32;
+    let mut texture_slots: Vec<TextureSlot> = Vec::new();
+    let mut texture_allocations: Vec<TextureAllocationPlanEntry> = Vec::new();
+    let mut buffer_allocations: Vec<BufferAllocationPlanEntry> = Vec::new();
+    let mut texture_allocation_ids = HashMap::new();
+    let mut buffer_allocation_ids = HashMap::new();
+
+    for resource in resources {
+        match resource.handle {
+            ResourceHandle::Texture(handle) => {
+                if resource.lifetime != ResourceLifetime::Transient {
+                    continue;
+                }
+                let Some(desc) = graph.textures.get(handle.0 as usize).copied() else {
+                    continue;
+                };
+                let chosen = texture_slots
+                    .iter_mut()
+                    .find(|slot| {
+                        slot.last_use_pass_index < resource.first_use_pass_index
+                            && slot.desc.width() == desc.width()
+                            && slot.desc.height() == desc.height()
+                            && slot.desc.format() == desc.format()
+                            && slot.desc.dimension() == desc.dimension()
+                            && slot.desc.usage() == desc.usage()
+                            && slot.desc.sample_count() == desc.sample_count()
+                    })
+                    .map(|slot| {
+                        slot.last_use_pass_index = resource.last_use_pass_index;
+                        slot.id
+                    })
+                    .unwrap_or_else(|| {
+                        let id = AllocationId(next_id);
+                        next_id = next_id.saturating_add(1);
+                        texture_slots.push(TextureSlot {
+                            id,
+                            desc,
+                            last_use_pass_index: resource.last_use_pass_index,
+                        });
+                        texture_allocations.push(TextureAllocationPlanEntry {
+                            allocation_id: id,
+                            owner: AllocationOwner::AllocatorManaged,
+                            resources: Vec::new(),
+                        });
+                        id
+                    });
+                texture_allocation_ids.insert(handle, chosen);
+                if let Some(entry) = texture_allocations
+                    .iter_mut()
+                    .find(|entry| entry.allocation_id == chosen)
+                {
+                    entry.resources.push(handle);
+                }
+            }
+            ResourceHandle::Buffer(handle) => {
+                if resource.lifetime != ResourceLifetime::Transient {
+                    continue;
+                }
+                let Some(_desc) = graph.buffers.get(handle.0 as usize).copied() else {
+                    continue;
+                };
+                let chosen = {
+                    let id = AllocationId(next_id);
+                    next_id = next_id.saturating_add(1);
+                    buffer_allocations.push(BufferAllocationPlanEntry {
+                        allocation_id: id,
+                        owner: AllocationOwner::AllocatorManaged,
+                        resources: Vec::new(),
+                    });
+                    id
+                };
+                buffer_allocation_ids.insert(handle, chosen);
+                if let Some(entry) = buffer_allocations
+                    .iter_mut()
+                    .find(|entry| entry.allocation_id == chosen)
+                {
+                    entry.resources.push(handle);
+                }
+            }
+        }
+    }
+
+    let uses_surface = ordered_passes.iter().any(|&pass_index| {
+        let PassDetails::Graphics(graphics) = &graph.passes[pass_index].descriptor.details else {
+            return false;
+        };
+        graphics
+            .color_attachments
+            .iter()
+            .any(|attachment| attachment.target == AttachmentTarget::Surface)
+            || graphics
+                .depth_stencil_attachment
+                .is_some_and(|attachment| attachment.target == AttachmentTarget::Surface)
+    });
+
+    let mut external_resources = Vec::new();
+    if uses_surface {
+        external_resources.push(ExternalAllocationPlanEntry {
+            resource: ExternalResource::Surface,
+            owner: AllocationOwner::ExternalOwned,
+        });
+    }
+
+    (
+        AllocationPlan {
+            texture_allocations,
+            buffer_allocations,
+            external_resources,
+        },
+        texture_allocation_ids,
+        buffer_allocation_ids,
+    )
+}
+
 pub trait FrameResourceContext {
     fn viewport(&mut self) -> &mut Viewport;
     fn textures(&self) -> &[TextureDesc];
     fn buffers(&self) -> &[BufferDesc];
+    fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId>;
+    fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId>;
 
     fn buffer_desc(&self, handle: BufferHandle) -> Option<BufferDesc> {
         self.buffers().get(handle.0 as usize).copied()
@@ -1492,7 +1834,8 @@ pub trait FrameResourceContext {
 
     fn acquire_buffer(&mut self, handle: BufferHandle) -> Option<wgpu::Buffer> {
         let desc = self.buffer_desc(handle)?;
-        self.viewport().acquire_frame_buffer(handle, desc)
+        let allocation_id = self.buffer_allocation_id(handle)?;
+        self.viewport().acquire_frame_buffer(allocation_id, desc)
     }
 }
 
@@ -1500,6 +1843,8 @@ pub struct PrepareContext<'a, 'b> {
     pub(crate) viewport: &'a mut Viewport,
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
+    texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+    buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
 }
 
 impl<'a, 'b> PrepareContext<'a, 'b> {
@@ -1507,11 +1852,15 @@ impl<'a, 'b> PrepareContext<'a, 'b> {
         viewport: &'a mut Viewport,
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
+        texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+        buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
             viewport,
             textures,
             buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
         }
     }
 
@@ -1519,8 +1868,11 @@ impl<'a, 'b> PrepareContext<'a, 'b> {
         let Some(desc) = self.buffer_desc(handle) else {
             return false;
         };
+        let Some(allocation_id) = self.buffer_allocation_id(handle) else {
+            return false;
+        };
         self.viewport
-            .upload_frame_buffer(handle, desc, offset, data)
+            .upload_frame_buffer(allocation_id, desc, offset, data)
     }
 }
 
@@ -1536,12 +1888,22 @@ impl FrameResourceContext for PrepareContext<'_, '_> {
     fn buffers(&self) -> &[BufferDesc] {
         self.buffers
     }
+
+    fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId> {
+        self.texture_allocation_ids.get(&handle).copied()
+    }
+
+    fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
+        self.buffer_allocation_ids.get(&handle).copied()
+    }
 }
 
 pub struct RecordContext<'a, 'b> {
     pub(crate) viewport: &'a mut Viewport,
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
+    texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+    buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
     detail_timings: HashMap<String, f64>,
     detail_counts: HashMap<String, usize>,
     detail_order: Vec<String>,
@@ -1552,11 +1914,15 @@ impl<'a, 'b> RecordContext<'a, 'b> {
         viewport: &'a mut Viewport,
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
+        texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+        buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
             viewport,
             textures,
             buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
             detail_timings: HashMap::new(),
             detail_counts: HashMap::new(),
             detail_order: Vec::new(),
@@ -1612,12 +1978,22 @@ impl FrameResourceContext for RecordContext<'_, '_> {
     fn buffers(&self) -> &[BufferDesc] {
         self.buffers
     }
+
+    fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId> {
+        self.texture_allocation_ids.get(&handle).copied()
+    }
+
+    fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
+        self.buffer_allocation_ids.get(&handle).copied()
+    }
 }
 
 pub struct GraphicsRecordContext<'ctx, 'rp, 'res> {
     pub(crate) viewport: &'ctx mut Viewport,
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
+    texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
+    buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
     detail_timings: &'ctx mut HashMap<String, f64>,
     detail_counts: &'ctx mut HashMap<String, usize>,
     detail_order: &'ctx mut Vec<String>,
@@ -1633,6 +2009,8 @@ impl<'ctx, 'rp, 'res> GraphicsRecordContext<'ctx, 'rp, 'res> {
             viewport,
             textures,
             buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
             detail_timings,
             detail_counts,
             detail_order,
@@ -1641,6 +2019,8 @@ impl<'ctx, 'rp, 'res> GraphicsRecordContext<'ctx, 'rp, 'res> {
             viewport,
             textures,
             buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
             detail_timings,
             detail_counts,
             detail_order,
@@ -1693,6 +2073,14 @@ impl FrameResourceContext for GraphicsRecordContext<'_, '_, '_> {
     fn buffers(&self) -> &[BufferDesc] {
         self.buffers
     }
+
+    fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId> {
+        self.texture_allocation_ids.get(&handle).copied()
+    }
+
+    fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
+        self.buffer_allocation_ids.get(&handle).copied()
+    }
 }
 
 #[derive(Debug)]
@@ -1735,6 +2123,7 @@ impl<T> Default for ResourceCache<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::frame_graph::BufferResource;
     use crate::view::frame_graph::slot::{InSlot, OutSlot};
     use crate::view::frame_graph::texture_resource::{TextureDesc, TextureResource};
     use crate::view::render_pass::present_surface_pass::{
@@ -1790,6 +2179,62 @@ mod tests {
             builder.declare_color_attachment(
                 &self.target,
                 GraphicsColorAttachmentDescriptor::load(target),
+            );
+        }
+
+        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+    }
+
+    #[derive(Default)]
+    struct SurfacePass;
+
+    impl RenderPass for SurfacePass {
+        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
+                builder.surface_target(),
+                [0.0, 0.0, 0.0, 0.0],
+            ));
+        }
+
+        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+    }
+
+    #[derive(Default)]
+    struct PersistentInternalPass {
+        output: OutSlot<TextureResource, ()>,
+    }
+
+    #[derive(Default)]
+    struct BufferWritePass {
+        output: OutSlot<BufferResource, ()>,
+    }
+
+    impl RenderPass for BufferWritePass {
+        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+            self.output = builder.create_buffer(BufferDesc {
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+                label: Some("Test Buffer"),
+            });
+            builder.declare_uniform_buffer(&self.output);
+        }
+
+        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+    }
+
+    impl RenderPass for PersistentInternalPass {
+        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+            self.output = builder.create_texture_internal(
+                test_texture_desc(),
+                ResourceLifetime::Persistent,
+                Some(0xCAFE),
+            );
+            let target = builder
+                .texture_target(&self.output)
+                .expect("persistent output should have texture target");
+            builder.declare_color_attachment(
+                &self.output,
+                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
             );
         }
 
@@ -1912,5 +2357,116 @@ mod tests {
 
         let err = graph.compile().expect_err("compile should fail");
         assert!(matches!(err, FrameGraphError::MissingInput(_)));
+    }
+
+    #[test]
+    fn compile_tracks_resource_lifetime_by_compiled_pass_index() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        graph.add_pass(WritePass {
+            output: texture.clone(),
+        });
+        graph.add_pass(ModifyPass {
+            target: texture.clone(),
+        });
+        graph.add_pass(ReadPass {
+            input: InSlot::with_handle(
+                texture.handle().expect("declared texture should have handle"),
+            ),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let resource = compiled
+            .resources
+            .iter()
+            .find(|resource| resource.handle == ResourceHandle::Texture(texture.handle().unwrap()))
+            .expect("compiled resource should exist");
+        assert_eq!(resource.first_use_pass_index, 0);
+        assert_eq!(resource.last_use_pass_index, 2);
+    }
+
+    #[test]
+    fn compile_aliases_transient_textures_when_lifetimes_do_not_overlap() {
+        let mut graph = FrameGraph::new();
+        let texture_a = graph.declare_texture::<()>(test_texture_desc());
+        let texture_b = graph.declare_texture::<()>(test_texture_desc());
+        graph.add_pass(WritePass {
+            output: texture_a.clone(),
+        });
+        graph.add_pass(WritePass {
+            output: texture_b.clone(),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let resource_a = compiled
+            .resources
+            .iter()
+            .find(|resource| resource.handle == ResourceHandle::Texture(texture_a.handle().unwrap()))
+            .expect("resource A should exist");
+        let resource_b = compiled
+            .resources
+            .iter()
+            .find(|resource| resource.handle == ResourceHandle::Texture(texture_b.handle().unwrap()))
+            .expect("resource B should exist");
+        assert_eq!(resource_a.allocation_id, resource_b.allocation_id);
+        assert_eq!(compiled.allocation_plan.texture_allocations.len(), 1);
+    }
+
+    #[test]
+    fn compile_marks_surface_as_external_owned() {
+        let mut graph = FrameGraph::new();
+        graph.add_pass(SurfacePass);
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(
+            compiled.allocation_plan.external_resources,
+            vec![ExternalAllocationPlanEntry {
+                resource: ExternalResource::Surface,
+                owner: AllocationOwner::ExternalOwned,
+            }]
+        );
+    }
+
+    #[test]
+    fn compile_keeps_internal_persistent_resources_out_of_aliasing() {
+        let mut graph = FrameGraph::new();
+        graph.add_pass(PersistentInternalPass::default());
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let resource = compiled
+            .resources
+            .iter()
+            .find(|resource| resource.lifetime == ResourceLifetime::Persistent)
+            .expect("persistent resource should exist");
+        assert_eq!(resource.stable_key, Some(0xCAFE));
+        assert_eq!(resource.allocation_id, None);
+        assert!(compiled.allocation_plan.texture_allocations.is_empty());
+    }
+
+    #[test]
+    fn compile_keeps_transient_buffers_on_distinct_allocations() {
+        let mut graph = FrameGraph::new();
+        graph.add_pass(BufferWritePass::default());
+        graph.add_pass(BufferWritePass::default());
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let buffer_resources = compiled
+            .resources
+            .iter()
+            .filter(|resource| matches!(resource.handle, ResourceHandle::Buffer(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(buffer_resources.len(), 2);
+        assert_ne!(buffer_resources[0].allocation_id, buffer_resources[1].allocation_id);
+        assert_eq!(compiled.allocation_plan.buffer_allocations.len(), 2);
     }
 }

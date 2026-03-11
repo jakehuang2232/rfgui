@@ -1,5 +1,6 @@
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::{
+    AttachmentTarget,
     FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
     GraphicsDepthStencilAttachmentDescriptor, GraphicsRecordContext,
     GraphicsStencilAspectDescriptor, PassBuilder,
@@ -11,7 +12,7 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    render_target_msaa_view, render_target_size, render_target_view,
+    render_target_attachment_view, render_target_msaa_view, render_target_size, render_target_view,
 };
 use crate::view::render_pass::{RenderPass, RenderPassBatchKey};
 use std::sync::{Mutex, OnceLock};
@@ -22,6 +23,7 @@ const TEXTURE_COMPOSITE_RESOURCES: u64 = 205;
 pub struct TextureCompositePass {
     params: TextureCompositeParams,
     stencil_clip_id: Option<u8>,
+    depth_stencil_target: Option<AttachmentTarget>,
     uniform_buffer: TextureCompositeUniformBufferOut,
     vertex_buffer: TextureCompositeVertexBufferOut,
     index_buffer: TextureCompositeIndexBufferOut,
@@ -110,12 +112,17 @@ impl TextureCompositePass {
         Self {
             params,
             stencil_clip_id: None,
+            depth_stencil_target: None,
             uniform_buffer: TextureCompositeUniformBufferOut::default(),
             vertex_buffer: TextureCompositeVertexBufferOut::default(),
             index_buffer: TextureCompositeIndexBufferOut::default(),
             input,
             output,
         }
+    }
+
+    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.depth_stencil_target = depth_stencil_target;
     }
 }
 
@@ -160,11 +167,13 @@ impl RenderPass for TextureCompositePass {
                 builder.surface_target(),
             ));
         }
-        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-            target: builder.surface_target(),
-            depth: Some(GraphicsDepthAspectDescriptor::read()),
-            stencil: Some(GraphicsStencilAspectDescriptor::read()),
-        });
+        if let Some(target) = self.depth_stencil_target {
+            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+                target,
+                depth: Some(GraphicsDepthAspectDescriptor::read()),
+                stencil: Some(GraphicsStencilAspectDescriptor::read()),
+            });
+        }
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
@@ -353,6 +362,10 @@ impl RenderPass for TextureCompositePass {
             .render_target
             .handle()
             .and_then(|h| render_target_msaa_view(ctx, h));
+        let depth_stencil_view = match self.depth_stencil_target {
+            Some(AttachmentTarget::Texture(handle)) => render_target_attachment_view(ctx, handle),
+            Some(AttachmentTarget::Surface) | None => None,
+        };
         let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
         let Some(parts) = ctx.viewport.frame_parts() else {
             return;
@@ -369,6 +382,25 @@ impl RenderPass for TextureCompositePass {
                 (None, _) => (parts.view, surface_resolve),
             };
 
+        let depth_stencil_attachment = match self.depth_stencil_target {
+            Some(AttachmentTarget::Surface) => {
+                parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+            }
+            Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
+                wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }
+            }),
+            None => None,
+        };
         let mut pass = parts
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -382,8 +414,7 @@ impl RenderPass for TextureCompositePass {
                     depth_slice: None,
                     resolve_target,
                 })],
-                depth_stencil_attachment: parts
-                    .depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load),
+                depth_stencil_attachment,
                 ..Default::default()
             });
         encode(
@@ -405,7 +436,7 @@ impl RenderPass for TextureCompositePass {
     fn batch_key(&self) -> Option<RenderPassBatchKey> {
         Some(RenderPassBatchKey {
             color_target: self.output.render_target.handle(),
-            uses_depth_stencil: true,
+            uses_depth_stencil: self.depth_stencil_target.is_some(),
         })
     }
 
@@ -421,6 +452,10 @@ impl RenderTargetPass for TextureCompositePass {
 
     fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
         self.stencil_clip_id = clip_id;
+    }
+
+    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.set_depth_stencil_target(depth_stencil_target);
     }
 }
 
@@ -523,8 +558,7 @@ pub(crate) fn composite_immediate(
                 depth_slice: None,
                 resolve_target,
             })],
-            depth_stencil_attachment: parts
-                .depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load),
+            depth_stencil_attachment: None,
             ..Default::default()
         });
     encode(

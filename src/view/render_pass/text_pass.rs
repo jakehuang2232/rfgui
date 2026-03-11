@@ -1,5 +1,6 @@
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::{
+    AttachmentTarget,
     GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
     GraphicsDepthStencilAttachmentDescriptor, GraphicsRecordContext,
     GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
@@ -9,7 +10,7 @@ use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    render_target_msaa_view, render_target_size, render_target_view,
+    render_target_attachment_view, render_target_msaa_view, render_target_size, render_target_view,
 };
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
@@ -22,6 +23,7 @@ pub struct TextPass {
     params: TextPassParams,
     staging_buffer: TextStagingBufferOut,
     prepared: Option<TextPreparedState>,
+    depth_stencil_target: Option<AttachmentTarget>,
     output: TextOutput,
 }
 
@@ -87,8 +89,13 @@ impl TextPass {
             params,
             staging_buffer: TextStagingBufferOut::default(),
             prepared: None,
+            depth_stencil_target: None,
             output,
         }
+    }
+
+    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.depth_stencil_target = depth_stencil_target;
     }
 
     fn prepare_signature(&self, bounds: TextBounds, scale: f32, screen_size: (u32, u32)) -> u64 {
@@ -139,9 +146,9 @@ impl RenderPass for TextPass {
                 builder.surface_target(),
             ));
         }
-        if self.params.stencil_clip_id.is_some() {
+        if self.params.stencil_clip_id.is_some() && self.depth_stencil_target.is_some() {
             builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-                target: builder.surface_target(),
+                target: self.depth_stencil_target.expect("checked is_some"),
                 depth: Some(GraphicsDepthAspectDescriptor::read()),
                 stencil: Some(GraphicsStencilAspectDescriptor::read()),
             });
@@ -352,6 +359,10 @@ impl RenderPass for TextPass {
             Some(handle) => render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size()),
             None => ctx.viewport.surface_size(),
         };
+        let depth_stencil_view = match self.depth_stencil_target {
+            Some(AttachmentTarget::Texture(handle)) => render_target_attachment_view(ctx, handle),
+            Some(AttachmentTarget::Surface) | None => None,
+        };
 
         let sample_count = ctx.viewport.msaa_sample_count();
         let viewport = &mut *ctx.viewport;
@@ -372,6 +383,29 @@ impl RenderPass for TextPass {
                 (Some(resolve_view), None) => (resolve_view, None),
                 (None, _) => (parts.view, surface_resolve),
             };
+        let depth_stencil_attachment = if prepared.stencil_clip_id.is_some() {
+            match self.depth_stencil_target {
+                Some(AttachmentTarget::Surface) => {
+                    parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+                }
+                Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    }
+                }),
+                None => None,
+            }
+        } else {
+            None
+        };
         let mut pass = parts
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -385,11 +419,7 @@ impl RenderPass for TextPass {
                     depth_slice: None,
                     resolve_target,
                 })],
-                depth_stencil_attachment: if prepared.stencil_clip_id.is_some() {
-                    parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-                } else {
-                    None
-                },
+                depth_stencil_attachment,
                 ..Default::default()
             });
         if let Some(stencil_clip_id) = prepared.stencil_clip_id {
@@ -415,7 +445,8 @@ impl RenderPass for TextPass {
     fn batch_key(&self) -> Option<crate::view::render_pass::RenderPassBatchKey> {
         Some(crate::view::render_pass::RenderPassBatchKey {
             color_target: self.output.render_target.handle(),
-            uses_depth_stencil: true,
+            uses_depth_stencil: self.params.stencil_clip_id.is_some()
+                && self.depth_stencil_target.is_some(),
         })
     }
 
@@ -431,6 +462,10 @@ impl RenderTargetPass for TextPass {
 
     fn apply_stencil_clip(&mut self, clip_id: Option<u8>) {
         self.params.stencil_clip_id = clip_id;
+    }
+
+    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.set_depth_stencil_target(depth_stencil_target);
     }
 }
 
