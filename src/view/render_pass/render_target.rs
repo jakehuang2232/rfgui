@@ -1,5 +1,5 @@
-use crate::view::frame_graph::{AllocationId, AttachmentTarget, FrameResourceContext};
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
+use crate::view::frame_graph::{AllocationId, AttachmentTarget, FrameResourceContext};
 use std::collections::HashMap;
 
 pub(crate) trait RenderTargetPass {
@@ -291,7 +291,8 @@ pub(crate) fn render_target_bundle(
 ) -> Option<RenderTargetBundle> {
     let desc = texture_desc_for_handle(ctx, handle)?;
     let allocation_id = ctx.texture_allocation_id(handle)?;
-    ctx.viewport().acquire_offscreen_render_target(allocation_id, desc)
+    ctx.viewport()
+        .acquire_offscreen_render_target(allocation_id, desc)
 }
 
 pub(crate) fn render_target_size(

@@ -1,7 +1,4 @@
-use std::any::Any;
-
 use crate::view::frame_graph::{GraphicsRecordContext, PassBuilder, PrepareContext};
-use crate::view::frame_graph::texture_resource::TextureHandle;
 
 pub mod blur_pass;
 pub mod clear_pass;
@@ -24,36 +21,37 @@ pub use texture_composite_pass::{
     TextureCompositePass, TextureCompositeSourceIn,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct RenderPassBatchKey {
-    pub color_target: Option<TextureHandle>,
-    pub uses_depth_stencil: bool,
-}
-
 pub trait RenderPass {
     fn setup(&mut self, builder: &mut PassBuilder<'_>);
     fn prepare(&mut self, _ctx: &mut PrepareContext<'_, '_>) {}
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>);
-    fn batchable(&self) -> bool {
-        false
-    }
-    fn batch_key(&self) -> Option<RenderPassBatchKey> {
-        None
-    }
-    fn shared_render_pass_capable(&self) -> bool {
-        false
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    );
+    fn record_inline(
+        &mut self,
+        _ctx: &mut GraphicsRecordContext<'_, '_>,
+        _render_pass: &mut wgpu::RenderPass<'_>,
+    ) {
+        unreachable!("inline recording is not enabled for this pass")
     }
 }
 
 pub trait RenderPassDyn {
     fn setup(&mut self, builder: &mut PassBuilder<'_>);
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>);
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>);
-    fn batchable(&self) -> bool;
-    fn batch_key(&self) -> Option<RenderPassBatchKey>;
-    fn shared_render_pass_capable(&self) -> bool;
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    );
+    fn record_inline(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        render_pass: &mut wgpu::RenderPass<'_>,
+    );
     fn name(&self) -> &'static str;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub struct PassWrapper<P: RenderPass> {
@@ -65,32 +63,28 @@ impl<P: RenderPass + 'static> RenderPassDyn for PassWrapper<P> {
         self.pass.setup(builder);
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
-        self.pass.record(ctx);
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.pass.record_standalone(ctx, encoder);
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         self.pass.prepare(ctx);
     }
 
-    fn batchable(&self) -> bool {
-        self.pass.batchable()
-    }
-
-    fn batch_key(&self) -> Option<RenderPassBatchKey> {
-        self.pass.batch_key()
-    }
-
-    fn shared_render_pass_capable(&self) -> bool {
-        self.pass.shared_render_pass_capable()
+    fn record_inline(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        render_pass: &mut wgpu::RenderPass<'_>,
+    ) {
+        self.pass.record_inline(ctx, render_pass);
     }
 
     fn name(&self) -> &'static str {
         std::any::type_name::<P>()
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        &mut self.pass
     }
 }
 
@@ -168,7 +162,9 @@ mod tests {
     fn count_buffer_usages(usages: &[PassResourceUsage], usage: ResourceUsage) -> usize {
         usages
             .iter()
-            .filter(|entry| matches!(entry.resource, ResourceHandle::Buffer(_)) && entry.usage == usage)
+            .filter(|entry| {
+                matches!(entry.resource, ResourceHandle::Buffer(_)) && entry.usage == usage
+            })
             .count()
     }
 
@@ -179,14 +175,21 @@ mod tests {
         let (descriptor, usages) = collect_setup_contract(BlurPass::new(
             BlurPassParams::new(8.0),
             BlurInput { layer },
-            BlurOutput { render_target: output },
+            BlurOutput {
+                render_target: output,
+            },
         ));
 
         assert!(usages.contains(&texture_usage(TextureHandle(1), ResourceUsage::SampledRead)));
-        assert!(usages.contains(&texture_usage(TextureHandle(2), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(2),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::Produced), 1);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::UniformRead), 1);
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         assert_eq!(graphics.color_attachments.len(), 1);
     }
 
@@ -200,27 +203,41 @@ mod tests {
         let PassDetails::Graphics(surface_graphics) = surface_descriptor.details else {
             panic!("expected graphics");
         };
-        assert_eq!(surface_graphics.color_attachments[0].target, AttachmentTarget::Surface);
+        assert_eq!(
+            surface_graphics.color_attachments[0].target,
+            AttachmentTarget::Surface
+        );
         let depth = surface_graphics
             .depth_stencil_attachment
             .expect("surface clear should declare depth/stencil");
         assert_eq!(depth.target, AttachmentTarget::Surface);
         assert_eq!(
             depth.depth,
-            Some(GraphicsDepthAspectDescriptor::write(AttachmentLoadOp::Clear, Some(1.0)))
+            Some(GraphicsDepthAspectDescriptor::write(
+                AttachmentLoadOp::Clear,
+                Some(1.0)
+            ))
         );
         assert_eq!(
             depth.stencil,
-            Some(GraphicsStencilAspectDescriptor::write(AttachmentLoadOp::Clear, Some(0)))
+            Some(GraphicsStencilAspectDescriptor::write(
+                AttachmentLoadOp::Clear,
+                Some(0)
+            ))
         );
 
         let offscreen = RenderTargetOut::with_handle(TextureHandle(3));
         let (offscreen_descriptor, usages) = collect_setup_contract(ClearPass::new(
             ClearParams::new([1.0, 0.0, 0.0, 1.0]),
             ClearInput,
-            ClearOutput { render_target: offscreen },
+            ClearOutput {
+                render_target: offscreen,
+            },
         ));
-        assert!(usages.contains(&texture_usage(TextureHandle(3), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(3),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         let PassDetails::Graphics(offscreen_graphics) = offscreen_descriptor.details else {
             panic!("expected graphics");
         };
@@ -229,17 +246,16 @@ mod tests {
         let mut offscreen_with_depth = ClearPass::new(
             ClearParams::new([1.0, 0.0, 0.0, 1.0]),
             ClearInput,
-            ClearOutput { render_target: offscreen },
+            ClearOutput {
+                render_target: offscreen,
+            },
         );
         crate::view::render_pass::render_target::RenderTargetPass::set_depth_stencil_target(
             &mut offscreen_with_depth,
             Some(AttachmentTarget::Texture(TextureHandle(18))),
         );
         let (offscreen_descriptor, usages) = collect_setup_contract(offscreen_with_depth);
-        assert!(usages.contains(&texture_usage(
-            TextureHandle(18),
-            ResourceUsage::DepthWrite
-        )));
+        assert!(usages.contains(&texture_usage(TextureHandle(18), ResourceUsage::DepthWrite)));
         assert!(usages.contains(&texture_usage(
             TextureHandle(18),
             ResourceUsage::StencilWrite
@@ -272,11 +288,16 @@ mod tests {
         ));
 
         assert!(usages.contains(&texture_usage(TextureHandle(4), ResourceUsage::SampledRead)));
-        assert!(usages.contains(&texture_usage(TextureHandle(5), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(5),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::Produced), 2);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::VertexRead), 1);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::IndexRead), 1);
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         assert_eq!(graphics.color_attachments.len(), 1);
     }
 
@@ -290,8 +311,13 @@ mod tests {
         );
         pass.set_depth_stencil_target(Some(AttachmentTarget::Texture(TextureHandle(19))));
         let (descriptor, usages) = collect_setup_contract(pass);
-        assert!(usages.contains(&texture_usage(TextureHandle(6), ResourceUsage::ColorAttachmentWrite)));
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(6),
+            ResourceUsage::ColorAttachmentWrite
+        )));
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         let depth = graphics
             .depth_stencil_attachment
             .expect("debug overlay should declare depth/stencil");
@@ -314,10 +340,15 @@ mod tests {
         draw.set_depth_stencil_target(Some(AttachmentTarget::Texture(TextureHandle(20))));
         let (descriptor, usages) = collect_setup_contract(draw);
         assert!(usages.contains(&texture_usage(TextureHandle(7), ResourceUsage::SampledRead)));
-        assert!(usages.contains(&texture_usage(TextureHandle(8), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(8),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::Produced), 1);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::UniformRead), 1);
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         let depth = graphics
             .depth_stencil_attachment
             .expect("draw rect should declare depth/stencil");
@@ -336,11 +367,17 @@ mod tests {
             },
         );
         draw.set_depth_stencil_target(Some(AttachmentTarget::Texture(TextureHandle(21))));
-        let (descriptor, usages) = collect_setup_contract(OpaqueRectPass::from_draw_rect_pass(draw));
+        let (descriptor, usages) =
+            collect_setup_contract(OpaqueRectPass::from_draw_rect_pass(draw));
         assert!(usages.contains(&texture_usage(TextureHandle(9), ResourceUsage::SampledRead)));
-        assert!(usages.contains(&texture_usage(TextureHandle(10), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(10),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::UniformRead), 1);
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         assert!(graphics.depth_stencil_attachment.is_some());
     }
 
@@ -353,10 +390,18 @@ mod tests {
             },
             PresentSurfaceOutput,
         ));
-        assert!(usages.contains(&texture_usage(TextureHandle(11), ResourceUsage::SampledRead)));
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(11),
+            ResourceUsage::SampledRead
+        )));
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         assert_eq!(graphics.color_attachments.len(), 1);
-        assert_eq!(graphics.color_attachments[0].target, AttachmentTarget::Surface);
+        assert_eq!(
+            graphics.color_attachments[0].target,
+            AttachmentTarget::Surface
+        );
     }
 
     #[test]
@@ -370,11 +415,19 @@ mod tests {
                 mask_render_target: RenderTargetOut::with_handle(TextureHandle(13)),
             },
         ));
-        assert!(usages.contains(&texture_usage(TextureHandle(12), ResourceUsage::ColorAttachmentWrite)));
-        assert!(usages.contains(&texture_usage(TextureHandle(13), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(12),
+            ResourceUsage::ColorAttachmentWrite
+        )));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(13),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::Produced), 3);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::UniformRead), 3);
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         assert_eq!(graphics.color_attachments.len(), 2);
     }
 
@@ -406,10 +459,15 @@ mod tests {
         );
         pass.set_depth_stencil_target(Some(AttachmentTarget::Texture(TextureHandle(22))));
         let (descriptor, usages) = collect_setup_contract(pass);
-        assert!(usages.contains(&texture_usage(TextureHandle(14), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(14),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::Produced), 1);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::UniformRead), 1);
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         let depth = graphics
             .depth_stencil_attachment
             .expect("text pass with stencil clip should declare depth/stencil");
@@ -423,8 +481,12 @@ mod tests {
         let mut pass = TextureCompositePass::new(
             TextureCompositeParams::default(),
             TextureCompositeInput {
-                source: InSlot::<TextureResource, TextureCompositeSourceTag>::with_handle(TextureHandle(15)),
-                mask: InSlot::<TextureResource, TextureCompositeMaskTag>::with_handle(TextureHandle(16)),
+                source: InSlot::<TextureResource, TextureCompositeSourceTag>::with_handle(
+                    TextureHandle(15),
+                ),
+                mask: InSlot::<TextureResource, TextureCompositeMaskTag>::with_handle(
+                    TextureHandle(16),
+                ),
             },
             TextureCompositeOutput {
                 render_target: RenderTargetOut::with_handle(TextureHandle(17)),
@@ -432,14 +494,25 @@ mod tests {
         );
         pass.set_depth_stencil_target(Some(AttachmentTarget::Texture(TextureHandle(23))));
         let (descriptor, usages) = collect_setup_contract(pass);
-        assert!(usages.contains(&texture_usage(TextureHandle(15), ResourceUsage::SampledRead)));
-        assert!(usages.contains(&texture_usage(TextureHandle(16), ResourceUsage::SampledRead)));
-        assert!(usages.contains(&texture_usage(TextureHandle(17), ResourceUsage::ColorAttachmentWrite)));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(15),
+            ResourceUsage::SampledRead
+        )));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(16),
+            ResourceUsage::SampledRead
+        )));
+        assert!(usages.contains(&texture_usage(
+            TextureHandle(17),
+            ResourceUsage::ColorAttachmentWrite
+        )));
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::Produced), 3);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::UniformRead), 1);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::VertexRead), 1);
         assert_eq!(count_buffer_usages(&usages, ResourceUsage::IndexRead), 1);
-        let PassDetails::Graphics(graphics) = descriptor.details else { panic!("expected graphics"); };
+        let PassDetails::Graphics(graphics) = descriptor.details else {
+            panic!("expected graphics");
+        };
         let depth = graphics
             .depth_stencil_attachment
             .expect("texture composite should declare depth/stencil");

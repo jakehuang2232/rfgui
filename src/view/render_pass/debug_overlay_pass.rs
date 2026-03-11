@@ -1,11 +1,11 @@
 use crate::view::frame_graph::{
-    AttachmentTarget,
-    GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    AttachmentTarget, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
     GraphicsDepthStencilAttachmentDescriptor, GraphicsStencilAspectDescriptor, PassBuilder,
 };
 use crate::view::frame_graph::{GraphicsRecordContext, ResourceCache};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
+use crate::view::render_pass::render_target::RenderTargetPass;
 use crate::view::render_pass::render_target::{
     render_target_attachment_view, render_target_bundle, render_target_size, render_target_view,
 };
@@ -69,7 +69,11 @@ impl RenderPass for DebugOverlayPass {
         }
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         if !ctx.viewport.debug_geometry_overlay() {
             let _ = ctx.viewport.take_debug_overlay_geometry();
             return;
@@ -151,42 +155,48 @@ impl RenderPass for DebugOverlayPass {
             Some(AttachmentTarget::Surface) => {
                 parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
             }
-            Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
-                wgpu::RenderPassDepthStencilAttachment {
-                    view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }
-            }),
+            Some(AttachmentTarget::Texture(_)) => {
+                depth_stencil_view
+                    .as_ref()
+                    .map(|view| wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    })
+            }
             None => None,
         };
-        let mut pass = parts
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Debug Overlay"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                    resolve_target,
-                })],
-                depth_stencil_attachment,
-                ..Default::default()
-            });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Debug Overlay"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+                resolve_target,
+            })],
+            depth_stencil_attachment,
+            ..Default::default()
+        });
         pass.set_pipeline(&resources.pipeline);
         pass.set_scissor_rect(0, 0, target_w, target_h);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+    }
+}
+
+impl RenderTargetPass for DebugOverlayPass {
+    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
+        self.depth_stencil_target = depth_stencil_target;
     }
 }
 

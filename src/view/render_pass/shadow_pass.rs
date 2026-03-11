@@ -1,10 +1,10 @@
 use crate::render_pass::render_target::RenderTargetPass;
+use crate::view::frame_graph::slot::OutSlot;
+use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{
     FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
     PrepareContext,
 };
-use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
@@ -452,7 +452,11 @@ impl RenderPass for ShadowPass {
         }
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        _encoder: &mut wgpu::CommandEncoder,
+    ) {
         let target_handle = self.output.render_target.handle();
         let geometry_started_at = Instant::now();
         if self.mesh.vertices.len() < 3 || self.mesh.indices.len() < 3 {
@@ -1014,7 +1018,7 @@ fn create_resources(
 
 #[allow(clippy::too_many_arguments)]
 fn draw_mesh_fill(
-    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_>,
     pipeline: &wgpu::RenderPipeline,
     view: &wgpu::TextureView,
     bx: f32,
@@ -1152,7 +1156,7 @@ impl ShadowFinalCache {
 }
 
 fn acquire_temp_texture_view(
-    _ctx: &mut GraphicsRecordContext<'_, '_, '_>,
+    _ctx: &mut GraphicsRecordContext<'_, '_>,
     device: &wgpu::Device,
     width: u32,
     height: u32,
@@ -1278,7 +1282,7 @@ pub fn begin_shadow_resources_frame() {
 }
 
 fn create_shadow_cache_surface(
-    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_>,
     device: &wgpu::Device,
     source: &ShadowSurface,
     format: wgpu::TextureFormat,
@@ -1372,7 +1376,7 @@ fn shadow_final_cache_key(
 }
 
 fn blur_texture(
-    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_>,
     blur_pipeline: &wgpu::RenderPipeline,
     blur_bind_group_layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,

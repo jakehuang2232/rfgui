@@ -1,9 +1,9 @@
 use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
 use super::frame_graph::{
     AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
-    GraphicsDepthStencilAttachmentDescriptor, PassDescriptor, PassResourceUsage, ResourceHandle,
-    ResourceLifetime, ResourceMetadata, ResourceUsage, SampleCountPolicy, ScissorPolicy,
-    ViewportPolicy,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassRecordingMode, PassDescriptor,
+    PassResourceUsage, ResourceHandle, ResourceLifetime, ResourceMetadata, ResourceUsage,
+    SampleCountPolicy, ScissorPolicy, ViewportPolicy,
 };
 use super::slot::{InSlot, OutSlot};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
@@ -27,7 +27,9 @@ impl<'a> PassBuilder<'a> {
         &mut self,
         output: &OutSlot<TextureResource, Tag>,
     ) -> Option<AttachmentTarget> {
-        output.handle().map(|handle| AttachmentTarget::Texture(handle))
+        output
+            .handle()
+            .map(|handle| AttachmentTarget::Texture(handle))
     }
 
     pub fn descriptor(&self) -> &PassDescriptor {
@@ -48,6 +50,10 @@ impl<'a> PassBuilder<'a> {
 
     pub fn set_scissor_policy(&mut self, policy: ScissorPolicy) {
         self.descriptor.graphics_mut().scissor_policy = policy;
+    }
+
+    pub fn set_graphics_recording_mode(&mut self, mode: GraphicsPassRecordingMode) {
+        self.descriptor.graphics_mut().recording_mode = mode;
     }
 
     pub fn create_texture<Tag>(&mut self, desc: TextureDesc) -> OutSlot<TextureResource, Tag> {
@@ -298,7 +304,10 @@ impl<'a> PassBuilder<'a> {
         AttachmentTarget::Surface
     }
 
-    pub fn texture_target<Tag>(&mut self, output: &OutSlot<TextureResource, Tag>) -> Option<AttachmentTarget> {
+    pub fn texture_target<Tag>(
+        &mut self,
+        output: &OutSlot<TextureResource, Tag>,
+    ) -> Option<AttachmentTarget> {
         self.texture_target_from_output(output)
     }
 }

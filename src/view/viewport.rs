@@ -1628,6 +1628,8 @@ impl Viewport {
                         ..Default::default()
                     },
                 );
+                let mut debug_pass = debug_pass;
+                debug_pass.set_depth_stencil_target(ctx.depth_stencil_target());
                 graph.add_pass(debug_pass);
             }
             let present_pass = super::render_pass::present_surface_pass::PresentSurfacePass::new(
@@ -1640,9 +1642,12 @@ impl Viewport {
                 },
                 super::render_pass::present_surface_pass::PresentSurfaceOutput::default(),
             );
-            graph.add_pass(present_pass);
+            let present_handle = graph.add_pass(present_pass);
+            graph.add_pass_sink(
+                present_handle,
+                super::frame_graph::ExternalSinkKind::SurfacePresent,
+            );
         }
-        graph.normalize_opaque_rect_depths();
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let compile_started_at = Instant::now();
@@ -1876,8 +1881,12 @@ impl Viewport {
         desc: TextureDesc,
     ) -> Option<RenderTargetBundle> {
         let device = self.device.as_ref()?;
-        self.offscreen_render_target_pool
-            .acquire(device, allocation_id, desc, self.msaa_sample_count)
+        self.offscreen_render_target_pool.acquire(
+            device,
+            allocation_id,
+            desc,
+            self.msaa_sample_count,
+        )
     }
 
     pub(crate) fn acquire_frame_buffer(

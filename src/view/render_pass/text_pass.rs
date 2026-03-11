@@ -1,11 +1,10 @@
 use crate::render_pass::render_target::RenderTargetPass;
+use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{
-    AttachmentTarget,
-    GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
-    GraphicsDepthStencilAttachmentDescriptor, GraphicsRecordContext,
+    AttachmentTarget, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassRecordingMode, GraphicsRecordContext,
     GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
 };
-use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
@@ -130,6 +129,7 @@ impl TextPass {
 
 impl RenderPass for TextPass {
     fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+        builder.set_graphics_recording_mode(GraphicsPassRecordingMode::InlineOrStandalone);
         self.staging_buffer = builder.create_buffer(BufferDesc {
             size: (self.params.content.len().max(1) as u64).next_power_of_two(),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
@@ -303,7 +303,11 @@ impl RenderPass for TextPass {
         });
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         let Some(prepared) = self.prepared.as_mut() else {
             return;
         };
@@ -318,35 +322,6 @@ impl RenderPass for TextPass {
         let format = ctx.viewport.surface_format();
         let mut global = text_resources(&device, &queue, format);
         let resources = global.resources.as_mut().unwrap();
-
-        if ctx.active_render_pass().is_some() {
-            let target_size = match self.output.render_target.handle() {
-                Some(handle) => {
-                    render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size())
-                }
-                None => ctx.viewport.surface_size(),
-            };
-            let scissor_rect = physical_scissor_rect(
-                self.params.scissor_rect,
-                ctx.viewport.scale_factor(),
-                target_size,
-            );
-            let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
-            let Some(renderer) = prepared.renderer.as_mut() else {
-                return;
-            };
-            let Some(pass) = ctx.active_render_pass() else {
-                return;
-            };
-            if let Some([x, y, width, height]) = scissor_rect {
-                pass.set_scissor_rect(x, y, width, height);
-            } else {
-                pass.set_scissor_rect(0, 0, target_size.0, target_size.1);
-            }
-            pass.set_stencil_reference(stencil_reference);
-            let _ = renderer.render(&resources.atlas, &resources.viewport, pass);
-            return;
-        }
 
         let (offscreen_view, offscreen_msaa_view) = match self.output.render_target.handle() {
             Some(handle) => (
@@ -383,45 +358,44 @@ impl RenderPass for TextPass {
                 (Some(resolve_view), None) => (resolve_view, None),
                 (None, _) => (parts.view, surface_resolve),
             };
-        let depth_stencil_attachment = if prepared.stencil_clip_id.is_some() {
-            match self.depth_stencil_target {
-                Some(AttachmentTarget::Surface) => {
-                    parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-                }
-                Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
+        let depth_stencil_attachment =
+            if prepared.stencil_clip_id.is_some() {
+                match self.depth_stencil_target {
+                    Some(AttachmentTarget::Surface) => {
+                        parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
                     }
-                }),
-                None => None,
-            }
-        } else {
-            None
-        };
-        let mut pass = parts
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("TextPass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                    resolve_target,
-                })],
-                depth_stencil_attachment,
-                ..Default::default()
-            });
+                    Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
+                        wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
+                        }
+                    }),
+                    None => None,
+                }
+            } else {
+                None
+            };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("TextPass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+                resolve_target,
+            })],
+            depth_stencil_attachment,
+            ..Default::default()
+        });
         if let Some(stencil_clip_id) = prepared.stencil_clip_id {
             pass.set_stencil_reference(stencil_clip_id as u32);
         }
@@ -438,20 +412,45 @@ impl RenderPass for TextPass {
         let _ = renderer.render(&resources.atlas, &resources.viewport, &mut pass);
     }
 
-    fn batchable(&self) -> bool {
-        true
-    }
-
-    fn batch_key(&self) -> Option<crate::view::render_pass::RenderPassBatchKey> {
-        Some(crate::view::render_pass::RenderPassBatchKey {
-            color_target: self.output.render_target.handle(),
-            uses_depth_stencil: self.params.stencil_clip_id.is_some()
-                && self.depth_stencil_target.is_some(),
-        })
-    }
-
-    fn shared_render_pass_capable(&self) -> bool {
-        true
+    fn record_inline(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) {
+        let Some(prepared) = self.prepared.as_mut() else {
+            return;
+        };
+        let device = match ctx.viewport.device().cloned() {
+            Some(device) => device,
+            None => return,
+        };
+        let queue = match ctx.viewport.queue().cloned() {
+            Some(queue) => queue,
+            None => return,
+        };
+        let format = ctx.viewport.surface_format();
+        let mut global = text_resources(&device, &queue, format);
+        let resources = global.resources.as_mut().unwrap();
+        let target_size = match self.output.render_target.handle() {
+            Some(handle) => render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size()),
+            None => ctx.viewport.surface_size(),
+        };
+        let scissor_rect = physical_scissor_rect(
+            self.params.scissor_rect,
+            ctx.viewport.scale_factor(),
+            target_size,
+        );
+        let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
+        let Some(renderer) = prepared.renderer.as_mut() else {
+            return;
+        };
+        if let Some([x, y, width, height]) = scissor_rect {
+            pass.set_scissor_rect(x, y, width, height);
+        } else {
+            pass.set_scissor_rect(0, 0, target_size.0, target_size.1);
+        }
+        pass.set_stencil_reference(stencil_reference);
+        let _ = renderer.render(&resources.atlas, &resources.viewport, pass);
     }
 }
 

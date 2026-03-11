@@ -1,21 +1,21 @@
 use super::{ElementCore, Position, Size};
+use crate::ColorLike;
 use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::render_pass::shadow_pass::{ShadowInput, ShadowOutput};
 use crate::style::{
-    compute_style, Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-    ComputedStyle, CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
-    PositionMode, ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming,
+    Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
+    CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
+    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
-    ChannelId, LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition,
-    ScrollAxis, StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition,
-    StyleValue, TimeFunction, VisualField, VisualTrackRequest,
-    VisualTransition as RuntimeVisualTransition, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH,
-    CHANNEL_STYLE_BACKGROUND_COLOR, CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
-    CHANNEL_STYLE_BORDER_LEFT_COLOR, CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR,
-    CHANNEL_STYLE_BORDER_TOP_COLOR, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X,
-    CHANNEL_VISUAL_Y,
+    CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
+    CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
+    CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
+    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
+    LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
+    StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue,
+    TimeFunction, VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
@@ -32,7 +32,6 @@ use crate::view::render_pass::{
     TextureCompositePass, TextureCompositeSourceIn,
 };
 use crate::view::viewport::ViewportControl;
-use crate::ColorLike;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -349,8 +348,10 @@ impl UiBuildContext {
         self.viewport.color_target
     }
 
-    fn depth_stencil_target(&self) -> Option<AttachmentTarget> {
-        self.state.depth_stencil_target.or(self.viewport.depth_stencil_target)
+    pub(crate) fn depth_stencil_target(&self) -> Option<AttachmentTarget> {
+        self.state
+            .depth_stencil_target
+            .or(self.viewport.depth_stencil_target)
     }
 
     pub(crate) fn set_color_target(&mut self, color_target: Option<TextureHandle>) {

@@ -1,11 +1,11 @@
 use crate::render_pass::render_target::RenderTargetPass;
+use crate::view::frame_graph::ResourceCache;
+use crate::view::frame_graph::slot::OutSlot;
+use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{
     FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
     PrepareContext,
 };
-use crate::view::frame_graph::ResourceCache;
-use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
@@ -131,7 +131,11 @@ impl RenderPass for BlurPass {
         }
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };
@@ -208,22 +212,20 @@ impl RenderPass for BlurPass {
         };
         let color_view = offscreen_view.as_ref().unwrap_or(surface_color_view);
 
-        let mut pass = parts
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blur"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                    resolve_target: None,
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Blur"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+                resolve_target: None,
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
         if let Some([x, y, width, height]) = scissor_rect_physical {
             pass.set_scissor_rect(x, y, width, height);
         }

@@ -1,8 +1,8 @@
 use crate::render_pass::render_target::RenderTargetPass;
 use crate::view::frame_graph::{
     AttachmentLoadOp, AttachmentTarget, GraphicsColorAttachmentDescriptor,
-    GraphicsDepthAspectDescriptor, GraphicsDepthStencilAttachmentDescriptor,
-    GraphicsRecordContext, GraphicsStencilAspectDescriptor, PassBuilder,
+    GraphicsDepthAspectDescriptor, GraphicsDepthStencilAttachmentDescriptor, GraphicsRecordContext,
+    GraphicsStencilAspectDescriptor, PassBuilder,
 };
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
@@ -59,17 +59,19 @@ impl RenderPass for ClearPass {
                 GraphicsColorAttachmentDescriptor::clear(target, color),
             );
             if let Some(depth_stencil_target) = self.depth_stencil_target {
-                builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-                    target: depth_stencil_target,
-                    depth: Some(GraphicsDepthAspectDescriptor::write(
-                        AttachmentLoadOp::Clear,
-                        Some(1.0),
-                    )),
-                    stencil: Some(GraphicsStencilAspectDescriptor::write(
-                        AttachmentLoadOp::Clear,
-                        Some(0),
-                    )),
-                });
+                builder.declare_depth_stencil_attachment(
+                    GraphicsDepthStencilAttachmentDescriptor {
+                        target: depth_stencil_target,
+                        depth: Some(GraphicsDepthAspectDescriptor::write(
+                            AttachmentLoadOp::Clear,
+                            Some(1.0),
+                        )),
+                        stencil: Some(GraphicsStencilAspectDescriptor::write(
+                            AttachmentLoadOp::Clear,
+                            Some(0),
+                        )),
+                    },
+                );
             }
         } else {
             builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
@@ -90,7 +92,11 @@ impl RenderPass for ClearPass {
         }
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         let color = wgpu::Color {
             r: self.params.color[0] as f64,
             g: self.params.color[1] as f64,
@@ -129,37 +135,37 @@ impl RenderPass for ClearPass {
             Some(AttachmentTarget::Surface) => {
                 parts.depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), wgpu::LoadOp::Clear(0))
             }
-            Some(AttachmentTarget::Texture(_)) => depth_stencil_view.as_ref().map(|view| {
-                wgpu::RenderPassDepthStencilAttachment {
-                    view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }
-            }),
+            Some(AttachmentTarget::Texture(_)) => {
+                depth_stencil_view
+                    .as_ref()
+                    .map(|view| wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    })
+            }
             None => None,
         };
-        let _pass = parts
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(color),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                    resolve_target,
-                })],
-                depth_stencil_attachment,
-                ..Default::default()
-            });
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+                resolve_target,
+            })],
+            depth_stencil_attachment,
+            ..Default::default()
+        });
     }
 }
 
