@@ -1,12 +1,14 @@
 use crate::view::frame_graph::slot::OutSlot;
+use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{
     BufferReadUsage, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext,
+    GraphicsPassMergePolicy, PrepareContext,
 };
-use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_size};
-use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
+use crate::view::render_pass::render_target::{
+    GraphicsPassContext as RenderPassContext, render_target_size,
+};
+use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
@@ -71,7 +73,7 @@ pub type TextStagingBufferOut = OutSlot<BufferResource, TextStagingBufferTag>;
 
 #[derive(Default)]
 pub struct TextInput {
-    pub pass_context: GraphicsPassContext,
+    pub pass_context: RenderPassContext,
 }
 
 #[derive(Default)]
@@ -139,12 +141,16 @@ impl GraphicsPass for TextPass {
                 builder.surface_target(),
             ));
         }
-        self.params.scissor_rect =
-            intersect_scissor_rects(self.input.pass_context.scissor_rect, self.params.scissor_rect);
+        self.params.scissor_rect = intersect_scissor_rects(
+            self.input.pass_context.scissor_rect,
+            self.params.scissor_rect,
+        );
         if self.params.stencil_clip_id.is_none() {
             self.params.stencil_clip_id = self.input.pass_context.stencil_clip_id;
         }
-        if self.params.stencil_clip_id.is_some() && self.input.pass_context.depth_stencil_target.is_some() {
+        if self.params.stencil_clip_id.is_some()
+            && self.input.pass_context.depth_stencil_target.is_some()
+        {
             let target = self
                 .input
                 .pass_context
@@ -303,35 +309,29 @@ impl GraphicsPass for TextPass {
         });
     }
 
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
-        let GraphicsEncodeScope::Render(pass) = scope else {
-            unreachable!("TextPass requires render scope");
-        };
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let Some(prepared) = self.prepared.as_mut() else {
             return;
         };
-        let device = match ctx.viewport.device().cloned() {
+        let device = match ctx.viewport().device().cloned() {
             Some(device) => device,
             None => return,
         };
-        let queue = match ctx.viewport.queue().cloned() {
+        let queue = match ctx.viewport().queue().cloned() {
             Some(queue) => queue,
             None => return,
         };
-        let format = ctx.viewport.surface_format();
+        let format = ctx.viewport().surface_format();
         let mut global = text_resources(&device, &queue, format);
         let resources = global.resources.as_mut().unwrap();
         let target_size = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size()),
-            None => ctx.viewport.surface_size(),
+            Some(handle) => render_target_size(ctx.frame_resources(), handle)
+                .unwrap_or(ctx.viewport().surface_size()),
+            None => ctx.viewport().surface_size(),
         };
         let scissor_rect = physical_scissor_rect(
             self.params.scissor_rect,
-            ctx.viewport.scale_factor(),
+            ctx.viewport().scale_factor(),
             target_size,
         );
         let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
@@ -339,12 +339,12 @@ impl GraphicsPass for TextPass {
             return;
         };
         if let Some([x, y, width, height]) = scissor_rect {
-            pass.set_scissor_rect(x, y, width, height);
+            ctx.set_scissor_rect(x, y, width, height);
         } else {
-            pass.set_scissor_rect(0, 0, target_size.0, target_size.1);
+            ctx.set_scissor_rect(0, 0, target_size.0, target_size.1);
         }
-        pass.set_stencil_reference(stencil_reference);
-        let _ = renderer.render(&resources.atlas, &resources.viewport, pass);
+        ctx.set_stencil_reference(stencil_reference);
+        let _ = renderer.render(&resources.atlas, &resources.viewport, ctx.raw_render_pass());
     }
 }
 

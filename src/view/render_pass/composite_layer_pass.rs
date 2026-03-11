@@ -4,11 +4,11 @@ use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
     FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext,
+    GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
-use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
+use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
@@ -167,30 +167,25 @@ impl GraphicsPass for CompositeLayerPass {
         }
     }
 
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
-        let GraphicsEncodeScope::Render(pass) = scope else {
-            unreachable!("CompositeLayerPass requires render scope");
-        };
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };
-        let Some(layer_view) = render_target_view(ctx, layer_handle) else {
+        let Some(layer_view) = render_target_view(ctx.frame_resources(), layer_handle) else {
             return;
         };
-        let surface_size = ctx.viewport.surface_size();
+        let surface_size = ctx.viewport().surface_size();
         let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+            Some(handle) => {
+                render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
+            }
             None => surface_size,
         };
-        let device = match ctx.viewport.device() {
+        let device = match ctx.viewport().device() {
             Some(device) => device.clone(),
             None => return,
         };
-        let format = ctx.viewport.surface_format();
+        let format = ctx.viewport().surface_format();
         let cache = composite_layer_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources = cache.get_or_insert_with(COMPOSITE_LAYER_RESOURCES, || {
@@ -206,14 +201,14 @@ impl GraphicsPass for CompositeLayerPass {
         let Some(vertex_buffer) = self
             .vertex_buffer
             .handle()
-            .and_then(|h| ctx.acquire_buffer(h))
+            .and_then(|h| ctx.frame_resources().acquire_buffer(h))
         else {
             return;
         };
         let Some(index_buffer) = self
             .index_buffer
             .handle()
-            .and_then(|h| ctx.acquire_buffer(h))
+            .and_then(|h| ctx.frame_resources().acquire_buffer(h))
         else {
             return;
         };
@@ -233,19 +228,19 @@ impl GraphicsPass for CompositeLayerPass {
             ],
         });
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport
+            ctx.viewport()
                 .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
 
-        let debug_geometry_overlay = ctx.viewport.debug_geometry_overlay();
+        let debug_geometry_overlay = ctx.viewport().debug_geometry_overlay();
         if let Some([x, y, width, height]) = scissor_rect_physical {
-            pass.set_scissor_rect(x, y, width, height);
+            ctx.set_scissor_rect(x, y, width, height);
         }
-        pass.set_pipeline(&resources.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.prepared_indices.len() as u32, 0, 0..1);
+        ctx.set_pipeline(&resources.pipeline);
+        ctx.set_bind_group(0, &bind_group, &[]);
+        ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+        ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        ctx.draw_indexed(0..self.prepared_indices.len() as u32, 0, 0..1);
 
         if debug_geometry_overlay {
             let (debug_vertices, debug_indices) = build_debug_overlay_geometry(
@@ -269,15 +264,14 @@ impl GraphicsPass for CompositeLayerPass {
                         contents: bytemuck::cast_slice(&debug_indices),
                         usage: wgpu::BufferUsages::INDEX,
                     });
-                pass.set_pipeline(&resources.debug_pipeline);
-                pass.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
-                pass.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
+                ctx.set_pipeline(&resources.debug_pipeline);
+                ctx.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
+                ctx.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                ctx.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
             }
         }
     }
 }
-
 
 fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> CompositeLayerResources {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

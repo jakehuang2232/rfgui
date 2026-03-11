@@ -79,26 +79,22 @@ impl OffscreenRenderTargetPool {
         let format = desc.format();
         let dimension = desc.dimension();
 
-        let mut best_fit: Option<(u32, u64)> = None;
+        let mut best_fit: Option<u32> = None;
         for (&entry_id, entry) in &self.entries {
             if entry.frame_busy_epoch == self.frame_epoch
                 || entry.format != format
                 || entry.dimension != dimension
                 || entry.msaa_sample_count != msaa_sample_count
-                || entry.width < width
-                || entry.height < height
+                || entry.width != width
+                || entry.height != height
             {
                 continue;
             }
-            let waste = (entry.width as u64 * entry.height as u64)
-                .saturating_sub(width as u64 * height as u64);
-            match best_fit {
-                Some((_, best_waste)) if waste >= best_waste => {}
-                _ => best_fit = Some((entry_id, waste)),
-            }
+            best_fit = Some(entry_id);
+            break;
         }
 
-        let entry_id = if let Some((entry_id, _)) = best_fit {
+        let entry_id = if let Some(entry_id) = best_fit {
             entry_id
         } else {
             let entry_id = self.next_entry_id;
@@ -300,4 +296,11 @@ pub(crate) fn render_target_size(
     handle: TextureHandle,
 ) -> Option<(u32, u32)> {
     Some(render_target_bundle(ctx, handle)?.size)
+}
+
+pub(crate) fn render_target_format(
+    ctx: &impl FrameResourceContext,
+    handle: TextureHandle,
+) -> Option<wgpu::TextureFormat> {
+    Some(texture_desc_for_handle(ctx, handle)?.format())
 }

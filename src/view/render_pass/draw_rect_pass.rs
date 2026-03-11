@@ -4,10 +4,12 @@ use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource}
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
     FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext,
+    GraphicsPassMergePolicy, PrepareContext,
 };
-use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_size};
-use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
+use crate::view::render_pass::render_target::{
+    GraphicsPassContext as RenderPassContext, render_target_size,
+};
+use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
 use std::num::NonZeroU64;
 use std::sync::{Mutex, OnceLock};
@@ -101,7 +103,7 @@ pub enum RectRenderMode {
 #[derive(Default)]
 pub struct DrawRectInput {
     pub render_target: RenderTargetIn,
-    pub pass_context: GraphicsPassContext,
+    pub pass_context: RenderPassContext,
 }
 
 #[derive(Default)]
@@ -132,6 +134,14 @@ impl DrawRectPass {
             label: Some("DrawRect Uniform Ring Buffer"),
         });
         builder.read_buffer(&self.uniform_buffer, BufferReadUsage::Uniform);
+    }
+
+    fn inherit_stencil_clip_if_needed(&mut self) {
+        if matches!(self.stencil_mode, RectStencilMode::Disabled)
+            && let Some(clip_id) = self.input.pass_context.stencil_clip_id
+        {
+            self.set_stencil_test(clip_id);
+        }
     }
 
     pub fn new(params: RectPassParams, input: DrawRectInput, output: DrawRectOutput) -> Self {
@@ -529,15 +539,7 @@ impl GraphicsPass for DrawRectPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         self.build_uniform_buffer(builder);
-        if matches!(self.stencil_mode, RectStencilMode::Disabled) {
-            if let Some(clip_id) = self.input.pass_context.stencil_clip_id {
-                self.set_stencil_test(clip_id);
-            }
-        }
-        if let Some(handle) = self.input.render_target.handle() {
-            let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.render_target, &source);
-        }
+        self.inherit_stencil_clip_if_needed();
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             builder.write_color(
                 &self.output.render_target,
@@ -558,15 +560,8 @@ impl GraphicsPass for DrawRectPass {
         self.compile_upload_uniform(ctx, RectShaderVariant::Alpha);
     }
 
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
-        let GraphicsEncodeScope::Render(render_pass) = scope else {
-            unreachable!("DrawRectPass requires render scope");
-        };
-        encode_draw_rect_into_existing_pass(self, ctx, render_pass, RectShaderVariant::Alpha);
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
+        encode_draw_rect_into_existing_pass(self, ctx, RectShaderVariant::Alpha);
     }
 }
 
@@ -574,10 +569,7 @@ impl GraphicsPass for OpaqueRectPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         self.inner.build_uniform_buffer(builder);
-        if let Some(handle) = self.inner.input.render_target.handle() {
-            let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.inner.input.render_target, &source);
-        }
+        self.inner.inherit_stencil_clip_if_needed();
         if let Some(target) = builder.texture_target(&self.inner.output.render_target) {
             builder.write_color(
                 &self.inner.output.render_target,
@@ -599,20 +591,8 @@ impl GraphicsPass for OpaqueRectPass {
             .compile_upload_uniform(ctx, RectShaderVariant::Opaque);
     }
 
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
-        let GraphicsEncodeScope::Render(render_pass) = scope else {
-            unreachable!("OpaqueRectPass requires render scope");
-        };
-        encode_draw_rect_into_existing_pass(
-            &mut self.inner,
-            ctx,
-            render_pass,
-            RectShaderVariant::Opaque,
-        );
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
+        encode_draw_rect_into_existing_pass(&mut self.inner, ctx, RectShaderVariant::Opaque);
     }
 }
 
@@ -652,23 +632,22 @@ fn stencil_class_and_reference(stencil_mode: RectStencilMode) -> (RectStencilCla
 
 fn encode_draw_rect_into_existing_pass(
     pass_def: &mut DrawRectPass,
-    ctx: &mut GraphicsRecordContext<'_, '_>,
-    pass: &mut wgpu::RenderPass<'_>,
+    ctx: &mut GraphicsCtx<'_, '_, '_, '_>,
     variant: RectShaderVariant,
 ) {
     let draw = pass_def.snapshot_draw();
-    let surface_size = ctx.viewport.surface_size();
+    let surface_size = ctx.viewport().surface_size();
     let (target_w, target_h) = match draw.color_target {
-        Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+        Some(handle) => render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size),
         None => surface_size,
     };
-    let scale = ctx.viewport.scale_factor();
-    let device = match ctx.viewport.device() {
+    let scale = ctx.viewport().scale_factor();
+    let device = match ctx.viewport().device() {
         Some(device) => device.clone(),
         None => return,
     };
-    let format = ctx.viewport.surface_format();
-    let sample_count = ctx.viewport.msaa_sample_count();
+    let format = ctx.viewport().surface_format();
+    let sample_count = ctx.viewport().msaa_sample_count();
     let scaled_position = [draw.position[0] * scale, draw.position[1] * scale];
     let scaled_size = [draw.size[0] * scale, draw.size[1] * scale];
     let scaled_border_widths = draw.border_widths.map(|v| v * scale);
@@ -761,22 +740,22 @@ fn encode_draw_rect_into_existing_pass(
         })
     };
     let scissor_rect_physical = draw.scissor_rect.and_then(|scissor_rect| {
-        ctx.viewport
+        ctx.viewport()
             .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
     });
-    pass.set_pipeline(&pipeline);
-    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-    pass.set_bind_group(0, &bind_group, &[0]);
+    ctx.set_pipeline(&pipeline);
+    ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+    ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+    ctx.set_bind_group(0, &bind_group, &[0]);
     if let Some(stencil_reference) = stencil_reference {
-        pass.set_stencil_reference(stencil_reference as u32);
+        ctx.set_stencil_reference(stencil_reference as u32);
     }
     if let Some([x, y, width, height]) = scissor_rect_physical {
-        pass.set_scissor_rect(x, y, width, height);
+        ctx.set_scissor_rect(x, y, width, height);
     } else {
-        pass.set_scissor_rect(0, 0, target_w, target_h);
+        ctx.set_scissor_rect(0, 0, target_w, target_h);
     }
-    pass.draw_indexed(0..index_count, 0, 0..1);
+    ctx.draw_indexed(0..index_count, 0, 0..1);
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1498,5 +1477,27 @@ mod tests {
         assert!(first.inner.params.depth > later.inner.params.depth);
         assert!(first.inner.params.depth <= 1.0);
         assert!(later.inner.params.depth >= 0.0);
+    }
+
+    #[test]
+    fn opaque_rect_inherits_parent_stencil_clip() {
+        let mut pass = OpaqueRectPass::from_draw_rect_pass(DrawRectPass::new(
+            RectPassParams::default(),
+            DrawRectInput {
+                pass_context: RenderPassContext {
+                    stencil_clip_id: Some(3),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            DrawRectOutput::default(),
+        ));
+
+        pass.inner.inherit_stencil_clip_if_needed();
+
+        assert_eq!(
+            pass.inner.stencil_mode,
+            RectStencilMode::Test { clip_id: 3 }
+        );
     }
 }

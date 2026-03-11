@@ -2,74 +2,193 @@ use crate::view::frame_graph::{
     ComputePassBuilder, ComputeRecordContext, GraphicsPassBuilder, GraphicsRecordContext,
     PrepareContext, TransferPassBuilder, TransferRecordContext,
 };
+use crate::view::viewport::Viewport;
 
-pub mod blur_pass;
+pub mod blur_module;
 pub mod clear_pass;
 pub mod composite_layer_pass;
 pub mod debug_overlay_pass;
 pub mod draw_rect_pass;
 pub mod present_surface_pass;
 pub(crate) mod render_target;
-pub mod shadow_pass;
+pub mod shadow_module;
 pub mod text_pass;
 pub mod texture_composite_pass;
-pub use blur_pass::BlurPass;
+pub use blur_module::{BlurModuleInput, BlurModuleOutput, BlurModuleParams, build_blur_module};
 pub use clear_pass::ClearPass;
 pub use composite_layer_pass::{CompositeLayerPass, LayerOut, LayerTag};
 pub use draw_rect_pass::{AlphaRectPass, DrawRectPass, OpaqueRectPass, RectRenderMode};
-pub use shadow_pass::{ShadowMesh, ShadowParams, ShadowPass};
+pub use shadow_module::{ShadowMesh, ShadowModuleSpec, ShadowParams, build_shadow_module};
 pub use text_pass::{TextPass, prewarm_text_pipeline};
 pub use texture_composite_pass::{
     TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
     TextureCompositePass, TextureCompositeSourceIn,
 };
 
+pub struct GraphicsCtx<'a, 'ctx, 'res, 'pass> {
+    frame_resources: &'a mut GraphicsRecordContext<'ctx, 'res>,
+    render_pass: &'a mut wgpu::RenderPass<'pass>,
+}
+
+impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
+    pub(crate) fn new(
+        frame_resources: &'a mut GraphicsRecordContext<'ctx, 'res>,
+        render_pass: &'a mut wgpu::RenderPass<'pass>,
+    ) -> Self {
+        Self {
+            frame_resources,
+            render_pass,
+        }
+    }
+
+    pub fn frame_resources(&mut self) -> &mut GraphicsRecordContext<'ctx, 'res> {
+        self.frame_resources
+    }
+
+    pub fn viewport(&mut self) -> &mut Viewport {
+        self.frame_resources.viewport()
+    }
+
+    pub fn set_pipeline(&mut self, pipeline: &wgpu::RenderPipeline) {
+        self.render_pass.set_pipeline(pipeline);
+    }
+
+    pub fn set_bind_group(
+        &mut self,
+        index: u32,
+        bind_group: &wgpu::BindGroup,
+        offsets: &[wgpu::DynamicOffset],
+    ) {
+        self.render_pass.set_bind_group(index, bind_group, offsets);
+    }
+
+    pub fn set_vertex_buffer(&mut self, slot: u32, buffer_slice: wgpu::BufferSlice<'_>) {
+        self.render_pass.set_vertex_buffer(slot, buffer_slice);
+    }
+
+    pub fn set_index_buffer(
+        &mut self,
+        buffer_slice: wgpu::BufferSlice<'_>,
+        index_format: wgpu::IndexFormat,
+    ) {
+        self.render_pass
+            .set_index_buffer(buffer_slice, index_format);
+    }
+
+    pub fn set_scissor_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        self.render_pass.set_scissor_rect(x, y, width, height);
+    }
+
+    pub fn set_stencil_reference(&mut self, reference: u32) {
+        self.render_pass.set_stencil_reference(reference);
+    }
+
+    pub fn draw(&mut self, vertices: std::ops::Range<u32>, instances: std::ops::Range<u32>) {
+        self.render_pass.draw(vertices, instances);
+    }
+
+    pub fn draw_indexed(
+        &mut self,
+        indices: std::ops::Range<u32>,
+        base_vertex: i32,
+        instances: std::ops::Range<u32>,
+    ) {
+        self.render_pass
+            .draw_indexed(indices, base_vertex, instances);
+    }
+
+    pub(crate) fn raw_render_pass(&mut self) -> &mut wgpu::RenderPass<'pass> {
+        self.render_pass
+    }
+}
+
+pub struct ComputeCtx<'a, 'ctx, 'res, 'pass> {
+    frame_resources: &'a mut ComputeRecordContext<'ctx, 'res>,
+    #[allow(dead_code)]
+    scope: ComputeEncodeScope<'a, 'pass>,
+}
+
+impl<'a, 'ctx, 'res, 'pass> ComputeCtx<'a, 'ctx, 'res, 'pass> {
+    pub(crate) fn new(
+        frame_resources: &'a mut ComputeRecordContext<'ctx, 'res>,
+        scope: ComputeEncodeScope<'a, 'pass>,
+    ) -> Self {
+        Self {
+            frame_resources,
+            scope,
+        }
+    }
+
+    pub fn frame_resources(&mut self) -> &mut ComputeRecordContext<'ctx, 'res> {
+        self.frame_resources
+    }
+
+    pub fn viewport(&mut self) -> &mut Viewport {
+        self.frame_resources.viewport()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn scope(&mut self) -> &mut ComputeEncodeScope<'a, 'pass> {
+        &mut self.scope
+    }
+}
+
+pub struct TransferCtx<'a, 'ctx, 'res> {
+    frame_resources: &'a mut TransferRecordContext<'ctx, 'res>,
+    #[allow(dead_code)]
+    encoder: &'a mut wgpu::CommandEncoder,
+}
+
+impl<'a, 'ctx, 'res> TransferCtx<'a, 'ctx, 'res> {
+    pub(crate) fn new(
+        frame_resources: &'a mut TransferRecordContext<'ctx, 'res>,
+        encoder: &'a mut wgpu::CommandEncoder,
+    ) -> Self {
+        Self {
+            frame_resources,
+            encoder,
+        }
+    }
+
+    pub fn frame_resources(&mut self) -> &mut TransferRecordContext<'ctx, 'res> {
+        self.frame_resources
+    }
+
+    pub fn viewport(&mut self) -> &mut Viewport {
+        self.frame_resources.viewport()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn command_encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        self.encoder
+    }
+}
+
 pub trait GraphicsPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>);
     fn prepare(&mut self, _ctx: &mut PrepareContext<'_, '_>) {}
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    );
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>);
 }
 
 pub trait ComputePass {
     fn setup(&mut self, builder: &mut ComputePassBuilder<'_, '_>);
     fn prepare(&mut self, _ctx: &mut PrepareContext<'_, '_>) {}
-    fn encode(&mut self, ctx: &mut ComputeRecordContext<'_, '_>, scope: ComputeEncodeScope<'_, '_>);
+    fn execute(&mut self, ctx: &mut ComputeCtx<'_, '_, '_, '_>);
 }
 
 pub trait TransferPass {
     fn setup(&mut self, builder: &mut TransferPassBuilder<'_, '_>);
     fn prepare(&mut self, _ctx: &mut PrepareContext<'_, '_>) {}
-    fn encode(&mut self, ctx: &mut TransferRecordContext<'_, '_>, scope: TransferEncodeScope<'_>);
+    fn execute(&mut self, ctx: &mut TransferCtx<'_, '_, '_>);
 }
 
 pub(crate) trait PassNodeDyn {
     fn setup(&mut self, builder: &mut crate::view::frame_graph::PassBuilderState<'_>);
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>);
-    fn encode_graphics(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    );
-    fn encode_compute(
-        &mut self,
-        ctx: &mut ComputeRecordContext<'_, '_>,
-        scope: ComputeEncodeScope<'_, '_>,
-    );
-    fn encode_transfer(
-        &mut self,
-        ctx: &mut TransferRecordContext<'_, '_>,
-        scope: TransferEncodeScope<'_>,
-    );
+    fn execute_graphics(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>);
+    fn execute_compute(&mut self, ctx: &mut ComputeCtx<'_, '_, '_, '_>);
+    fn execute_transfer(&mut self, ctx: &mut TransferCtx<'_, '_, '_>);
     fn name(&self) -> &'static str;
-}
-
-pub enum GraphicsEncodeScope<'a, 'pass> {
-    Command(&'a mut wgpu::CommandEncoder),
-    Render(&'a mut wgpu::RenderPass<'pass>),
 }
 
 pub enum ComputeEncodeScope<'a, 'pass> {
@@ -95,27 +214,15 @@ impl<P: GraphicsPass + 'static> PassNodeDyn for GraphicsPassWrapper<P> {
         self.pass.prepare(ctx);
     }
 
-    fn encode_graphics(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
-        self.pass.encode(ctx, scope);
+    fn execute_graphics(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
+        self.pass.execute(ctx);
     }
 
-    fn encode_compute(
-        &mut self,
-        _ctx: &mut ComputeRecordContext<'_, '_>,
-        _scope: ComputeEncodeScope<'_, '_>,
-    ) {
+    fn execute_compute(&mut self, _ctx: &mut ComputeCtx<'_, '_, '_, '_>) {
         unreachable!("graphics pass encoded through compute path");
     }
 
-    fn encode_transfer(
-        &mut self,
-        _ctx: &mut TransferRecordContext<'_, '_>,
-        _scope: TransferEncodeScope<'_>,
-    ) {
+    fn execute_transfer(&mut self, _ctx: &mut TransferCtx<'_, '_, '_>) {
         unreachable!("graphics pass encoded through transfer path");
     }
 
@@ -138,27 +245,15 @@ impl<P: ComputePass + 'static> PassNodeDyn for ComputePassWrapper<P> {
         self.pass.prepare(ctx);
     }
 
-    fn encode_graphics(
-        &mut self,
-        _ctx: &mut GraphicsRecordContext<'_, '_>,
-        _scope: GraphicsEncodeScope<'_, '_>,
-    ) {
+    fn execute_graphics(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         unreachable!("compute pass encoded through graphics path");
     }
 
-    fn encode_compute(
-        &mut self,
-        ctx: &mut ComputeRecordContext<'_, '_>,
-        scope: ComputeEncodeScope<'_, '_>,
-    ) {
-        self.pass.encode(ctx, scope);
+    fn execute_compute(&mut self, ctx: &mut ComputeCtx<'_, '_, '_, '_>) {
+        self.pass.execute(ctx);
     }
 
-    fn encode_transfer(
-        &mut self,
-        _ctx: &mut TransferRecordContext<'_, '_>,
-        _scope: TransferEncodeScope<'_>,
-    ) {
+    fn execute_transfer(&mut self, _ctx: &mut TransferCtx<'_, '_, '_>) {
         unreachable!("compute pass encoded through transfer path");
     }
 
@@ -181,28 +276,16 @@ impl<P: TransferPass + 'static> PassNodeDyn for TransferPassWrapper<P> {
         self.pass.prepare(ctx);
     }
 
-    fn encode_graphics(
-        &mut self,
-        _ctx: &mut GraphicsRecordContext<'_, '_>,
-        _scope: GraphicsEncodeScope<'_, '_>,
-    ) {
+    fn execute_graphics(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         unreachable!("transfer pass encoded through graphics path");
     }
 
-    fn encode_compute(
-        &mut self,
-        _ctx: &mut ComputeRecordContext<'_, '_>,
-        _scope: ComputeEncodeScope<'_, '_>,
-    ) {
+    fn execute_compute(&mut self, _ctx: &mut ComputeCtx<'_, '_, '_, '_>) {
         unreachable!("transfer pass encoded through compute path");
     }
 
-    fn encode_transfer(
-        &mut self,
-        ctx: &mut TransferRecordContext<'_, '_>,
-        scope: TransferEncodeScope<'_>,
-    ) {
-        self.pass.encode(ctx, scope);
+    fn execute_transfer(&mut self, ctx: &mut TransferCtx<'_, '_, '_>) {
+        self.pass.execute(ctx);
     }
 
     fn name(&self) -> &'static str {

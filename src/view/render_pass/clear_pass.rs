@@ -1,10 +1,10 @@
 use crate::view::frame_graph::{
     AttachmentLoadOp, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, GraphicsRecordContext,
+    GraphicsPassMergePolicy,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::GraphicsPassContext;
-use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
+use crate::view::render_pass::render_target::GraphicsPassContext as RenderPassContext;
+use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 
 pub struct ClearPass {
     params: ClearParams,
@@ -24,7 +24,7 @@ impl ClearParams {
 
 #[derive(Default)]
 pub struct ClearInput {
-    pub pass_context: GraphicsPassContext,
+    pub pass_context: RenderPassContext,
     pub clear_depth_stencil: bool,
 }
 
@@ -73,11 +73,7 @@ impl GraphicsPass for ClearPass {
         }
     }
 
-    fn encode(
-        &mut self,
-        _ctx: &mut GraphicsRecordContext<'_, '_>,
-        _scope: GraphicsEncodeScope<'_, '_>,
-    ) {
+    fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         // Clear work is fully represented by attachment load ops declared in setup().
     }
 }

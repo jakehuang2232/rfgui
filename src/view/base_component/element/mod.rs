@@ -1,7 +1,6 @@
 use super::{ElementCore, Position, Size};
 use crate::ColorLike;
 use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
-use crate::render_pass::shadow_pass::{ShadowInput, ShadowOutput};
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
     CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
@@ -22,14 +21,12 @@ use crate::ui::{
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{AttachmentTarget, FrameGraph, TextureDesc};
-use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::GraphicsPassContext;
 use crate::view::render_pass::{
-    ClearPass, DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowMesh,
-    ShadowParams, ShadowPass, TextureCompositeInput, TextureCompositeMaskIn,
-    TextureCompositeOutput, TextureCompositeParams, TextureCompositePass, TextureCompositeSourceIn,
+    DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowModuleSpec,
+    ShadowParams, build_shadow_module,
 };
 use crate::view::viewport::ViewportControl;
 use std::cell::RefCell;

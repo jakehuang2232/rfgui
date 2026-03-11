@@ -1,15 +1,15 @@
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
-use crate::view::frame_graph::{
-    BufferReadUsage, FrameResourceContext, GraphicsColorAttachmentDescriptor,
-    GraphicsPassBuilder, GraphicsPassMergePolicy, GraphicsRecordContext,
-};
 use crate::view::frame_graph::{BufferDesc, BufferResource, PrepareContext, ResourceCache};
+use crate::view::frame_graph::{
+    BufferReadUsage, FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    GraphicsPassMergePolicy, GraphicsRecordContext,
+};
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext, render_target_size, render_target_view,
+    GraphicsPassContext as RenderPassContext, render_target_size, render_target_view,
 };
-use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
+use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -65,7 +65,7 @@ pub type TextureCompositeIndexBufferOut = OutSlot<BufferResource, TextureComposi
 pub struct TextureCompositeInput {
     pub source: TextureCompositeSourceIn,
     pub mask: TextureCompositeMaskIn,
-    pub pass_context: GraphicsPassContext,
+    pub pass_context: RenderPassContext,
 }
 
 #[derive(Default)]
@@ -112,7 +112,6 @@ impl TextureCompositePass {
             output,
         }
     }
-
 }
 
 impl GraphicsPass for TextureCompositePass {
@@ -137,8 +136,10 @@ impl GraphicsPass for TextureCompositePass {
         builder.read_buffer(&self.vertex_buffer, BufferReadUsage::Vertex);
         builder.read_buffer(&self.index_buffer, BufferReadUsage::Index);
 
-        self.params.scissor_rect =
-            intersect_scissor_rects(self.input.pass_context.scissor_rect, self.params.scissor_rect);
+        self.params.scissor_rect = intersect_scissor_rects(
+            self.input.pass_context.scissor_rect,
+            self.params.scissor_rect,
+        );
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, TextureCompositeSourceTag> =
                 OutSlot::with_handle(handle);
@@ -198,32 +199,25 @@ impl GraphicsPass for TextureCompositePass {
         }
     }
 
-    fn encode(
-        &mut self,
-        ctx: &mut GraphicsRecordContext<'_, '_>,
-        scope: GraphicsEncodeScope<'_, '_>,
-    ) {
-        let GraphicsEncodeScope::Render(pass) = scope else {
-            unreachable!("TextureCompositePass requires render scope");
-        };
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let Some(source_handle) = self.input.source.handle() else {
             return;
         };
-        let Some(source_view) = render_target_view(ctx, source_handle) else {
+        let Some(source_view) = render_target_view(ctx.frame_resources(), source_handle) else {
             return;
         };
         let mask_view = self
             .input
             .mask
             .handle()
-            .and_then(|h| render_target_view(ctx, h));
+            .and_then(|h| render_target_view(ctx.frame_resources(), h));
 
-        let device = match ctx.viewport.device() {
+        let device = match ctx.viewport().device() {
             Some(device) => device.clone(),
             None => return,
         };
-        let format = ctx.viewport.surface_format();
-        let sample_count = ctx.viewport.msaa_sample_count();
+        let format = ctx.viewport().surface_format();
+        let sample_count = ctx.viewport().msaa_sample_count();
         let cache = texture_composite_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
@@ -236,7 +230,7 @@ impl GraphicsPass for TextureCompositePass {
         let acquired_uniform_buffer = self
             .uniform_buffer
             .handle()
-            .and_then(|h| ctx.acquire_buffer(h));
+            .and_then(|h| ctx.frame_resources().acquire_buffer(h));
         let fallback_uniform_buffer;
         let uniform_binding = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
             buffer.as_entire_binding()
@@ -282,11 +276,11 @@ impl GraphicsPass for TextureCompositePass {
         let acquired_vertex_buffer = self
             .vertex_buffer
             .handle()
-            .and_then(|h| ctx.acquire_buffer(h));
+            .and_then(|h| ctx.frame_resources().acquire_buffer(h));
         let acquired_index_buffer = self
             .index_buffer
             .handle()
-            .and_then(|h| ctx.acquire_buffer(h));
+            .and_then(|h| ctx.frame_resources().acquire_buffer(h));
         let fallback_vertex_buffer;
         let fallback_index_buffer;
         let (vertex_buffer, index_buffer): (&wgpu::Buffer, &wgpu::Buffer) = if let (
@@ -298,12 +292,14 @@ impl GraphicsPass for TextureCompositePass {
         ) {
             (vb, ib)
         } else {
-            let surface_size = ctx.viewport.surface_size();
+            let surface_size = ctx.viewport().surface_size();
             let (target_w, target_h) = match self.output.render_target.handle() {
-                Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+                Some(handle) => {
+                    render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
+                }
                 None => surface_size,
             };
-            let scale = ctx.viewport.scale_factor();
+            let scale = ctx.viewport().scale_factor();
             let bounds =
                 resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
             let (vertices, indices) = quad_for_bounds(bounds, target_w as f32, target_h as f32);
@@ -320,13 +316,15 @@ impl GraphicsPass for TextureCompositePass {
             (&fallback_vertex_buffer, &fallback_index_buffer)
         };
 
-        let surface_size = ctx.viewport.surface_size();
+        let surface_size = ctx.viewport().surface_size();
         let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
+            Some(handle) => {
+                render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
+            }
             None => surface_size,
         };
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport
+            ctx.viewport()
                 .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
         let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
@@ -335,7 +333,7 @@ impl GraphicsPass for TextureCompositePass {
             &resources.pipeline_no_stencil
         };
         encode(
-            pass,
+            ctx.raw_render_pass(),
             pipeline,
             &bind_group,
             vertex_buffer,
