@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::view::frame_graph::FrameGraph;
-use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::TextPass;
 use crate::view::render_pass::text_pass::TextPassParams;
 use crate::view::render_pass::text_pass::{TextInput, TextOutput};
@@ -607,7 +606,6 @@ impl Renderable for Text {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        let next_dep = graph.declare_dep_token();
         let mut pass = TextPass::new(
             TextPassParams {
                 content: self.content.clone(),
@@ -626,18 +624,15 @@ impl Renderable for Text {
                 scissor_rect: None,
                 stencil_clip_id: None,
             },
-            TextInput {
-                dep: DepIn::with_handle(ctx.current_dep_token()),
-            },
+            TextInput::default(),
             TextOutput {
                 render_target: input_target,
-                dep: DepOut::with_handle(next_dep),
+                ..Default::default()
             },
         );
         ctx.configure_pass(&mut pass);
         graph.add_pass(pass);
         ctx.set_current_target(input_target);
-        ctx.set_current_dep_token(next_dep);
         ctx.into_state()
     }
 }

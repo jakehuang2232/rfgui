@@ -1,9 +1,12 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::PassContext;
-use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::{
+    FrameResourceContext, GraphicsColorAttachmentDescriptor,
+    GraphicsDepthAspectDescriptor, GraphicsDepthStencilAttachmentDescriptor,
+    GraphicsRecordContext, GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
+};
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
-use crate::view::frame_graph::{BufferDesc, BufferResource, DepHandle, DepIn, DepOut};
+use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::render_target::{
     render_target_bundle, render_target_msaa_view, render_target_size, render_target_view,
 };
@@ -102,13 +105,11 @@ pub enum RectRenderMode {
 #[derive(Default)]
 pub struct DrawRectInput {
     pub render_target: RenderTargetIn,
-    pub dep: DepIn,
 }
 
 #[derive(Default)]
 pub struct DrawRectOutput {
     pub render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 pub struct OpaqueRectPass {
@@ -117,12 +118,21 @@ pub struct OpaqueRectPass {
 }
 
 impl DrawRectPass {
-    fn build_uniform_buffer(&mut self, builder: &mut BuildContext) {
+    pub(crate) fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput {
+        &mut self.input
+    }
+
+    pub(crate) fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput {
+        &mut self.output
+    }
+
+    fn build_uniform_buffer(&mut self, builder: &mut PassBuilder<'_>) {
         self.uniform_buffer = builder.create_buffer(BufferDesc {
             size: RECT_UNIFORM_SLOT_SIZE * RECT_UNIFORM_SLOT_COUNT as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             label: Some("DrawRect Uniform Ring Buffer"),
         });
+        builder.declare_uniform_buffer(&self.uniform_buffer);
     }
 
     pub fn new(params: RectPassParams, input: DrawRectInput, output: DrawRectOutput) -> Self {
@@ -177,14 +187,6 @@ impl DrawRectPass {
 
     pub fn set_output(&mut self, output: RenderTargetOut) {
         self.output.render_target = output;
-    }
-
-    pub fn set_dep_input(&mut self, dep_input: Option<DepHandle>) {
-        self.input.dep = dep_input.map(DepIn::with_handle).unwrap_or_default();
-    }
-
-    pub fn set_dep_output(&mut self, dep_output: Option<DepHandle>) {
-        self.output.dep = dep_output.map(DepOut::with_handle).unwrap_or_default();
     }
 
     pub fn set_border_width(&mut self, width: f32) {
@@ -288,7 +290,7 @@ impl DrawRectPass {
 
     fn compile_upload_uniform(
         &mut self,
-        ctx: &mut PassContext<'_, '_>,
+        ctx: &mut PrepareContext<'_, '_>,
         variant: RectShaderVariant,
     ) {
         let Some(handle) = self.uniform_buffer.handle() else {
@@ -417,6 +419,14 @@ impl DrawRectPass {
 }
 
 impl OpaqueRectPass {
+    pub(crate) fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput {
+        &mut self.inner.input
+    }
+
+    pub(crate) fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput {
+        &mut self.inner.output
+    }
+
     pub fn from_draw_rect_pass(pass: DrawRectPass) -> Self {
         Self {
             inner: pass,
@@ -434,14 +444,6 @@ impl OpaqueRectPass {
 
     pub fn set_output(&mut self, output: RenderTargetOut) {
         self.inner.set_output(output);
-    }
-
-    pub fn set_dep_input(&mut self, dep_input: Option<DepHandle>) {
-        self.inner.set_dep_input(dep_input);
-    }
-
-    pub fn set_dep_output(&mut self, dep_output: Option<DepHandle>) {
-        self.inner.set_dep_output(dep_output);
     }
 
     pub fn set_depth_order(&mut self, depth_order: u32) {
@@ -565,53 +567,35 @@ pub(crate) struct DrawRectBatchEntry {
 }
 
 impl RenderPass for DrawRectPass {
-    type Input = DrawRectInput;
-    type Output = DrawRectOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
         self.build_uniform_buffer(builder);
         if let Some(handle) = self.input.render_target.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.render_target, &source);
+            builder.declare_sampled_texture(&mut self.input.render_target, &source);
         }
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = OutSlot::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+                builder.surface_target(),
+            ));
         }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
-        }
+        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+            target: builder.surface_target(),
+            depth: Some(GraphicsDepthAspectDescriptor::read()),
+            stencil: Some(GraphicsStencilAspectDescriptor::read()),
+        });
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         self.compile_upload_uniform(ctx, RectShaderVariant::Alpha);
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
-        execute_draw_rect_pass(self, ctx, RectShaderVariant::Alpha, render_pass);
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+        execute_draw_rect_pass(self, ctx, RectShaderVariant::Alpha);
     }
 
     fn batchable(&self) -> bool {
@@ -628,54 +612,36 @@ impl RenderPass for DrawRectPass {
 }
 
 impl RenderPass for OpaqueRectPass {
-    type Input = DrawRectInput;
-    type Output = DrawRectOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.inner.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.inner.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.inner.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.inner.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
         self.inner.build_uniform_buffer(builder);
         if let Some(handle) = self.inner.input.render_target.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.inner.input.render_target, &source);
+            builder.declare_sampled_texture(&mut self.inner.input.render_target, &source);
         }
-        if let Some(handle) = self.inner.input.dep.handle() {
-            let source: DepOut = OutSlot::with_handle(handle);
-            builder.read_dep(&mut self.inner.input.dep, &source);
+        if let Some(target) = builder.texture_target(&self.inner.output.render_target) {
+            builder.declare_color_attachment(
+                &self.inner.output.render_target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+                builder.surface_target(),
+            ));
         }
-        if self.inner.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.inner.output.render_target);
-        }
-        if self.inner.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.inner.output.dep);
-        }
+        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+            target: builder.surface_target(),
+            depth: Some(GraphicsDepthAspectDescriptor::read()),
+            stencil: Some(GraphicsStencilAspectDescriptor::read()),
+        });
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         self.inner
             .compile_upload_uniform(ctx, RectShaderVariant::Opaque);
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
-        execute_draw_rect_pass(&mut self.inner, ctx, RectShaderVariant::Opaque, render_pass);
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+        execute_draw_rect_pass(&mut self.inner, ctx, RectShaderVariant::Opaque);
     }
 
     fn batchable(&self) -> bool {
@@ -732,12 +698,11 @@ fn draw_requires_depth_stencil(variant: RectShaderVariant, stencil_mode: RectSte
 
 fn execute_draw_rect_pass(
     pass_def: &mut DrawRectPass,
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
     variant: RectShaderVariant,
-    mut render_pass: Option<&mut wgpu::RenderPass<'_>>,
 ) {
-    if let Some(pass) = render_pass.as_mut() {
-        encode_draw_rect_into_existing_pass(pass_def, ctx, variant, pass);
+    if ctx.active_render_pass().is_some() {
+        encode_draw_rect_into_existing_pass(pass_def, ctx, variant);
         return;
     }
     let entry = DrawRectBatchEntry {
@@ -750,9 +715,8 @@ fn execute_draw_rect_pass(
 
 fn encode_draw_rect_into_existing_pass(
     pass_def: &mut DrawRectPass,
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
     variant: RectShaderVariant,
-    pass: &mut wgpu::RenderPass<'_>,
 ) {
     let draw = pass_def.snapshot_draw();
     let surface_size = ctx.viewport.surface_size();
@@ -862,6 +826,9 @@ fn encode_draw_rect_into_existing_pass(
         ctx.viewport
             .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
     });
+    let Some(pass) = ctx.active_render_pass() else {
+        return;
+    };
     pass.set_pipeline(&pipeline);
     pass.set_vertex_buffer(0, vertex_buffer.slice(..));
     pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -879,7 +846,7 @@ fn encode_draw_rect_into_existing_pass(
 
 pub(crate) fn execute_draw_rect_batch(
     entries: &[DrawRectBatchEntry],
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
 ) -> bool {
     if entries.is_empty() {
         return true;

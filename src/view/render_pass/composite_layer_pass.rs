@@ -1,10 +1,12 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::ResourceCache;
-use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::{
+    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
+    PrepareContext,
+};
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
-use crate::view::frame_graph::{BufferDesc, BufferResource, DepIn, DepOut};
+use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
@@ -46,14 +48,12 @@ pub type CompositeIndexBufferOut = OutSlot<BufferResource, CompositeIndexBufferT
 
 #[derive(Default)]
 pub struct CompositeLayerInput {
-    pub dep: DepIn,
     pub layer: LayerIn,
 }
 
 #[derive(Default)]
 pub struct CompositeLayerOutput {
     pub render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -99,26 +99,7 @@ impl CompositeLayerPass {
 }
 
 impl RenderPass for CompositeLayerPass {
-    type Input = CompositeLayerInput;
-    type Output = CompositeLayerOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
         self.vertex_buffer = builder.create_buffer(BufferDesc {
             size: 256 * 1024,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
@@ -129,19 +110,21 @@ impl RenderPass for CompositeLayerPass {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
             label: Some("CompositeLayer Index Buffer"),
         });
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = DepOut::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
-        }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
+        builder.declare_vertex_buffer(&self.vertex_buffer);
+        builder.declare_index_buffer(&self.index_buffer);
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+                builder.surface_target(),
+            ));
         }
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };
@@ -181,11 +164,7 @@ impl RenderPass for CompositeLayerPass {
         }
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };

@@ -1,0 +1,228 @@
+impl Layoutable for Element {
+    fn measure(&mut self, constraints: LayoutConstraints) {
+        let context = constraints.context();
+        let proposal = LayoutProposal {
+            width: context.width,
+            height: context.height,
+            viewport_width: context.viewport_width,
+            viewport_height: context.viewport_height,
+            percent_base_width: context.percent_base_width,
+            percent_base_height: context.percent_base_height,
+        };
+
+        if !self.layout_dirty && self.last_layout_proposal == Some(proposal) {
+            return;
+        }
+
+        self.measure_self(proposal);
+        self.apply_size_constraints(proposal, false);
+
+        // We should always measure children because they might be Auto or use Percent units
+        // that depend on our inner size.
+        let is_flex = matches!(
+            self.computed_style.layout,
+            Layout::Flow { .. } | Layout::InlineFlex
+        );
+        if is_flex {
+            self.measure_flex_children(proposal);
+        } else {
+            let bw_l = resolve_px_or_zero(
+                self.computed_style.border_widths.left,
+                proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+            let bw_r = resolve_px_or_zero(
+                self.computed_style.border_widths.right,
+                proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+            let bw_t = resolve_px_or_zero(
+                self.computed_style.border_widths.top,
+                proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+            let bw_b = resolve_px_or_zero(
+                self.computed_style.border_widths.bottom,
+                proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+
+            let p_l = resolve_px_or_zero(
+                self.computed_style.padding.left,
+                proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+            let p_r = resolve_px_or_zero(
+                self.computed_style.padding.right,
+                proposal.percent_base_width,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+            let p_t = resolve_px_or_zero(
+                self.computed_style.padding.top,
+                proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+            let p_b = resolve_px_or_zero(
+                self.computed_style.padding.bottom,
+                proposal.percent_base_height,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            );
+
+            let (layout_w, layout_h) = self.current_layout_transition_size();
+            let measure_w = if self.computed_style.width == SizeValue::Auto
+                && proposal.percent_base_width.is_some()
+            {
+                proposal.width.max(0.0)
+            } else {
+                layout_w
+            };
+            let measure_h = if self.computed_style.height == SizeValue::Auto
+                && proposal.percent_base_height.is_some()
+            {
+                proposal.height.max(0.0)
+            } else {
+                layout_h
+            };
+            let inner_w = (measure_w - bw_l - bw_r - p_l - p_r).max(0.0);
+            let inner_h = (measure_h - bw_t - bw_b - p_t - p_b).max(0.0);
+
+            let (child_available_width, child_available_height) = match self.scroll_direction {
+                ScrollDirection::None => (inner_w, inner_h),
+                ScrollDirection::Vertical => (inner_w, 1_000_000.0),
+                ScrollDirection::Horizontal => (1_000_000.0, inner_h),
+                ScrollDirection::Both => (1_000_000.0, 1_000_000.0),
+            };
+
+            let child_percent_base_width = if self.width_is_known(proposal) {
+                Some(inner_w)
+            } else {
+                None
+            };
+            let child_percent_base_height = if self.height_is_known(proposal) {
+                Some(inner_h)
+            } else {
+                None
+            };
+
+            for child in &mut self.children {
+                child.measure(LayoutConstraints {
+                    max_width: child_available_width,
+                    max_height: child_available_height,
+                    viewport_width: proposal.viewport_width,
+                    viewport_height: proposal.viewport_height,
+                    percent_base_width: child_percent_base_width,
+                    percent_base_height: child_percent_base_height,
+                });
+            }
+
+            if self.computed_style.width == SizeValue::Auto
+                || self.computed_style.height == SizeValue::Auto
+            {
+                self.update_size_from_measured_children();
+            }
+        }
+        self.apply_size_constraints(proposal, true);
+
+        self.last_layout_proposal = Some(proposal);
+        self.layout_dirty = false;
+    }
+
+    fn place(&mut self, placement: LayoutPlacement) {
+        self.begin_place_scope(placement);
+        let context = placement.context();
+        let proposal = LayoutProposal {
+            width: context.width,
+            height: context.height,
+            viewport_width: context.viewport_width,
+            viewport_height: context.viewport_height,
+            percent_base_width: context.percent_base_width,
+            percent_base_height: context.percent_base_height,
+        };
+        self.resolve_lengths_from_parent_inner(proposal);
+        self.place_self(
+            proposal,
+            placement.parent_x,
+            placement.parent_y,
+            placement.visual_offset_x,
+            placement.visual_offset_y,
+        );
+        self.register_anchor_snapshot();
+        self.resolve_corner_radii_from_self_box(proposal);
+        let max_bw = (self
+            .core
+            .layout_size
+            .width
+            .min(self.core.layout_size.height))
+            * 0.5;
+        let border_left = self.border_widths.left.clamp(0.0, max_bw);
+        let border_right = self.border_widths.right.clamp(0.0, max_bw);
+        let border_top = self.border_widths.top.clamp(0.0, max_bw);
+        let border_bottom = self.border_widths.bottom.clamp(0.0, max_bw);
+        let inset_left = border_left + self.padding.left.max(0.0);
+        let inset_right = border_right + self.padding.right.max(0.0);
+        let inset_top = border_top + self.padding.top.max(0.0);
+        let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
+        self.layout_flow_inner_position = Position {
+            x: self.layout_flow_position.x + inset_left,
+            y: self.layout_flow_position.y + inset_top,
+        };
+        self.layout_inner_position = Position {
+            x: self.core.layout_position.x + inset_left,
+            y: self.core.layout_position.y + inset_top,
+        };
+        self.layout_inner_size = Size {
+            width: (self.core.layout_size.width - inset_left - inset_right).max(0.0),
+            height: (self.core.layout_size.height - inset_top - inset_bottom).max(0.0),
+        };
+
+        let child_percent_base_width = if self.width_is_known(proposal) {
+            Some(self.layout_inner_size.width.max(0.0))
+        } else {
+            None
+        };
+        let child_percent_base_height = if self.height_is_known(proposal) {
+            Some(self.layout_inner_size.height.max(0.0))
+        } else {
+            None
+        };
+        self.place_children(
+            proposal.viewport_width,
+            proposal.viewport_height,
+            child_percent_base_width,
+            child_percent_base_height,
+        );
+        self.end_place_scope();
+    }
+
+    fn measured_size(&self) -> (f32, f32) {
+        self.current_layout_transition_size()
+    }
+
+    fn set_layout_width(&mut self, width: f32) {
+        self.core.set_width(width);
+    }
+
+    fn set_layout_height(&mut self, height: f32) {
+        self.core.set_height(height);
+    }
+
+    fn allows_cross_stretch(&self, is_row: bool) -> bool {
+        if is_row {
+            self.computed_style.height == SizeValue::Auto
+        } else {
+            self.computed_style.width == SizeValue::Auto
+        }
+    }
+
+    fn set_layout_offset(&mut self, x: f32, y: f32) {
+        self.core.set_position(x, y);
+    }
+}

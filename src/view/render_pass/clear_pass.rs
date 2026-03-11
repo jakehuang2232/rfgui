@@ -1,7 +1,9 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::PassContext;
-use crate::view::frame_graph::builder::BuildContext;
-use crate::view::frame_graph::{DepIn, DepOut};
+use crate::view::frame_graph::{
+    AttachmentLoadOp, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsRecordContext,
+    GraphicsStencilAspectDescriptor, PassBuilder,
+};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -10,7 +12,6 @@ use crate::view::render_pass::render_target::{
 
 pub struct ClearPass {
     params: ClearParams,
-    input: ClearInput,
     output: ClearOutput,
 }
 
@@ -25,64 +26,53 @@ impl ClearParams {
 }
 
 #[derive(Default)]
-pub struct ClearInput {
-    pub dep: DepIn,
-}
+pub struct ClearInput;
 
 #[derive(Default)]
 pub struct ClearOutput {
     pub render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 impl ClearPass {
     pub fn new(params: ClearParams, input: ClearInput, output: ClearOutput) -> Self {
-        Self {
-            params,
-            input,
-            output,
-        }
+        let _ = input;
+        Self { params, output }
     }
 }
 
 impl RenderPass for ClearPass {
-    type Input = ClearInput;
-    type Output = ClearOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = DepOut::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+        let color = [
+            self.params.color[0] as f64,
+            self.params.color[1] as f64,
+            self.params.color[2] as f64,
+            self.params.color[3] as f64,
+        ];
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::clear(target, color),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
+                builder.surface_target(),
+                color,
+            ));
+            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+                target: builder.surface_target(),
+                depth: Some(GraphicsDepthAspectDescriptor::write(
+                    AttachmentLoadOp::Clear,
+                    Some(1.0),
+                )),
+                stencil: Some(GraphicsStencilAspectDescriptor::write(
+                    AttachmentLoadOp::Clear,
+                    Some(0),
+                )),
+            });
         }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
-        }
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         let color = wgpu::Color {
             r: self.params.color[0] as f64,
             g: self.params.color[1] as f64,

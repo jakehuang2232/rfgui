@@ -1,0 +1,808 @@
+use super::{ElementCore, Position, Size};
+use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
+use crate::render_pass::render_target::RenderTargetPass;
+use crate::render_pass::shadow_pass::{ShadowInput, ShadowOutput};
+use crate::style::{
+    compute_style, Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
+    ComputedStyle, CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
+    PositionMode, ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming,
+};
+use crate::transition::{
+    ChannelId, LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition,
+    ScrollAxis, StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition,
+    StyleValue, TimeFunction, VisualField, VisualTrackRequest,
+    VisualTransition as RuntimeVisualTransition, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH,
+    CHANNEL_STYLE_BACKGROUND_COLOR, CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
+    CHANNEL_STYLE_BORDER_LEFT_COLOR, CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR,
+    CHANNEL_STYLE_BORDER_TOP_COLOR, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X,
+    CHANNEL_VISUAL_Y,
+};
+use crate::ui::{
+    BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
+    MouseDownEvent, MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent,
+};
+use crate::view::frame_graph::texture_resource::TextureHandle;
+use crate::view::frame_graph::{FrameGraph, RenderPass, TextureDesc};
+use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
+use crate::view::render_pass::draw_rect_pass::DrawRectInput;
+use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
+use crate::view::render_pass::{
+    ClearPass, DrawRectPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowParams, ShadowPass,
+    TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
+    TextureCompositePass, TextureCompositeSourceIn,
+};
+use crate::view::viewport::ViewportControl;
+use crate::ColorLike;
+use std::cell::RefCell;
+use std::sync::OnceLock;
+include!("event_target.rs");
+include!("layout_trait.rs");
+include!("render_trait.rs");
+include!("impl_core.rs");
+include!("impl_scroll.rs");
+include!("impl_render.rs");
+include!("impl_layout.rs");
+include!("helpers.rs");
+include!("tests.rs");
+
+use std::time::{Duration, Instant};
+
+trait DrawRectIoPass {
+    fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput;
+    fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput;
+}
+
+impl DrawRectIoPass for DrawRectPass {
+    fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput {
+        DrawRectPass::draw_rect_input_mut(self)
+    }
+
+    fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput {
+        DrawRectPass::draw_rect_output_mut(self)
+    }
+}
+
+impl DrawRectIoPass for OpaqueRectPass {
+    fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput {
+        OpaqueRectPass::draw_rect_input_mut(self)
+    }
+
+    fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput {
+        OpaqueRectPass::draw_rect_output_mut(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EdgeInsets {
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LayoutProposal {
+    width: f32,
+    height: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    percent_base_width: Option<f32>,
+    percent_base_height: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LayoutFrame {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CornerRadii {
+    top_left: f32,
+    top_right: f32,
+    bottom_right: f32,
+    bottom_left: f32,
+}
+
+impl CornerRadii {
+    const fn uniform(value: f32) -> Self {
+        Self {
+            top_left: value,
+            top_right: value,
+            bottom_right: value,
+            bottom_left: value,
+        }
+    }
+
+    const fn zero() -> Self {
+        Self::uniform(0.0)
+    }
+
+    fn to_array(self) -> [f32; 4] {
+        [
+            self.top_left,
+            self.top_right,
+            self.bottom_right,
+            self.bottom_left,
+        ]
+    }
+
+    fn has_any_rounding(self) -> bool {
+        self.top_left > 0.0
+            || self.top_right > 0.0
+            || self.bottom_right > 0.0
+            || self.bottom_left > 0.0
+    }
+
+    fn max(self) -> f32 {
+        self.top_left
+            .max(self.top_right)
+            .max(self.bottom_right)
+            .max(self.bottom_left)
+    }
+}
+
+#[derive(Clone)]
+struct EdgeColors {
+    left: Box<dyn ColorLike>,
+    right: Box<dyn ColorLike>,
+    top: Box<dyn ColorLike>,
+    bottom: Box<dyn ColorLike>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Rect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl Rect {
+    fn contains(self, px: f32, py: f32) -> bool {
+        px >= self.x && py >= self.y && px <= self.x + self.width && py <= self.y + self.height
+    }
+}
+
+fn intersect_rect(a: Rect, b: Rect) -> Rect {
+    let left = a.x.max(b.x);
+    let top = a.y.max(b.y);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    Rect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AnchorSnapshot {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    parent_clip_rect: Rect,
+}
+
+#[derive(Default)]
+struct PlacementRuntime {
+    depth: usize,
+    viewport_width: f32,
+    viewport_height: f32,
+    anchors: std::collections::HashMap<String, AnchorSnapshot>,
+    child_clip_stack: Vec<Rect>,
+    hit_test_clip_stack: Vec<Rect>,
+}
+
+thread_local! {
+    static PLACEMENT_RUNTIME: RefCell<PlacementRuntime> = RefCell::new(PlacementRuntime::default());
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ScrollbarAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ScrollbarDragState {
+    axis: ScrollbarAxis,
+    grab_offset: f32,
+    reanchor_on_first_move: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ScrollbarGeometry {
+    vertical_track: Option<Rect>,
+    vertical_thumb: Option<Rect>,
+    horizontal_track: Option<Rect>,
+    horizontal_thumb: Option<Rect>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ChildClipScope {
+    previous_scissor: Option<[u32; 4]>,
+    parent_clip_id: u8,
+    child_clip_id: u8,
+}
+
+#[derive(Clone, Copy)]
+pub struct ViewportContext {
+    color_target: Option<TextureHandle>,
+    target_width: u32,
+    target_height: u32,
+    target_format: wgpu::TextureFormat,
+    scale_factor: f32,
+}
+
+#[derive(Clone)]
+pub struct BuildState {
+    target: Option<RenderTargetOut>,
+    scissor_rect: Option<[u32; 4]>,
+    clip_id_stack: Vec<u8>,
+    deferred_node_ids: Vec<u64>,
+    dfs_opaque_rect_order: u32,
+}
+
+pub struct UiBuildContext {
+    viewport: ViewportContext,
+    state: BuildState,
+}
+
+impl UiBuildContext {
+    pub fn new(
+        viewport_width: u32,
+        viewport_height: u32,
+        viewport_format: wgpu::TextureFormat,
+        scale_factor: f32,
+    ) -> Self {
+        Self {
+            viewport: ViewportContext {
+                color_target: None,
+                target_width: viewport_width.max(1),
+                target_height: viewport_height.max(1),
+                target_format: viewport_format,
+                scale_factor: scale_factor.max(0.0001),
+            },
+            state: BuildState {
+                target: None,
+                scissor_rect: None,
+                clip_id_stack: Vec::new(),
+                deferred_node_ids: Vec::new(),
+                dfs_opaque_rect_order: 0,
+            },
+        }
+    }
+
+    pub fn from_parts(viewport: ViewportContext, state: BuildState) -> Self {
+        Self { viewport, state }
+    }
+
+    pub fn viewport(&self) -> ViewportContext {
+        self.viewport
+    }
+
+    pub fn set_state(&mut self, state: BuildState) {
+        self.state = state;
+    }
+
+    pub fn state_clone(&self) -> BuildState {
+        self.state.clone()
+    }
+
+    pub fn into_state(self) -> BuildState {
+        self.state
+    }
+
+    pub fn allocate_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
+        self.next_target(graph)
+    }
+
+    pub fn set_current_target(&mut self, target: RenderTargetOut) {
+        self.state.target = Some(target);
+    }
+
+    pub(crate) fn current_target(&self) -> Option<RenderTargetOut> {
+        self.state.target
+    }
+
+    fn next_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
+        graph.declare_texture::<RenderTargetTag>(TextureDesc::new(
+            self.viewport.target_width,
+            self.viewport.target_height,
+            self.viewport.target_format,
+            wgpu::TextureDimension::D2,
+        ))
+    }
+
+    fn color_target(&self) -> Option<TextureHandle> {
+        self.viewport.color_target
+    }
+
+    pub(crate) fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
+        self.viewport.color_target = color_target;
+    }
+
+    fn scissor_rect(&self) -> Option<[u32; 4]> {
+        self.state.scissor_rect
+    }
+
+    fn current_clip_id(&self) -> u8 {
+        self.state.clip_id_stack.last().copied().unwrap_or(0)
+    }
+
+    fn active_clip_id(&self) -> Option<u8> {
+        self.state.clip_id_stack.last().copied()
+    }
+
+    pub(crate) fn push_clip_id(&mut self) -> Option<u8> {
+        let current = self.current_clip_id();
+        if current == u8::MAX {
+            return None;
+        }
+        let next = current.saturating_add(1);
+        self.state.clip_id_stack.push(next);
+        Some(next)
+    }
+
+    pub(crate) fn pop_clip_id(&mut self) {
+        let _ = self.state.clip_id_stack.pop();
+    }
+
+    pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
+        let previous = self.state.scissor_rect;
+        self.state.scissor_rect = intersect_scissor_rects(self.state.scissor_rect, scissor_rect);
+        previous
+    }
+
+    pub(crate) fn restore_scissor_rect(&mut self, previous: Option<[u32; 4]>) {
+        self.state.scissor_rect = previous;
+    }
+
+    pub(crate) fn append_to_defer(&mut self, node_id: u64) {
+        if !self.state.deferred_node_ids.contains(&node_id) {
+            self.state.deferred_node_ids.push(node_id);
+        }
+    }
+
+    pub(crate) fn take_deferred_node_ids(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.state.deferred_node_ids)
+    }
+
+    pub(crate) fn next_opaque_rect_order(&mut self) -> u32 {
+        let order = self.state.dfs_opaque_rect_order;
+        self.state.dfs_opaque_rect_order = self.state.dfs_opaque_rect_order.saturating_add(1);
+        order
+    }
+
+    pub(crate) fn configure_pass<P: RenderTargetPass>(&self, pass: &mut P) {
+        pass.apply_clip(self.scissor_rect());
+        pass.apply_stencil_clip(self.active_clip_id());
+        pass.set_color_target(self.color_target());
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutContext {
+    pub width: f32,
+    pub height: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub percent_base_width: Option<f32>,
+    pub percent_base_height: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutConstraints {
+    pub max_width: f32,
+    pub max_height: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub percent_base_width: Option<f32>,
+    pub percent_base_height: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutPlacement {
+    pub parent_x: f32,
+    pub parent_y: f32,
+    pub visual_offset_x: f32,
+    pub visual_offset_y: f32,
+    pub available_width: f32,
+    pub available_height: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub percent_base_width: Option<f32>,
+    pub percent_base_height: Option<f32>,
+}
+
+impl LayoutConstraints {
+    fn context(self) -> LayoutContext {
+        LayoutContext {
+            width: self.max_width,
+            height: self.max_height,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            percent_base_width: self.percent_base_width,
+            percent_base_height: self.percent_base_height,
+        }
+    }
+}
+
+impl LayoutPlacement {
+    fn context(self) -> LayoutContext {
+        LayoutContext {
+            width: self.available_width,
+            height: self.available_height,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            percent_base_width: self.percent_base_width,
+            percent_base_height: self.percent_base_height,
+        }
+    }
+}
+
+pub trait Layoutable {
+    fn measure(&mut self, constraints: LayoutConstraints);
+    fn place(&mut self, placement: LayoutPlacement);
+    fn measured_size(&self) -> (f32, f32);
+    fn set_layout_width(&mut self, width: f32);
+    fn set_layout_height(&mut self, height: f32);
+    fn allows_cross_stretch(&self, is_row: bool) -> bool;
+    fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
+}
+
+pub trait EventTarget {
+    fn dispatch_mouse_down(
+        &mut self,
+        _event: &mut MouseDownEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
+    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
+    }
+    fn dispatch_mouse_move(
+        &mut self,
+        _event: &mut MouseMoveEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
+    fn dispatch_mouse_enter(&mut self, _event: &mut MouseEnterEvent) {}
+    fn dispatch_mouse_leave(&mut self, _event: &mut MouseLeaveEvent) {}
+    fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
+    }
+    fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_text_input(
+        &mut self,
+        _event: &mut crate::ui::TextInputEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
+    fn dispatch_ime_preedit(
+        &mut self,
+        _event: &mut crate::ui::ImePreeditEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+    }
+    fn dispatch_focus(&mut self, _event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_blur(&mut self, _event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {}
+    fn cancel_pointer_interaction(&mut self) -> bool {
+        false
+    }
+    fn set_hovered(&mut self, _hovered: bool) -> bool {
+        false
+    }
+    fn scroll_by(&mut self, _dx: f32, _dy: f32) -> bool {
+        false
+    }
+    fn can_scroll_by(&self, _dx: f32, _dy: f32) -> bool {
+        false
+    }
+    fn get_scroll_offset(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+    fn set_scroll_offset(&mut self, _offset: (f32, f32)) {}
+    fn ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        None
+    }
+    fn cursor(&self) -> Cursor {
+        Cursor::Default
+    }
+    fn wants_animation_frame(&self) -> bool {
+        false
+    }
+    fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
+        Vec::new()
+    }
+    fn take_layout_transition_requests(&mut self) -> Vec<LayoutTrackRequest> {
+        Vec::new()
+    }
+    fn take_visual_transition_requests(&mut self) -> Vec<VisualTrackRequest> {
+        Vec::new()
+    }
+}
+
+pub trait Renderable {
+    fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> BuildState;
+}
+
+pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
+    fn id(&self) -> u64;
+    fn parent_id(&self) -> Option<u64>;
+    fn set_parent_id(&mut self, parent_id: Option<u64>);
+    fn box_model_snapshot(&self) -> BoxModelSnapshot;
+    fn children(&self) -> Option<&[Box<dyn ElementTrait>]>;
+    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]>;
+
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+
+    fn restore_state(&mut self, _snapshot: &dyn std::any::Any) -> bool {
+        false
+    }
+
+    fn intercepts_pointer_at(&self, _viewport_x: f32, _viewport_y: f32) -> bool {
+        false
+    }
+
+    fn hit_test_visible_at(&self, _viewport_x: f32, _viewport_y: f32) -> bool {
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BoxModelSnapshot {
+    pub node_id: u64,
+    pub parent_id: Option<u64>,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub border_radius: f32,
+    pub should_render: bool,
+}
+
+type MouseDownHandler = Box<dyn FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>)>;
+type MouseUpHandler = Box<dyn FnMut(&mut MouseUpEvent, &mut ViewportControl<'_>)>;
+type MouseMoveHandler = Box<dyn FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>)>;
+type MouseEnterHandler = Box<dyn FnMut(&mut MouseEnterEvent)>;
+type MouseLeaveHandler = Box<dyn FnMut(&mut MouseLeaveEvent)>;
+type ClickHandler = Box<dyn FnMut(&mut ClickEvent, &mut ViewportControl<'_>)>;
+type KeyDownHandler = Box<dyn FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>)>;
+type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>)>;
+type FocusHandler = Box<dyn FnMut(&mut FocusEvent, &mut ViewportControl<'_>)>;
+type BlurHandler = Box<dyn FnMut(&mut BlurEvent, &mut ViewportControl<'_>)>;
+
+#[derive(Clone, Debug)]
+struct FlexLayoutInfo {
+    lines: Vec<Vec<usize>>,
+    line_main_sum: Vec<f32>,
+    line_cross_max: Vec<f32>,
+    total_main: f32,
+    total_cross: f32,
+    child_sizes: Vec<(f32, f32)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ElementStyleSnapshot {
+    opacity: f32,
+    border_radius: f32,
+    is_hovered: bool,
+    background_color: Color,
+    foreground_color: Color,
+    border_top_color: Color,
+    border_right_color: Color,
+    border_bottom_color: Color,
+    border_left_color: Color,
+    transition_snapshot: Option<TransitionSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TransitionSnapshot {
+    has_layout_snapshot: bool,
+    layout_transition_visual_offset_x: f32,
+    layout_transition_visual_offset_y: f32,
+    layout_transition_override_width: Option<f32>,
+    layout_transition_override_height: Option<f32>,
+    layout_transition_target_x: Option<f32>,
+    layout_transition_target_y: Option<f32>,
+    layout_transition_target_width: Option<f32>,
+    layout_transition_target_height: Option<f32>,
+    last_parent_layout_x: f32,
+    last_parent_layout_y: f32,
+}
+
+pub struct Element {
+    core: ElementCore,
+    anchor_name: Option<AnchorName>,
+    layout_flow_position: Position,
+    layout_inner_position: Position,
+    layout_flow_inner_position: Position,
+    layout_inner_size: Size,
+    parsed_style: Style,
+    computed_style: ComputedStyle,
+    padding: EdgeInsets,
+    background_color: Box<dyn ColorLike>,
+    border_colors: EdgeColors,
+    border_widths: EdgeInsets,
+    border_radii: CornerRadii,
+    border_radius: f32,
+    box_shadows: Vec<BoxShadow>,
+    foreground_color: Color,
+    opacity: f32,
+    scroll_direction: ScrollDirection,
+    scroll_offset: Position,
+    content_size: Size,
+    scrollbar_drag: Option<ScrollbarDragState>,
+    last_scrollbar_interaction: Option<Instant>,
+    scrollbar_shadow_blur_radius: f32,
+    pending_style_transition_requests: Vec<StyleTrackRequest>,
+    pending_layout_transition_requests: Vec<LayoutTrackRequest>,
+    pending_visual_transition_requests: Vec<VisualTrackRequest>,
+    has_style_snapshot: bool,
+    has_layout_snapshot: bool,
+    layout_transition_visual_offset_x: f32,
+    layout_transition_visual_offset_y: f32,
+    layout_transition_override_width: Option<f32>,
+    layout_transition_override_height: Option<f32>,
+    layout_transition_target_x: Option<f32>,
+    layout_transition_target_y: Option<f32>,
+    layout_transition_target_width: Option<f32>,
+    layout_transition_target_height: Option<f32>,
+    last_parent_layout_x: f32,
+    last_parent_layout_y: f32,
+    is_hovered: bool,
+    mouse_down_handlers: Vec<MouseDownHandler>,
+    mouse_up_handlers: Vec<MouseUpHandler>,
+    mouse_move_handlers: Vec<MouseMoveHandler>,
+    mouse_enter_handlers: Vec<MouseEnterHandler>,
+    mouse_leave_handlers: Vec<MouseLeaveHandler>,
+    click_handlers: Vec<ClickHandler>,
+    key_down_handlers: Vec<KeyDownHandler>,
+    key_up_handlers: Vec<KeyUpHandler>,
+    focus_handlers: Vec<FocusHandler>,
+    blur_handlers: Vec<BlurHandler>,
+    layout_dirty: bool,
+    last_layout_proposal: Option<LayoutProposal>,
+    flex_info: Option<FlexLayoutInfo>,
+    has_absolute_descendant_for_hit_test: bool,
+    absolute_clip_rect: Option<Rect>,
+    anchor_parent_clip_rect: Option<Rect>,
+    hit_test_clip_rect: Option<Rect>,
+    children: Vec<Box<dyn ElementTrait>>,
+}
+
+impl ElementTrait for Element {
+    fn id(&self) -> u64 {
+        self.core.id
+    }
+
+    fn parent_id(&self) -> Option<u64> {
+        self.core.parent_id
+    }
+
+    fn set_parent_id(&mut self, parent_id: Option<u64>) {
+        self.core.parent_id = parent_id;
+    }
+
+    fn box_model_snapshot(&self) -> BoxModelSnapshot {
+        BoxModelSnapshot {
+            node_id: self.core.id,
+            parent_id: self.core.parent_id,
+            x: self.core.layout_position.x,
+            y: self.core.layout_position.y,
+            width: self.core.layout_size.width,
+            height: self.core.layout_size.height,
+            border_radius: self.border_radius,
+            should_render: self.core.should_render,
+        }
+    }
+
+    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> {
+        Some(&self.children)
+    }
+
+    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> {
+        Some(&mut self.children)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
+        let local_x = viewport_x - self.core.layout_position.x;
+        let local_y = viewport_y - self.core.layout_position.y;
+        self.is_scrollbar_hit(local_x, local_y)
+    }
+
+    fn hit_test_visible_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
+        self.hit_test_clip_rect
+            .map_or(true, |rect| rect.contains(viewport_x, viewport_y))
+    }
+
+    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
+        let [bg_r, bg_g, bg_b, bg_a] = self.background_color.as_ref().to_rgba_u8();
+        let [bt_r, bt_g, bt_b, bt_a] = self.border_colors.top.as_ref().to_rgba_u8();
+        let [br_r, br_g, br_b, br_a] = self.border_colors.right.as_ref().to_rgba_u8();
+        let [bb_r, bb_g, bb_b, bb_a] = self.border_colors.bottom.as_ref().to_rgba_u8();
+        let [bl_r, bl_g, bl_b, bl_a] = self.border_colors.left.as_ref().to_rgba_u8();
+        Some(Box::new(ElementStyleSnapshot {
+            opacity: self.opacity,
+            border_radius: self.border_radius,
+            is_hovered: self.is_hovered,
+            background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
+            foreground_color: self.foreground_color,
+            border_top_color: Color::rgba(bt_r, bt_g, bt_b, bt_a),
+            border_right_color: Color::rgba(br_r, br_g, br_b, br_a),
+            border_bottom_color: Color::rgba(bb_r, bb_g, bb_b, bb_a),
+            border_left_color: Color::rgba(bl_r, bl_g, bl_b, bl_a),
+            transition_snapshot: Some(TransitionSnapshot {
+                has_layout_snapshot: self.has_layout_snapshot,
+                layout_transition_visual_offset_x: self.layout_transition_visual_offset_x,
+                layout_transition_visual_offset_y: self.layout_transition_visual_offset_y,
+                layout_transition_override_width: self.layout_transition_override_width,
+                layout_transition_override_height: self.layout_transition_override_height,
+                layout_transition_target_x: self.layout_transition_target_x,
+                layout_transition_target_y: self.layout_transition_target_y,
+                layout_transition_target_width: self.layout_transition_target_width,
+                layout_transition_target_height: self.layout_transition_target_height,
+                last_parent_layout_x: self.last_parent_layout_x,
+                last_parent_layout_y: self.last_parent_layout_y,
+            }),
+        }))
+    }
+
+    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
+        let Some(snapshot) = snapshot.downcast_ref::<ElementStyleSnapshot>() else {
+            return false;
+        };
+
+        self.opacity = snapshot.opacity;
+        self.border_radius = snapshot.border_radius;
+        self.is_hovered = snapshot.is_hovered;
+        self.background_color = Box::new(snapshot.background_color);
+        self.foreground_color = snapshot.foreground_color;
+        self.border_colors.top = Box::new(snapshot.border_top_color);
+        self.border_colors.right = Box::new(snapshot.border_right_color);
+        self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
+        self.border_colors.left = Box::new(snapshot.border_left_color);
+        self.has_style_snapshot = true;
+        if let Some(transition_snapshot) = snapshot.transition_snapshot {
+            self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
+            self.layout_transition_visual_offset_x =
+                transition_snapshot.layout_transition_visual_offset_x;
+            self.layout_transition_visual_offset_y =
+                transition_snapshot.layout_transition_visual_offset_y;
+            self.layout_transition_override_width =
+                transition_snapshot.layout_transition_override_width;
+            self.layout_transition_override_height =
+                transition_snapshot.layout_transition_override_height;
+            self.layout_transition_target_x = transition_snapshot.layout_transition_target_x;
+            self.layout_transition_target_y = transition_snapshot.layout_transition_target_y;
+            self.layout_transition_target_width =
+                transition_snapshot.layout_transition_target_width;
+            self.layout_transition_target_height =
+                transition_snapshot.layout_transition_target_height;
+            self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
+            self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
+        }
+
+        // Recompute against current parsed_style so transitions can bridge from old -> new style.
+        self.recompute_style();
+        true
+    }
+}

@@ -1549,13 +1549,11 @@ impl Viewport {
         let build_graph_started_at = Instant::now();
         self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
-        let initial_dep = graph.declare_dep_token();
         let mut ctx = super::base_component::UiBuildContext::new(
             self.surface_config.width,
             self.surface_config.height,
             self.surface_config.format,
             self.scale_factor,
-            initial_dep,
         );
         let clear_uses_premultiplied_alpha = matches!(
             self.surface_config.alpha_mode,
@@ -1577,14 +1575,13 @@ impl Viewport {
             super::render_pass::clear_pass::ClearInput::default(),
             super::render_pass::clear_pass::ClearOutput {
                 render_target: output.clone(),
-                dep: super::frame_graph::DepOut::with_handle(initial_dep),
+                ..Default::default()
             },
         );
         if let Some(handle) = output_handle {
             ctx.set_color_target(Some(handle));
         }
         graph.add_pass(clear_pass);
-        ctx.set_current_dep_token(initial_dep);
         ctx.set_current_target(output);
         for root in roots.iter_mut() {
             let next_state = root.build(
@@ -1619,37 +1616,29 @@ impl Viewport {
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
             if self.debug_options.geometry_overlay {
-                let debug_dep_out = graph.declare_dep_token();
                 let debug_pass = super::render_pass::debug_overlay_pass::DebugOverlayPass::new(
-                    super::render_pass::debug_overlay_pass::DebugOverlayInput {
-                        dep: super::frame_graph::DepIn::with_handle(ctx.current_dep_token()),
-                    },
+                    super::render_pass::debug_overlay_pass::DebugOverlayInput::default(),
                     super::render_pass::debug_overlay_pass::DebugOverlayOutput {
                         render_target:
                             super::render_pass::draw_rect_pass::RenderTargetOut::with_handle(
                                 dep_handle,
                             ),
-                        dep: super::frame_graph::DepOut::with_handle(debug_dep_out),
+                        ..Default::default()
                     },
                 );
                 graph.add_pass(debug_pass);
-                ctx.set_current_dep_token(debug_dep_out);
             }
-            let present_dep_out = graph.declare_dep_token();
             let present_pass = super::render_pass::present_surface_pass::PresentSurfacePass::new(
                 super::render_pass::present_surface_pass::PresentSurfaceParams,
                 super::render_pass::present_surface_pass::PresentSurfaceInput {
                     source: super::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
                         dep_handle,
                     ),
-                    dep: super::frame_graph::DepIn::with_handle(ctx.current_dep_token()),
+                    ..Default::default()
                 },
-                super::render_pass::present_surface_pass::PresentSurfaceOutput {
-                    dep: super::frame_graph::DepOut::with_handle(present_dep_out),
-                },
+                super::render_pass::present_surface_pass::PresentSurfaceOutput::default(),
             );
             graph.add_pass(present_pass);
-            ctx.set_current_dep_token(present_dep_out);
         }
         graph.normalize_opaque_rect_depths();
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;

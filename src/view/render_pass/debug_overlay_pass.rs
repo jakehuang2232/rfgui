@@ -1,6 +1,8 @@
-use crate::view::frame_graph::builder::BuildContext;
-use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{DepIn, DepOut, PassContext, ResourceCache};
+use crate::view::frame_graph::{
+    GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsStencilAspectDescriptor, PassBuilder,
+};
+use crate::view::frame_graph::{GraphicsRecordContext, ResourceCache};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -19,65 +21,44 @@ pub struct DebugOverlayVertex {
 }
 
 pub struct DebugOverlayPass {
-    input: DebugOverlayInput,
     output: DebugOverlayOutput,
 }
 
 #[derive(Default)]
-pub struct DebugOverlayInput {
-    pub dep: DepIn,
-}
+pub struct DebugOverlayInput;
 
 #[derive(Default)]
 pub struct DebugOverlayOutput {
     pub render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 impl DebugOverlayPass {
     pub fn new(input: DebugOverlayInput, output: DebugOverlayOutput) -> Self {
-        Self { input, output }
+        let _ = input;
+        Self { output }
     }
 }
 
 impl RenderPass for DebugOverlayPass {
-    type Input = DebugOverlayInput;
-    type Output = DebugOverlayOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = OutSlot::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+                builder.surface_target(),
+            ));
         }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
-        }
+        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+            target: builder.surface_target(),
+            depth: Some(GraphicsDepthAspectDescriptor::read()),
+            stencil: Some(GraphicsStencilAspectDescriptor::read()),
+        });
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         if !ctx.viewport.debug_geometry_overlay() {
             let _ = ctx.viewport.take_debug_overlay_geometry();
             return;
