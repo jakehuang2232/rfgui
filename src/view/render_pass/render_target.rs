@@ -2,11 +2,11 @@ use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
 use crate::view::frame_graph::{AllocationId, AttachmentTarget, FrameResourceContext};
 use std::collections::HashMap;
 
-pub(crate) trait RenderTargetPass {
-    fn apply_clip(&mut self, _scissor_rect: Option<[u32; 4]>) {}
-    fn apply_stencil_clip(&mut self, _clip_id: Option<u8>) {}
-    fn set_color_target(&mut self, _color_target: Option<TextureHandle>) {}
-    fn set_depth_stencil_target(&mut self, _depth_stencil_target: Option<AttachmentTarget>) {}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GraphicsPassContext {
+    pub scissor_rect: Option<[u32; 4]>,
+    pub stencil_clip_id: Option<u8>,
+    pub depth_stencil_target: Option<AttachmentTarget>,
 }
 
 struct RenderTargetEntry {

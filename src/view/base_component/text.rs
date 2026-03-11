@@ -606,7 +606,7 @@ impl Renderable for Text {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        let mut pass = TextPass::new(
+        let pass = TextPass::new(
             TextPassParams {
                 content: self.content.clone(),
                 x: self.layout_position.x,
@@ -624,14 +624,15 @@ impl Renderable for Text {
                 scissor_rect: None,
                 stencil_clip_id: None,
             },
-            TextInput::default(),
+            TextInput {
+                pass_context: ctx.graphics_pass_context(),
+            },
             TextOutput {
                 render_target: input_target,
                 ..Default::default()
             },
         );
-        ctx.configure_pass(&mut pass);
-        graph.add_pass(pass);
+        graph.add_graphics_pass(pass);
         ctx.set_current_target(input_target);
         ctx.into_state()
     }

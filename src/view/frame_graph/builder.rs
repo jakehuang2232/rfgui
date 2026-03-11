@@ -1,14 +1,66 @@
 use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
 use super::frame_graph::{
-    AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
-    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassRecordingMode, PassDescriptor,
+    AttachmentLoadOp, AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
+    GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassMergePolicy, PassDescriptor,
     PassResourceUsage, ResourceHandle, ResourceLifetime, ResourceMetadata, ResourceUsage,
-    SampleCountPolicy, ScissorPolicy, ViewportPolicy,
+    SampleCountPolicy, ScissorPolicy, ViewportPolicy, GraphicsStencilAspectDescriptor,
 };
-use super::slot::{InSlot, OutSlot};
+use super::slot::{InSlot, OutSlot, ResourceType};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
 
-pub struct PassBuilder<'a> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferReadUsage {
+    Uniform,
+    Vertex,
+    Index,
+}
+
+impl BufferReadUsage {
+    fn resource_usage(self) -> ResourceUsage {
+        match self {
+            Self::Uniform => ResourceUsage::UniformRead,
+            Self::Vertex => ResourceUsage::VertexRead,
+            Self::Index => ResourceUsage::IndexRead,
+        }
+    }
+}
+
+pub trait UsageTrackedResource: ResourceType {
+    fn into_resource_handle(handle: Self::Handle) -> ResourceHandle;
+    fn missing_input_error() -> &'static str;
+    fn missing_output_error() -> &'static str;
+}
+
+impl UsageTrackedResource for TextureResource {
+    fn into_resource_handle(handle: Self::Handle) -> ResourceHandle {
+        ResourceHandle::Texture(handle)
+    }
+
+    fn missing_input_error() -> &'static str {
+        "texture slot has no handle"
+    }
+
+    fn missing_output_error() -> &'static str {
+        "texture slot has no handle"
+    }
+}
+
+impl UsageTrackedResource for BufferResource {
+    fn into_resource_handle(handle: Self::Handle) -> ResourceHandle {
+        ResourceHandle::Buffer(handle)
+    }
+
+    fn missing_input_error() -> &'static str {
+        "buffer slot has no handle"
+    }
+
+    fn missing_output_error() -> &'static str {
+        "buffer slot has no handle"
+    }
+}
+
+pub(crate) struct PassBuilderState<'a> {
     pub(crate) descriptor: &'a mut PassDescriptor,
     pub(crate) textures: &'a mut Vec<TextureDesc>,
     pub(crate) buffers: &'a mut Vec<BufferDesc>,
@@ -18,9 +70,43 @@ pub struct PassBuilder<'a> {
     pub(crate) build_errors: &'a mut Vec<FrameGraphError>,
 }
 
-impl<'a> PassBuilder<'a> {
+impl<'a> PassBuilderState<'a> {
     fn push_usage(&mut self, resource: ResourceHandle, usage: ResourceUsage) {
         self.usages.push(PassResourceUsage { resource, usage });
+    }
+
+    fn bind_read_usage<R: UsageTrackedResource, Tag>(
+        &mut self,
+        input: &mut InSlot<R, Tag>,
+        source: &OutSlot<R, Tag>,
+        usage: ResourceUsage,
+    ) {
+        match source.handle {
+            Some(handle) => {
+                input.handle = Some(handle);
+                self.push_usage(R::into_resource_handle(handle), usage);
+            }
+            None => {
+                self.build_errors
+                    .push(FrameGraphError::MissingInput(R::missing_input_error()));
+            }
+        }
+    }
+
+    fn declare_usage<R: UsageTrackedResource, Tag>(
+        &mut self,
+        output: &OutSlot<R, Tag>,
+        usage: ResourceUsage,
+    ) {
+        match output.handle() {
+            Some(handle) => {
+                self.push_usage(R::into_resource_handle(handle), usage);
+            }
+            None => {
+                self.build_errors
+                    .push(FrameGraphError::MissingOutput(R::missing_output_error()));
+            }
+        }
     }
 
     fn texture_target_from_output<Tag>(
@@ -32,31 +118,15 @@ impl<'a> PassBuilder<'a> {
             .map(|handle| AttachmentTarget::Texture(handle))
     }
 
-    pub fn descriptor(&self) -> &PassDescriptor {
+    fn descriptor(&self) -> &PassDescriptor {
         self.descriptor
     }
 
-    pub fn descriptor_mut(&mut self) -> &mut PassDescriptor {
+    fn descriptor_mut(&mut self) -> &mut PassDescriptor {
         self.descriptor
     }
 
-    pub fn set_sample_count(&mut self, sample_count: SampleCountPolicy) {
-        self.descriptor.graphics_mut().sample_count = sample_count;
-    }
-
-    pub fn set_viewport_policy(&mut self, policy: ViewportPolicy) {
-        self.descriptor.graphics_mut().viewport_policy = policy;
-    }
-
-    pub fn set_scissor_policy(&mut self, policy: ScissorPolicy) {
-        self.descriptor.graphics_mut().scissor_policy = policy;
-    }
-
-    pub fn set_graphics_recording_mode(&mut self, mode: GraphicsPassRecordingMode) {
-        self.descriptor.graphics_mut().recording_mode = mode;
-    }
-
-    pub fn create_texture<Tag>(&mut self, desc: TextureDesc) -> OutSlot<TextureResource, Tag> {
+    fn create_texture<Tag>(&mut self, desc: TextureDesc) -> OutSlot<TextureResource, Tag> {
         self.create_texture_internal(desc, ResourceLifetime::Transient, None)
     }
 
@@ -78,7 +148,7 @@ impl<'a> PassBuilder<'a> {
         OutSlot::with_handle(handle)
     }
 
-    pub fn create_buffer<Tag>(&mut self, desc: BufferDesc) -> OutSlot<BufferResource, Tag> {
+    fn create_buffer<Tag>(&mut self, desc: BufferDesc) -> OutSlot<BufferResource, Tag> {
         self.create_buffer_internal(desc, ResourceLifetime::Transient, None)
     }
 
@@ -100,102 +170,92 @@ impl<'a> PassBuilder<'a> {
         OutSlot::with_handle(handle)
     }
 
-    pub fn declare_sampled_texture<Tag>(
+    fn declare_sampled_texture<Tag>(
         &mut self,
         input: &mut InSlot<TextureResource, Tag>,
         source: &OutSlot<TextureResource, Tag>,
     ) {
-        match source.handle {
-            Some(handle) => {
-                input.handle = Some(handle);
-                self.push_usage(ResourceHandle::Texture(handle), ResourceUsage::SampledRead);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingInput("texture slot has no handle"));
-            }
-        }
+        self.read_texture(input, source);
     }
 
-    pub fn declare_uniform_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        match buffer.handle() {
-            Some(handle) => {
-                self.push_usage(ResourceHandle::Buffer(handle), ResourceUsage::UniformRead);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingInput("buffer slot has no handle"));
-            }
-        }
+    fn declare_uniform_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+        self.read_buffer(buffer, BufferReadUsage::Uniform);
     }
 
-    pub fn declare_vertex_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        match buffer.handle() {
-            Some(handle) => {
-                self.push_usage(ResourceHandle::Buffer(handle), ResourceUsage::VertexRead);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingInput("buffer slot has no handle"));
-            }
-        }
+    fn declare_vertex_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+        self.read_buffer(buffer, BufferReadUsage::Vertex);
     }
 
-    pub fn declare_index_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        match buffer.handle() {
-            Some(handle) => {
-                self.push_usage(ResourceHandle::Buffer(handle), ResourceUsage::IndexRead);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingInput("buffer slot has no handle"));
-            }
-        }
+    fn declare_index_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+        self.read_buffer(buffer, BufferReadUsage::Index);
     }
 
-    pub fn declare_copy_src_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        match buffer.handle() {
-            Some(handle) => {
-                self.push_usage(ResourceHandle::Buffer(handle), ResourceUsage::CopySrc);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingInput("buffer slot has no handle"));
-            }
-        }
+    fn declare_copy_src_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+        self.copy_src(buffer);
     }
 
-    pub fn declare_copy_dst_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
-        match buffer.handle() {
-            Some(handle) => {
-                self.push_usage(ResourceHandle::Buffer(handle), ResourceUsage::CopyDst);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingOutput("buffer slot has no handle"));
-            }
-        }
+    fn declare_copy_dst_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+        self.copy_dst(buffer);
     }
 
-    pub fn declare_read_buffer<Tag>(
+    fn declare_read_buffer<Tag>(
         &mut self,
         input: &mut InSlot<BufferResource, Tag>,
         source: &OutSlot<BufferResource, Tag>,
         usage: ResourceUsage,
     ) {
-        match source.handle {
-            Some(handle) => {
-                input.handle = Some(handle);
-                self.push_usage(ResourceHandle::Buffer(handle), usage);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingInput("buffer slot has no handle"));
-            }
-        }
+        self.bind_read_usage(input, source, usage);
     }
 
-    pub fn declare_color_attachment<Tag>(
+    fn declare_texture_usage<Tag>(
+        &mut self,
+        output: &OutSlot<TextureResource, Tag>,
+        usage: ResourceUsage,
+    ) {
+        self.declare_usage(output, usage);
+    }
+
+    fn declare_buffer_usage<Tag>(
+        &mut self,
+        output: &OutSlot<BufferResource, Tag>,
+        usage: ResourceUsage,
+    ) {
+        self.declare_usage(output, usage);
+    }
+
+    fn read_texture<Tag>(
+        &mut self,
+        input: &mut InSlot<TextureResource, Tag>,
+        source: &OutSlot<TextureResource, Tag>,
+    ) {
+        self.bind_read_usage(input, source, ResourceUsage::SampledRead);
+    }
+
+    fn read_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>, usage: BufferReadUsage) {
+        self.declare_usage(buffer, usage.resource_usage());
+    }
+
+    fn write_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+        self.declare_usage(buffer, ResourceUsage::BufferWrite);
+    }
+
+    fn copy_src<R: UsageTrackedResource, Tag>(&mut self, resource: &OutSlot<R, Tag>) {
+        self.declare_usage(resource, ResourceUsage::CopySrc);
+    }
+
+    fn copy_dst<R: UsageTrackedResource, Tag>(&mut self, resource: &OutSlot<R, Tag>) {
+        self.declare_usage(resource, ResourceUsage::CopyDst);
+    }
+
+    fn read_storage<R: UsageTrackedResource, Tag>(&mut self, resource: &OutSlot<R, Tag>) {
+        self.declare_usage(resource, ResourceUsage::StorageRead);
+    }
+
+    fn write_storage<R: UsageTrackedResource, Tag>(&mut self, resource: &OutSlot<R, Tag>) {
+        self.declare_usage(resource, ResourceUsage::StorageWrite);
+    }
+
+    fn declare_color_attachment<Tag>(
         &mut self,
         output: &OutSlot<TextureResource, Tag>,
         attachment: GraphicsColorAttachmentDescriptor,
@@ -224,10 +284,7 @@ impl<'a> PassBuilder<'a> {
             .push(attachment);
     }
 
-    pub fn declare_surface_color_attachment(
-        &mut self,
-        attachment: GraphicsColorAttachmentDescriptor,
-    ) {
+    fn declare_surface_color_attachment(&mut self, attachment: GraphicsColorAttachmentDescriptor) {
         if attachment.target != AttachmentTarget::Surface {
             self.build_errors.push(FrameGraphError::MissingOutput(
                 "surface color attachment must target the surface",
@@ -244,70 +301,394 @@ impl<'a> PassBuilder<'a> {
             .push(attachment);
     }
 
-    pub fn declare_depth_stencil_attachment(
+    fn declare_depth_stencil_attachment(
         &mut self,
         attachment: GraphicsDepthStencilAttachmentDescriptor,
     ) {
+        self.merge_depth_stencil_attachment(attachment.target, attachment.depth, attachment.stencil);
+    }
+
+    fn merge_depth_stencil_attachment(
+        &mut self,
+        target: AttachmentTarget,
+        depth: Option<GraphicsDepthAspectDescriptor>,
+        stencil: Option<GraphicsStencilAspectDescriptor>,
+    ) {
         let requirements = &mut self.descriptor.graphics_mut().requirements;
-        if let Some(depth) = attachment.depth {
+        if let Some(depth) = depth {
             requirements.uses_depth = true;
             requirements.writes_depth = depth.usage == ResourceUsage::DepthWrite;
         }
-        if let Some(stencil) = attachment.stencil {
+        if let Some(stencil) = stencil {
             requirements.uses_stencil = true;
             requirements.writes_stencil = stencil.usage == ResourceUsage::StencilWrite;
         }
-        if let AttachmentTarget::Texture(handle) = attachment.target {
-            if let Some(depth) = attachment.depth {
+        if let AttachmentTarget::Texture(handle) = target {
+            if let Some(depth) = depth {
                 self.push_usage(ResourceHandle::Texture(handle), depth.usage);
             }
-            if let Some(stencil) = attachment.stencil {
+            if let Some(stencil) = stencil {
                 self.push_usage(ResourceHandle::Texture(handle), stencil.usage);
             }
+        }
+        let mut attachment = self
+            .descriptor
+            .graphics_mut()
+            .depth_stencil_attachment
+            .unwrap_or(GraphicsDepthStencilAttachmentDescriptor {
+                target,
+                depth: None,
+                stencil: None,
+            });
+        if attachment.target != target {
+            self.build_errors.push(FrameGraphError::Validation(
+                "depth/stencil attachment target does not match existing target".into(),
+            ));
+            return;
+        }
+        if let Some(depth) = depth {
+            attachment.depth = Some(depth);
+        }
+        if let Some(stencil) = stencil {
+            attachment.stencil = Some(stencil);
         }
         self.descriptor.graphics_mut().depth_stencil_attachment = Some(attachment);
     }
 
-    pub fn declare_texture_usage<Tag>(
-        &mut self,
-        output: &OutSlot<TextureResource, Tag>,
-        usage: ResourceUsage,
-    ) {
-        match output.handle() {
-            Some(handle) => {
-                self.push_usage(ResourceHandle::Texture(handle), usage);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingOutput("texture slot has no handle"));
-            }
-        }
+    fn read_depth(&mut self, target: AttachmentTarget) {
+        self.merge_depth_stencil_attachment(target, Some(GraphicsDepthAspectDescriptor::read()), None);
     }
 
-    pub fn declare_buffer_usage<Tag>(
+    fn write_depth(
         &mut self,
-        output: &OutSlot<BufferResource, Tag>,
-        usage: ResourceUsage,
+        target: AttachmentTarget,
+        load_op: AttachmentLoadOp,
+        clear_depth: Option<f32>,
     ) {
-        match output.handle() {
-            Some(handle) => {
-                self.push_usage(ResourceHandle::Buffer(handle), usage);
-            }
-            None => {
-                self.build_errors
-                    .push(FrameGraphError::MissingOutput("buffer slot has no handle"));
-            }
-        }
+        self.merge_depth_stencil_attachment(
+            target,
+            Some(GraphicsDepthAspectDescriptor::write(load_op, clear_depth)),
+            None,
+        );
     }
 
-    pub fn surface_target(&self) -> AttachmentTarget {
+    fn read_stencil(&mut self, target: AttachmentTarget) {
+        self.merge_depth_stencil_attachment(
+            target,
+            None,
+            Some(GraphicsStencilAspectDescriptor::read()),
+        );
+    }
+
+    fn write_stencil(
+        &mut self,
+        target: AttachmentTarget,
+        load_op: AttachmentLoadOp,
+        clear_stencil: Option<u32>,
+    ) {
+        self.merge_depth_stencil_attachment(
+            target,
+            None,
+            Some(GraphicsStencilAspectDescriptor::write(load_op, clear_stencil)),
+        );
+    }
+
+    fn surface_target(&self) -> AttachmentTarget {
         AttachmentTarget::Surface
     }
 
-    pub fn texture_target<Tag>(
+    fn texture_target<Tag>(
         &mut self,
         output: &OutSlot<TextureResource, Tag>,
     ) -> Option<AttachmentTarget> {
         self.texture_target_from_output(output)
     }
 }
+
+macro_rules! impl_shared_builder_api {
+    ($ty:ident) => {
+        impl<'a, 'b> $ty<'a, 'b> {
+            pub fn descriptor(&self) -> &PassDescriptor {
+                self.state.descriptor()
+            }
+
+            pub fn descriptor_mut(&mut self) -> &mut PassDescriptor {
+                self.state.descriptor_mut()
+            }
+
+            pub fn create_texture<Tag>(
+                &mut self,
+                desc: TextureDesc,
+            ) -> OutSlot<TextureResource, Tag> {
+                self.state.create_texture(desc)
+            }
+
+            #[allow(dead_code)]
+            pub(crate) fn create_texture_internal<Tag>(
+                &mut self,
+                desc: TextureDesc,
+                lifetime: ResourceLifetime,
+                stable_key: Option<u64>,
+            ) -> OutSlot<TextureResource, Tag> {
+                self.state
+                    .create_texture_internal(desc, lifetime, stable_key)
+            }
+
+            pub fn create_buffer<Tag>(&mut self, desc: BufferDesc) -> OutSlot<BufferResource, Tag> {
+                self.state.create_buffer(desc)
+            }
+
+            #[allow(dead_code)]
+            pub(crate) fn create_buffer_internal<Tag>(
+                &mut self,
+                desc: BufferDesc,
+                lifetime: ResourceLifetime,
+                stable_key: Option<u64>,
+            ) -> OutSlot<BufferResource, Tag> {
+                self.state
+                    .create_buffer_internal(desc, lifetime, stable_key)
+            }
+
+            pub fn declare_sampled_texture<Tag>(
+                &mut self,
+                input: &mut InSlot<TextureResource, Tag>,
+                source: &OutSlot<TextureResource, Tag>,
+            ) {
+                self.state.declare_sampled_texture(input, source);
+            }
+
+            pub fn read_texture<Tag>(
+                &mut self,
+                input: &mut InSlot<TextureResource, Tag>,
+                source: &OutSlot<TextureResource, Tag>,
+            ) {
+                self.state.read_texture(input, source);
+            }
+
+            pub fn declare_uniform_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+                self.state.declare_uniform_buffer(buffer);
+            }
+
+            pub fn declare_vertex_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+                self.state.declare_vertex_buffer(buffer);
+            }
+
+            pub fn declare_index_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+                self.state.declare_index_buffer(buffer);
+            }
+
+            pub fn declare_copy_src_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+                self.state.declare_copy_src_buffer(buffer);
+            }
+
+            pub fn declare_copy_dst_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+                self.state.declare_copy_dst_buffer(buffer);
+            }
+
+            pub fn declare_read_buffer<Tag>(
+                &mut self,
+                input: &mut InSlot<BufferResource, Tag>,
+                source: &OutSlot<BufferResource, Tag>,
+                usage: ResourceUsage,
+            ) {
+                self.state.declare_read_buffer(input, source, usage);
+            }
+
+            pub fn read_buffer<Tag>(
+                &mut self,
+                buffer: &OutSlot<BufferResource, Tag>,
+                usage: BufferReadUsage,
+            ) {
+                self.state.read_buffer(buffer, usage);
+            }
+
+            pub fn write_buffer<Tag>(&mut self, buffer: &OutSlot<BufferResource, Tag>) {
+                self.state.write_buffer(buffer);
+            }
+
+            pub fn copy_src<R: UsageTrackedResource, Tag>(&mut self, resource: &OutSlot<R, Tag>) {
+                self.state.copy_src(resource);
+            }
+
+            pub fn copy_dst<R: UsageTrackedResource, Tag>(&mut self, resource: &OutSlot<R, Tag>) {
+                self.state.copy_dst(resource);
+            }
+
+            pub fn read_storage<R: UsageTrackedResource, Tag>(
+                &mut self,
+                resource: &OutSlot<R, Tag>,
+            ) {
+                self.state.read_storage(resource);
+            }
+
+            pub fn write_storage<R: UsageTrackedResource, Tag>(
+                &mut self,
+                resource: &OutSlot<R, Tag>,
+            ) {
+                self.state.write_storage(resource);
+            }
+
+            pub fn declare_texture_usage<Tag>(
+                &mut self,
+                output: &OutSlot<TextureResource, Tag>,
+                usage: ResourceUsage,
+            ) {
+                self.state.declare_texture_usage(output, usage);
+            }
+
+            pub fn declare_buffer_usage<Tag>(
+                &mut self,
+                output: &OutSlot<BufferResource, Tag>,
+                usage: ResourceUsage,
+            ) {
+                self.state.declare_buffer_usage(output, usage);
+            }
+
+            pub fn surface_target(&self) -> AttachmentTarget {
+                self.state.surface_target()
+            }
+
+            pub fn texture_target<Tag>(
+                &mut self,
+                output: &OutSlot<TextureResource, Tag>,
+            ) -> Option<AttachmentTarget> {
+                self.state.texture_target(output)
+            }
+        }
+    };
+}
+
+pub struct GraphicsPassBuilder<'a, 'b> {
+    state: &'a mut PassBuilderState<'b>,
+}
+
+impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
+    pub(crate) fn new(state: &'a mut PassBuilderState<'b>) -> Self {
+        state.descriptor.kind = super::frame_graph::PassKind::Graphics;
+        if !matches!(
+            state.descriptor.details,
+            super::frame_graph::PassDetails::Graphics(_)
+        ) {
+            state.descriptor.details =
+                super::frame_graph::PassDetails::Graphics(Default::default());
+        }
+        Self { state }
+    }
+
+    pub fn set_sample_count(&mut self, sample_count: SampleCountPolicy) {
+        self.state.descriptor.graphics_mut().sample_count = sample_count;
+    }
+
+    pub fn set_viewport_policy(&mut self, policy: ViewportPolicy) {
+        self.state.descriptor.graphics_mut().viewport_policy = policy;
+    }
+
+    pub fn set_scissor_policy(&mut self, policy: ScissorPolicy) {
+        self.state.descriptor.graphics_mut().scissor_policy = policy;
+    }
+
+    pub fn set_graphics_merge_policy(&mut self, policy: GraphicsPassMergePolicy) {
+        self.state.descriptor.graphics_mut().merge_policy = policy;
+    }
+
+    pub fn declare_color_attachment<Tag>(
+        &mut self,
+        output: &OutSlot<TextureResource, Tag>,
+        attachment: GraphicsColorAttachmentDescriptor,
+    ) {
+        self.state.declare_color_attachment(output, attachment);
+    }
+
+    pub fn write_color<Tag>(
+        &mut self,
+        output: &OutSlot<TextureResource, Tag>,
+        attachment: GraphicsColorAttachmentDescriptor,
+    ) {
+        self.state.declare_color_attachment(output, attachment);
+    }
+
+    pub fn declare_surface_color_attachment(
+        &mut self,
+        attachment: GraphicsColorAttachmentDescriptor,
+    ) {
+        self.state.declare_surface_color_attachment(attachment);
+    }
+
+    pub fn write_surface_color(&mut self, attachment: GraphicsColorAttachmentDescriptor) {
+        self.state.declare_surface_color_attachment(attachment);
+    }
+
+    pub fn declare_depth_stencil_attachment(
+        &mut self,
+        attachment: GraphicsDepthStencilAttachmentDescriptor,
+    ) {
+        self.state.declare_depth_stencil_attachment(attachment);
+    }
+
+    pub fn read_depth(&mut self, target: AttachmentTarget) {
+        self.state.read_depth(target);
+    }
+
+    pub fn write_depth(
+        &mut self,
+        target: AttachmentTarget,
+        load_op: AttachmentLoadOp,
+        clear_depth: Option<f32>,
+    ) {
+        self.state.write_depth(target, load_op, clear_depth);
+    }
+
+    pub fn read_stencil(&mut self, target: AttachmentTarget) {
+        self.state.read_stencil(target);
+    }
+
+    pub fn write_stencil(
+        &mut self,
+        target: AttachmentTarget,
+        load_op: AttachmentLoadOp,
+        clear_stencil: Option<u32>,
+    ) {
+        self.state.write_stencil(target, load_op, clear_stencil);
+    }
+}
+
+impl_shared_builder_api!(GraphicsPassBuilder);
+
+pub struct ComputePassBuilder<'a, 'b> {
+    state: &'a mut PassBuilderState<'b>,
+}
+
+impl<'a, 'b> ComputePassBuilder<'a, 'b> {
+    pub(crate) fn new(state: &'a mut PassBuilderState<'b>) -> Self {
+        state.descriptor.kind = super::frame_graph::PassKind::Compute;
+        if !matches!(
+            state.descriptor.details,
+            super::frame_graph::PassDetails::Compute(_)
+        ) {
+            state.descriptor.details = super::frame_graph::PassDetails::Compute(Default::default());
+        }
+        Self { state }
+    }
+}
+
+impl_shared_builder_api!(ComputePassBuilder);
+
+pub struct TransferPassBuilder<'a, 'b> {
+    state: &'a mut PassBuilderState<'b>,
+}
+
+impl<'a, 'b> TransferPassBuilder<'a, 'b> {
+    pub(crate) fn new(state: &'a mut PassBuilderState<'b>) -> Self {
+        state.descriptor.kind = super::frame_graph::PassKind::Transfer;
+        if !matches!(
+            state.descriptor.details,
+            super::frame_graph::PassDetails::Transfer(_)
+        ) {
+            state.descriptor.details =
+                super::frame_graph::PassDetails::Transfer(Default::default());
+        }
+        Self { state }
+    }
+}
+
+impl_shared_builder_api!(TransferPassBuilder);

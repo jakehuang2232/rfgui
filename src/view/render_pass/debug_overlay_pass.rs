@@ -1,14 +1,12 @@
 use crate::view::frame_graph::{
-    AttachmentTarget, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
-    GraphicsDepthStencilAttachmentDescriptor, GraphicsStencilAspectDescriptor, PassBuilder,
+    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
 };
 use crate::view::frame_graph::{GraphicsRecordContext, ResourceCache};
-use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::RenderTargetPass;
 use crate::view::render_pass::render_target::{
-    render_target_attachment_view, render_target_bundle, render_target_size, render_target_view,
+    GraphicsPassContext, render_target_bundle, render_target_size,
 };
+use crate::view::render_pass::{GraphicsEncodeScope, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -22,12 +20,14 @@ pub struct DebugOverlayVertex {
 }
 
 pub struct DebugOverlayPass {
-    depth_stencil_target: Option<AttachmentTarget>,
+    input: DebugOverlayInput,
     output: DebugOverlayOutput,
 }
 
 #[derive(Default)]
-pub struct DebugOverlayInput;
+pub struct DebugOverlayInput {
+    pub pass_context: GraphicsPassContext,
+}
 
 #[derive(Default)]
 pub struct DebugOverlayOutput {
@@ -36,44 +36,37 @@ pub struct DebugOverlayOutput {
 
 impl DebugOverlayPass {
     pub fn new(input: DebugOverlayInput, output: DebugOverlayOutput) -> Self {
-        let _ = input;
-        Self {
-            depth_stencil_target: None,
-            output,
-        }
-    }
-
-    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
-        self.depth_stencil_target = depth_stencil_target;
+        Self { input, output }
     }
 }
 
-impl RenderPass for DebugOverlayPass {
-    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+impl GraphicsPass for DebugOverlayPass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output.render_target,
                 GraphicsColorAttachmentDescriptor::load(target),
             );
         } else {
-            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
                 builder.surface_target(),
             ));
         }
-        if let Some(target) = self.depth_stencil_target {
-            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
-                target,
-                depth: Some(GraphicsDepthAspectDescriptor::read()),
-                stencil: Some(GraphicsStencilAspectDescriptor::read()),
-            });
+        if let Some(target) = self.input.pass_context.depth_stencil_target {
+            builder.read_depth(target);
+            builder.read_stencil(target);
         }
     }
 
-    fn record_standalone(
+    fn encode(
         &mut self,
         ctx: &mut GraphicsRecordContext<'_, '_>,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: GraphicsEncodeScope<'_, '_>,
     ) {
+        let GraphicsEncodeScope::Render(pass) = scope else {
+            unreachable!("DebugOverlayPass requires render scope");
+        };
         if !ctx.viewport.debug_geometry_overlay() {
             let _ = ctx.viewport.take_debug_overlay_geometry();
             return;
@@ -109,94 +102,21 @@ impl RenderPass for DebugOverlayPass {
         });
 
         let surface_size = ctx.viewport.surface_size();
-        let (offscreen_view, offscreen_msaa_view, target_w, target_h) =
-            match self.output.render_target.handle() {
-                Some(handle) => {
-                    if let Some(bundle) = render_target_bundle(ctx, handle) {
-                        (
-                            Some(bundle.view),
-                            bundle.msaa_view,
-                            bundle.size.0,
-                            bundle.size.1,
-                        )
-                    } else {
-                        (
-                            render_target_view(ctx, handle),
-                            None,
-                            render_target_size(ctx, handle).unwrap_or(surface_size).0,
-                            render_target_size(ctx, handle).unwrap_or(surface_size).1,
-                        )
-                    }
+        let (target_w, target_h) = match self.output.render_target.handle() {
+            Some(handle) => {
+                if let Some(bundle) = render_target_bundle(ctx, handle) {
+                    bundle.size
+                } else {
+                    render_target_size(ctx, handle).unwrap_or(surface_size)
                 }
-                None => (None, None, surface_size.0, surface_size.1),
-            };
-
-        let depth_stencil_view = match self.depth_stencil_target {
-            Some(AttachmentTarget::Texture(handle)) => render_target_attachment_view(ctx, handle),
-            Some(AttachmentTarget::Surface) | None => None,
-        };
-        let Some(parts) = ctx.viewport.frame_parts() else {
-            return;
-        };
-        let (color_view, resolve_target) =
-            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
-                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-                (Some(resolve_view), None) => (resolve_view, None),
-                (None, _) => {
-                    let surface_resolve = if sample_count > 1 {
-                        parts.resolve_view
-                    } else {
-                        None
-                    };
-                    (parts.view, surface_resolve)
-                }
-            };
-        let depth_stencil_attachment = match self.depth_stencil_target {
-            Some(AttachmentTarget::Surface) => {
-                parts.depth_stencil_attachment(wgpu::LoadOp::Load, wgpu::LoadOp::Load)
             }
-            Some(AttachmentTarget::Texture(_)) => {
-                depth_stencil_view
-                    .as_ref()
-                    .map(|view| wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    })
-            }
-            None => None,
+            None => surface_size,
         };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Debug Overlay"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target,
-            })],
-            depth_stencil_attachment,
-            ..Default::default()
-        });
         pass.set_pipeline(&resources.pipeline);
         pass.set_scissor_rect(0, 0, target_w, target_h);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
-    }
-}
-
-impl RenderTargetPass for DebugOverlayPass {
-    fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
-        self.depth_stencil_target = depth_stencil_target;
     }
 }
 

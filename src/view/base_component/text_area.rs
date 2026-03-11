@@ -1950,9 +1950,15 @@ fn push_draw_rect_pass_explicit(
     let Some(input_target) = ctx.current_target() else {
         return;
     };
+    pass.set_input(
+        input_target
+            .handle()
+            .map(crate::view::render_pass::draw_rect_pass::RenderTargetIn::with_handle)
+            .unwrap_or_default(),
+    );
+    pass.draw_rect_input_mut().pass_context = ctx.graphics_pass_context();
     pass.set_output(input_target);
-    ctx.configure_pass(&mut pass);
-    graph.add_pass(pass);
+    graph.add_graphics_pass(pass);
     ctx.set_current_target(input_target);
 }
 
@@ -1964,16 +1970,17 @@ fn push_text_pass_explicit(
     let Some(input_target) = ctx.current_target() else {
         return;
     };
-    let mut pass = TextPass::new(
+    let pass = TextPass::new(
         params,
-        TextInput::default(),
+        TextInput {
+            pass_context: ctx.graphics_pass_context(),
+        },
         TextOutput {
             render_target: input_target,
             ..Default::default()
         },
     );
-    ctx.configure_pass(&mut pass);
-    graph.add_pass(pass);
+    graph.add_graphics_pass(pass);
     ctx.set_current_target(input_target);
 }
 

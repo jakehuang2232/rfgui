@@ -1571,19 +1571,21 @@ impl Viewport {
         let output = ctx.allocate_target(&mut graph);
         let output_handle = output.handle();
         ctx.set_current_target(output.clone());
-        let mut clear_pass = super::frame_graph::ClearPass::new(
+        let clear_pass = super::frame_graph::ClearPass::new(
             super::render_pass::clear_pass::ClearParams::new(clear_rgba),
-            super::render_pass::clear_pass::ClearInput::default(),
+            super::render_pass::clear_pass::ClearInput {
+                pass_context: ctx.graphics_pass_context(),
+                clear_depth_stencil: true,
+            },
             super::render_pass::clear_pass::ClearOutput {
                 render_target: output.clone(),
                 ..Default::default()
             },
         );
-        ctx.configure_pass(&mut clear_pass);
         if let Some(handle) = output_handle {
             ctx.set_color_target(Some(handle));
         }
-        graph.add_pass(clear_pass);
+        graph.add_graphics_pass(clear_pass);
         ctx.set_current_target(output);
         for root in roots.iter_mut() {
             let next_state = root.build(
@@ -1619,7 +1621,12 @@ impl Viewport {
         if let Some(dep_handle) = dependency_handle {
             if self.debug_options.geometry_overlay {
                 let debug_pass = super::render_pass::debug_overlay_pass::DebugOverlayPass::new(
-                    super::render_pass::debug_overlay_pass::DebugOverlayInput::default(),
+                    super::render_pass::debug_overlay_pass::DebugOverlayInput {
+                        pass_context: super::render_pass::render_target::GraphicsPassContext {
+                            depth_stencil_target: ctx.depth_stencil_target(),
+                            ..Default::default()
+                        },
+                    },
                     super::render_pass::debug_overlay_pass::DebugOverlayOutput {
                         render_target:
                             super::render_pass::draw_rect_pass::RenderTargetOut::with_handle(
@@ -1628,9 +1635,7 @@ impl Viewport {
                         ..Default::default()
                     },
                 );
-                let mut debug_pass = debug_pass;
-                debug_pass.set_depth_stencil_target(ctx.depth_stencil_target());
-                graph.add_pass(debug_pass);
+                graph.add_graphics_pass(debug_pass);
             }
             let present_pass = super::render_pass::present_surface_pass::PresentSurfacePass::new(
                 super::render_pass::present_surface_pass::PresentSurfaceParams,
@@ -1642,11 +1647,13 @@ impl Viewport {
                 },
                 super::render_pass::present_surface_pass::PresentSurfaceOutput::default(),
             );
-            let present_handle = graph.add_pass(present_pass);
-            graph.add_pass_sink(
-                present_handle,
-                super::frame_graph::ExternalSinkKind::SurfacePresent,
-            );
+            let present_handle = graph.add_graphics_pass(present_pass);
+            graph
+                .add_pass_sink(
+                    present_handle,
+                    super::frame_graph::ExternalSinkKind::SurfacePresent,
+                )
+                .expect("surface present sink should register");
         }
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
 

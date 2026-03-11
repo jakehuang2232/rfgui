@@ -4,13 +4,16 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::buffer_resource::{BufferDesc, BufferHandle};
-use super::builder::PassBuilder;
+use super::builder::PassBuilderState;
 use super::texture_resource::{TextureDesc, TextureHandle};
 use crate::view::render_pass::draw_rect_pass::{DrawRectPass, OpaqueRectPass};
 use crate::view::render_pass::render_target::{
     render_target_attachment_view, render_target_msaa_view, render_target_view,
 };
-use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
+use crate::view::render_pass::{
+    ComputeEncodeScope, ComputePass, ComputePassWrapper, GraphicsEncodeScope, GraphicsPass,
+    GraphicsPassWrapper, PassNodeDyn, TransferEncodeScope, TransferPass, TransferPassWrapper,
+};
 use crate::view::viewport::Viewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -58,16 +61,47 @@ pub struct ExternalSinkId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExternalSinkKind {
     SurfacePresent,
-    ReadbackBuffer,
+    Readback,
     DebugCapture,
+    ExportTexture,
+    ExportBuffer,
+}
+
+impl ExternalSinkKind {
+    fn supports_pass_target(self) -> bool {
+        matches!(self, ExternalSinkKind::SurfacePresent)
+    }
+
+    fn supports_texture_target(self) -> bool {
+        matches!(
+            self,
+            ExternalSinkKind::DebugCapture
+                | ExternalSinkKind::ExportTexture
+                | ExternalSinkKind::Readback
+        )
+    }
+
+    fn supports_buffer_target(self) -> bool {
+        matches!(
+            self,
+            ExternalSinkKind::DebugCapture
+                | ExternalSinkKind::ExportBuffer
+                | ExternalSinkKind::Readback
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalSinkTarget {
+    Pass(PassHandle),
+    Resource(ResourceHandle),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExternalSink {
     pub id: ExternalSinkId,
     pub kind: ExternalSinkKind,
-    pub pass: Option<PassHandle>,
-    pub source: Option<ResourceHandle>,
+    pub target: ExternalSinkTarget,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -99,6 +133,7 @@ pub enum ResourceAccess {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceUsage {
     Produced,
+    BufferWrite,
     SampledRead,
     ColorAttachmentWrite,
     DepthRead,
@@ -118,6 +153,7 @@ impl ResourceUsage {
     pub fn effective_access(self) -> ResourceAccess {
         match self {
             ResourceUsage::Produced
+            | ResourceUsage::BufferWrite
             | ResourceUsage::ColorAttachmentWrite
             | ResourceUsage::DepthWrite
             | ResourceUsage::StencilWrite
@@ -190,10 +226,10 @@ pub enum ScissorPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum GraphicsPassRecordingMode {
+pub enum GraphicsPassMergePolicy {
     #[default]
-    StandaloneOnly,
-    InlineOrStandalone,
+    RequiresOwnPass,
+    Mergeable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -294,7 +330,7 @@ pub struct GraphicsPassDescriptor {
     pub sample_count: SampleCountPolicy,
     pub viewport_policy: ViewportPolicy,
     pub scissor_policy: ScissorPolicy,
-    pub recording_mode: GraphicsPassRecordingMode,
+    pub merge_policy: GraphicsPassMergePolicy,
     pub requirements: GraphicsPipelineRequirements,
 }
 
@@ -306,7 +342,7 @@ impl Default for GraphicsPassDescriptor {
             sample_count: SampleCountPolicy::SurfaceDefault,
             viewport_policy: ViewportPolicy::Dynamic,
             scissor_policy: ScissorPolicy::Dynamic,
-            recording_mode: GraphicsPassRecordingMode::StandaloneOnly,
+            merge_policy: GraphicsPassMergePolicy::RequiresOwnPass,
             requirements: GraphicsPipelineRequirements::default(),
         }
     }
@@ -356,6 +392,22 @@ impl PassDescriptor {
         }
     }
 
+    pub fn compute(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: PassKind::Compute,
+            details: PassDetails::Compute(ComputePassDescriptor),
+        }
+    }
+
+    pub fn transfer(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: PassKind::Transfer,
+            details: PassDetails::Transfer(TransferPassDescriptor),
+        }
+    }
+
     pub fn graphics_mut(&mut self) -> &mut GraphicsPassDescriptor {
         self.kind = PassKind::Graphics;
         if !matches!(self.details, PassDetails::Graphics(_)) {
@@ -369,7 +421,7 @@ impl PassDescriptor {
 }
 
 struct PassNode {
-    pass: Box<dyn RenderPassDyn>,
+    pass: Box<dyn PassNodeDyn>,
     descriptor: PassDescriptor,
     usages: Vec<PassResourceUsage>,
 }
@@ -546,10 +598,10 @@ impl FrameGraph {
         }
     }
 
-    pub fn add_pass<P: RenderPass + 'static>(&mut self, pass: P) -> PassHandle {
+    pub fn add_graphics_pass<P: GraphicsPass + 'static>(&mut self, pass: P) -> PassHandle {
         let name = std::any::type_name::<P>();
         let node = PassNode {
-            pass: Box::new(PassWrapper { pass }),
+            pass: Box::new(GraphicsPassWrapper { pass }),
             descriptor: PassDescriptor::graphics(name),
             usages: Vec::new(),
         };
@@ -560,8 +612,46 @@ impl FrameGraph {
         handle
     }
 
-    pub fn add_pass_sink(&mut self, pass: PassHandle, kind: ExternalSinkKind) -> ExternalSinkId {
-        self.add_external_sink(kind, Some(pass), None)
+    pub fn add_compute_pass<P: ComputePass + 'static>(&mut self, pass: P) -> PassHandle {
+        let name = std::any::type_name::<P>();
+        let node = PassNode {
+            pass: Box::new(ComputePassWrapper { pass }),
+            descriptor: PassDescriptor::compute(name),
+            usages: Vec::new(),
+        };
+        let handle = PassHandle(self.passes.len());
+        self.passes.push(node);
+        self.compiled_graph = None;
+        self.compiled = false;
+        handle
+    }
+
+    pub fn add_transfer_pass<P: TransferPass + 'static>(&mut self, pass: P) -> PassHandle {
+        let name = std::any::type_name::<P>();
+        let node = PassNode {
+            pass: Box::new(TransferPassWrapper { pass }),
+            descriptor: PassDescriptor::transfer(name),
+            usages: Vec::new(),
+        };
+        let handle = PassHandle(self.passes.len());
+        self.passes.push(node);
+        self.compiled_graph = None;
+        self.compiled = false;
+        handle
+    }
+
+    pub fn add_pass_sink(
+        &mut self,
+        pass: PassHandle,
+        kind: ExternalSinkKind,
+    ) -> Result<ExternalSinkId, FrameGraphError> {
+        if !kind.supports_pass_target() {
+            return Err(FrameGraphError::Validation(format!(
+                "sink kind {:?} does not support pass targets",
+                kind
+            )));
+        }
+        Ok(self.add_external_sink(kind, ExternalSinkTarget::Pass(pass)))
     }
 
     pub fn add_texture_sink<Tag>(
@@ -569,12 +659,21 @@ impl FrameGraph {
         source: &super::slot::OutSlot<super::texture_resource::TextureResource, Tag>,
         kind: ExternalSinkKind,
     ) -> Result<ExternalSinkId, FrameGraphError> {
+        if !kind.supports_texture_target() {
+            return Err(FrameGraphError::Validation(format!(
+                "sink kind {:?} does not support texture targets",
+                kind
+            )));
+        }
         let Some(handle) = source.handle() else {
             return Err(FrameGraphError::MissingOutput(
                 "texture sink source has no handle",
             ));
         };
-        Ok(self.add_external_sink(kind, None, Some(ResourceHandle::Texture(handle))))
+        Ok(self.add_external_sink(
+            kind,
+            ExternalSinkTarget::Resource(ResourceHandle::Texture(handle)),
+        ))
     }
 
     pub fn add_buffer_sink<Tag>(
@@ -582,27 +681,30 @@ impl FrameGraph {
         source: &super::slot::OutSlot<super::buffer_resource::BufferResource, Tag>,
         kind: ExternalSinkKind,
     ) -> Result<ExternalSinkId, FrameGraphError> {
+        if !kind.supports_buffer_target() {
+            return Err(FrameGraphError::Validation(format!(
+                "sink kind {:?} does not support buffer targets",
+                kind
+            )));
+        }
         let Some(handle) = source.handle() else {
             return Err(FrameGraphError::MissingOutput(
                 "buffer sink source has no handle",
             ));
         };
-        Ok(self.add_external_sink(kind, None, Some(ResourceHandle::Buffer(handle))))
+        Ok(self.add_external_sink(
+            kind,
+            ExternalSinkTarget::Resource(ResourceHandle::Buffer(handle)),
+        ))
     }
 
     fn add_external_sink(
         &mut self,
         kind: ExternalSinkKind,
-        pass: Option<PassHandle>,
-        source: Option<ResourceHandle>,
+        target: ExternalSinkTarget,
     ) -> ExternalSinkId {
         let id = ExternalSinkId(self.external_sinks.len() as u32);
-        self.external_sinks.push(ExternalSink {
-            id,
-            kind,
-            pass,
-            source,
-        });
+        self.external_sinks.push(ExternalSink { id, kind, target });
         self.compiled_graph = None;
         self.compiled = false;
         id
@@ -666,7 +768,7 @@ impl FrameGraph {
         let mut build_errors: Vec<FrameGraphError> = Vec::new();
 
         for node in &mut self.passes {
-            let mut builder = PassBuilder {
+            let mut builder = PassBuilderState {
                 descriptor: &mut node.descriptor,
                 textures: &mut textures,
                 buffers: &mut buffers,
@@ -830,31 +932,28 @@ impl FrameGraph {
         let mut sink_passes = Vec::new();
         let mut seen = HashSet::new();
         for sink in &self.external_sinks {
-            if let Some(pass) = sink.pass {
-                let index = pass.0;
-                if index >= self.passes.len() {
-                    return Err(FrameGraphError::MissingOutput(
-                        "external sink references an unknown pass",
-                    ));
+            match sink.target {
+                ExternalSinkTarget::Pass(pass) => {
+                    let index = pass.0;
+                    if index >= self.passes.len() {
+                        return Err(FrameGraphError::MissingOutput(
+                            "external sink references an unknown pass",
+                        ));
+                    }
+                    if seen.insert(index) {
+                        sink_passes.push(index);
+                    }
                 }
-                if seen.insert(index) {
-                    sink_passes.push(index);
+                ExternalSinkTarget::Resource(source) => {
+                    let Some(producer) = find_latest_writer(pass_summaries, source) else {
+                        return Err(FrameGraphError::MissingInput(
+                            "external sink source has no producer",
+                        ));
+                    };
+                    if seen.insert(producer) {
+                        sink_passes.push(producer);
+                    }
                 }
-                continue;
-            }
-
-            let Some(source) = sink.source else {
-                return Err(FrameGraphError::MissingOutput(
-                    "external sink requires a pass or source resource",
-                ));
-            };
-            let Some(producer) = find_latest_writer(pass_summaries, source) else {
-                return Err(FrameGraphError::MissingInput(
-                    "external sink source has no producer",
-                ));
-            };
-            if seen.insert(producer) {
-                sink_passes.push(producer);
             }
         }
 
@@ -1386,9 +1485,21 @@ impl FrameGraph {
         );
         for step in self.execute_steps.clone() {
             match step {
-                ExecuteStep::GraphicsPass { index }
-                | ExecuteStep::ComputePass { index }
-                | ExecuteStep::TransferPass { index } => self.execute_single_pass(
+                ExecuteStep::GraphicsPass { index } => self.execute_graphics_pass(
+                    index,
+                    &mut ctx,
+                    &mut pass_timings,
+                    &mut pass_counts,
+                    &mut pass_first_seen_order,
+                ),
+                ExecuteStep::ComputePass { index } => self.execute_compute_pass(
+                    index,
+                    &mut ctx,
+                    &mut pass_timings,
+                    &mut pass_counts,
+                    &mut pass_first_seen_order,
+                ),
+                ExecuteStep::TransferPass { index } => self.execute_transfer_pass(
                     index,
                     &mut ctx,
                     &mut pass_timings,
@@ -1431,7 +1542,7 @@ impl FrameGraph {
 
 impl FrameGraph {
     #[allow(clippy::too_many_arguments)]
-    fn execute_single_pass(
+    fn execute_graphics_pass(
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
@@ -1441,6 +1552,7 @@ impl FrameGraph {
     ) {
         let pass_name = self.passes[index].pass.name().to_string();
         let pass_started_at = Instant::now();
+        let mut recorded_inside_graphics_scope = false;
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
@@ -1448,19 +1560,41 @@ impl FrameGraph {
             parts.encoder as *mut wgpu::CommandEncoder
         };
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let mut graphics_ctx = GraphicsRecordContext::new(ctx);
             let encoder = unsafe { &mut *encoder_ptr };
-            self.passes[index]
-                .pass
-                .record_standalone(&mut graphics_ctx, encoder);
+            match &self.passes[index].descriptor.details {
+                PassDetails::Graphics(graphics)
+                    if graphics.merge_policy == GraphicsPassMergePolicy::Mergeable =>
+                {
+                    let compatibility = render_pass_compatibility_for_graphics(graphics);
+                    self.execute_graphics_passes(
+                        &[index],
+                        &compatibility,
+                        ctx,
+                        encoder,
+                        pass_timings,
+                        pass_counts,
+                        pass_first_seen_order,
+                    );
+                    recorded_inside_graphics_scope = true;
+                    return;
+                }
+                _ => {
+                    let mut graphics_ctx = GraphicsRecordContext::new(ctx);
+                    self.passes[index]
+                        .pass
+                        .encode_graphics(&mut graphics_ctx, GraphicsEncodeScope::Command(encoder))
+                }
+            }
         }));
-        record_pass_timing(
-            pass_name,
-            pass_started_at,
-            pass_timings,
-            pass_counts,
-            pass_first_seen_order,
-        );
+        if !recorded_inside_graphics_scope {
+            record_pass_timing(
+                pass_name,
+                pass_started_at,
+                pass_timings,
+                pass_counts,
+                pass_first_seen_order,
+            );
+        }
         if let Err(payload) = result {
             let detail = if let Some(message) = payload.downcast_ref::<&str>() {
                 *message
@@ -1478,6 +1612,105 @@ impl FrameGraph {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn execute_compute_pass(
+        &mut self,
+        index: usize,
+        ctx: &mut RecordContext<'_, '_>,
+        pass_timings: &mut HashMap<String, f64>,
+        pass_counts: &mut HashMap<String, usize>,
+        pass_first_seen_order: &mut Vec<String>,
+    ) {
+        let pass_name = self.passes[index].pass.name().to_string();
+        let pass_started_at = Instant::now();
+        let encoder_ptr = {
+            let Some(parts) = ctx.viewport.frame_parts() else {
+                return;
+            };
+            parts.encoder as *mut wgpu::CommandEncoder
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let encoder = unsafe { &mut *encoder_ptr };
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("FrameGraph ComputePass"),
+                ..Default::default()
+            });
+            let mut compute_ctx = ComputeRecordContext::new(ctx);
+            self.passes[index].pass.encode_compute(
+                &mut compute_ctx,
+                ComputeEncodeScope::Compute(&mut compute_pass),
+            );
+        }));
+        record_pass_timing(
+            pass_name,
+            pass_started_at,
+            pass_timings,
+            pass_counts,
+            pass_first_seen_order,
+        );
+        if let Err(payload) = result {
+            let detail = if let Some(message) = payload.downcast_ref::<&str>() {
+                *message
+            } else if let Some(message) = payload.downcast_ref::<String>() {
+                message.as_str()
+            } else {
+                "unknown panic payload"
+            };
+            eprintln!(
+                "[warn] compute pass panicked and was skipped: {} ({})",
+                self.passes[index].pass.name(),
+                detail
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_transfer_pass(
+        &mut self,
+        index: usize,
+        ctx: &mut RecordContext<'_, '_>,
+        pass_timings: &mut HashMap<String, f64>,
+        pass_counts: &mut HashMap<String, usize>,
+        pass_first_seen_order: &mut Vec<String>,
+    ) {
+        let pass_name = self.passes[index].pass.name().to_string();
+        let pass_started_at = Instant::now();
+        let encoder_ptr = {
+            let Some(parts) = ctx.viewport.frame_parts() else {
+                return;
+            };
+            parts.encoder as *mut wgpu::CommandEncoder
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let encoder = unsafe { &mut *encoder_ptr };
+            let mut transfer_ctx = TransferRecordContext::new(ctx);
+            self.passes[index]
+                .pass
+                .encode_transfer(&mut transfer_ctx, TransferEncodeScope::Command(encoder));
+        }));
+        record_pass_timing(
+            pass_name,
+            pass_started_at,
+            pass_timings,
+            pass_counts,
+            pass_first_seen_order,
+        );
+        if let Err(payload) = result {
+            let detail = if let Some(message) = payload.downcast_ref::<&str>() {
+                *message
+            } else if let Some(message) = payload.downcast_ref::<String>() {
+                message.as_str()
+            } else {
+                "unknown panic payload"
+            };
+            eprintln!(
+                "[warn] transfer pass panicked and was skipped: {} ({})",
+                self.passes[index].pass.name(),
+                detail
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn execute_graphics_group(
         &mut self,
         group: &RenderPassGroup,
@@ -1486,20 +1719,46 @@ impl FrameGraph {
         pass_counts: &mut HashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
-        let (encoder_ptr, surface_view, surface_resolve_view, depth_view) = {
+        let Some(parts) = ctx.viewport.frame_parts() else {
+            return;
+        };
+        let encoder = parts.encoder as *mut wgpu::CommandEncoder;
+        let encoder = unsafe { &mut *encoder };
+        self.execute_graphics_passes(
+            &group.pass_indices,
+            &group.compatibility,
+            ctx,
+            encoder,
+            pass_timings,
+            pass_counts,
+            pass_first_seen_order,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_graphics_passes(
+        &mut self,
+        pass_indices: &[usize],
+        compatibility: &RenderPassCompatibilityKey,
+        ctx: &mut RecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+        pass_timings: &mut HashMap<String, f64>,
+        pass_counts: &mut HashMap<String, usize>,
+        pass_first_seen_order: &mut Vec<String>,
+    ) {
+        let (surface_view, surface_resolve_view, depth_view) = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
             };
             (
-                parts.encoder as *mut wgpu::CommandEncoder,
                 parts.view.clone(),
                 parts.resolve_view.cloned(),
                 parts.depth_view.cloned(),
             )
         };
         let mut owned_color_views: Vec<(wgpu::TextureView, Option<wgpu::TextureView>)> = Vec::new();
-        let mut color_attachments = Vec::with_capacity(group.compatibility.color_attachments.len());
-        for attachment in &group.compatibility.color_attachments {
+        let mut color_attachments = Vec::with_capacity(compatibility.color_attachments.len());
+        for attachment in &compatibility.color_attachments {
             let (view, resolve_target) = resolve_color_attachment_views(
                 ctx,
                 attachment.target,
@@ -1512,7 +1771,7 @@ impl FrameGraph {
             };
             owned_color_views.push((view, resolve_target));
         }
-        for (index, attachment) in group.compatibility.color_attachments.iter().enumerate() {
+        for (index, attachment) in compatibility.color_attachments.iter().enumerate() {
             let (view, resolve_target) = &owned_color_views[index];
             color_attachments.push(Some(wgpu::RenderPassColorAttachment {
                 view,
@@ -1524,19 +1783,19 @@ impl FrameGraph {
                 depth_slice: None,
             }));
         }
-        let owned_depth_attachment = group
-            .compatibility
-            .depth_stencil_attachment
-            .as_ref()
-            .and_then(|(target, depth, stencil)| {
-                let view = match target {
-                    AttachmentTarget::Surface => depth_view.clone(),
-                    AttachmentTarget::Texture(handle) => {
-                        render_target_attachment_view(ctx, *handle)
-                    }
-                }?;
-                Some((view, depth.clone(), stencil.clone()))
-            });
+        let owned_depth_attachment =
+            compatibility
+                .depth_stencil_attachment
+                .as_ref()
+                .and_then(|(target, depth, stencil)| {
+                    let view = match target {
+                        AttachmentTarget::Surface => depth_view.clone(),
+                        AttachmentTarget::Texture(handle) => {
+                            render_target_attachment_view(ctx, *handle)
+                        }
+                    }?;
+                    Some((view, depth.clone(), stencil.clone()))
+                });
         let depth_attachment = owned_depth_attachment
             .as_ref()
             .map(
@@ -1552,7 +1811,6 @@ impl FrameGraph {
                     }),
                 },
             );
-        let encoder = unsafe { &mut *encoder_ptr };
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("FrameGraph GraphicsGroup"),
             color_attachments: &color_attachments,
@@ -1560,13 +1818,14 @@ impl FrameGraph {
             ..Default::default()
         });
 
-        for &index in &group.pass_indices {
+        for &index in pass_indices {
             let pass_name = self.passes[index].pass.name().to_string();
             let pass_started_at = Instant::now();
             let mut graphics_ctx = GraphicsRecordContext::new(ctx);
-            self.passes[index]
-                .pass
-                .record_inline(&mut graphics_ctx, &mut render_pass);
+            self.passes[index].pass.encode_graphics(
+                &mut graphics_ctx,
+                GraphicsEncodeScope::Render(&mut render_pass),
+            );
             record_pass_timing(
                 pass_name,
                 pass_started_at,
@@ -1684,6 +1943,9 @@ fn summarize_pass_resources(
         match usage.usage {
             ResourceUsage::Produced => {
                 entry.produced = true;
+                entry.writes = true;
+            }
+            ResourceUsage::BufferWrite => {
                 entry.writes = true;
             }
             ResourceUsage::SampledRead
@@ -1972,11 +2234,17 @@ fn render_pass_compatibility_key(
     let PassDetails::Graphics(graphics) = &descriptor.details else {
         return None;
     };
-    if graphics.recording_mode != GraphicsPassRecordingMode::InlineOrStandalone {
+    if graphics.merge_policy != GraphicsPassMergePolicy::Mergeable {
         return None;
     }
 
-    Some(RenderPassCompatibilityKey {
+    Some(render_pass_compatibility_for_graphics(graphics))
+}
+
+fn render_pass_compatibility_for_graphics(
+    graphics: &GraphicsPassDescriptor,
+) -> RenderPassCompatibilityKey {
+    RenderPassCompatibilityKey {
         color_attachments: graphics
             .color_attachments
             .iter()
@@ -2011,7 +2279,7 @@ fn render_pass_compatibility_key(
             )
         }),
         sample_count: graphics.sample_count,
-    })
+    }
 }
 
 fn resolve_target_for_attachment(
@@ -2416,6 +2684,178 @@ impl FrameResourceContext for GraphicsRecordContext<'_, '_> {
     }
 }
 
+pub struct ComputeRecordContext<'ctx, 'res> {
+    pub(crate) viewport: &'ctx mut Viewport,
+    pub(crate) textures: &'res [TextureDesc],
+    pub(crate) buffers: &'res [BufferDesc],
+    texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
+    buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
+    detail_timings: &'ctx mut HashMap<String, f64>,
+    detail_counts: &'ctx mut HashMap<String, usize>,
+    detail_order: &'ctx mut Vec<String>,
+}
+
+impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
+    pub(crate) fn new(record: &'ctx mut RecordContext<'_, 'res>) -> Self {
+        let RecordContext {
+            viewport,
+            textures,
+            buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
+            detail_timings,
+            detail_counts,
+            detail_order,
+        } = record;
+        Self {
+            viewport,
+            textures,
+            buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
+            detail_timings,
+            detail_counts,
+            detail_order,
+        }
+    }
+
+    pub fn viewport(&mut self) -> &mut Viewport {
+        self.viewport
+    }
+
+    pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {
+        if !self.viewport.debug_trace_render_time() || elapsed_ms <= 0.0 {
+            return;
+        }
+        let name = name.to_string();
+        if !self.detail_timings.contains_key(&name) {
+            self.detail_order.push(name.clone());
+        }
+        *self.detail_timings.entry(name.clone()).or_insert(0.0) += elapsed_ms;
+        *self.detail_counts.entry(name).or_insert(0) += 1;
+    }
+
+    pub fn record_detail_count(&mut self, name: &'static str) {
+        if !self.viewport.debug_trace_render_time() {
+            return;
+        }
+        let name = name.to_string();
+        if !self.detail_timings.contains_key(&name) {
+            self.detail_order.push(name.clone());
+        }
+        self.detail_timings.entry(name.clone()).or_insert(0.0);
+        *self.detail_counts.entry(name).or_insert(0) += 1;
+    }
+}
+
+impl FrameResourceContext for ComputeRecordContext<'_, '_> {
+    fn viewport(&mut self) -> &mut Viewport {
+        self.viewport
+    }
+
+    fn textures(&self) -> &[TextureDesc] {
+        self.textures
+    }
+
+    fn buffers(&self) -> &[BufferDesc] {
+        self.buffers
+    }
+
+    fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId> {
+        self.texture_allocation_ids.get(&handle).copied()
+    }
+
+    fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
+        self.buffer_allocation_ids.get(&handle).copied()
+    }
+}
+
+pub struct TransferRecordContext<'ctx, 'res> {
+    pub(crate) viewport: &'ctx mut Viewport,
+    pub(crate) textures: &'res [TextureDesc],
+    pub(crate) buffers: &'res [BufferDesc],
+    texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
+    buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
+    detail_timings: &'ctx mut HashMap<String, f64>,
+    detail_counts: &'ctx mut HashMap<String, usize>,
+    detail_order: &'ctx mut Vec<String>,
+}
+
+impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
+    pub(crate) fn new(record: &'ctx mut RecordContext<'_, 'res>) -> Self {
+        let RecordContext {
+            viewport,
+            textures,
+            buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
+            detail_timings,
+            detail_counts,
+            detail_order,
+        } = record;
+        Self {
+            viewport,
+            textures,
+            buffers,
+            texture_allocation_ids,
+            buffer_allocation_ids,
+            detail_timings,
+            detail_counts,
+            detail_order,
+        }
+    }
+
+    pub fn viewport(&mut self) -> &mut Viewport {
+        self.viewport
+    }
+
+    pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {
+        if !self.viewport.debug_trace_render_time() || elapsed_ms <= 0.0 {
+            return;
+        }
+        let name = name.to_string();
+        if !self.detail_timings.contains_key(&name) {
+            self.detail_order.push(name.clone());
+        }
+        *self.detail_timings.entry(name.clone()).or_insert(0.0) += elapsed_ms;
+        *self.detail_counts.entry(name).or_insert(0) += 1;
+    }
+
+    pub fn record_detail_count(&mut self, name: &'static str) {
+        if !self.viewport.debug_trace_render_time() {
+            return;
+        }
+        let name = name.to_string();
+        if !self.detail_timings.contains_key(&name) {
+            self.detail_order.push(name.clone());
+        }
+        self.detail_timings.entry(name.clone()).or_insert(0.0);
+        *self.detail_counts.entry(name).or_insert(0) += 1;
+    }
+}
+
+impl FrameResourceContext for TransferRecordContext<'_, '_> {
+    fn viewport(&mut self) -> &mut Viewport {
+        self.viewport
+    }
+
+    fn textures(&self) -> &[TextureDesc] {
+        self.textures
+    }
+
+    fn buffers(&self) -> &[BufferDesc] {
+        self.buffers
+    }
+
+    fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId> {
+        self.texture_allocation_ids.get(&handle).copied()
+    }
+
+    fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
+        self.buffer_allocation_ids.get(&handle).copied()
+    }
+}
+
 #[derive(Debug)]
 pub enum FrameGraphError {
     MissingInput(&'static str),
@@ -2456,13 +2896,19 @@ impl<T> Default for ResourceCache<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::frame_graph::BufferResource;
     use crate::view::frame_graph::slot::{InSlot, OutSlot};
     use crate::view::frame_graph::texture_resource::{TextureDesc, TextureResource};
-    use crate::view::render_pass::RenderPass;
+    use crate::view::frame_graph::{
+        BufferReadUsage, BufferResource, ComputePassBuilder, GraphicsPassBuilder,
+        TransferPassBuilder,
+    };
     use crate::view::render_pass::draw_rect_pass::RenderTargetIn;
     use crate::view::render_pass::present_surface_pass::{
         PresentSurfaceInput, PresentSurfaceOutput, PresentSurfaceParams, PresentSurfacePass,
+    };
+    use crate::view::render_pass::{
+        ComputeEncodeScope, ComputePass, GraphicsEncodeScope, GraphicsPass, TransferEncodeScope,
+        TransferPass,
     };
 
     #[derive(Default)]
@@ -2470,21 +2916,21 @@ mod tests {
         output: OutSlot<TextureResource, ()>,
     }
 
-    impl RenderPass for WritePass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+    impl GraphicsPass for WritePass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
             let target = builder
                 .texture_target(&self.output)
                 .expect("test output should have texture target");
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output,
                 GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
             );
         }
 
-        fn record_standalone(
+        fn encode(
             &mut self,
             _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _scope: GraphicsEncodeScope<'_, '_>,
         ) {
         }
     }
@@ -2494,17 +2940,17 @@ mod tests {
         input: InSlot<TextureResource, ()>,
     }
 
-    impl RenderPass for ReadPass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+    impl GraphicsPass for ReadPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
             if let Some(handle) = self.input.handle() {
-                builder.declare_sampled_texture(&mut self.input, &OutSlot::with_handle(handle));
+                builder.read_texture(&mut self.input, &OutSlot::with_handle(handle));
             }
         }
 
-        fn record_standalone(
+        fn encode(
             &mut self,
             _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _scope: GraphicsEncodeScope<'_, '_>,
         ) {
         }
     }
@@ -2514,21 +2960,21 @@ mod tests {
         target: OutSlot<TextureResource, ()>,
     }
 
-    impl RenderPass for ModifyPass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+    impl GraphicsPass for ModifyPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
             let target = builder
                 .texture_target(&self.target)
                 .expect("test output should have texture target");
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.target,
                 GraphicsColorAttachmentDescriptor::load(target),
             );
         }
 
-        fn record_standalone(
+        fn encode(
             &mut self,
             _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _scope: GraphicsEncodeScope<'_, '_>,
         ) {
         }
     }
@@ -2536,18 +2982,18 @@ mod tests {
     #[derive(Default)]
     struct SurfacePass;
 
-    impl RenderPass for SurfacePass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
-            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
+    impl GraphicsPass for SurfacePass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
                 builder.surface_target(),
                 [0.0, 0.0, 0.0, 0.0],
             ));
         }
 
-        fn record_standalone(
+        fn encode(
             &mut self,
             _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _scope: GraphicsEncodeScope<'_, '_>,
         ) {
         }
     }
@@ -2562,6 +3008,14 @@ mod tests {
         output: OutSlot<BufferResource, ()>,
     }
 
+    struct ExistingBufferWritePass {
+        output: OutSlot<BufferResource, ()>,
+    }
+
+    struct BufferReadPass {
+        input: OutSlot<BufferResource, ()>,
+    }
+
     #[derive(Default)]
     struct InlineLoadPass {
         target: OutSlot<TextureResource, ()>,
@@ -2573,83 +3027,94 @@ mod tests {
     #[derive(Default)]
     struct TransferStubPass;
 
-    impl RenderPass for BufferWritePass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+    impl GraphicsPass for BufferWritePass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
             self.output = builder.create_buffer(BufferDesc {
                 size: 16,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
                 label: Some("Test Buffer"),
             });
-            builder.declare_uniform_buffer(&self.output);
+            builder.read_buffer(&self.output, BufferReadUsage::Uniform);
         }
 
-        fn record_standalone(
+        fn encode(
             &mut self,
             _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _scope: GraphicsEncodeScope<'_, '_>,
         ) {
         }
     }
 
-    impl RenderPass for InlineLoadPass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
-            builder.set_graphics_recording_mode(GraphicsPassRecordingMode::InlineOrStandalone);
+    impl GraphicsPass for ExistingBufferWritePass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.write_buffer(&self.output);
+        }
+
+        fn encode(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _scope: GraphicsEncodeScope<'_, '_>,
+        ) {
+        }
+    }
+
+    impl GraphicsPass for BufferReadPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.read_buffer(&self.input, BufferReadUsage::Uniform);
+        }
+
+        fn encode(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _scope: GraphicsEncodeScope<'_, '_>,
+        ) {
+        }
+    }
+
+    impl GraphicsPass for InlineLoadPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
             let target = builder
                 .texture_target(&self.target)
                 .expect("inline test output should have texture target");
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.target,
                 GraphicsColorAttachmentDescriptor::load(target),
             );
         }
 
-        fn record_standalone(
+        fn encode(
             &mut self,
             _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
-        ) {
-        }
-
-        fn record_inline(
-            &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _render_pass: &mut wgpu::RenderPass<'_>,
+            _scope: GraphicsEncodeScope<'_, '_>,
         ) {
         }
     }
 
-    impl RenderPass for ComputeStubPass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
-            let descriptor = builder.descriptor_mut();
-            descriptor.kind = PassKind::Compute;
-            descriptor.details = PassDetails::Compute(ComputePassDescriptor);
-        }
+    impl ComputePass for ComputeStubPass {
+        fn setup(&mut self, _builder: &mut ComputePassBuilder<'_, '_>) {}
 
-        fn record_standalone(
+        fn encode(
             &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _ctx: &mut ComputeRecordContext<'_, '_>,
+            _scope: ComputeEncodeScope<'_, '_>,
         ) {
         }
     }
 
-    impl RenderPass for TransferStubPass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
-            let descriptor = builder.descriptor_mut();
-            descriptor.kind = PassKind::Transfer;
-            descriptor.details = PassDetails::Transfer(TransferPassDescriptor);
-        }
+    impl TransferPass for TransferStubPass {
+        fn setup(&mut self, _builder: &mut TransferPassBuilder<'_, '_>) {}
 
-        fn record_standalone(
+        fn encode(
             &mut self,
-            _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _ctx: &mut TransferRecordContext<'_, '_>,
+            _scope: TransferEncodeScope<'_>,
         ) {
         }
     }
 
-    impl RenderPass for PersistentInternalPass {
-        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+    impl GraphicsPass for PersistentInternalPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
             self.output = builder.create_texture_internal(
                 test_texture_desc(),
                 ResourceLifetime::Persistent,
@@ -2658,16 +3123,16 @@ mod tests {
             let target = builder
                 .texture_target(&self.output)
                 .expect("persistent output should have texture target");
-            builder.declare_color_attachment(
+            builder.write_color(
                 &self.output,
                 GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
             );
         }
 
-        fn record_standalone(
+        fn encode(
             &mut self,
             _ctx: &mut GraphicsRecordContext<'_, '_>,
-            _encoder: &mut wgpu::CommandEncoder,
+            _scope: GraphicsEncodeScope<'_, '_>,
         ) {
         }
     }
@@ -2679,6 +3144,14 @@ mod tests {
             wgpu::TextureFormat::Rgba8Unorm,
             wgpu::TextureDimension::D2,
         )
+    }
+
+    fn test_buffer_desc() -> BufferDesc {
+        BufferDesc {
+            size: 16,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            label: Some("test-buffer"),
+        }
     }
 
     fn make_present_pass(texture: &OutSlot<TextureResource, ()>) -> PresentSurfacePass {
@@ -2697,10 +3170,10 @@ mod tests {
     fn compile_orders_write_then_read_from_usage() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        let writer = graph.add_pass(WritePass {
+        let writer = graph.add_graphics_pass(WritePass {
             output: texture.clone(),
         });
-        let reader = graph.add_pass(ReadPass {
+        let reader = graph.add_graphics_pass(ReadPass {
             input: InSlot::with_handle(
                 texture
                     .handle()
@@ -2717,13 +3190,13 @@ mod tests {
     fn compile_orders_modify_chain_from_usage() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        let writer = graph.add_pass(WritePass {
+        let writer = graph.add_graphics_pass(WritePass {
             output: texture.clone(),
         });
-        let modify_a = graph.add_pass(ModifyPass {
+        let modify_a = graph.add_graphics_pass(ModifyPass {
             target: texture.clone(),
         });
-        let modify_b = graph.add_pass(ModifyPass { target: texture });
+        let modify_b = graph.add_graphics_pass(ModifyPass { target: texture });
 
         graph.compile().expect("compile should succeed");
 
@@ -2731,10 +3204,31 @@ mod tests {
     }
 
     #[test]
+    fn compile_orders_buffer_write_then_read_from_usage_api() {
+        let mut graph = FrameGraph::new();
+        let buffer = graph.declare_buffer_internal::<()>(
+            test_buffer_desc(),
+            ResourceLifetime::Transient,
+            None,
+        );
+        let buffer_handle = buffer.handle().expect("declared buffer should have handle");
+        let writer = graph.add_graphics_pass(ExistingBufferWritePass {
+            output: OutSlot::with_handle(buffer_handle),
+        });
+        let reader = graph.add_graphics_pass(BufferReadPass {
+            input: OutSlot::with_handle(buffer_handle),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        assert_eq!(graph.order, vec![writer.0, reader.0]);
+    }
+
+    #[test]
     fn compile_captures_graphics_pass_descriptor() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        graph.add_pass(WritePass { output: texture });
+        graph.add_graphics_pass(WritePass { output: texture });
 
         graph.compile().expect("compile should succeed");
 
@@ -2756,14 +3250,16 @@ mod tests {
         let mut graph = FrameGraph::new();
         let live_texture = graph.declare_texture::<()>(test_texture_desc());
         let dead_texture = graph.declare_texture::<()>(test_texture_desc());
-        let live_writer = graph.add_pass(WritePass {
+        let live_writer = graph.add_graphics_pass(WritePass {
             output: live_texture.clone(),
         });
-        let dead_writer = graph.add_pass(WritePass {
+        let dead_writer = graph.add_graphics_pass(WritePass {
             output: dead_texture,
         });
-        let present = graph.add_pass(make_present_pass(&live_texture));
-        graph.add_pass_sink(present, ExternalSinkKind::SurfacePresent);
+        let present = graph.add_graphics_pass(make_present_pass(&live_texture));
+        graph
+            .add_pass_sink(present, ExternalSinkKind::SurfacePresent)
+            .expect("pass sink should register");
 
         graph.compile().expect("compile should succeed");
 
@@ -2780,10 +3276,10 @@ mod tests {
         let mut graph = FrameGraph::new();
         let live_texture = graph.declare_texture::<()>(test_texture_desc());
         let dead_texture = graph.declare_texture::<()>(test_texture_desc());
-        let live_writer = graph.add_pass(WritePass {
+        let live_writer = graph.add_graphics_pass(WritePass {
             output: live_texture.clone(),
         });
-        let dead_writer = graph.add_pass(WritePass {
+        let dead_writer = graph.add_graphics_pass(WritePass {
             output: dead_texture,
         });
         graph
@@ -2800,8 +3296,7 @@ mod tests {
             vec![ExternalSink {
                 id: ExternalSinkId(0),
                 kind: ExternalSinkKind::DebugCapture,
-                pass: None,
-                source: Some(ResourceHandle::Texture(
+                target: ExternalSinkTarget::Resource(ResourceHandle::Texture(
                     live_texture
                         .handle()
                         .expect("live texture should have handle")
@@ -2814,10 +3309,10 @@ mod tests {
     fn compile_rejects_multiple_live_writers_on_same_resource() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        graph.add_pass(WritePass {
+        graph.add_graphics_pass(WritePass {
             output: texture.clone(),
         });
-        graph.add_pass(WritePass { output: texture });
+        graph.add_graphics_pass(WritePass { output: texture });
 
         let err = graph
             .compile()
@@ -2826,10 +3321,38 @@ mod tests {
     }
 
     #[test]
+    fn texture_sink_rejects_buffer_export_kind() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+
+        let err = graph
+            .add_texture_sink(&texture, ExternalSinkKind::ExportBuffer)
+            .expect_err("texture sink should reject buffer export kind");
+
+        assert!(matches!(err, FrameGraphError::Validation(_)));
+    }
+
+    #[test]
+    fn buffer_sink_rejects_texture_export_kind() {
+        let mut graph = FrameGraph::new();
+        let buffer = graph.declare_buffer_internal::<()>(
+            test_buffer_desc(),
+            ResourceLifetime::Transient,
+            None,
+        );
+
+        let err = graph
+            .add_buffer_sink(&buffer, ExternalSinkKind::ExportTexture)
+            .expect_err("buffer sink should reject texture export kind");
+
+        assert!(matches!(err, FrameGraphError::Validation(_)));
+    }
+
+    #[test]
     fn compile_rejects_read_without_producer() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        graph.add_pass(ReadPass {
+        graph.add_graphics_pass(ReadPass {
             input: InSlot::with_handle(
                 texture
                     .handle()
@@ -2845,13 +3368,13 @@ mod tests {
     fn compile_tracks_resource_lifetime_by_compiled_pass_index() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        graph.add_pass(WritePass {
+        graph.add_graphics_pass(WritePass {
             output: texture.clone(),
         });
-        graph.add_pass(ModifyPass {
+        graph.add_graphics_pass(ModifyPass {
             target: texture.clone(),
         });
-        graph.add_pass(ReadPass {
+        graph.add_graphics_pass(ReadPass {
             input: InSlot::with_handle(
                 texture
                     .handle()
@@ -2875,16 +3398,16 @@ mod tests {
     fn compile_groups_inline_graphics_passes_from_descriptor_compatibility() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        let writer = graph.add_pass(WritePass {
+        let writer = graph.add_graphics_pass(WritePass {
             output: texture.clone(),
         });
-        let inline_a = graph.add_pass(InlineLoadPass {
+        let inline_a = graph.add_graphics_pass(InlineLoadPass {
             target: texture.clone(),
         });
-        let inline_b = graph.add_pass(InlineLoadPass {
+        let inline_b = graph.add_graphics_pass(InlineLoadPass {
             target: texture.clone(),
         });
-        let present = graph.add_pass(make_present_pass(&texture));
+        let present = graph.add_graphics_pass(make_present_pass(&texture));
 
         graph.compile().expect("compile should succeed");
 
@@ -2908,8 +3431,8 @@ mod tests {
     #[test]
     fn compile_emits_execution_step_shapes_for_compute_and_transfer() {
         let mut graph = FrameGraph::new();
-        let compute = graph.add_pass(ComputeStubPass);
-        let transfer = graph.add_pass(TransferStubPass);
+        let compute = graph.add_compute_pass(ComputeStubPass);
+        let transfer = graph.add_transfer_pass(TransferStubPass);
 
         graph.compile().expect("compile should succeed");
 
@@ -2936,10 +3459,10 @@ mod tests {
         let mut graph = FrameGraph::new();
         let texture_a = graph.declare_texture::<()>(test_texture_desc());
         let texture_b = graph.declare_texture::<()>(test_texture_desc());
-        graph.add_pass(WritePass {
+        graph.add_graphics_pass(WritePass {
             output: texture_a.clone(),
         });
-        graph.add_pass(WritePass {
+        graph.add_graphics_pass(WritePass {
             output: texture_b.clone(),
         });
 
@@ -2967,7 +3490,7 @@ mod tests {
     #[test]
     fn compile_marks_surface_as_external_owned() {
         let mut graph = FrameGraph::new();
-        graph.add_pass(SurfacePass);
+        graph.add_graphics_pass(SurfacePass);
 
         graph.compile().expect("compile should succeed");
 
@@ -2984,7 +3507,7 @@ mod tests {
     #[test]
     fn compile_keeps_internal_persistent_resources_out_of_aliasing() {
         let mut graph = FrameGraph::new();
-        graph.add_pass(PersistentInternalPass::default());
+        graph.add_graphics_pass(PersistentInternalPass::default());
 
         graph.compile().expect("compile should succeed");
 
@@ -3002,8 +3525,8 @@ mod tests {
     #[test]
     fn compile_keeps_transient_buffers_on_distinct_allocations() {
         let mut graph = FrameGraph::new();
-        graph.add_pass(BufferWritePass::default());
-        graph.add_pass(BufferWritePass::default());
+        graph.add_graphics_pass(BufferWritePass::default());
+        graph.add_graphics_pass(BufferWritePass::default());
 
         graph.compile().expect("compile should succeed");
 

@@ -299,35 +299,35 @@ impl Element {
         ctx.into_state()
     }
 
-    fn push_pass<P: RenderTargetPass + RenderPass + DrawRectIoPass + 'static>(
+    fn push_pass<P: GraphicsPass + DrawRectIoPass + 'static>(
         &mut self,
         graph: &mut FrameGraph,
         ctx: &mut UiBuildContext,
         mut pass: P,
     ) {
-        ctx.configure_pass(&mut pass);
         let input = self.ensure_current_render_target(graph, ctx);
         if let Some(handle) = input.handle() {
             pass.draw_rect_input_mut().render_target = RenderTargetIn::with_handle(handle);
         }
+        pass.draw_rect_input_mut().pass_context = ctx.graphics_pass_context();
         pass.draw_rect_output_mut().render_target = input;
-        graph.add_pass(pass);
+        graph.add_graphics_pass(pass);
         ctx.set_current_target(input);
     }
 
-    fn push_stencil_pass<P: RenderTargetPass + RenderPass + DrawRectIoPass + 'static>(
+    fn push_stencil_pass<P: GraphicsPass + DrawRectIoPass + 'static>(
         &mut self,
         graph: &mut FrameGraph,
         ctx: &mut UiBuildContext,
         mut pass: P,
     ) {
-        ctx.configure_pass(&mut pass);
         let input = self.ensure_current_render_target(graph, ctx);
         if let Some(handle) = input.handle() {
             pass.draw_rect_input_mut().render_target = RenderTargetIn::with_handle(handle);
         }
+        pass.draw_rect_input_mut().pass_context = ctx.graphics_pass_context();
         pass.draw_rect_output_mut().render_target = input;
-        graph.add_pass(pass);
+        graph.add_graphics_pass(pass);
         ctx.set_current_target(input);
     }
 
@@ -561,14 +561,17 @@ impl Element {
 
         let clear_pass = ClearPass::new(
             ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-            ClearInput::default(),
+            ClearInput {
+                pass_context: ctx.graphics_pass_context(),
+                clear_depth_stencil: false,
+            },
             ClearOutput {
                 render_target: shadow_layer,
                 ..Default::default()
             },
         );
 
-        graph.add_pass(clear_pass);
+        graph.add_graphics_pass(clear_pass);
         let pass = ShadowPass::new(
             local_mesh,
             params,
@@ -580,8 +583,8 @@ impl Element {
             },
         );
 
-        graph.add_pass(pass);
-        let mut composite_pass = TextureCompositePass::new(
+        graph.add_graphics_pass(pass);
+        let composite_pass = TextureCompositePass::new(
             TextureCompositeParams {
                 bounds: [
                     bx / scale,
@@ -602,6 +605,7 @@ impl Element {
                     .handle()
                     .map(TextureCompositeMaskIn::with_handle)
                     .unwrap_or_default(),
+                pass_context: ctx.graphics_pass_context(),
                 ..Default::default()
             },
             TextureCompositeOutput {
@@ -609,8 +613,7 @@ impl Element {
                 ..Default::default()
             },
         );
-        ctx.configure_pass(&mut composite_pass);
-        graph.add_pass(composite_pass);
+        graph.add_graphics_pass(composite_pass);
         ctx.set_current_target(output);
         ctx.into_state()
     }
