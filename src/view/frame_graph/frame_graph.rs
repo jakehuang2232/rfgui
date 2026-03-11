@@ -7,10 +7,10 @@ use super::buffer_resource::{BufferDesc, BufferHandle};
 use super::builder::PassBuilder;
 use super::texture_resource::{TextureDesc, TextureHandle};
 use crate::view::render_pass::draw_rect_pass::{DrawRectPass, OpaqueRectPass};
-use crate::view::render_pass::debug_overlay_pass::DebugOverlayPass;
-use crate::view::render_pass::present_surface_pass::PresentSurfacePass;
-use crate::view::render_pass::render_target::{render_target_msaa_view, render_target_view};
-use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassBatchKey, RenderPassDyn};
+use crate::view::render_pass::render_target::{
+    render_target_attachment_view, render_target_msaa_view, render_target_view,
+};
+use crate::view::render_pass::{PassWrapper, RenderPass, RenderPassDyn};
 use crate::view::viewport::Viewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -50,6 +50,24 @@ pub enum AllocationOwner {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExternalResource {
     Surface,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalSinkId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalSinkKind {
+    SurfacePresent,
+    ReadbackBuffer,
+    DebugCapture,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalSink {
+    pub id: ExternalSinkId,
+    pub kind: ExternalSinkKind,
+    pub pass: Option<PassHandle>,
+    pub source: Option<ResourceHandle>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -171,6 +189,13 @@ pub enum ScissorPolicy {
     Dynamic,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum GraphicsPassRecordingMode {
+    #[default]
+    StandaloneOnly,
+    InlineOrStandalone,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsColorAttachmentDescriptor {
     pub target: AttachmentTarget,
@@ -269,6 +294,7 @@ pub struct GraphicsPassDescriptor {
     pub sample_count: SampleCountPolicy,
     pub viewport_policy: ViewportPolicy,
     pub scissor_policy: ScissorPolicy,
+    pub recording_mode: GraphicsPassRecordingMode,
     pub requirements: GraphicsPipelineRequirements,
 }
 
@@ -280,6 +306,7 @@ impl Default for GraphicsPassDescriptor {
             sample_count: SampleCountPolicy::SurfaceDefault,
             viewport_policy: ViewportPolicy::Dynamic,
             scissor_policy: ScissorPolicy::Dynamic,
+            recording_mode: GraphicsPassRecordingMode::StandaloneOnly,
             requirements: GraphicsPipelineRequirements::default(),
         }
     }
@@ -399,10 +426,52 @@ pub struct AllocationPlan {
     pub external_resources: Vec<ExternalAllocationPlanEntry>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderPassCompatibleColorAttachment {
+    pub target: AttachmentTarget,
+    pub resolve_target: Option<AttachmentTarget>,
+    pub load_op: AttachmentLoadOp,
+    pub store_op: AttachmentStoreOp,
+    pub clear_color_bits: Option<[u64; 4]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderPassCompatibleDepthAspect {
+    pub load_op: AttachmentLoadOp,
+    pub store_op: AttachmentStoreOp,
+    pub clear_depth_bits: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderPassCompatibleStencilAspect {
+    pub load_op: AttachmentLoadOp,
+    pub store_op: AttachmentStoreOp,
+    pub clear_stencil: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderPassCompatibilityKey {
+    pub color_attachments: Vec<RenderPassCompatibleColorAttachment>,
+    pub depth_stencil_attachment: Option<(
+        AttachmentTarget,
+        Option<RenderPassCompatibleDepthAspect>,
+        Option<RenderPassCompatibleStencilAspect>,
+    )>,
+    pub sample_count: SampleCountPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenderPassGroup {
+    pub pass_indices: Vec<usize>,
+    pub compatibility: RenderPassCompatibilityKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompiledExecuteStep {
-    Single { pass_index: usize },
-    SharedRun { start: usize, end: usize },
+    GraphicsPass { pass_index: usize },
+    GraphicsPassGroup(RenderPassGroup),
+    ComputePass { pass_index: usize },
+    TransferPass { pass_index: usize },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -415,6 +484,7 @@ pub struct ExecutionPlan {
 pub struct CompiledGraph {
     pub passes: Vec<CompiledPass>,
     pub resources: Vec<CompiledResource>,
+    pub external_sinks: Vec<ExternalSink>,
     pub allocation_plan: AllocationPlan,
     pub culled_passes: Vec<usize>,
     pub execution_plan: ExecutionPlan,
@@ -429,10 +499,12 @@ struct PassResourceSummary {
     produced: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum ExecuteStep {
-    Single { index: usize },
-    SharedRun { start: usize, end: usize },
+    GraphicsPass { index: usize },
+    GraphicsPassGroup(RenderPassGroup),
+    ComputePass { index: usize },
+    TransferPass { index: usize },
 }
 
 pub struct FrameGraph {
@@ -441,6 +513,7 @@ pub struct FrameGraph {
     buffers: Vec<BufferDesc>,
     texture_metadata: Vec<ResourceMetadata>,
     buffer_metadata: Vec<ResourceMetadata>,
+    external_sinks: Vec<ExternalSink>,
     compiled_graph: Option<CompiledGraph>,
     order: Vec<usize>,
     compiled: bool,
@@ -464,6 +537,7 @@ impl FrameGraph {
             buffers: Vec::new(),
             texture_metadata: Vec::new(),
             buffer_metadata: Vec::new(),
+            external_sinks: Vec::new(),
             compiled_graph: None,
             order: Vec::new(),
             compiled: false,
@@ -484,6 +558,54 @@ impl FrameGraph {
         self.compiled_graph = None;
         self.compiled = false;
         handle
+    }
+
+    pub fn add_pass_sink(&mut self, pass: PassHandle, kind: ExternalSinkKind) -> ExternalSinkId {
+        self.add_external_sink(kind, Some(pass), None)
+    }
+
+    pub fn add_texture_sink<Tag>(
+        &mut self,
+        source: &super::slot::OutSlot<super::texture_resource::TextureResource, Tag>,
+        kind: ExternalSinkKind,
+    ) -> Result<ExternalSinkId, FrameGraphError> {
+        let Some(handle) = source.handle() else {
+            return Err(FrameGraphError::MissingOutput(
+                "texture sink source has no handle",
+            ));
+        };
+        Ok(self.add_external_sink(kind, None, Some(ResourceHandle::Texture(handle))))
+    }
+
+    pub fn add_buffer_sink<Tag>(
+        &mut self,
+        source: &super::slot::OutSlot<super::buffer_resource::BufferResource, Tag>,
+        kind: ExternalSinkKind,
+    ) -> Result<ExternalSinkId, FrameGraphError> {
+        let Some(handle) = source.handle() else {
+            return Err(FrameGraphError::MissingOutput(
+                "buffer sink source has no handle",
+            ));
+        };
+        Ok(self.add_external_sink(kind, None, Some(ResourceHandle::Buffer(handle))))
+    }
+
+    fn add_external_sink(
+        &mut self,
+        kind: ExternalSinkKind,
+        pass: Option<PassHandle>,
+        source: Option<ResourceHandle>,
+    ) -> ExternalSinkId {
+        let id = ExternalSinkId(self.external_sinks.len() as u32);
+        self.external_sinks.push(ExternalSink {
+            id,
+            kind,
+            pass,
+            source,
+        });
+        self.compiled_graph = None;
+        self.compiled = false;
+        id
     }
 
     pub fn declare_texture<Tag>(
@@ -573,8 +695,18 @@ impl FrameGraph {
             .steps
             .iter()
             .map(|step| match *step {
-                CompiledExecuteStep::Single { pass_index } => ExecuteStep::Single { index: pass_index },
-                CompiledExecuteStep::SharedRun { start, end } => ExecuteStep::SharedRun { start, end },
+                CompiledExecuteStep::GraphicsPass { pass_index } => {
+                    ExecuteStep::GraphicsPass { index: pass_index }
+                }
+                CompiledExecuteStep::GraphicsPassGroup(ref group) => {
+                    ExecuteStep::GraphicsPassGroup(group.clone())
+                }
+                CompiledExecuteStep::ComputePass { pass_index } => {
+                    ExecuteStep::ComputePass { index: pass_index }
+                }
+                CompiledExecuteStep::TransferPass { pass_index } => {
+                    ExecuteStep::TransferPass { index: pass_index }
+                }
             })
             .collect();
 
@@ -586,7 +718,7 @@ impl FrameGraph {
                         "[batch][compile] pos={} pass={} key={:?}",
                         pos,
                         pass.name(),
-                        pass.batch_key()
+                        render_pass_compatibility_key(&self.passes[pass_index].descriptor)
                     );
                 }
             }
@@ -602,7 +734,10 @@ impl FrameGraph {
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
         let (texture_allocations, buffer_allocations) = {
-            let compiled = self.compiled_graph.as_ref().expect("compiled graph should exist");
+            let compiled = self
+                .compiled_graph
+                .as_ref()
+                .expect("compiled graph should exist");
             (
                 compiled.texture_allocation_ids.clone(),
                 compiled.buffer_allocation_ids.clone(),
@@ -630,13 +765,9 @@ impl FrameGraph {
     }
 
     fn build_compiled_graph(&self) -> Result<CompiledGraph, FrameGraphError> {
-        let mut root_passes = self.discover_root_passes();
-        if root_passes.is_empty() {
-            root_passes = (0..self.passes.len()).collect();
-        }
-
         let pass_summaries = self.pass_resource_summaries()?;
-        let live_passes = self.discover_live_passes(&root_passes, &pass_summaries)?;
+        let sink_passes = self.discover_sink_passes(&pass_summaries)?;
+        let live_passes = self.discover_live_passes(&sink_passes, &pass_summaries)?;
         let (graph_edges, indegree) =
             self.build_live_dependency_graph(&live_passes, &pass_summaries)?;
         let ordered_passes = self.toposort_live_passes(&live_passes, &graph_edges, indegree)?;
@@ -658,7 +789,7 @@ impl FrameGraph {
                     descriptor: self.passes[index].descriptor.clone(),
                     dependencies,
                     resource_usages: self.passes[index].usages.clone(),
-                    is_root: root_passes.contains(&index),
+                    is_root: sink_passes.contains(&index),
                 }
             })
             .filter(|pass| live_set.contains(&pass.original_index))
@@ -667,6 +798,7 @@ impl FrameGraph {
         Ok(CompiledGraph {
             passes: compiled_passes,
             resources,
+            external_sinks: self.external_sinks.clone(),
             allocation_plan,
             culled_passes,
             execution_plan: ExecutionPlan {
@@ -678,23 +810,6 @@ impl FrameGraph {
         })
     }
 
-    fn discover_root_passes(&self) -> Vec<usize> {
-        let present_name = std::any::type_name::<PresentSurfacePass>();
-        let debug_overlay_name = std::any::type_name::<DebugOverlayPass>();
-        self.passes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
-                let name = node.descriptor.name;
-                if name == present_name || name == debug_overlay_name {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     fn pass_resource_summaries(
         &self,
     ) -> Result<Vec<HashMap<ResourceHandle, PassResourceSummary>>, FrameGraphError> {
@@ -704,13 +819,55 @@ impl FrameGraph {
             .collect()
     }
 
+    fn discover_sink_passes(
+        &self,
+        pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
+    ) -> Result<Vec<usize>, FrameGraphError> {
+        if self.external_sinks.is_empty() {
+            return Ok((0..self.passes.len()).collect());
+        }
+
+        let mut sink_passes = Vec::new();
+        let mut seen = HashSet::new();
+        for sink in &self.external_sinks {
+            if let Some(pass) = sink.pass {
+                let index = pass.0;
+                if index >= self.passes.len() {
+                    return Err(FrameGraphError::MissingOutput(
+                        "external sink references an unknown pass",
+                    ));
+                }
+                if seen.insert(index) {
+                    sink_passes.push(index);
+                }
+                continue;
+            }
+
+            let Some(source) = sink.source else {
+                return Err(FrameGraphError::MissingOutput(
+                    "external sink requires a pass or source resource",
+                ));
+            };
+            let Some(producer) = find_latest_writer(pass_summaries, source) else {
+                return Err(FrameGraphError::MissingInput(
+                    "external sink source has no producer",
+                ));
+            };
+            if seen.insert(producer) {
+                sink_passes.push(producer);
+            }
+        }
+
+        Ok(sink_passes)
+    }
+
     fn discover_live_passes(
         &self,
-        root_passes: &[usize],
+        sink_passes: &[usize],
         pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
     ) -> Result<HashSet<usize>, FrameGraphError> {
         let mut live = HashSet::new();
-        let mut stack = root_passes.to_vec();
+        let mut stack = sink_passes.to_vec();
         while let Some(pass_index) = stack.pop() {
             if !live.insert(pass_index) {
                 continue;
@@ -808,7 +965,6 @@ impl FrameGraph {
                     }
                 }
             }
-
         }
 
         Ok((graph_edges, indegree))
@@ -895,24 +1051,24 @@ impl FrameGraph {
             })
             .collect();
 
-        let batch_signatures: Vec<Option<RenderPassBatchKey>> = self
+        let compatibility_keys: Vec<Option<RenderPassCompatibilityKey>> = self
             .passes
             .iter()
             .enumerate()
             .map(|(index, node)| {
-                if !live_passes.contains(&index) || !node.pass.batchable() {
+                if !live_passes.contains(&index) {
                     return None;
                 }
-                node.pass.batch_key()
+                render_pass_compatibility_key(&node.descriptor)
             })
             .collect();
-        let mut last_signature: Option<RenderPassBatchKey> = None;
+        let mut last_signature: Option<RenderPassCompatibilityKey> = None;
 
         while !queue.is_empty() {
-            let n = select_next_ready_node(&queue, &batch_signatures, last_signature);
+            let n = select_next_ready_node(&queue, &compatibility_keys, last_signature.as_ref());
             let n = remove_from_queue(&mut queue, n);
             order.push(n);
-            last_signature = batch_signatures[n];
+            last_signature = compatibility_keys[n].clone();
             for &m in &graph_edges[n] {
                 indegree[m] -= 1;
                 if indegree[m] == 0 && live_passes.contains(&m) {
@@ -933,35 +1089,52 @@ impl FrameGraph {
         let mut cursor = 0usize;
         while cursor < order.len() {
             let index = order[cursor];
-            let key = self.passes[index].pass.batch_key();
-            if !self.passes[index].pass.shared_render_pass_capable() || key.is_none() {
-                steps.push(CompiledExecuteStep::Single { pass_index: index });
-                cursor += 1;
-                continue;
-            }
-            let current_key = key;
-            let mut end = cursor + 1;
-            while end < order.len() {
-                let next_index = order[end];
-                if !self.passes[next_index].pass.shared_render_pass_capable() {
-                    break;
+            match self.passes[index].descriptor.kind {
+                PassKind::Graphics => {
+                    let Some(current_key) =
+                        render_pass_compatibility_key(&self.passes[index].descriptor)
+                    else {
+                        steps.push(CompiledExecuteStep::GraphicsPass { pass_index: index });
+                        cursor += 1;
+                        continue;
+                    };
+                    let mut pass_indices = vec![index];
+                    let mut end = cursor + 1;
+                    while end < order.len() {
+                        let next_index = order[end];
+                        if self.passes[next_index].descriptor.kind != PassKind::Graphics {
+                            break;
+                        }
+                        let Some(next_key) =
+                            render_pass_compatibility_key(&self.passes[next_index].descriptor)
+                        else {
+                            break;
+                        };
+                        if current_key != next_key {
+                            break;
+                        }
+                        pass_indices.push(next_index);
+                        end += 1;
+                    }
+                    if pass_indices.len() > 1 {
+                        steps.push(CompiledExecuteStep::GraphicsPassGroup(RenderPassGroup {
+                            pass_indices,
+                            compatibility: current_key,
+                        }));
+                        cursor = end;
+                    } else {
+                        steps.push(CompiledExecuteStep::GraphicsPass { pass_index: index });
+                        cursor += 1;
+                    }
                 }
-                let next_key = self.passes[next_index].pass.batch_key();
-                let compatible = match (current_key, next_key) {
-                    (Some(a), Some(b)) => batch_keys_compatible(a, b),
-                    _ => false,
-                };
-                if !compatible {
-                    break;
+                PassKind::Compute => {
+                    steps.push(CompiledExecuteStep::ComputePass { pass_index: index });
+                    cursor += 1;
                 }
-                end += 1;
-            }
-            if end > cursor + 1 {
-                steps.push(CompiledExecuteStep::SharedRun { start: cursor, end });
-                cursor = end;
-            } else {
-                steps.push(CompiledExecuteStep::Single { pass_index: index });
-                cursor += 1;
+                PassKind::Transfer => {
+                    steps.push(CompiledExecuteStep::TransferPass { pass_index: index });
+                    cursor += 1;
+                }
             }
         }
         steps
@@ -1054,12 +1227,16 @@ impl FrameGraph {
                 .texture_metadata
                 .get(handle.0 as usize)
                 .copied()
-                .unwrap_or_else(|| ResourceMetadata::transient(ResourceKind::Texture, AllocationClass::Texture)),
+                .unwrap_or_else(|| {
+                    ResourceMetadata::transient(ResourceKind::Texture, AllocationClass::Texture)
+                }),
             ResourceHandle::Buffer(handle) => self
                 .buffer_metadata
                 .get(handle.0 as usize)
                 .copied()
-                .unwrap_or_else(|| ResourceMetadata::transient(ResourceKind::Buffer, AllocationClass::Buffer)),
+                .unwrap_or_else(|| {
+                    ResourceMetadata::transient(ResourceKind::Buffer, AllocationClass::Buffer)
+                }),
         }
     }
 
@@ -1177,28 +1354,6 @@ impl FrameGraph {
         dot
     }
 
-    pub fn normalize_opaque_rect_depths(&mut self) {
-        let mut total = 0_u32;
-        for node in &mut self.passes {
-            if node
-                .pass
-                .as_any_mut()
-                .downcast_mut::<OpaqueRectPass>()
-                .is_some()
-            {
-                total = total.saturating_add(1);
-            }
-        }
-        if total == 0 {
-            return;
-        }
-        for node in &mut self.passes {
-            if let Some(pass) = node.pass.as_any_mut().downcast_mut::<OpaqueRectPass>() {
-                pass.normalize_depth(total);
-            }
-        }
-    }
-
     pub(crate) fn execute_profiled(
         &mut self,
         viewport: &mut Viewport,
@@ -1213,7 +1368,10 @@ impl FrameGraph {
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
         let (texture_allocations, buffer_allocations) = {
-            let compiled = self.compiled_graph.as_ref().expect("compiled graph should exist");
+            let compiled = self
+                .compiled_graph
+                .as_ref()
+                .expect("compiled graph should exist");
             (
                 compiled.texture_allocation_ids.clone(),
                 compiled.buffer_allocation_ids.clone(),
@@ -1228,43 +1386,22 @@ impl FrameGraph {
         );
         for step in self.execute_steps.clone() {
             match step {
-                ExecuteStep::Single { index } => {
-                    let pass_name = self.passes[index].pass.name().to_string();
-                    let pass_started_at = Instant::now();
-                    let result = catch_unwind(AssertUnwindSafe(|| {
-                        let mut graphics_ctx = GraphicsRecordContext::new(&mut ctx, None);
-                        self.passes[index].pass.record(&mut graphics_ctx);
-                    }));
-                    let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
-                    if !pass_timings.contains_key(&pass_name) {
-                        pass_first_seen_order.push(pass_name.clone());
-                    }
-                    *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
-                    *pass_counts.entry(pass_name.clone()).or_insert(0) += 1;
-                    if let Err(payload) = result {
-                        let detail = if let Some(message) = payload.downcast_ref::<&str>() {
-                            *message
-                        } else if let Some(message) = payload.downcast_ref::<String>() {
-                            message.as_str()
-                        } else {
-                            "unknown panic payload"
-                        };
-                        eprintln!(
-                            "[warn] render pass panicked and was skipped: {} ({})",
-                            pass_name, detail
-                        );
-                    }
-                }
-                ExecuteStep::SharedRun { start, end } => {
-                    self.execute_shared_run(
-                        start,
-                        end,
-                        &mut ctx,
-                        &mut pass_timings,
-                        &mut pass_counts,
-                        &mut pass_first_seen_order,
-                    );
-                }
+                ExecuteStep::GraphicsPass { index }
+                | ExecuteStep::ComputePass { index }
+                | ExecuteStep::TransferPass { index } => self.execute_single_pass(
+                    index,
+                    &mut ctx,
+                    &mut pass_timings,
+                    &mut pass_counts,
+                    &mut pass_first_seen_order,
+                ),
+                ExecuteStep::GraphicsPassGroup(group) => self.execute_graphics_group(
+                    &group,
+                    &mut ctx,
+                    &mut pass_timings,
+                    &mut pass_counts,
+                    &mut pass_first_seen_order,
+                ),
             }
         }
         let mut top_passes: Vec<(String, f64)> = pass_timings
@@ -1294,48 +1431,61 @@ impl FrameGraph {
 
 impl FrameGraph {
     #[allow(clippy::too_many_arguments)]
-    fn execute_shared_run(
+    fn execute_single_pass(
         &mut self,
-        start: usize,
-        end: usize,
+        index: usize,
         ctx: &mut RecordContext<'_, '_>,
         pass_timings: &mut HashMap<String, f64>,
         pass_counts: &mut HashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
-        let Some(first_index) = self.order.get(start).copied() else {
-            return;
+        let pass_name = self.passes[index].pass.name().to_string();
+        let pass_started_at = Instant::now();
+        let encoder_ptr = {
+            let Some(parts) = ctx.viewport.frame_parts() else {
+                return;
+            };
+            parts.encoder as *mut wgpu::CommandEncoder
         };
-        let Some(key) = self.passes[first_index].pass.batch_key() else {
-            for offset in start..end {
-                let index = self.order[offset];
-                let pass_name = self.passes[index].pass.name().to_string();
-                let pass_started_at = Instant::now();
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    let mut graphics_ctx = GraphicsRecordContext::new(ctx, None);
-                    self.passes[index].pass.record(&mut graphics_ctx);
-                }));
-                let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
-                if !pass_timings.contains_key(&pass_name) {
-                    pass_first_seen_order.push(pass_name.clone());
-                }
-                *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
-                *pass_counts.entry(pass_name.clone()).or_insert(0) += 1;
-                if result.is_err() {
-                    eprintln!("[warn] render pass panicked and was skipped: {}", pass_name);
-                }
-            }
-            return;
-        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut graphics_ctx = GraphicsRecordContext::new(ctx);
+            let encoder = unsafe { &mut *encoder_ptr };
+            self.passes[index]
+                .pass
+                .record_standalone(&mut graphics_ctx, encoder);
+        }));
+        record_pass_timing(
+            pass_name,
+            pass_started_at,
+            pass_timings,
+            pass_counts,
+            pass_first_seen_order,
+        );
+        if let Err(payload) = result {
+            let detail = if let Some(message) = payload.downcast_ref::<&str>() {
+                *message
+            } else if let Some(message) = payload.downcast_ref::<String>() {
+                message.as_str()
+            } else {
+                "unknown panic payload"
+            };
+            eprintln!(
+                "[warn] render pass panicked and was skipped: {} ({})",
+                self.passes[index].pass.name(),
+                detail
+            );
+        }
+    }
 
-        let (offscreen_view, offscreen_msaa_view) = match key.color_target {
-            Some(handle) => (
-                render_target_view(ctx, handle),
-                render_target_msaa_view(ctx, handle),
-            ),
-            None => (None, None),
-        };
-        let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
+    #[allow(clippy::too_many_arguments)]
+    fn execute_graphics_group(
+        &mut self,
+        group: &RenderPassGroup,
+        ctx: &mut RecordContext<'_, '_>,
+        pass_timings: &mut HashMap<String, f64>,
+        pass_counts: &mut HashMap<String, usize>,
+        pass_first_seen_order: &mut Vec<String>,
+    ) {
         let (encoder_ptr, surface_view, surface_resolve_view, depth_view) = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
@@ -1347,60 +1497,174 @@ impl FrameGraph {
                 parts.depth_view.cloned(),
             )
         };
-        let surface_resolve = if msaa_enabled {
-            surface_resolve_view.as_ref()
-        } else {
-            None
-        };
-        let (color_view, resolve_target) =
-            match (offscreen_view.as_ref(), offscreen_msaa_view.as_ref()) {
-                (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-                (Some(resolve_view), None) => (resolve_view, None),
-                (None, _) => (&surface_view, surface_resolve),
+        let mut owned_color_views: Vec<(wgpu::TextureView, Option<wgpu::TextureView>)> = Vec::new();
+        let mut color_attachments = Vec::with_capacity(group.compatibility.color_attachments.len());
+        for attachment in &group.compatibility.color_attachments {
+            let (view, resolve_target) = resolve_color_attachment_views(
+                ctx,
+                attachment.target,
+                attachment.resolve_target,
+                &surface_view,
+                surface_resolve_view.as_ref(),
+            );
+            let Some(view) = view else {
+                return;
             };
-        let depth_attachment =
-            depth_view
-                .as_ref()
-                .map(|view| wgpu::RenderPassDepthStencilAttachment {
-                    view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                });
-        let encoder = unsafe { &mut *encoder_ptr };
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("FrameGraph ShareRun"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
+            owned_color_views.push((view, resolve_target));
+        }
+        for (index, attachment) in group.compatibility.color_attachments.iter().enumerate() {
+            let (view, resolve_target) = &owned_color_views[index];
+            color_attachments.push(Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: resolve_target.as_ref(),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
+                    load: to_wgpu_load_op(attachment.load_op, attachment.clear_color_bits),
+                    store: to_wgpu_store_op(attachment.store_op),
                 },
                 depth_slice: None,
-                resolve_target,
-            })],
+            }));
+        }
+        let owned_depth_attachment = group
+            .compatibility
+            .depth_stencil_attachment
+            .as_ref()
+            .and_then(|(target, depth, stencil)| {
+                let view = match target {
+                    AttachmentTarget::Surface => depth_view.clone(),
+                    AttachmentTarget::Texture(handle) => {
+                        render_target_attachment_view(ctx, *handle)
+                    }
+                }?;
+                Some((view, depth.clone(), stencil.clone()))
+            });
+        let depth_attachment = owned_depth_attachment
+            .as_ref()
+            .map(
+                |(view, depth, stencil)| wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: depth.as_ref().map(|aspect| wgpu::Operations {
+                        load: to_wgpu_depth_load_op(aspect.load_op, aspect.clear_depth_bits),
+                        store: to_wgpu_store_op(aspect.store_op),
+                    }),
+                    stencil_ops: stencil.as_ref().map(|aspect| wgpu::Operations {
+                        load: to_wgpu_stencil_load_op(aspect.load_op, aspect.clear_stencil),
+                        store: to_wgpu_store_op(aspect.store_op),
+                    }),
+                },
+            );
+        let encoder = unsafe { &mut *encoder_ptr };
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("FrameGraph GraphicsGroup"),
+            color_attachments: &color_attachments,
             depth_stencil_attachment: depth_attachment,
             ..Default::default()
         });
 
-        for offset in start..end {
-            let index = self.order[offset];
+        for &index in &group.pass_indices {
             let pass_name = self.passes[index].pass.name().to_string();
             let pass_started_at = Instant::now();
-            let mut graphics_ctx = GraphicsRecordContext::new(ctx, Some(&mut render_pass));
-            self.passes[index].pass.record(&mut graphics_ctx);
-            let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
-            if !pass_timings.contains_key(&pass_name) {
-                pass_first_seen_order.push(pass_name.clone());
-            }
-            *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
-            *pass_counts.entry(pass_name).or_insert(0) += 1;
+            let mut graphics_ctx = GraphicsRecordContext::new(ctx);
+            self.passes[index]
+                .pass
+                .record_inline(&mut graphics_ctx, &mut render_pass);
+            record_pass_timing(
+                pass_name,
+                pass_started_at,
+                pass_timings,
+                pass_counts,
+                pass_first_seen_order,
+            );
         }
+    }
+}
+
+fn record_pass_timing(
+    pass_name: String,
+    pass_started_at: Instant,
+    pass_timings: &mut HashMap<String, f64>,
+    pass_counts: &mut HashMap<String, usize>,
+    pass_first_seen_order: &mut Vec<String>,
+) {
+    let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
+    if !pass_timings.contains_key(&pass_name) {
+        pass_first_seen_order.push(pass_name.clone());
+    }
+    *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
+    *pass_counts.entry(pass_name).or_insert(0) += 1;
+}
+
+fn resolve_color_attachment_views(
+    ctx: &mut RecordContext<'_, '_>,
+    target: AttachmentTarget,
+    resolve_target: Option<AttachmentTarget>,
+    surface_view: &wgpu::TextureView,
+    surface_resolve_view: Option<&wgpu::TextureView>,
+) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
+    match target {
+        AttachmentTarget::Surface => (
+            Some(surface_view.clone()),
+            resolve_target.and_then(|_| surface_resolve_view.cloned()),
+        ),
+        AttachmentTarget::Texture(handle) => {
+            let resolve_view = render_target_view(ctx, handle);
+            let attachment_view = if resolve_target.is_some() {
+                render_target_msaa_view(ctx, handle).or_else(|| resolve_view.clone())
+            } else {
+                resolve_view.clone()
+            };
+            (
+                attachment_view,
+                resolve_view.filter(|_| resolve_target.is_some()),
+            )
+        }
+    }
+}
+
+fn to_wgpu_store_op(store_op: AttachmentStoreOp) -> wgpu::StoreOp {
+    match store_op {
+        AttachmentStoreOp::Store => wgpu::StoreOp::Store,
+        AttachmentStoreOp::Discard => wgpu::StoreOp::Discard,
+    }
+}
+
+fn to_wgpu_load_op(
+    load_op: AttachmentLoadOp,
+    clear_color_bits: Option<[u64; 4]>,
+) -> wgpu::LoadOp<wgpu::Color> {
+    match load_op {
+        AttachmentLoadOp::Load => wgpu::LoadOp::Load,
+        AttachmentLoadOp::Clear => {
+            let [r, g, b, a] = clear_color_bits
+                .expect("clear color bits should exist when load_op is Clear")
+                .map(f64::from_bits);
+            wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a })
+        }
+    }
+}
+
+fn to_wgpu_depth_load_op(
+    load_op: AttachmentLoadOp,
+    clear_depth_bits: Option<u32>,
+) -> wgpu::LoadOp<f32> {
+    match load_op {
+        AttachmentLoadOp::Load => wgpu::LoadOp::Load,
+        AttachmentLoadOp::Clear => wgpu::LoadOp::Clear(
+            clear_depth_bits
+                .map(f32::from_bits)
+                .expect("clear depth bits should exist when load_op is Clear"),
+        ),
+    }
+}
+
+fn to_wgpu_stencil_load_op(
+    load_op: AttachmentLoadOp,
+    clear_stencil: Option<u32>,
+) -> wgpu::LoadOp<u32> {
+    match load_op {
+        AttachmentLoadOp::Load => wgpu::LoadOp::Load,
+        AttachmentLoadOp::Clear => wgpu::LoadOp::Clear(
+            clear_stencil.expect("clear stencil should exist when load_op is Clear"),
+        ),
     }
 }
 
@@ -1410,11 +1674,13 @@ fn summarize_pass_resources(
 ) -> Result<HashMap<ResourceHandle, PassResourceSummary>, FrameGraphError> {
     let mut summaries = HashMap::new();
     for usage in usages {
-        let entry = summaries.entry(usage.resource).or_insert(PassResourceSummary {
-            requires_input: false,
-            writes: false,
-            produced: false,
-        });
+        let entry = summaries
+            .entry(usage.resource)
+            .or_insert(PassResourceSummary {
+                requires_input: false,
+                writes: false,
+                produced: false,
+            });
         match usage.usage {
             ResourceUsage::Produced => {
                 entry.produced = true;
@@ -1438,13 +1704,17 @@ fn summarize_pass_resources(
             }
             ResourceUsage::DepthWrite => {
                 entry.writes = true;
-                if depth_stencil_aspect_requires_input(descriptor, usage.resource, true) && !entry.produced {
+                if depth_stencil_aspect_requires_input(descriptor, usage.resource, true)
+                    && !entry.produced
+                {
                     entry.requires_input = true;
                 }
             }
             ResourceUsage::StencilWrite => {
                 entry.writes = true;
-                if depth_stencil_aspect_requires_input(descriptor, usage.resource, false) && !entry.produced {
+                if depth_stencil_aspect_requires_input(descriptor, usage.resource, false)
+                    && !entry.produced
+                {
                     entry.requires_input = true;
                 }
             }
@@ -1515,6 +1785,17 @@ fn find_latest_writer_before(
     pass_index: usize,
 ) -> Option<usize> {
     (0..pass_index).rev().find(|candidate| {
+        pass_summaries[*candidate]
+            .get(&resource)
+            .is_some_and(|summary| summary.writes || summary.produced)
+    })
+}
+
+fn find_latest_writer(
+    pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
+    resource: ResourceHandle,
+) -> Option<usize> {
+    (0..pass_summaries.len()).rev().find(|candidate| {
         pass_summaries[*candidate]
             .get(&resource)
             .is_some_and(|summary| summary.writes || summary.produced)
@@ -1620,14 +1901,15 @@ fn remove_from_queue(queue: &mut VecDeque<usize>, value: usize) -> usize {
 
 fn select_next_ready_node(
     queue: &VecDeque<usize>,
-    signatures: &[Option<RenderPassBatchKey>],
-    last_signature: Option<RenderPassBatchKey>,
+    signatures: &[Option<RenderPassCompatibilityKey>],
+    last_signature: Option<&RenderPassCompatibilityKey>,
 ) -> usize {
     if let Some(last_signature) = last_signature {
         let mut best: Option<usize> = None;
         for &idx in queue {
             if signatures[idx]
-                .is_some_and(|signature| batch_keys_compatible(last_signature, signature))
+                .as_ref()
+                .is_some_and(|signature| signature == last_signature)
             {
                 if best.is_none_or(|current| idx < current) {
                     best = Some(idx);
@@ -1639,16 +1921,21 @@ fn select_next_ready_node(
         }
     }
 
-    let mut best_signature: Option<(RenderPassBatchKey, usize)> = None;
-    let unique_signatures: HashSet<RenderPassBatchKey> =
-        queue.iter().filter_map(|&idx| signatures[idx]).collect();
+    let mut best_signature: Option<(RenderPassCompatibilityKey, usize)> = None;
+    let unique_signatures: HashSet<RenderPassCompatibilityKey> = queue
+        .iter()
+        .filter_map(|&idx| signatures[idx].clone())
+        .collect();
     for signature in unique_signatures {
         let count = queue
             .iter()
-            .filter_map(|&idx| signatures[idx])
-            .filter(|&candidate| batch_keys_compatible(signature, candidate))
+            .filter_map(|&idx| signatures[idx].as_ref())
+            .filter(|candidate| **candidate == signature)
             .count();
-        if best_signature.is_none_or(|(_, best_count)| count > best_count) {
+        if best_signature
+            .as_ref()
+            .is_none_or(|(_, best_count)| count > *best_count)
+        {
             best_signature = Some((signature, count));
         }
     }
@@ -1659,7 +1946,8 @@ fn select_next_ready_node(
         let mut best: Option<usize> = None;
         for &idx in queue {
             if signatures[idx]
-                .is_some_and(|signature| batch_keys_compatible(target_signature, signature))
+                .as_ref()
+                .is_some_and(|signature| *signature == target_signature)
             {
                 if best.is_none_or(|current| idx < current) {
                     best = Some(idx);
@@ -1678,8 +1966,62 @@ fn is_rect_pass_name(name: &str) -> bool {
     name == std::any::type_name::<DrawRectPass>() || name == std::any::type_name::<OpaqueRectPass>()
 }
 
-fn batch_keys_compatible(current: RenderPassBatchKey, next: RenderPassBatchKey) -> bool {
-    current.color_target == next.color_target
+fn render_pass_compatibility_key(
+    descriptor: &PassDescriptor,
+) -> Option<RenderPassCompatibilityKey> {
+    let PassDetails::Graphics(graphics) = &descriptor.details else {
+        return None;
+    };
+    if graphics.recording_mode != GraphicsPassRecordingMode::InlineOrStandalone {
+        return None;
+    }
+
+    Some(RenderPassCompatibilityKey {
+        color_attachments: graphics
+            .color_attachments
+            .iter()
+            .map(|attachment| RenderPassCompatibleColorAttachment {
+                target: attachment.target,
+                resolve_target: resolve_target_for_attachment(
+                    attachment.target,
+                    graphics.sample_count,
+                ),
+                load_op: attachment.load_op,
+                store_op: attachment.store_op,
+                clear_color_bits: attachment.clear_color.map(|color| color.map(f64::to_bits)),
+            })
+            .collect(),
+        depth_stencil_attachment: graphics.depth_stencil_attachment.map(|attachment| {
+            (
+                attachment.target,
+                attachment
+                    .depth
+                    .map(|depth| RenderPassCompatibleDepthAspect {
+                        load_op: depth.load_op,
+                        store_op: depth.store_op,
+                        clear_depth_bits: depth.clear_depth.map(f32::to_bits),
+                    }),
+                attachment
+                    .stencil
+                    .map(|stencil| RenderPassCompatibleStencilAspect {
+                        load_op: stencil.load_op,
+                        store_op: stencil.store_op,
+                        clear_stencil: stencil.clear_stencil,
+                    }),
+            )
+        }),
+        sample_count: graphics.sample_count,
+    })
+}
+
+fn resolve_target_for_attachment(
+    target: AttachmentTarget,
+    sample_count: SampleCountPolicy,
+) -> Option<AttachmentTarget> {
+    match sample_count {
+        SampleCountPolicy::Fixed(count) if count <= 1 => None,
+        _ => Some(target),
+    }
 }
 
 fn batch_trace_enabled() -> bool {
@@ -1988,7 +2330,7 @@ impl FrameResourceContext for RecordContext<'_, '_> {
     }
 }
 
-pub struct GraphicsRecordContext<'ctx, 'rp, 'res> {
+pub struct GraphicsRecordContext<'ctx, 'res> {
     pub(crate) viewport: &'ctx mut Viewport,
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
@@ -1997,14 +2339,10 @@ pub struct GraphicsRecordContext<'ctx, 'rp, 'res> {
     detail_timings: &'ctx mut HashMap<String, f64>,
     detail_counts: &'ctx mut HashMap<String, usize>,
     detail_order: &'ctx mut Vec<String>,
-    render_pass: Option<&'ctx mut wgpu::RenderPass<'rp>>,
 }
 
-impl<'ctx, 'rp, 'res> GraphicsRecordContext<'ctx, 'rp, 'res> {
-    pub(crate) fn new(
-        record: &'ctx mut RecordContext<'_, 'res>,
-        render_pass: Option<&'ctx mut wgpu::RenderPass<'rp>>,
-    ) -> Self {
+impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
+    pub(crate) fn new(record: &'ctx mut RecordContext<'_, 'res>) -> Self {
         let RecordContext {
             viewport,
             textures,
@@ -2024,12 +2362,7 @@ impl<'ctx, 'rp, 'res> GraphicsRecordContext<'ctx, 'rp, 'res> {
             detail_timings,
             detail_counts,
             detail_order,
-            render_pass,
         }
-    }
-
-    pub fn active_render_pass(&mut self) -> Option<&mut wgpu::RenderPass<'rp>> {
-        self.render_pass.as_deref_mut()
     }
 
     pub fn viewport(&mut self) -> &mut Viewport {
@@ -2061,7 +2394,7 @@ impl<'ctx, 'rp, 'res> GraphicsRecordContext<'ctx, 'rp, 'res> {
     }
 }
 
-impl FrameResourceContext for GraphicsRecordContext<'_, '_, '_> {
+impl FrameResourceContext for GraphicsRecordContext<'_, '_> {
     fn viewport(&mut self) -> &mut Viewport {
         self.viewport
     }
@@ -2126,11 +2459,11 @@ mod tests {
     use crate::view::frame_graph::BufferResource;
     use crate::view::frame_graph::slot::{InSlot, OutSlot};
     use crate::view::frame_graph::texture_resource::{TextureDesc, TextureResource};
+    use crate::view::render_pass::RenderPass;
+    use crate::view::render_pass::draw_rect_pass::RenderTargetIn;
     use crate::view::render_pass::present_surface_pass::{
         PresentSurfaceInput, PresentSurfaceOutput, PresentSurfaceParams, PresentSurfacePass,
     };
-    use crate::view::render_pass::draw_rect_pass::RenderTargetIn;
-    use crate::view::render_pass::RenderPass;
 
     #[derive(Default)]
     struct WritePass {
@@ -2148,7 +2481,12 @@ mod tests {
             );
         }
 
-        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
     }
 
     #[derive(Default)]
@@ -2163,7 +2501,12 @@ mod tests {
             }
         }
 
-        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
     }
 
     #[derive(Default)]
@@ -2182,7 +2525,12 @@ mod tests {
             );
         }
 
-        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
     }
 
     #[derive(Default)]
@@ -2196,7 +2544,12 @@ mod tests {
             ));
         }
 
-        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
     }
 
     #[derive(Default)]
@@ -2209,6 +2562,17 @@ mod tests {
         output: OutSlot<BufferResource, ()>,
     }
 
+    #[derive(Default)]
+    struct InlineLoadPass {
+        target: OutSlot<TextureResource, ()>,
+    }
+
+    #[derive(Default)]
+    struct ComputeStubPass;
+
+    #[derive(Default)]
+    struct TransferStubPass;
+
     impl RenderPass for BufferWritePass {
         fn setup(&mut self, builder: &mut PassBuilder<'_>) {
             self.output = builder.create_buffer(BufferDesc {
@@ -2219,7 +2583,69 @@ mod tests {
             builder.declare_uniform_buffer(&self.output);
         }
 
-        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
+    }
+
+    impl RenderPass for InlineLoadPass {
+        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+            builder.set_graphics_recording_mode(GraphicsPassRecordingMode::InlineOrStandalone);
+            let target = builder
+                .texture_target(&self.target)
+                .expect("inline test output should have texture target");
+            builder.declare_color_attachment(
+                &self.target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        }
+
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
+
+        fn record_inline(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _render_pass: &mut wgpu::RenderPass<'_>,
+        ) {
+        }
+    }
+
+    impl RenderPass for ComputeStubPass {
+        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+            let descriptor = builder.descriptor_mut();
+            descriptor.kind = PassKind::Compute;
+            descriptor.details = PassDetails::Compute(ComputePassDescriptor);
+        }
+
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
+    }
+
+    impl RenderPass for TransferStubPass {
+        fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+            let descriptor = builder.descriptor_mut();
+            descriptor.kind = PassKind::Transfer;
+            descriptor.details = PassDetails::Transfer(TransferPassDescriptor);
+        }
+
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
     }
 
     impl RenderPass for PersistentInternalPass {
@@ -2238,11 +2664,21 @@ mod tests {
             );
         }
 
-        fn record(&mut self, _ctx: &mut GraphicsRecordContext<'_, '_, '_>) {}
+        fn record_standalone(
+            &mut self,
+            _ctx: &mut GraphicsRecordContext<'_, '_>,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
     }
 
     fn test_texture_desc() -> TextureDesc {
-        TextureDesc::new(1, 1, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureDimension::D2)
+        TextureDesc::new(
+            1,
+            1,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        )
     }
 
     fn make_present_pass(texture: &OutSlot<TextureResource, ()>) -> PresentSurfacePass {
@@ -2266,7 +2702,9 @@ mod tests {
         });
         let reader = graph.add_pass(ReadPass {
             input: InSlot::with_handle(
-                texture.handle().expect("declared texture should have handle"),
+                texture
+                    .handle()
+                    .expect("declared texture should have handle"),
             ),
         });
 
@@ -2307,7 +2745,10 @@ mod tests {
             panic!("expected graphics pass details");
         };
         assert_eq!(graphics.color_attachments.len(), 1);
-        assert_eq!(graphics.color_attachments[0].load_op, AttachmentLoadOp::Clear);
+        assert_eq!(
+            graphics.color_attachments[0].load_op,
+            AttachmentLoadOp::Clear
+        );
     }
 
     #[test]
@@ -2322,12 +2763,51 @@ mod tests {
             output: dead_texture,
         });
         let present = graph.add_pass(make_present_pass(&live_texture));
+        graph.add_pass_sink(present, ExternalSinkKind::SurfacePresent);
 
         graph.compile().expect("compile should succeed");
 
         let compiled = graph.compiled_graph().expect("compiled graph should exist");
-        assert_eq!(compiled.execution_plan.ordered_passes, vec![live_writer.0, present.0]);
+        assert_eq!(
+            compiled.execution_plan.ordered_passes,
+            vec![live_writer.0, present.0]
+        );
         assert!(compiled.culled_passes.contains(&dead_writer.0));
+    }
+
+    #[test]
+    fn compile_discovers_live_passes_from_resource_sink() {
+        let mut graph = FrameGraph::new();
+        let live_texture = graph.declare_texture::<()>(test_texture_desc());
+        let dead_texture = graph.declare_texture::<()>(test_texture_desc());
+        let live_writer = graph.add_pass(WritePass {
+            output: live_texture.clone(),
+        });
+        let dead_writer = graph.add_pass(WritePass {
+            output: dead_texture,
+        });
+        graph
+            .add_texture_sink(&live_texture, ExternalSinkKind::DebugCapture)
+            .expect("resource sink should register");
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(compiled.execution_plan.ordered_passes, vec![live_writer.0]);
+        assert!(compiled.culled_passes.contains(&dead_writer.0));
+        assert_eq!(
+            compiled.external_sinks,
+            vec![ExternalSink {
+                id: ExternalSinkId(0),
+                kind: ExternalSinkKind::DebugCapture,
+                pass: None,
+                source: Some(ResourceHandle::Texture(
+                    live_texture
+                        .handle()
+                        .expect("live texture should have handle")
+                )),
+            }]
+        );
     }
 
     #[test]
@@ -2337,11 +2817,11 @@ mod tests {
         graph.add_pass(WritePass {
             output: texture.clone(),
         });
-        graph.add_pass(WritePass {
-            output: texture,
-        });
+        graph.add_pass(WritePass { output: texture });
 
-        let err = graph.compile().expect_err("compile should reject multiple writers");
+        let err = graph
+            .compile()
+            .expect_err("compile should reject multiple writers");
         assert!(matches!(err, FrameGraphError::MultipleWriters));
     }
 
@@ -2351,7 +2831,9 @@ mod tests {
         let texture = graph.declare_texture::<()>(test_texture_desc());
         graph.add_pass(ReadPass {
             input: InSlot::with_handle(
-                texture.handle().expect("declared texture should have handle"),
+                texture
+                    .handle()
+                    .expect("declared texture should have handle"),
             ),
         });
 
@@ -2371,7 +2853,9 @@ mod tests {
         });
         graph.add_pass(ReadPass {
             input: InSlot::with_handle(
-                texture.handle().expect("declared texture should have handle"),
+                texture
+                    .handle()
+                    .expect("declared texture should have handle"),
             ),
         });
 
@@ -2385,6 +2869,66 @@ mod tests {
             .expect("compiled resource should exist");
         assert_eq!(resource.first_use_pass_index, 0);
         assert_eq!(resource.last_use_pass_index, 2);
+    }
+
+    #[test]
+    fn compile_groups_inline_graphics_passes_from_descriptor_compatibility() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        let writer = graph.add_pass(WritePass {
+            output: texture.clone(),
+        });
+        let inline_a = graph.add_pass(InlineLoadPass {
+            target: texture.clone(),
+        });
+        let inline_b = graph.add_pass(InlineLoadPass {
+            target: texture.clone(),
+        });
+        let present = graph.add_pass(make_present_pass(&texture));
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(
+            compiled.execution_plan.ordered_passes,
+            vec![writer.0, inline_a.0, inline_b.0, present.0]
+        );
+        assert!(matches!(
+            &compiled.execution_plan.steps[..],
+            [
+                CompiledExecuteStep::GraphicsPass { pass_index },
+                CompiledExecuteStep::GraphicsPassGroup(RenderPassGroup { pass_indices, .. }),
+                CompiledExecuteStep::GraphicsPass { pass_index: present_index },
+            ] if *pass_index == writer.0
+                && *present_index == present.0
+                && pass_indices == &vec![inline_a.0, inline_b.0]
+        ));
+    }
+
+    #[test]
+    fn compile_emits_execution_step_shapes_for_compute_and_transfer() {
+        let mut graph = FrameGraph::new();
+        let compute = graph.add_pass(ComputeStubPass);
+        let transfer = graph.add_pass(TransferStubPass);
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(
+            compiled.execution_plan.ordered_passes,
+            vec![compute.0, transfer.0]
+        );
+        assert_eq!(
+            compiled.execution_plan.steps,
+            vec![
+                CompiledExecuteStep::ComputePass {
+                    pass_index: compute.0
+                },
+                CompiledExecuteStep::TransferPass {
+                    pass_index: transfer.0
+                },
+            ]
+        );
     }
 
     #[test]
@@ -2405,12 +2949,16 @@ mod tests {
         let resource_a = compiled
             .resources
             .iter()
-            .find(|resource| resource.handle == ResourceHandle::Texture(texture_a.handle().unwrap()))
+            .find(|resource| {
+                resource.handle == ResourceHandle::Texture(texture_a.handle().unwrap())
+            })
             .expect("resource A should exist");
         let resource_b = compiled
             .resources
             .iter()
-            .find(|resource| resource.handle == ResourceHandle::Texture(texture_b.handle().unwrap()))
+            .find(|resource| {
+                resource.handle == ResourceHandle::Texture(texture_b.handle().unwrap())
+            })
             .expect("resource B should exist");
         assert_eq!(resource_a.allocation_id, resource_b.allocation_id);
         assert_eq!(compiled.allocation_plan.texture_allocations.len(), 1);
@@ -2466,7 +3014,10 @@ mod tests {
             .filter(|resource| matches!(resource.handle, ResourceHandle::Buffer(_)))
             .collect::<Vec<_>>();
         assert_eq!(buffer_resources.len(), 2);
-        assert_ne!(buffer_resources[0].allocation_id, buffer_resources[1].allocation_id);
+        assert_ne!(
+            buffer_resources[0].allocation_id,
+            buffer_resources[1].allocation_id
+        );
         assert_eq!(compiled.allocation_plan.buffer_allocations.len(), 2);
     }
 }

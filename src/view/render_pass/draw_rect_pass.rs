@@ -1,18 +1,18 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentDescriptor,
-    GraphicsDepthAspectDescriptor, GraphicsDepthStencilAttachmentDescriptor,
-    GraphicsRecordContext, GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
-};
-use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::AttachmentTarget;
+use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{BufferDesc, BufferResource};
+use crate::view::frame_graph::{
+    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassRecordingMode, GraphicsRecordContext,
+    GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
+};
+use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::render_target::{
     render_target_attachment_view, render_target_bundle, render_target_msaa_view,
     render_target_size, render_target_view,
 };
-use crate::view::render_pass::{RenderPass, RenderPassBatchKey};
 use std::collections::HashSet;
 use std::num::NonZeroU64;
 use std::sync::{Mutex, OnceLock};
@@ -119,6 +119,8 @@ pub struct OpaqueRectPass {
     inner: DrawRectPass,
     depth_order: u32,
 }
+
+const OPAQUE_RECT_DEPTH_BUCKETS: u32 = 1 << 20;
 
 impl DrawRectPass {
     pub(crate) fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput {
@@ -264,17 +266,6 @@ impl DrawRectPass {
 
     pub fn into_opaque(self) -> OpaqueRectPass {
         OpaqueRectPass::from_draw_rect_pass(self)
-    }
-
-    pub fn batch_key(&self) -> RenderPassBatchKey {
-        RenderPassBatchKey {
-            color_target: self.output.render_target.handle(),
-            uses_depth_stencil: draw_requires_depth_stencil(
-                self.depth_stencil_target,
-                RectShaderVariant::Alpha,
-                self.stencil_mode,
-            ),
-        }
     }
 
     pub fn snapshot_draw(&self) -> DrawRectDraw {
@@ -438,10 +429,12 @@ impl OpaqueRectPass {
     }
 
     pub fn from_draw_rect_pass(pass: DrawRectPass) -> Self {
-        Self {
+        let mut opaque = Self {
             inner: pass,
             depth_order: 0,
-        }
+        };
+        opaque.apply_depth_order();
+        opaque
     }
 
     pub fn set_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) {
@@ -458,23 +451,15 @@ impl OpaqueRectPass {
 
     pub fn set_depth_order(&mut self, depth_order: u32) {
         self.depth_order = depth_order;
+        self.apply_depth_order();
     }
 
-    pub fn normalize_depth(&mut self, total_count: u32) {
-        let denom = total_count.max(1) as f32;
-        let t = (self.depth_order as f32 + 0.5) / denom;
+    fn apply_depth_order(&mut self) {
+        let clamped_order = self
+            .depth_order
+            .min(OPAQUE_RECT_DEPTH_BUCKETS.saturating_sub(1));
+        let t = (clamped_order as f32 + 0.5) / OPAQUE_RECT_DEPTH_BUCKETS as f32;
         self.inner.params.depth = (1.0 - t).clamp(0.0, 1.0);
-    }
-
-    pub fn batch_key(&self) -> RenderPassBatchKey {
-        RenderPassBatchKey {
-            color_target: self.inner.output.render_target.handle(),
-            uses_depth_stencil: draw_requires_depth_stencil(
-                self.inner.depth_stencil_target,
-                RectShaderVariant::Opaque,
-                self.inner.stencil_mode,
-            ),
-        }
     }
 }
 
@@ -588,6 +573,7 @@ pub(crate) struct DrawRectBatchEntry {
 
 impl RenderPass for DrawRectPass {
     fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+        builder.set_graphics_recording_mode(GraphicsPassRecordingMode::InlineOrStandalone);
         self.build_uniform_buffer(builder);
         if let Some(handle) = self.input.render_target.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
@@ -616,25 +602,26 @@ impl RenderPass for DrawRectPass {
         self.compile_upload_uniform(ctx, RectShaderVariant::Alpha);
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
-        execute_draw_rect_pass(self, ctx, RectShaderVariant::Alpha);
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        execute_draw_rect_standalone(self, ctx, encoder, RectShaderVariant::Alpha);
     }
 
-    fn batchable(&self) -> bool {
-        true
-    }
-
-    fn batch_key(&self) -> Option<RenderPassBatchKey> {
-        Some(DrawRectPass::batch_key(self))
-    }
-
-    fn shared_render_pass_capable(&self) -> bool {
-        true
+    fn record_inline(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        render_pass: &mut wgpu::RenderPass<'_>,
+    ) {
+        encode_draw_rect_into_existing_pass(self, ctx, render_pass, RectShaderVariant::Alpha);
     }
 }
 
 impl RenderPass for OpaqueRectPass {
     fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+        builder.set_graphics_recording_mode(GraphicsPassRecordingMode::InlineOrStandalone);
         self.inner.build_uniform_buffer(builder);
         if let Some(handle) = self.inner.input.render_target.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
@@ -664,20 +651,25 @@ impl RenderPass for OpaqueRectPass {
             .compile_upload_uniform(ctx, RectShaderVariant::Opaque);
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
-        execute_draw_rect_pass(&mut self.inner, ctx, RectShaderVariant::Opaque);
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        execute_draw_rect_standalone(&mut self.inner, ctx, encoder, RectShaderVariant::Opaque);
     }
 
-    fn batchable(&self) -> bool {
-        true
-    }
-
-    fn batch_key(&self) -> Option<RenderPassBatchKey> {
-        Some(OpaqueRectPass::batch_key(self))
-    }
-
-    fn shared_render_pass_capable(&self) -> bool {
-        true
+    fn record_inline(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        render_pass: &mut wgpu::RenderPass<'_>,
+    ) {
+        encode_draw_rect_into_existing_pass(
+            &mut self.inner,
+            ctx,
+            render_pass,
+            RectShaderVariant::Opaque,
+        );
     }
 }
 
@@ -724,26 +716,24 @@ fn draw_requires_depth_stencil(
     depth_stencil_target.is_some()
 }
 
-fn execute_draw_rect_pass(
+fn execute_draw_rect_standalone(
     pass_def: &mut DrawRectPass,
-    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_>,
+    encoder: &mut wgpu::CommandEncoder,
     variant: RectShaderVariant,
 ) {
-    if ctx.active_render_pass().is_some() {
-        encode_draw_rect_into_existing_pass(pass_def, ctx, variant);
-        return;
-    }
     let entry = DrawRectBatchEntry {
         draw: pass_def.snapshot_draw(),
         variant,
         prepared_bind_group: pass_def.prepared_bind_group.clone(),
     };
-    let _ = execute_draw_rect_batch(std::slice::from_ref(&entry), ctx);
+    let _ = execute_draw_rect_batch(std::slice::from_ref(&entry), ctx, encoder);
 }
 
 fn encode_draw_rect_into_existing_pass(
     pass_def: &mut DrawRectPass,
-    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_>,
+    pass: &mut wgpu::RenderPass<'_>,
     variant: RectShaderVariant,
 ) {
     let draw = pass_def.snapshot_draw();
@@ -854,9 +844,6 @@ fn encode_draw_rect_into_existing_pass(
         ctx.viewport
             .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
     });
-    let Some(pass) = ctx.active_render_pass() else {
-        return;
-    };
     pass.set_pipeline(&pipeline);
     pass.set_vertex_buffer(0, vertex_buffer.slice(..));
     pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -874,7 +861,8 @@ fn encode_draw_rect_into_existing_pass(
 
 pub(crate) fn execute_draw_rect_batch(
     entries: &[DrawRectBatchEntry],
-    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_>,
+    encoder: &mut wgpu::CommandEncoder,
 ) -> bool {
     if entries.is_empty() {
         return true;
@@ -1133,22 +1121,20 @@ pub(crate) fn execute_draw_rect_batch(
                 }),
             _ => None,
         };
-        let mut pass = parts
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("DrawRect"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                    resolve_target,
-                })],
-                depth_stencil_attachment,
-                ..Default::default()
-            });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("DrawRect"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+                resolve_target,
+            })],
+            depth_stencil_attachment,
+            ..Default::default()
+        });
         for draw in &encoded_draws {
             pass.set_pipeline(&draw.pipeline);
             pass.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
@@ -1884,5 +1870,27 @@ mod tests {
         assert!(bottom_sum <= 100.0 + 1e-4);
         assert!(left_sum <= 60.0 + 1e-4);
         assert!(right_sum <= 60.0 + 1e-4);
+    }
+
+    #[test]
+    fn opaque_rect_depth_is_derived_from_build_time_order() {
+        let base = DrawRectPass::new(
+            RectPassParams::default(),
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
+        );
+        let mut first = OpaqueRectPass::from_draw_rect_pass(base);
+        let mut later = OpaqueRectPass::from_draw_rect_pass(DrawRectPass::new(
+            RectPassParams::default(),
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
+        ));
+
+        first.set_depth_order(0);
+        later.set_depth_order(1);
+
+        assert!(first.inner.params.depth > later.inner.params.depth);
+        assert!(first.inner.params.depth <= 1.0);
+        assert!(later.inner.params.depth >= 0.0);
     }
 }

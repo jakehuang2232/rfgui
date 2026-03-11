@@ -1,9 +1,9 @@
 use crate::view::frame_graph::ResourceCache;
+use crate::view::frame_graph::slot::OutSlot;
+use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
 };
-use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::render_target_view;
@@ -50,7 +50,11 @@ impl RenderPass for PresentSurfacePass {
         ));
     }
 
-    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+    fn record_standalone(
+        &mut self,
+        ctx: &mut GraphicsRecordContext<'_, '_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         let _ = &self.params;
         let Some(input_handle) = self.input.source.handle() else {
             return;
@@ -94,22 +98,20 @@ impl RenderPass for PresentSurfacePass {
         } else {
             parts.view
         };
-        let mut pass = parts
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Present Surface"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: present_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                    resolve_target: None,
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Present Surface"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: present_target,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+                resolve_target: None,
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
         pass.set_pipeline(&resources.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
