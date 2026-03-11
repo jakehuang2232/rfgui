@@ -1,8 +1,10 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::PassContext;
-use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::{
+    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
+    PrepareContext,
+};
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{BufferDesc, BufferResource, DepIn, DepOut};
+use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{render_target_size, render_target_view};
@@ -206,15 +208,12 @@ pub struct ShadowBlurVParamsBufferTag;
 pub type ShadowBlurVParamsBufferOut = OutSlot<BufferResource, ShadowBlurVParamsBufferTag>;
 
 #[derive(Default)]
-pub struct ShadowInput {
-    pub dep: DepIn,
-}
+pub struct ShadowInput;
 
 #[derive(Default)]
 pub struct ShadowOutput {
     pub render_target: RenderTargetOut,
     pub mask_render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -314,26 +313,8 @@ impl ShadowPass {
 }
 
 impl RenderPass for ShadowPass {
-    type Input = ShadowInput;
-    type Output = ShadowOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+        let _ = &self.input;
         self.blur_downsample_params_buffer = builder.create_buffer(BufferDesc {
             size: std::mem::size_of::<BlurParamsUniform>() as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
@@ -349,22 +330,29 @@ impl RenderPass for ShadowPass {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
             label: Some("ShadowPass Blur V Params"),
         });
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = OutSlot::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
+        builder.declare_uniform_buffer(&self.blur_downsample_params_buffer);
+        builder.declare_uniform_buffer(&self.blur_h_params_buffer);
+        builder.declare_uniform_buffer(&self.blur_v_params_buffer);
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
+                builder.surface_target(),
+                [0.0, 0.0, 0.0, 0.0],
+            ));
         }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
-        }
-        if self.output.mask_render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.mask_render_target);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
+        if let Some(target) = builder.texture_target(&self.output.mask_render_target) {
+            builder.declare_color_attachment(
+                &self.output.mask_render_target,
+                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+            );
         }
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let target_handle = self.output.render_target.handle();
         let surface_size = ctx.viewport.surface_size();
         let (target_w, target_h) = match target_handle {
@@ -464,11 +452,7 @@ impl RenderPass for ShadowPass {
         }
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         let target_handle = self.output.render_target.handle();
         let geometry_started_at = Instant::now();
         if self.mesh.vertices.len() < 3 || self.mesh.indices.len() < 3 {
@@ -1030,7 +1014,7 @@ fn create_resources(
 
 #[allow(clippy::too_many_arguments)]
 fn draw_mesh_fill(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
     pipeline: &wgpu::RenderPipeline,
     view: &wgpu::TextureView,
     bx: f32,
@@ -1168,7 +1152,7 @@ impl ShadowFinalCache {
 }
 
 fn acquire_temp_texture_view(
-    _ctx: &mut PassContext<'_, '_>,
+    _ctx: &mut GraphicsRecordContext<'_, '_, '_>,
     device: &wgpu::Device,
     width: u32,
     height: u32,
@@ -1294,7 +1278,7 @@ pub fn begin_shadow_resources_frame() {
 }
 
 fn create_shadow_cache_surface(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
     device: &wgpu::Device,
     source: &ShadowSurface,
     format: wgpu::TextureFormat,
@@ -1388,7 +1372,7 @@ fn shadow_final_cache_key(
 }
 
 fn blur_texture(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
     blur_pipeline: &wgpu::RenderPipeline,
     blur_bind_group_layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,

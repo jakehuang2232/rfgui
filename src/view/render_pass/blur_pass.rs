@@ -1,9 +1,11 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::PassContext;
+use crate::view::frame_graph::{
+    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
+    PrepareContext,
+};
 use crate::view::frame_graph::ResourceCache;
-use crate::view::frame_graph::builder::BuildContext;
 use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{BufferDesc, BufferResource, DepIn, DepOut};
+use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
@@ -40,14 +42,12 @@ pub type BlurBufferOut = OutSlot<BufferResource, BlurBufferTag>;
 
 #[derive(Default)]
 pub struct BlurInput {
-    pub dep: DepIn,
     pub layer: LayerIn,
 }
 
 #[derive(Default)]
 pub struct BlurOutput {
     pub render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -90,44 +90,26 @@ impl BlurPass {
 }
 
 impl RenderPass for BlurPass {
-    type Input = BlurInput;
-    type Output = BlurOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
         self.upload_buffer = builder.create_buffer(BufferDesc {
             size: 64 * 1024,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
             label: Some("BlurPass Upload Buffer"),
         });
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = DepOut::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
-        }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
+        builder.declare_uniform_buffer(&self.upload_buffer);
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+                builder.surface_target(),
+            ));
         }
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };
@@ -146,11 +128,7 @@ impl RenderPass for BlurPass {
         }
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         let Some(layer_handle) = self.input.layer.handle() else {
             return;
         };

@@ -1,7 +1,6 @@
 use std::any::Any;
 
-use crate::view::frame_graph::PassContext;
-use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::{GraphicsRecordContext, PassBuilder, PrepareContext};
 use crate::view::frame_graph::texture_resource::TextureHandle;
 
 pub mod blur_pass;
@@ -32,22 +31,9 @@ pub struct RenderPassBatchKey {
 }
 
 pub trait RenderPass {
-    type Input: Default;
-    type Output: Default;
-
-    fn input(&self) -> &Self::Input;
-    fn input_mut(&mut self) -> &mut Self::Input;
-
-    fn output(&self) -> &Self::Output;
-    fn output_mut(&mut self) -> &mut Self::Output;
-
-    fn build(&mut self, builder: &mut BuildContext);
-    fn compile_upload(&mut self, _ctx: &mut PassContext<'_, '_>) {}
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    );
+    fn setup(&mut self, builder: &mut PassBuilder<'_>);
+    fn prepare(&mut self, _ctx: &mut PrepareContext<'_, '_>) {}
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>);
     fn batchable(&self) -> bool {
         false
     }
@@ -60,13 +46,9 @@ pub trait RenderPass {
 }
 
 pub trait RenderPassDyn {
-    fn build(&mut self, builder: &mut BuildContext);
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>);
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    );
+    fn setup(&mut self, builder: &mut PassBuilder<'_>);
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>);
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>);
     fn batchable(&self) -> bool;
     fn batch_key(&self) -> Option<RenderPassBatchKey>;
     fn shared_render_pass_capable(&self) -> bool;
@@ -79,20 +61,16 @@ pub struct PassWrapper<P: RenderPass> {
 }
 
 impl<P: RenderPass + 'static> RenderPassDyn for PassWrapper<P> {
-    fn build(&mut self, builder: &mut BuildContext) {
-        self.pass.build(builder);
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
+        self.pass.setup(builder);
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
-        self.pass.execute(ctx, render_pass);
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
+        self.pass.record(ctx);
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
-        self.pass.compile_upload(ctx);
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
+        self.pass.prepare(ctx);
     }
 
     fn batchable(&self) -> bool {

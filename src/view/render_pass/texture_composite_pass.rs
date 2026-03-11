@@ -1,9 +1,13 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::{
+    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsRecordContext,
+    GraphicsStencilAspectDescriptor, PassBuilder,
+};
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
-    BufferDesc, BufferResource, DepIn, DepOut, PassContext, ResourceCache,
+    BufferDesc, BufferResource, PrepareContext, ResourceCache,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -64,7 +68,6 @@ pub type TextureCompositeIndexBufferOut = OutSlot<BufferResource, TextureComposi
 
 #[derive(Default)]
 pub struct TextureCompositeInput {
-    pub dep: DepIn,
     pub source: TextureCompositeSourceIn,
     pub mask: TextureCompositeMaskIn,
 }
@@ -72,7 +75,6 @@ pub struct TextureCompositeInput {
 #[derive(Default)]
 pub struct TextureCompositeOutput {
     pub render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -118,26 +120,7 @@ impl TextureCompositePass {
 }
 
 impl RenderPass for TextureCompositePass {
-    type Input = TextureCompositeInput;
-    type Output = TextureCompositeOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
         self.uniform_buffer = builder.create_buffer(BufferDesc {
             size: std::mem::size_of::<TextureCompositeUniform>() as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
@@ -153,30 +136,38 @@ impl RenderPass for TextureCompositePass {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
             label: Some("TextureComposite Index"),
         });
+        builder.declare_uniform_buffer(&self.uniform_buffer);
+        builder.declare_vertex_buffer(&self.vertex_buffer);
+        builder.declare_index_buffer(&self.index_buffer);
 
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = DepOut::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
-        }
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, TextureCompositeSourceTag> =
                 OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.source, &source);
+            builder.declare_sampled_texture(&mut self.input.source, &source);
         }
         if let Some(handle) = self.input.mask.handle() {
             let source: OutSlot<TextureResource, TextureCompositeMaskTag> =
                 OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.mask, &source);
+            builder.declare_sampled_texture(&mut self.input.mask, &source);
         }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+                builder.surface_target(),
+            ));
         }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
-        }
+        builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+            target: builder.surface_target(),
+            depth: Some(GraphicsDepthAspectDescriptor::read()),
+            stencil: Some(GraphicsStencilAspectDescriptor::read()),
+        });
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let surface_size = ctx.viewport.surface_size();
         let (target_w, target_h) = match self.output.render_target.handle() {
             Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
@@ -207,11 +198,7 @@ impl RenderPass for TextureCompositePass {
         }
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         let Some(source_handle) = self.input.source.handle() else {
             return;
         };
@@ -342,7 +329,7 @@ impl RenderPass for TextureCompositePass {
             &resources.pipeline_no_stencil
         };
 
-        if let Some(pass) = render_pass {
+        if let Some(pass) = ctx.active_render_pass() {
             encode(
                 pass,
                 pipeline,
@@ -440,7 +427,7 @@ impl RenderTargetPass for TextureCompositePass {
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 pub(crate) fn composite_immediate(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut GraphicsRecordContext<'_, '_, '_>,
     source_view: &wgpu::TextureView,
     mask_view: Option<&wgpu::TextureView>,
     offscreen_view: Option<&wgpu::TextureView>,

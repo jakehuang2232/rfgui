@@ -1,9 +1,11 @@
 use crate::render_pass::render_target::RenderTargetPass;
-use crate::view::frame_graph::PassContext;
-use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::{
+    GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsRecordContext,
+    GraphicsStencilAspectDescriptor, PassBuilder, PrepareContext,
+};
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource};
-use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -20,7 +22,6 @@ pub struct TextPass {
     params: TextPassParams,
     staging_buffer: TextStagingBufferOut,
     prepared: Option<TextPreparedState>,
-    input: TextInput,
     output: TextOutput,
 }
 
@@ -72,23 +73,20 @@ pub struct TextStagingBufferTag;
 pub type TextStagingBufferOut = OutSlot<BufferResource, TextStagingBufferTag>;
 
 #[derive(Default)]
-pub struct TextInput {
-    pub dep: DepIn,
-}
+pub struct TextInput;
 
 #[derive(Default)]
 pub struct TextOutput {
     pub render_target: RenderTargetOut,
-    pub dep: DepOut,
 }
 
 impl TextPass {
     pub fn new(params: TextPassParams, input: TextInput, output: TextOutput) -> Self {
+        let _ = input;
         Self {
             params,
             staging_buffer: TextStagingBufferOut::default(),
             prepared: None,
-            input,
             output,
         }
     }
@@ -124,44 +122,33 @@ impl TextPass {
 }
 
 impl RenderPass for TextPass {
-    type Input = TextInput;
-    type Output = TextOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
         self.staging_buffer = builder.create_buffer(BufferDesc {
             size: (self.params.content.len().max(1) as u64).next_power_of_two(),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
             label: Some("TextPass Staging Buffer"),
         });
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = DepOut::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
+        builder.declare_uniform_buffer(&self.staging_buffer);
+        if let Some(target) = builder.texture_target(&self.output.render_target) {
+            builder.declare_color_attachment(
+                &self.output.render_target,
+                GraphicsColorAttachmentDescriptor::load(target),
+            );
+        } else {
+            builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::load(
+                builder.surface_target(),
+            ));
         }
-        if self.output.render_target.handle().is_some() {
-            builder.write_texture(&mut self.output.render_target);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
+        if self.params.stencil_clip_id.is_some() {
+            builder.declare_depth_stencil_attachment(GraphicsDepthStencilAttachmentDescriptor {
+                target: builder.surface_target(),
+                depth: Some(GraphicsDepthAspectDescriptor::read()),
+                stencil: Some(GraphicsStencilAspectDescriptor::read()),
+            });
         }
     }
 
-    fn compile_upload(&mut self, ctx: &mut PassContext<'_, '_>) {
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let Some(handle) = self.staging_buffer.handle() else {
             return;
         };
@@ -309,11 +296,7 @@ impl RenderPass for TextPass {
         });
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        mut render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         let Some(prepared) = self.prepared.as_mut() else {
             return;
         };
@@ -329,7 +312,7 @@ impl RenderPass for TextPass {
         let mut global = text_resources(&device, &queue, format);
         let resources = global.resources.as_mut().unwrap();
 
-        if let Some(pass) = render_pass.as_mut() {
+        if ctx.active_render_pass().is_some() {
             let target_size = match self.output.render_target.handle() {
                 Some(handle) => {
                     render_target_size(ctx, handle).unwrap_or(ctx.viewport.surface_size())
@@ -341,19 +324,19 @@ impl RenderPass for TextPass {
                 ctx.viewport.scale_factor(),
                 target_size,
             );
+            let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
+            let Some(renderer) = prepared.renderer.as_mut() else {
+                return;
+            };
+            let Some(pass) = ctx.active_render_pass() else {
+                return;
+            };
             if let Some([x, y, width, height]) = scissor_rect {
                 pass.set_scissor_rect(x, y, width, height);
             } else {
                 pass.set_scissor_rect(0, 0, target_size.0, target_size.1);
             }
-            if let Some(stencil_clip_id) = prepared.stencil_clip_id {
-                pass.set_stencil_reference(stencil_clip_id as u32);
-            } else {
-                pass.set_stencil_reference(0);
-            }
-            let Some(renderer) = prepared.renderer.as_mut() else {
-                return;
-            };
+            pass.set_stencil_reference(stencil_reference);
             let _ = renderer.render(&resources.atlas, &resources.viewport, pass);
             return;
         }
@@ -371,7 +354,7 @@ impl RenderPass for TextPass {
         };
 
         let sample_count = ctx.viewport.msaa_sample_count();
-        let viewport = &mut ctx.viewport;
+        let viewport = &mut *ctx.viewport;
         let viewport_scale = viewport.scale_factor();
         let msaa_enabled = sample_count > 1;
         let parts = match viewport.frame_parts() {

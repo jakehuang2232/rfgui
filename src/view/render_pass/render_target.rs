@@ -1,4 +1,4 @@
-use crate::view::frame_graph::PassContext;
+use crate::view::frame_graph::FrameResourceContext;
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
 use std::collections::HashMap;
 
@@ -257,36 +257,36 @@ impl OffscreenRenderTargetPool {
 }
 
 fn texture_desc_for_handle(
-    ctx: &PassContext<'_, '_>,
+    ctx: &impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<TextureDesc> {
-    ctx.textures.get(handle.0 as usize).copied()
+    ctx.textures().get(handle.0 as usize).copied()
 }
 
 pub(crate) fn render_target_view(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<wgpu::TextureView> {
     Some(render_target_bundle(ctx, handle)?.view)
 }
 
 pub(crate) fn render_target_msaa_view(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<wgpu::TextureView> {
     Some(render_target_bundle(ctx, handle)?.msaa_view?)
 }
 
 pub(crate) fn render_target_bundle(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<RenderTargetBundle> {
     let desc = texture_desc_for_handle(ctx, handle)?;
-    ctx.viewport.acquire_offscreen_render_target(handle, desc)
+    ctx.viewport().acquire_offscreen_render_target(handle, desc)
 }
 
 pub(crate) fn render_target_size(
-    ctx: &mut PassContext<'_, '_>,
+    ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<(u32, u32)> {
     Some(render_target_bundle(ctx, handle)?.size)

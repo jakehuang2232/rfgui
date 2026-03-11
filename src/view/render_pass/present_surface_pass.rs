@@ -1,9 +1,9 @@
-use crate::view::frame_graph::PassContext;
 use crate::view::frame_graph::ResourceCache;
-use crate::view::frame_graph::builder::BuildContext;
+use crate::view::frame_graph::{
+    GraphicsColorAttachmentDescriptor, GraphicsRecordContext, PassBuilder,
+};
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
-use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::RenderPass;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::render_target_view;
@@ -14,7 +14,6 @@ const PRESENT_SURFACE_RESOURCES: u64 = 401;
 pub struct PresentSurfacePass {
     params: PresentSurfaceParams,
     input: PresentSurfaceInput,
-    output: PresentSurfaceOutput,
 }
 
 #[derive(Default)]
@@ -23,13 +22,10 @@ pub struct PresentSurfaceParams;
 #[derive(Default)]
 pub struct PresentSurfaceInput {
     pub source: RenderTargetIn,
-    pub dep: DepIn,
 }
 
 #[derive(Default)]
-pub struct PresentSurfaceOutput {
-    pub dep: DepOut,
-}
+pub struct PresentSurfaceOutput;
 
 impl PresentSurfacePass {
     pub fn new(
@@ -37,53 +33,24 @@ impl PresentSurfacePass {
         input: PresentSurfaceInput,
         output: PresentSurfaceOutput,
     ) -> Self {
-        Self {
-            params,
-            input,
-            output,
-        }
+        let _ = output;
+        Self { params, input }
     }
 }
 
 impl RenderPass for PresentSurfacePass {
-    type Input = PresentSurfaceInput;
-    type Output = PresentSurfaceOutput;
-
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
-
-    fn input_mut(&mut self) -> &mut Self::Input {
-        &mut self.input
-    }
-
-    fn output(&self) -> &Self::Output {
-        &self.output
-    }
-
-    fn output_mut(&mut self) -> &mut Self::Output {
-        &mut self.output
-    }
-
-    fn build(&mut self, builder: &mut BuildContext) {
+    fn setup(&mut self, builder: &mut PassBuilder<'_>) {
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
-            builder.read_texture(&mut self.input.source, &source);
+            builder.declare_sampled_texture(&mut self.input.source, &source);
         }
-        if let Some(handle) = self.input.dep.handle() {
-            let source: DepOut = OutSlot::with_handle(handle);
-            builder.read_dep(&mut self.input.dep, &source);
-        }
-        if self.output.dep.handle().is_some() {
-            builder.write_dep(&mut self.output.dep);
-        }
+        builder.declare_surface_color_attachment(GraphicsColorAttachmentDescriptor::clear(
+            builder.surface_target(),
+            [0.0, 0.0, 0.0, 0.0],
+        ));
     }
 
-    fn execute(
-        &mut self,
-        ctx: &mut PassContext<'_, '_>,
-        _render_pass: Option<&mut wgpu::RenderPass<'_>>,
-    ) {
+    fn record(&mut self, ctx: &mut GraphicsRecordContext<'_, '_, '_>) {
         let _ = &self.params;
         let Some(input_handle) = self.input.source.handle() else {
             return;

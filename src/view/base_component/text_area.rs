@@ -1,6 +1,5 @@
 use crate::ui::MouseButton as UiMouseButton;
 use crate::view::frame_graph::FrameGraph;
-use crate::view::frame_graph::{DepIn, DepOut};
 use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, RectPassParams, RenderTargetIn,
 };
@@ -1958,13 +1957,9 @@ fn push_draw_rect_pass_explicit(
     if let Some(handle) = input_target.handle() {
         pass.set_input(RenderTargetIn::with_handle(handle));
     }
-    pass.set_dep_input(Some(ctx.current_dep_token()));
-    let next_dep = graph.declare_dep_token();
-    pass.set_dep_output(Some(next_dep));
     pass.set_output(output_target);
     graph.add_pass(pass);
     ctx.set_current_target(output_target);
-    ctx.set_current_dep_token(next_dep);
 }
 
 fn push_text_pass_explicit(
@@ -1975,21 +1970,17 @@ fn push_text_pass_explicit(
     let Some(input_target) = ctx.current_target() else {
         return;
     };
-    let next_dep = graph.declare_dep_token();
     let mut pass = TextPass::new(
         params,
-        TextInput {
-            dep: DepIn::with_handle(ctx.current_dep_token()),
-        },
+        TextInput::default(),
         TextOutput {
             render_target: input_target,
-            dep: DepOut::with_handle(next_dep),
+            ..Default::default()
         },
     );
     ctx.configure_pass(&mut pass);
     graph.add_pass(pass);
     ctx.set_current_target(input_target);
-    ctx.set_current_dep_token(next_dep);
 }
 
 #[cfg(test)]
