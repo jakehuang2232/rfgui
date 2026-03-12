@@ -2365,6 +2365,7 @@ impl Viewport {
         let Some((x, y)) = self.mouse_position_viewport() else {
             return false;
         };
+        let redraw_requested_before = self.redraw_requested;
         let mut roots = std::mem::take(&mut self.ui_roots);
         let hover_target = roots
             .iter()
@@ -2426,7 +2427,8 @@ impl Viewport {
         self.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
-        if handled || hover_changed || hover_event_dispatched || listener_handled {
+        let redraw_requested_during_event = !redraw_requested_before && self.redraw_requested;
+        if hover_changed || hover_event_dispatched || redraw_requested_during_event {
             self.request_redraw();
         }
         handled || hover_changed || hover_event_dispatched || listener_handled
