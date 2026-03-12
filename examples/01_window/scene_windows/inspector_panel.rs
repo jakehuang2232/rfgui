@@ -3,6 +3,7 @@ use crate::rfgui::{Layout, Length};
 use crate::rfgui_components::{Button, ButtonVariant, Switch, Theme};
 use crate::state::REQUEST_DUMP_FRAME_GRAPH_DOT;
 use std::sync::atomic::Ordering;
+use rfgui::ui::host::Element;
 
 pub struct InspectorPanelBindings {
     pub switch_on: Binding<bool>,
@@ -12,7 +13,7 @@ pub struct InspectorPanelBindings {
 
 pub fn build(theme: &Theme, bindings: InspectorPanelBindings) -> RsxNode {
     rsx! {
-        <crate::rfgui::ui::host::Element style={{
+        <Element style={{
             gap: theme.spacing.xs,
             layout: Layout::flow().column().no_wrap(),
             width: Length::percent(100.0),
@@ -36,6 +37,6 @@ pub fn build(theme: &Theme, bindings: InspectorPanelBindings) -> RsxNode {
                     REQUEST_DUMP_FRAME_GRAPH_DOT.store(true, Ordering::Release);
                 }}
             />
-        </crate::rfgui::ui::host::Element>
+        </Element>
     }
 }

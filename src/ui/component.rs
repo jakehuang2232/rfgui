@@ -16,6 +16,10 @@ pub trait IntoOptionalProp<T> {
     fn into_optional_prop(self) -> Option<T>;
 }
 
+pub trait BooleanPropMarker {}
+
+impl BooleanPropMarker for bool {}
+
 impl<T> IntoOptionalProp<T> for Option<T> {
     fn into_optional_prop(self) -> Option<T> {
         self
@@ -255,10 +259,18 @@ where
     build_typed_prop(build)
 }
 
+pub fn boolean_prop_shorthand<T>(_: PhantomData<T>) -> bool
+where
+    T: BooleanPropMarker,
+{
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GlobalKey, RsxChildrenPolicy, RsxComponent, create_element_with_key};
-    use crate::ui::{Patch, RsxKey, RsxNode, reconcile};
+    use crate::style::{Color, FontSize, FontWeight, Length, ParsedValue, PropertyId};
+    use crate::ui::{Patch, RsxKey, RsxNode, component, reconcile, rsx};
     use std::marker::PhantomData;
 
     struct Button;
@@ -281,6 +293,24 @@ mod tests {
     impl RsxComponent<()> for ElementLike {
         fn render(_: (), _: Vec<RsxNode>) -> RsxNode {
             RsxNode::element("Element")
+        }
+    }
+
+    #[component]
+    fn BoolFlag(flag: bool) -> RsxNode {
+        if flag {
+            RsxNode::element("BoolTrue")
+        } else {
+            RsxNode::element("BoolFalse")
+        }
+    }
+
+    #[component]
+    fn OptionalFlag(flag: Option<bool>) -> RsxNode {
+        if flag == Some(true) {
+            RsxNode::element("OptionTrue")
+        } else {
+            RsxNode::element("OptionFalse")
         }
     }
 
@@ -326,5 +356,142 @@ mod tests {
 
         let patches = reconcile(Some(&old), &new);
         assert!(matches!(patches.as_slice(), [Patch::ReplaceRoot(_)]));
+    }
+
+    #[test]
+    fn boolean_shorthand_sets_required_bool_prop_true() {
+        let node = rsx! { <BoolFlag flag /> };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.tag, "BoolTrue");
+    }
+
+    #[test]
+    fn boolean_shorthand_sets_optional_bool_prop_true() {
+        let node = rsx! { <OptionalFlag flag /> };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.tag, "OptionTrue");
+    }
+
+    #[test]
+    fn numeric_length_style_values_coerce_to_px() {
+        let node = rsx! {
+            <crate::ui::host::Element
+                style={{
+                    width: 10,
+                    height: 12.5,
+                    gap: 8,
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = node
+            .props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Style(style)) => Some(style),
+                _ => None,
+            })
+            .expect("missing style prop");
+        assert_eq!(
+            style.get(PropertyId::Width),
+            Some(&ParsedValue::Length(Length::px(10.0)))
+        );
+        assert_eq!(
+            style.get(PropertyId::Height),
+            Some(&ParsedValue::Length(Length::px(12.5)))
+        );
+        assert_eq!(
+            style.get(PropertyId::Gap),
+            Some(&ParsedValue::Length(Length::px(8.0)))
+        );
+    }
+
+    #[test]
+    fn numeric_font_size_style_values_coerce_to_px() {
+        let node = rsx! {
+            <crate::ui::host::Element
+                style={{
+                    font_size: 14,
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = node
+            .props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Style(style)) => Some(style),
+                _ => None,
+            })
+            .expect("missing style prop");
+        assert_eq!(
+            style.get(PropertyId::FontSize),
+            Some(&ParsedValue::FontSize(FontSize::px(14.0)))
+        );
+    }
+
+    #[test]
+    fn typed_color_style_values_coerce_via_style_field_helper() {
+        let node = rsx! {
+            <crate::ui::host::Element
+                style={{
+                    color: Color::hex("#112233"),
+                    background: Color::rgba(1, 2, 3, 255),
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = node
+            .props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Style(style)) => Some(style),
+                _ => None,
+            })
+            .expect("missing style prop");
+        assert_eq!(
+            style.get(PropertyId::Color),
+            Some(&ParsedValue::Color(Color::rgba(17, 34, 51, 255)))
+        );
+        assert_eq!(
+            style.get(PropertyId::BackgroundColor),
+            Some(&ParsedValue::Color(Color::rgba(1, 2, 3, 255)))
+        );
+    }
+
+    #[test]
+    fn numeric_font_weight_style_values_coerce_via_style_field_helper() {
+        let node = rsx! {
+            <crate::ui::host::Element
+                style={{
+                    font_weight: 700,
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = node
+            .props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Style(style)) => Some(style),
+                _ => None,
+            })
+            .expect("missing style prop");
+        assert_eq!(
+            style.get(PropertyId::FontWeight),
+            Some(&ParsedValue::FontWeight(FontWeight::new(700)))
+        );
     }
 }
