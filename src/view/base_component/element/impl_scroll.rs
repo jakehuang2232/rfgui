@@ -349,6 +349,7 @@ impl Element {
             );
             if changed {
                 self.note_scrollbar_interaction();
+                control.request_redraw();
             }
             return true;
         }
@@ -367,6 +368,7 @@ impl Element {
                 .is_some_and(|thumb| thumb.contains(local_x, local_y))
         {
             self.note_scrollbar_interaction();
+            control.request_redraw();
         }
         false
     }
