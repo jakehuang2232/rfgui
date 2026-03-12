@@ -254,7 +254,7 @@ impl GraphicsPass for ShadowFillPass {
         encode_mesh_fill_into_pass(
             &device,
             &pipeline,
-            ctx.raw_render_pass(),
+            ctx,
             target_w as f32,
             target_h as f32,
             &self.mesh.vertices,
@@ -522,7 +522,7 @@ fn create_resources(device: &wgpu::Device) -> ShadowResources {
 fn encode_mesh_fill_into_pass(
     device: &wgpu::Device,
     pipeline: &wgpu::RenderPipeline,
-    pass: &mut wgpu::RenderPass<'_>,
+    ctx: &mut crate::view::render_pass::GraphicsCtx<'_, '_, '_, '_>,
     target_w: f32,
     target_h: f32,
     vertices: &[[f32; 2]],
@@ -553,10 +553,10 @@ fn encode_mesh_fill_into_pass(
         contents: bytemuck::cast_slice(indices),
         usage: wgpu::BufferUsages::INDEX,
     });
-    pass.set_pipeline(pipeline);
-    pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-    pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+    ctx.set_pipeline(pipeline);
+    ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+    ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+    ctx.draw_indexed(0..indices.len() as u32, 0, 0..1);
 }
 
 fn apply_spread(vertices: &mut [[f32; 2]], spread: f32) {

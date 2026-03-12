@@ -104,18 +104,17 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
 
 pub struct ComputeCtx<'a, 'ctx, 'res, 'pass> {
     frame_resources: &'a mut ComputeRecordContext<'ctx, 'res>,
-    #[allow(dead_code)]
-    scope: ComputeEncodeScope<'a, 'pass>,
+    scope: BackendComputeScope<'a, 'pass>,
 }
 
 impl<'a, 'ctx, 'res, 'pass> ComputeCtx<'a, 'ctx, 'res, 'pass> {
-    pub(crate) fn new(
+    pub(crate) fn from_compute_pass(
         frame_resources: &'a mut ComputeRecordContext<'ctx, 'res>,
-        scope: ComputeEncodeScope<'a, 'pass>,
+        compute_pass: &'a mut wgpu::ComputePass<'pass>,
     ) -> Self {
         Self {
             frame_resources,
-            scope,
+            scope: BackendComputeScope::Compute(compute_pass),
         }
     }
 
@@ -128,14 +127,15 @@ impl<'a, 'ctx, 'res, 'pass> ComputeCtx<'a, 'ctx, 'res, 'pass> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn scope(&mut self) -> &mut ComputeEncodeScope<'a, 'pass> {
-        &mut self.scope
+    pub(crate) fn raw_compute_pass(&mut self) -> Option<&mut wgpu::ComputePass<'pass>> {
+        match &mut self.scope {
+            BackendComputeScope::Compute(pass) => Some(*pass),
+        }
     }
 }
 
 pub struct TransferCtx<'a, 'ctx, 'res> {
     frame_resources: &'a mut TransferRecordContext<'ctx, 'res>,
-    #[allow(dead_code)]
     encoder: &'a mut wgpu::CommandEncoder,
 }
 
@@ -191,13 +191,8 @@ pub(crate) trait PassNodeDyn {
     fn name(&self) -> &'static str;
 }
 
-pub enum ComputeEncodeScope<'a, 'pass> {
-    Command(&'a mut wgpu::CommandEncoder),
+enum BackendComputeScope<'a, 'pass> {
     Compute(&'a mut wgpu::ComputePass<'pass>),
-}
-
-pub enum TransferEncodeScope<'a> {
-    Command(&'a mut wgpu::CommandEncoder),
 }
 
 pub(crate) struct GraphicsPassWrapper<P: GraphicsPass> {

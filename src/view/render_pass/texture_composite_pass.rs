@@ -332,8 +332,8 @@ impl GraphicsPass for TextureCompositePass {
         } else {
             &resources.pipeline_no_stencil
         };
-        encode(
-            ctx.raw_render_pass(),
+        encode_pass(
+            ctx,
             pipeline,
             &bind_group,
             vertex_buffer,
@@ -447,7 +447,7 @@ pub(crate) fn composite_immediate(
             depth_stencil_attachment: None,
             ..Default::default()
         });
-    encode(
+    encode_raw_pass(
         &mut pass,
         &resources.pipeline_no_stencil,
         &bind_group,
@@ -459,7 +459,7 @@ pub(crate) fn composite_immediate(
     );
 }
 
-fn encode(
+fn encode_raw_pass(
     pass: &mut wgpu::RenderPass<'_>,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
@@ -484,6 +484,33 @@ fn encode(
     pass.set_vertex_buffer(0, vertex_buffer.slice(..));
     pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
     pass.draw_indexed(0..6, 0, 0..1);
+}
+
+fn encode_pass(
+    ctx: &mut GraphicsCtx<'_, '_, '_, '_>,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    vertex_buffer: &wgpu::Buffer,
+    index_buffer: &wgpu::Buffer,
+    target_size: (u32, u32),
+    scissor_rect_physical: Option<[u32; 4]>,
+    stencil_clip_id: Option<u8>,
+) {
+    if let Some([x, y, w, h]) = scissor_rect_physical {
+        ctx.set_scissor_rect(x, y, w, h);
+    } else {
+        ctx.set_scissor_rect(0, 0, target_size.0, target_size.1);
+    }
+    if let Some(clip_id) = stencil_clip_id {
+        ctx.set_stencil_reference(clip_id as u32);
+    } else {
+        ctx.set_stencil_reference(0);
+    }
+    ctx.set_pipeline(pipeline);
+    ctx.set_bind_group(0, bind_group, &[]);
+    ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+    ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+    ctx.draw_indexed(0..6, 0, 0..1);
 }
 
 fn create_resources(

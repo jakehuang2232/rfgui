@@ -72,7 +72,12 @@ pub(crate) struct PassBuilderState<'a> {
 
 impl<'a> PassBuilderState<'a> {
     fn push_usage(&mut self, resource: ResourceHandle, usage: ResourceUsage) {
-        self.usages.push(PassResourceUsage { resource, usage });
+        self.usages.push(PassResourceUsage {
+            resource,
+            usage,
+            read_version: None,
+            write_version: None,
+        });
     }
 
     fn bind_read_usage<R: UsageTrackedResource, Tag>(
