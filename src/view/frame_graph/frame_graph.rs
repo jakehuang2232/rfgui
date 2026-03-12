@@ -11,8 +11,8 @@ use crate::view::render_pass::render_target::{
     render_target_attachment_view, render_target_msaa_view, render_target_view,
 };
 use crate::view::render_pass::{
-    ComputeCtx, ComputeEncodeScope, ComputePass, ComputePassWrapper, GraphicsCtx, GraphicsPass,
-    GraphicsPassWrapper, PassNodeDyn, TransferCtx, TransferPass, TransferPassWrapper,
+    ComputeCtx, ComputePass, ComputePassWrapper, GraphicsCtx, GraphicsPass, GraphicsPassWrapper,
+    PassNodeDyn, TransferCtx, TransferPass, TransferPassWrapper,
 };
 use crate::view::viewport::Viewport;
 
@@ -223,6 +223,35 @@ impl ResourceState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PassResourceUsage {
     pub resource: ResourceHandle,
+    pub usage: ResourceUsage,
+    pub read_version: Option<ResourceVersionId>,
+    pub write_version: Option<ResourceVersionId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureVersionId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BufferVersionId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceVersionId {
+    Texture(TextureVersionId),
+    Buffer(BufferVersionId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProducedVersion {
+    pub resource: ResourceHandle,
+    pub version: ResourceVersionId,
+    pub producer_pass_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ConsumedVersion {
+    pub resource: ResourceHandle,
+    pub version: ResourceVersionId,
+    pub consumer_pass_index: usize,
     pub usage: ResourceUsage,
 }
 
@@ -505,6 +534,8 @@ pub struct CompiledPass {
     pub descriptor: PassDescriptor,
     pub dependencies: Vec<usize>,
     pub resource_usages: Vec<PassResourceUsage>,
+    pub input_versions: Vec<ConsumedVersion>,
+    pub output_versions: Vec<ProducedVersion>,
     pub resource_transitions: Vec<CompiledPassResourceTransition>,
     pub is_root: bool,
 }
@@ -617,13 +648,6 @@ pub struct CompiledGraph {
     pub resource_timelines: Vec<CompiledResourceTimeline>,
     texture_allocation_ids: HashMap<TextureHandle, AllocationId>,
     buffer_allocation_ids: HashMap<BufferHandle, AllocationId>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PassResourceSummary {
-    requires_input: bool,
-    writes: bool,
-    produced: bool,
 }
 
 #[derive(Clone)]
@@ -869,6 +893,8 @@ impl FrameGraph {
             return Err(err);
         }
 
+        self.annotate_resource_versions();
+
         let compiled_graph = self.build_compiled_graph()?;
         self.order = compiled_graph.execution_plan.ordered_passes.clone();
         self.execute_steps = compiled_graph
@@ -945,18 +971,66 @@ impl FrameGraph {
         self.compiled_graph.as_ref()
     }
 
+    fn annotate_resource_versions(&mut self) {
+        let mut latest_texture_version: HashMap<TextureHandle, TextureVersionId> = HashMap::new();
+        let mut latest_buffer_version: HashMap<BufferHandle, BufferVersionId> = HashMap::new();
+        let mut version_producers: HashMap<ResourceVersionId, usize> = HashMap::new();
+        let mut consumed_versions: Vec<ConsumedVersion> = Vec::new();
+        let mut produced_versions: Vec<ProducedVersion> = Vec::new();
+        let mut next_texture_version = 0_u32;
+        let mut next_buffer_version = 0_u32;
+
+        for (pass_index, node) in self.passes.iter_mut().enumerate() {
+            let descriptor = node.descriptor.clone();
+            for usage in &mut node.usages {
+                let (read_version, write_version) = annotate_usage_version(
+                    usage.resource,
+                    usage.usage,
+                    &descriptor,
+                    &mut latest_texture_version,
+                    &mut latest_buffer_version,
+                    &mut next_texture_version,
+                    &mut next_buffer_version,
+                );
+                usage.read_version = read_version;
+                usage.write_version = write_version;
+
+                if let Some(version) = read_version {
+                    consumed_versions.push(ConsumedVersion {
+                        resource: usage.resource,
+                        version,
+                        consumer_pass_index: pass_index,
+                        usage: usage.usage,
+                    });
+                }
+                if let Some(version) = write_version {
+                    version_producers.insert(version, pass_index);
+                    produced_versions.push(ProducedVersion {
+                        resource: usage.resource,
+                        version,
+                        producer_pass_index: pass_index,
+                    });
+                }
+            }
+        }
+
+        let _ = (version_producers, consumed_versions, produced_versions);
+    }
+
     fn build_compiled_graph(&self) -> Result<CompiledGraph, FrameGraphError> {
-        let pass_summaries = self.pass_resource_summaries()?;
-        let sink_passes = self.discover_sink_passes(&pass_summaries)?;
-        let live_passes = self.discover_live_passes(&sink_passes, &pass_summaries)?;
+        let version_producers = self.build_version_producers();
+        let latest_resource_versions = self.latest_resource_versions();
+        let sink_passes =
+            self.discover_sink_passes(&version_producers, &latest_resource_versions)?;
+        let live_passes = self.discover_live_passes(&sink_passes, &version_producers)?;
         let (graph_edges, indegree) =
-            self.build_live_dependency_graph(&live_passes, &pass_summaries)?;
+            self.build_live_dependency_graph(&live_passes, &version_producers)?;
         let ordered_passes = self.toposort_live_passes(&live_passes, &graph_edges, indegree)?;
         let execution_steps = self.build_execution_plan(&ordered_passes);
         let (pass_state_transitions, resource_transitions, resource_timelines) =
             self.build_resource_state_timelines(&ordered_passes)?;
         let (resources, allocation_plan, texture_allocation_ids, buffer_allocation_ids) =
-            self.build_compiled_resources(&live_passes, &ordered_passes, &pass_summaries);
+            self.build_compiled_resources(&live_passes, &ordered_passes);
         let culled_passes = (0..self.passes.len())
             .filter(|index| !live_passes.contains(index))
             .collect::<Vec<_>>();
@@ -972,6 +1046,8 @@ impl FrameGraph {
                     descriptor: self.passes[index].descriptor.clone(),
                     dependencies,
                     resource_usages: self.passes[index].usages.clone(),
+                    input_versions: self.pass_consumed_versions(index),
+                    output_versions: self.pass_produced_versions(index),
                     resource_transitions: pass_state_transitions
                         .get(&index)
                         .cloned()
@@ -999,18 +1075,10 @@ impl FrameGraph {
         })
     }
 
-    fn pass_resource_summaries(
-        &self,
-    ) -> Result<Vec<HashMap<ResourceHandle, PassResourceSummary>>, FrameGraphError> {
-        self.passes
-            .iter()
-            .map(|node| summarize_pass_resources(&node.descriptor, &node.usages))
-            .collect()
-    }
-
     fn discover_sink_passes(
         &self,
-        pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
+        version_producers: &HashMap<ResourceVersionId, usize>,
+        latest_resource_versions: &HashMap<ResourceHandle, ResourceVersionId>,
     ) -> Result<Vec<usize>, FrameGraphError> {
         if self.external_sinks.is_empty() {
             return Ok((0..self.passes.len()).collect());
@@ -1032,7 +1100,12 @@ impl FrameGraph {
                     }
                 }
                 ExternalSinkTarget::Resource(source) => {
-                    let Some(producer) = find_latest_writer(pass_summaries, source) else {
+                    let Some(version) = latest_resource_versions.get(&source).copied() else {
+                        return Err(FrameGraphError::MissingInput(
+                            "external sink source has no produced version",
+                        ));
+                    };
+                    let Some(&producer) = version_producers.get(&version) else {
                         return Err(FrameGraphError::MissingInput(
                             "external sink source has no producer",
                         ));
@@ -1050,7 +1123,7 @@ impl FrameGraph {
     fn discover_live_passes(
         &self,
         sink_passes: &[usize],
-        pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
+        version_producers: &HashMap<ResourceVersionId, usize>,
     ) -> Result<HashSet<usize>, FrameGraphError> {
         let mut live = HashSet::new();
         let mut stack = sink_passes.to_vec();
@@ -1058,18 +1131,16 @@ impl FrameGraph {
             if !live.insert(pass_index) {
                 continue;
             }
-            for (&resource, summary) in &pass_summaries[pass_index] {
-                if !summary.requires_input || summary.produced {
-                    continue;
-                }
-                let Some(producer) =
-                    find_latest_writer_before(pass_summaries, resource, pass_index)
-                else {
+            for (resource, version) in self.pass_input_versions(pass_index) {
+                if let Some(&producer) = version_producers.get(&version) {
+                    if producer != pass_index {
+                        stack.push(producer);
+                    }
+                } else if !self.resource_has_external_input(resource) {
                     return Err(FrameGraphError::MissingInput(
-                        "live pass requires a resource before it is written",
+                        "live pass requires a resource version without a producer",
                     ));
-                };
-                stack.push(producer);
+                }
             }
         }
         Ok(live)
@@ -1078,77 +1149,20 @@ impl FrameGraph {
     fn build_live_dependency_graph(
         &self,
         live_passes: &HashSet<usize>,
-        pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
+        version_producers: &HashMap<ResourceVersionId, usize>,
     ) -> Result<(Vec<HashSet<usize>>, Vec<usize>), FrameGraphError> {
         let mut indegree = vec![0usize; self.passes.len()];
         let mut graph_edges: Vec<HashSet<usize>> = vec![HashSet::new(); self.passes.len()];
-        let mut per_resource_usages: HashMap<ResourceHandle, Vec<(usize, ResourceAccess)>> =
-            HashMap::new();
 
-        self.validate_live_passes(live_passes, pass_summaries)?;
+        self.validate_live_passes(live_passes, version_producers)?;
 
-        for (index, summary_map) in pass_summaries.iter().enumerate() {
-            if !live_passes.contains(&index) {
-                continue;
-            }
-            for (&resource, summary) in summary_map {
-                if let Some(access) = summary_to_access(*summary) {
-                    per_resource_usages
-                        .entry(resource)
-                        .or_default()
-                        .push((index, access));
-                }
-            }
-        }
-
-        for (_resource, mut usages) in per_resource_usages {
-            usages.sort_by_key(|(index, _)| *index);
-            let mut prior_reads: Vec<usize> = Vec::new();
-            let mut last_writer: Option<usize> = None;
-
-            for (index, access) in usages {
-                match access {
-                    ResourceAccess::Read => {
-                        let Some(writer) = last_writer else {
-                            return Err(FrameGraphError::MissingInput(
-                                "resource has no producer in live graph",
-                            ));
-                        };
-                        if writer != index && graph_edges[writer].insert(index) {
-                            indegree[index] += 1;
-                        }
-                        prior_reads.push(index);
-                    }
-                    ResourceAccess::Write => {
-                        if let Some(writer) = last_writer
-                            && writer != index
-                            && graph_edges[writer].insert(index)
-                        {
-                            indegree[index] += 1;
-                        }
-                        for reader in prior_reads.drain(..) {
-                            if reader != index && graph_edges[reader].insert(index) {
-                                indegree[index] += 1;
-                            }
-                        }
-                        last_writer = Some(index);
-                    }
-                    ResourceAccess::Modify => {
-                        let Some(writer) = last_writer else {
-                            return Err(FrameGraphError::MissingInput(
-                                "resource modify requires prior producer",
-                            ));
-                        };
-                        if writer != index && graph_edges[writer].insert(index) {
-                            indegree[index] += 1;
-                        }
-                        for reader in prior_reads.drain(..) {
-                            if reader != index && graph_edges[reader].insert(index) {
-                                indegree[index] += 1;
-                            }
-                        }
-                        last_writer = Some(index);
-                    }
+        for &index in live_passes {
+            for (_, version) in self.pass_input_versions(index) {
+                if let Some(&producer) = version_producers.get(&version)
+                    && producer != index
+                    && graph_edges[producer].insert(index)
+                {
+                    indegree[index] += 1;
                 }
             }
         }
@@ -1159,63 +1173,166 @@ impl FrameGraph {
     fn validate_live_passes(
         &self,
         live_passes: &HashSet<usize>,
-        pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
+        version_producers: &HashMap<ResourceVersionId, usize>,
     ) -> Result<(), FrameGraphError> {
         for &index in live_passes {
             validate_pass_descriptor(&self.passes[index].descriptor, &self.textures)?;
-        }
 
-        let mut touched_resources = HashSet::new();
-        for (index, summary_map) in pass_summaries.iter().enumerate() {
-            if !live_passes.contains(&index) {
-                continue;
-            }
-            for &resource in summary_map.keys() {
-                touched_resources.insert(resource);
-            }
-        }
-
-        for resource in touched_resources {
-            let mut has_writer = false;
-            let mut seen_pure_writer = false;
-            for (index, summary_map) in pass_summaries.iter().enumerate() {
-                if !live_passes.contains(&index) {
-                    continue;
-                }
-                let Some(summary) = summary_map.get(&resource).copied() else {
+            for usage in &self.passes[index].usages {
+                let Some(version) = usage.read_version else {
                     continue;
                 };
-                let Some(access) = summary_to_access(summary) else {
+                if version_producers.contains_key(&version) {
                     continue;
-                };
-                match access {
-                    ResourceAccess::Read => {
-                        if !has_writer {
-                            return Err(FrameGraphError::MissingInput(
-                                "resource is read before any live producer",
-                            ));
-                        }
-                    }
-                    ResourceAccess::Modify => {
-                        if !has_writer {
-                            return Err(FrameGraphError::MissingInput(
-                                "resource is modified before any live producer",
-                            ));
-                        }
-                        has_writer = true;
-                    }
-                    ResourceAccess::Write => {
-                        if has_writer && seen_pure_writer {
-                            return Err(FrameGraphError::MultipleWriters);
-                        }
-                        has_writer = true;
-                        seen_pure_writer = true;
-                    }
                 }
+                if self.resource_has_external_input(usage.resource) {
+                    continue;
+                }
+
+                return Err(FrameGraphError::MissingInput(
+                    "resource version is consumed before any valid producer",
+                ));
             }
         }
 
         Ok(())
+    }
+
+    fn build_version_producers(&self) -> HashMap<ResourceVersionId, usize> {
+        let mut producers = HashMap::new();
+        for (pass_index, node) in self.passes.iter().enumerate() {
+            for usage in &node.usages {
+                if let Some(version) = usage.write_version {
+                    producers.insert(version, pass_index);
+                }
+            }
+        }
+        producers
+    }
+
+    fn latest_resource_versions(&self) -> HashMap<ResourceHandle, ResourceVersionId> {
+        let mut latest = HashMap::new();
+        for node in &self.passes {
+            for usage in &node.usages {
+                if let Some(version) = usage.write_version {
+                    latest.insert(usage.resource, version);
+                }
+            }
+        }
+        latest
+    }
+
+    fn pass_input_versions(&self, pass_index: usize) -> Vec<(ResourceHandle, ResourceVersionId)> {
+        let mut seen = HashSet::new();
+        let mut versions = Vec::new();
+        for usage in &self.passes[pass_index].usages {
+            let Some(version) = usage.read_version else {
+                continue;
+            };
+            if seen.insert((usage.resource, version)) {
+                versions.push((usage.resource, version));
+            }
+        }
+        versions
+    }
+
+    fn pass_consumed_versions(&self, pass_index: usize) -> Vec<ConsumedVersion> {
+        let mut seen = HashSet::new();
+        let mut versions = Vec::new();
+        for usage in &self.passes[pass_index].usages {
+            let Some(version) = usage.read_version else {
+                continue;
+            };
+            if seen.insert((usage.resource, version, usage.usage)) {
+                versions.push(ConsumedVersion {
+                    resource: usage.resource,
+                    version,
+                    consumer_pass_index: pass_index,
+                    usage: usage.usage,
+                });
+            }
+        }
+        versions
+    }
+
+    fn pass_produced_versions(&self, pass_index: usize) -> Vec<ProducedVersion> {
+        let mut seen = HashSet::new();
+        let mut versions = Vec::new();
+        for usage in &self.passes[pass_index].usages {
+            let Some(version) = usage.write_version else {
+                continue;
+            };
+            if seen.insert((usage.resource, version)) {
+                versions.push(ProducedVersion {
+                    resource: usage.resource,
+                    version,
+                    producer_pass_index: pass_index,
+                });
+            }
+        }
+        versions
+    }
+
+    fn resource_has_external_input(&self, resource: ResourceHandle) -> bool {
+        self.resource_metadata(resource).lifetime == ResourceLifetime::Imported
+    }
+
+    fn compute_batch_anchor_info(
+        &self,
+        live_passes: &HashSet<usize>,
+        graph_edges: &[HashSet<usize>],
+        indegree: &[usize],
+        compatibility_keys: &[Option<RenderPassCompatibilityKey>],
+    ) -> Vec<BatchAnchorInfo> {
+        let analysis_order = topological_order_for_analysis(live_passes, graph_edges, indegree);
+        let mut info = vec![BatchAnchorInfo::default(); self.passes.len()];
+
+        for &pass_index in analysis_order.iter().rev() {
+            let mut best_downstream: Option<BatchAnchorInfo> = None;
+            for &consumer in &graph_edges[pass_index] {
+                if !live_passes.contains(&consumer) {
+                    continue;
+                }
+                let candidate = &info[consumer];
+                if candidate.anchor_signature.is_none() {
+                    continue;
+                }
+                if best_downstream
+                    .as_ref()
+                    .is_none_or(|best| candidate.distance_to_anchor < best.distance_to_anchor)
+                {
+                    best_downstream = Some(candidate.clone());
+                }
+            }
+
+            let mergeable_signature =
+                is_mergeable_graphics_pass(&self.passes[pass_index].descriptor)
+                    .then(|| compatibility_keys[pass_index].clone())
+                    .flatten();
+
+            info[pass_index] = if let Some(downstream) = best_downstream {
+                if mergeable_signature.is_none() {
+                    BatchAnchorInfo {
+                        anchor_signature: downstream.anchor_signature,
+                        distance_to_anchor: downstream.distance_to_anchor.saturating_add(1),
+                    }
+                } else {
+                    BatchAnchorInfo {
+                        anchor_signature: downstream.anchor_signature,
+                        distance_to_anchor: downstream.distance_to_anchor.saturating_add(1),
+                    }
+                }
+            } else if let Some(signature) = mergeable_signature {
+                BatchAnchorInfo {
+                    anchor_signature: Some(signature),
+                    distance_to_anchor: 0,
+                }
+            } else {
+                BatchAnchorInfo::default()
+            };
+        }
+
+        info
     }
 
     fn toposort_live_passes(
@@ -1248,10 +1365,24 @@ impl FrameGraph {
                 render_pass_compatibility_key(&node.descriptor)
             })
             .collect();
+        let batch_anchor_info = self.compute_batch_anchor_info(
+            live_passes,
+            graph_edges,
+            &indegree,
+            &compatibility_keys,
+        );
         let mut last_signature: Option<RenderPassCompatibilityKey> = None;
 
         while !queue.is_empty() {
-            let n = select_next_ready_node(&queue, &compatibility_keys, last_signature.as_ref());
+            let n = select_next_ready_node(
+                &queue,
+                &compatibility_keys,
+                &batch_anchor_info,
+                last_signature.as_ref(),
+                graph_edges,
+                &indegree,
+                live_passes,
+            );
             let n = remove_from_queue(&mut queue, n);
             order.push(n);
             last_signature = compatibility_keys[n].clone();
@@ -1330,7 +1461,6 @@ impl FrameGraph {
         &self,
         live_passes: &HashSet<usize>,
         ordered_passes: &[usize],
-        pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
     ) -> (
         Vec<CompiledResource>,
         AllocationPlan,
@@ -1344,14 +1474,17 @@ impl FrameGraph {
             .collect::<HashMap<_, _>>();
         let mut resources = HashMap::<ResourceHandle, CompiledResource>::new();
 
-        for (pass_index, summary_map) in pass_summaries.iter().enumerate() {
+        for (pass_index, node) in self.passes.iter().enumerate() {
             if !live_passes.contains(&pass_index) {
                 continue;
             }
             let Some(order_index) = ordered_positions.get(&pass_index).copied() else {
                 continue;
             };
-            for (&resource, summary) in summary_map {
+            let mut producers = HashSet::new();
+            let mut consumers = HashSet::new();
+            for usage in &node.usages {
+                let resource = usage.resource;
                 let metadata = self.resource_metadata(resource);
                 let compiled = resources.entry(resource).or_insert(CompiledResource {
                     handle: resource,
@@ -1368,10 +1501,10 @@ impl FrameGraph {
                 });
                 compiled.first_use_pass_index = compiled.first_use_pass_index.min(order_index);
                 compiled.last_use_pass_index = compiled.last_use_pass_index.max(order_index);
-                if summary.writes || summary.produced {
+                if usage.write_version.is_some() && producers.insert(resource) {
                     compiled.producer_passes.push(pass_index);
                 }
-                if summary.requires_input {
+                if usage.read_version.is_some() && consumers.insert(resource) {
                     compiled.consumer_passes.push(pass_index);
                 }
             }
@@ -1693,6 +1826,12 @@ impl FrameGraph {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct BatchAnchorInfo {
+    anchor_signature: Option<RenderPassCompatibilityKey>,
+    distance_to_anchor: usize,
+}
+
 impl FrameGraph {
     #[allow(clippy::too_many_arguments)]
     fn execute_graphics_pass(
@@ -1764,10 +1903,8 @@ impl FrameGraph {
                 ..Default::default()
             });
             let mut compute_ctx = ComputeRecordContext::new(ctx);
-            let mut compute_ctx = ComputeCtx::new(
-                &mut compute_ctx,
-                ComputeEncodeScope::Compute(&mut compute_pass),
-            );
+            let mut compute_ctx =
+                ComputeCtx::from_compute_pass(&mut compute_ctx, &mut compute_pass);
             self.passes[index].pass.execute_compute(&mut compute_ctx);
         }));
         record_pass_timing(
@@ -2063,65 +2200,215 @@ fn to_wgpu_stencil_load_op(
     }
 }
 
-fn summarize_pass_resources(
+#[allow(clippy::too_many_arguments)]
+fn annotate_usage_version(
+    resource: ResourceHandle,
+    usage: ResourceUsage,
     descriptor: &PassDescriptor,
-    usages: &[PassResourceUsage],
-) -> Result<HashMap<ResourceHandle, PassResourceSummary>, FrameGraphError> {
-    let mut summaries = HashMap::new();
-    for usage in usages {
-        let entry = summaries
-            .entry(usage.resource)
-            .or_insert(PassResourceSummary {
-                requires_input: false,
-                writes: false,
-                produced: false,
-            });
-        match usage.usage {
-            ResourceUsage::Produced => {
-                entry.produced = true;
-                entry.writes = true;
-            }
-            ResourceUsage::BufferWrite => {
-                entry.writes = true;
-            }
-            ResourceUsage::SampledRead
-            | ResourceUsage::DepthRead
-            | ResourceUsage::StencilRead
-            | ResourceUsage::CopySrc
-            | ResourceUsage::UniformRead
-            | ResourceUsage::VertexRead
-            | ResourceUsage::IndexRead
-            | ResourceUsage::StorageRead => {
-                entry.requires_input = !entry.produced;
-            }
-            ResourceUsage::ColorAttachmentWrite => {
-                entry.writes = true;
-                if color_attachment_requires_input(descriptor, usage.resource) && !entry.produced {
-                    entry.requires_input = true;
-                }
-            }
-            ResourceUsage::DepthWrite => {
-                entry.writes = true;
-                if depth_stencil_aspect_requires_input(descriptor, usage.resource, true)
-                    && !entry.produced
-                {
-                    entry.requires_input = true;
-                }
-            }
-            ResourceUsage::StencilWrite => {
-                entry.writes = true;
-                if depth_stencil_aspect_requires_input(descriptor, usage.resource, false)
-                    && !entry.produced
-                {
-                    entry.requires_input = true;
-                }
-            }
-            ResourceUsage::CopyDst | ResourceUsage::StorageWrite => {
-                entry.writes = true;
-            }
+    latest_texture_version: &mut HashMap<TextureHandle, TextureVersionId>,
+    latest_buffer_version: &mut HashMap<BufferHandle, BufferVersionId>,
+    next_texture_version: &mut u32,
+    next_buffer_version: &mut u32,
+) -> (Option<ResourceVersionId>, Option<ResourceVersionId>) {
+    match resource {
+        ResourceHandle::Texture(handle) => annotate_texture_usage_version(
+            handle,
+            usage,
+            descriptor,
+            latest_texture_version,
+            next_texture_version,
+        ),
+        ResourceHandle::Buffer(handle) => {
+            annotate_buffer_usage_version(handle, usage, latest_buffer_version, next_buffer_version)
         }
     }
-    Ok(summaries)
+}
+
+fn annotate_texture_usage_version(
+    handle: TextureHandle,
+    usage: ResourceUsage,
+    descriptor: &PassDescriptor,
+    latest_versions: &mut HashMap<TextureHandle, TextureVersionId>,
+    next_version: &mut u32,
+) -> (Option<ResourceVersionId>, Option<ResourceVersionId>) {
+    let current = latest_versions
+        .get(&handle)
+        .copied()
+        .map(ResourceVersionId::Texture);
+    match usage {
+        ResourceUsage::Produced => {
+            let write = ResourceVersionId::Texture(allocate_texture_version(
+                handle,
+                latest_versions,
+                next_version,
+            ));
+            (None, Some(write))
+        }
+        ResourceUsage::SampledRead
+        | ResourceUsage::DepthRead
+        | ResourceUsage::StencilRead
+        | ResourceUsage::CopySrc
+        | ResourceUsage::UniformRead
+        | ResourceUsage::VertexRead
+        | ResourceUsage::IndexRead
+        | ResourceUsage::StorageRead => (
+            current.or_else(|| {
+                Some(ResourceVersionId::Texture(allocate_texture_version(
+                    handle,
+                    latest_versions,
+                    next_version,
+                )))
+            }),
+            None,
+        ),
+        ResourceUsage::ColorAttachmentWrite => {
+            let read =
+                if color_attachment_requires_input(descriptor, ResourceHandle::Texture(handle)) {
+                    current.or_else(|| {
+                        Some(ResourceVersionId::Texture(allocate_texture_version(
+                            handle,
+                            latest_versions,
+                            next_version,
+                        )))
+                    })
+                } else {
+                    None
+                };
+            let write = ResourceVersionId::Texture(allocate_texture_version(
+                handle,
+                latest_versions,
+                next_version,
+            ));
+            (read, Some(write))
+        }
+        ResourceUsage::DepthWrite => {
+            let read = if depth_stencil_aspect_requires_input(
+                descriptor,
+                ResourceHandle::Texture(handle),
+                true,
+            ) {
+                current.or_else(|| {
+                    Some(ResourceVersionId::Texture(allocate_texture_version(
+                        handle,
+                        latest_versions,
+                        next_version,
+                    )))
+                })
+            } else {
+                None
+            };
+            let write = ResourceVersionId::Texture(allocate_texture_version(
+                handle,
+                latest_versions,
+                next_version,
+            ));
+            (read, Some(write))
+        }
+        ResourceUsage::StencilWrite => {
+            let read = if depth_stencil_aspect_requires_input(
+                descriptor,
+                ResourceHandle::Texture(handle),
+                false,
+            ) {
+                current.or_else(|| {
+                    Some(ResourceVersionId::Texture(allocate_texture_version(
+                        handle,
+                        latest_versions,
+                        next_version,
+                    )))
+                })
+            } else {
+                None
+            };
+            let write = ResourceVersionId::Texture(allocate_texture_version(
+                handle,
+                latest_versions,
+                next_version,
+            ));
+            (read, Some(write))
+        }
+        ResourceUsage::CopyDst | ResourceUsage::StorageWrite => {
+            let write = ResourceVersionId::Texture(allocate_texture_version(
+                handle,
+                latest_versions,
+                next_version,
+            ));
+            (None, Some(write))
+        }
+        ResourceUsage::BufferWrite => (None, None),
+    }
+}
+
+fn annotate_buffer_usage_version(
+    handle: BufferHandle,
+    usage: ResourceUsage,
+    latest_versions: &mut HashMap<BufferHandle, BufferVersionId>,
+    next_version: &mut u32,
+) -> (Option<ResourceVersionId>, Option<ResourceVersionId>) {
+    let current = latest_versions
+        .get(&handle)
+        .copied()
+        .map(ResourceVersionId::Buffer);
+    match usage {
+        ResourceUsage::Produced => {
+            let write = ResourceVersionId::Buffer(allocate_buffer_version(
+                handle,
+                latest_versions,
+                next_version,
+            ));
+            (None, Some(write))
+        }
+        ResourceUsage::BufferWrite | ResourceUsage::CopyDst | ResourceUsage::StorageWrite => {
+            let write = ResourceVersionId::Buffer(allocate_buffer_version(
+                handle,
+                latest_versions,
+                next_version,
+            ));
+            (None, Some(write))
+        }
+        ResourceUsage::UniformRead
+        | ResourceUsage::VertexRead
+        | ResourceUsage::IndexRead
+        | ResourceUsage::CopySrc
+        | ResourceUsage::StorageRead => (
+            current.or_else(|| {
+                Some(ResourceVersionId::Buffer(allocate_buffer_version(
+                    handle,
+                    latest_versions,
+                    next_version,
+                )))
+            }),
+            None,
+        ),
+        ResourceUsage::SampledRead
+        | ResourceUsage::ColorAttachmentWrite
+        | ResourceUsage::DepthRead
+        | ResourceUsage::DepthWrite
+        | ResourceUsage::StencilRead
+        | ResourceUsage::StencilWrite => (None, None),
+    }
+}
+
+fn allocate_texture_version(
+    handle: TextureHandle,
+    latest_versions: &mut HashMap<TextureHandle, TextureVersionId>,
+    next_version: &mut u32,
+) -> TextureVersionId {
+    let version = TextureVersionId(*next_version);
+    *next_version = next_version.saturating_add(1);
+    latest_versions.insert(handle, version);
+    version
+}
+
+fn allocate_buffer_version(
+    handle: BufferHandle,
+    latest_versions: &mut HashMap<BufferHandle, BufferVersionId>,
+    next_version: &mut u32,
+) -> BufferVersionId {
+    let version = BufferVersionId(*next_version);
+    *next_version = next_version.saturating_add(1);
+    latest_versions.insert(handle, version);
+    version
 }
 
 fn color_attachment_requires_input(descriptor: &PassDescriptor, resource: ResourceHandle) -> bool {
@@ -2348,38 +2635,6 @@ fn derive_buffer_resource_state(
     Ok(state.unwrap_or(BufferResourceState::Undefined))
 }
 
-fn summary_to_access(summary: PassResourceSummary) -> Option<ResourceAccess> {
-    match (summary.requires_input, summary.writes) {
-        (false, false) => None,
-        (true, false) => Some(ResourceAccess::Read),
-        (false, true) => Some(ResourceAccess::Write),
-        (true, true) => Some(ResourceAccess::Modify),
-    }
-}
-
-fn find_latest_writer_before(
-    pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
-    resource: ResourceHandle,
-    pass_index: usize,
-) -> Option<usize> {
-    (0..pass_index).rev().find(|candidate| {
-        pass_summaries[*candidate]
-            .get(&resource)
-            .is_some_and(|summary| summary.writes || summary.produced)
-    })
-}
-
-fn find_latest_writer(
-    pass_summaries: &[HashMap<ResourceHandle, PassResourceSummary>],
-    resource: ResourceHandle,
-) -> Option<usize> {
-    (0..pass_summaries.len()).rev().find(|candidate| {
-        pass_summaries[*candidate]
-            .get(&resource)
-            .is_some_and(|summary| summary.writes || summary.produced)
-    })
-}
-
 fn validate_pass_descriptor(
     descriptor: &PassDescriptor,
     textures: &[TextureDesc],
@@ -2480,7 +2735,11 @@ fn remove_from_queue(queue: &mut VecDeque<usize>, value: usize) -> usize {
 fn select_next_ready_node(
     queue: &VecDeque<usize>,
     signatures: &[Option<RenderPassCompatibilityKey>],
+    batch_anchor_info: &[BatchAnchorInfo],
     last_signature: Option<&RenderPassCompatibilityKey>,
+    graph_edges: &[HashSet<usize>],
+    indegree: &[usize],
+    live_passes: &HashSet<usize>,
 ) -> usize {
     if let Some(last_signature) = last_signature {
         let mut best: Option<usize> = None;
@@ -2499,49 +2758,149 @@ fn select_next_ready_node(
         }
     }
 
-    let mut best_signature: Option<(RenderPassCompatibilityKey, usize)> = None;
-    let unique_signatures: HashSet<RenderPassCompatibilityKey> = queue
-        .iter()
-        .filter_map(|&idx| signatures[idx].clone())
-        .collect();
-    for signature in unique_signatures {
-        let count = queue
-            .iter()
-            .filter_map(|&idx| signatures[idx].as_ref())
-            .filter(|candidate| **candidate == signature)
-            .count();
-        if best_signature
+    let mut anchor_counts = HashMap::<RenderPassCompatibilityKey, usize>::new();
+    for &idx in queue {
+        let Some(anchor_signature) = batch_anchor_info[idx].anchor_signature.clone() else {
+            continue;
+        };
+        *anchor_counts.entry(anchor_signature).or_insert(0) += 1;
+    }
+    let mut best_anchor_choice: Option<(usize, usize, usize)> = None;
+    for &idx in queue {
+        let Some(anchor_signature) = batch_anchor_info[idx].anchor_signature.as_ref() else {
+            continue;
+        };
+        let ready_count = anchor_counts.get(anchor_signature).copied().unwrap_or(0);
+        let distance = batch_anchor_info[idx].distance_to_anchor;
+        if best_anchor_choice
             .as_ref()
-            .is_none_or(|(_, best_count)| count > *best_count)
+            .is_none_or(|(best_idx, best_count, best_distance)| {
+                ready_count > *best_count
+                    || (ready_count == *best_count && distance > *best_distance)
+                    || (ready_count == *best_count && distance == *best_distance && idx < *best_idx)
+            })
         {
-            best_signature = Some((signature, count));
+            best_anchor_choice = Some((idx, ready_count, distance));
+        }
+    }
+    if let Some((idx, ready_count, distance)) = best_anchor_choice
+        && (ready_count > 1 || distance > 0)
+    {
+        return idx;
+    }
+
+    let mut best_graphics_choice: Option<(usize, usize)> = None;
+    for &idx in queue {
+        let Some(signature) = signatures[idx].as_ref() else {
+            continue;
+        };
+        let run_len = estimate_compatible_run_length(
+            idx,
+            signature,
+            queue,
+            signatures,
+            graph_edges,
+            indegree,
+            live_passes,
+        );
+        if best_graphics_choice
+            .as_ref()
+            .is_none_or(|(best_idx, best_len)| {
+                run_len > *best_len || (run_len == *best_len && idx < *best_idx)
+            })
+        {
+            best_graphics_choice = Some((idx, run_len));
         }
     }
 
-    if let Some((target_signature, count)) = best_signature
-        && count > 1
+    if let Some((idx, run_len)) = best_graphics_choice
+        && run_len > 1
     {
-        let mut best: Option<usize> = None;
-        for &idx in queue {
-            if signatures[idx]
-                .as_ref()
-                .is_some_and(|signature| *signature == target_signature)
-            {
-                if best.is_none_or(|current| idx < current) {
-                    best = Some(idx);
-                }
-            }
-        }
-        if let Some(best) = best {
-            return best;
-        }
+        return idx;
     }
 
     queue.iter().copied().min().unwrap_or(0)
 }
 
+fn topological_order_for_analysis(
+    live_passes: &HashSet<usize>,
+    graph_edges: &[HashSet<usize>],
+    indegree: &[usize],
+) -> Vec<usize> {
+    let mut indegree = indegree.to_vec();
+    let mut queue: VecDeque<usize> = indegree
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &deg)| {
+            if deg == 0 && live_passes.contains(&idx) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut order = Vec::with_capacity(live_passes.len());
+    while let Some(node) = queue.pop_front() {
+        order.push(node);
+        for &next in &graph_edges[node] {
+            indegree[next] = indegree[next].saturating_sub(1);
+            if indegree[next] == 0 && live_passes.contains(&next) {
+                queue.push_back(next);
+            }
+        }
+    }
+    order
+}
+
+fn estimate_compatible_run_length(
+    start_idx: usize,
+    target_signature: &RenderPassCompatibilityKey,
+    queue: &VecDeque<usize>,
+    signatures: &[Option<RenderPassCompatibilityKey>],
+    graph_edges: &[HashSet<usize>],
+    indegree: &[usize],
+    live_passes: &HashSet<usize>,
+) -> usize {
+    let mut simulated_indegree = indegree.to_vec();
+    let mut ready: HashSet<usize> = queue.iter().copied().collect();
+    let mut run_len = 0usize;
+    let mut current = Some(start_idx);
+
+    while let Some(node) = current.take() {
+        if !ready.remove(&node) {
+            break;
+        }
+        run_len += 1;
+        for &next in &graph_edges[node] {
+            simulated_indegree[next] = simulated_indegree[next].saturating_sub(1);
+            if simulated_indegree[next] == 0 && live_passes.contains(&next) {
+                ready.insert(next);
+            }
+        }
+        current = ready
+            .iter()
+            .copied()
+            .filter(|&idx| {
+                signatures[idx]
+                    .as_ref()
+                    .is_some_and(|signature| signature == target_signature)
+            })
+            .min();
+    }
+
+    run_len
+}
+
 fn is_rect_pass_name(name: &str) -> bool {
     name == std::any::type_name::<DrawRectPass>() || name == std::any::type_name::<OpaqueRectPass>()
+}
+
+fn is_mergeable_graphics_pass(descriptor: &PassDescriptor) -> bool {
+    matches!(
+        &descriptor.details,
+        PassDetails::Graphics(graphics)
+            if graphics.merge_policy == GraphicsPassMergePolicy::Mergeable
+    )
 }
 
 fn render_pass_compatibility_key(
@@ -3294,8 +3653,61 @@ mod tests {
     #[derive(Default)]
     struct SurfacePass;
 
+    #[derive(Default)]
+    struct MergeableSurfacePass;
+
+    struct MergeablePrepPass {
+        output: OutSlot<TextureResource, ()>,
+    }
+
+    struct MergeableFinalReadPass {
+        input: InSlot<TextureResource, ()>,
+    }
+
     impl GraphicsPass for SurfacePass {
         fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
+                builder.surface_target(),
+                [0.0, 0.0, 0.0, 0.0],
+            ));
+        }
+
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
+    }
+
+    impl GraphicsPass for MergeableSurfacePass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
+            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
+                builder.surface_target(),
+                [0.0, 0.0, 0.0, 0.0],
+            ));
+        }
+
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
+    }
+
+    impl GraphicsPass for MergeablePrepPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
+            let target = builder
+                .texture_target(&self.output)
+                .expect("prep output should have texture target");
+            builder.write_color(
+                &self.output,
+                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+            );
+        }
+
+        fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
+    }
+
+    impl GraphicsPass for MergeableFinalReadPass {
+        fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+            builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
+            if let Some(handle) = self.input.handle() {
+                builder.read_texture(&mut self.input, &OutSlot::with_handle(handle));
+            }
             builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
                 builder.surface_target(),
                 [0.0, 0.0, 0.0, 0.0],
@@ -3519,6 +3931,115 @@ mod tests {
     }
 
     #[test]
+    fn compile_populates_version_metadata_for_write_then_read() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        let writer = graph.add_graphics_pass(WritePass {
+            output: texture.clone(),
+        });
+        let reader = graph.add_graphics_pass(ReadPass {
+            input: InSlot::with_handle(
+                texture
+                    .handle()
+                    .expect("declared texture should have handle"),
+            ),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let writer_usage = graph.passes[writer.0]
+            .usages
+            .first()
+            .copied()
+            .expect("writer should have one usage");
+        let reader_usage = graph.passes[reader.0]
+            .usages
+            .first()
+            .copied()
+            .expect("reader should have one usage");
+
+        assert_eq!(writer_usage.read_version, None);
+        assert_eq!(
+            writer_usage.write_version,
+            Some(ResourceVersionId::Texture(TextureVersionId(0)))
+        );
+        assert_eq!(
+            reader_usage.read_version,
+            Some(ResourceVersionId::Texture(TextureVersionId(0)))
+        );
+        assert_eq!(reader_usage.write_version, None);
+    }
+
+    #[test]
+    fn compile_populates_version_metadata_for_load_modify() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        let writer = graph.add_graphics_pass(WritePass {
+            output: texture.clone(),
+        });
+        let modify = graph.add_graphics_pass(ModifyPass { target: texture });
+
+        graph.compile().expect("compile should succeed");
+
+        let writer_usage = graph.passes[writer.0]
+            .usages
+            .first()
+            .copied()
+            .expect("writer should have one usage");
+        let modify_usage = graph.passes[modify.0]
+            .usages
+            .first()
+            .copied()
+            .expect("modify should have one usage");
+
+        assert_eq!(
+            writer_usage.write_version,
+            Some(ResourceVersionId::Texture(TextureVersionId(0)))
+        );
+        assert_eq!(
+            modify_usage.read_version,
+            Some(ResourceVersionId::Texture(TextureVersionId(0)))
+        );
+        assert_eq!(
+            modify_usage.write_version,
+            Some(ResourceVersionId::Texture(TextureVersionId(1)))
+        );
+    }
+
+    #[test]
+    fn compiled_pass_exposes_versioned_inputs_outputs() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        graph.add_graphics_pass(WritePass {
+            output: texture.clone(),
+        });
+        graph.add_graphics_pass(ModifyPass {
+            target: texture.clone(),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(compiled.passes.len(), 2);
+        assert_eq!(compiled.passes[0].input_versions.len(), 0);
+        assert_eq!(compiled.passes[0].output_versions.len(), 1);
+        assert_eq!(
+            compiled.passes[0].output_versions[0].version,
+            ResourceVersionId::Texture(TextureVersionId(0))
+        );
+        assert_eq!(compiled.passes[1].input_versions.len(), 1);
+        assert_eq!(compiled.passes[1].output_versions.len(), 1);
+        assert_eq!(
+            compiled.passes[1].input_versions[0].version,
+            ResourceVersionId::Texture(TextureVersionId(0))
+        );
+        assert_eq!(
+            compiled.passes[1].output_versions[0].version,
+            ResourceVersionId::Texture(TextureVersionId(1))
+        );
+    }
+
+    #[test]
     fn compile_orders_buffer_write_then_read_from_usage_api() {
         let mut graph = FrameGraph::new();
         let buffer = graph.declare_buffer_internal::<()>(
@@ -3621,18 +4142,38 @@ mod tests {
     }
 
     #[test]
-    fn compile_rejects_multiple_live_writers_on_same_resource() {
+    fn compile_allows_multiple_writers_on_same_resource() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
-        graph.add_graphics_pass(WritePass {
+        let writer_a = graph.add_graphics_pass(WritePass {
             output: texture.clone(),
         });
-        graph.add_graphics_pass(WritePass { output: texture });
+        let writer_b = graph.add_graphics_pass(WritePass { output: texture });
 
-        let err = graph
-            .compile()
-            .expect_err("compile should reject multiple writers");
-        assert!(matches!(err, FrameGraphError::MultipleWriters));
+        graph.compile().expect("compile should succeed");
+
+        assert_eq!(graph.order, vec![writer_a.0, writer_b.0]);
+    }
+
+    #[test]
+    fn compile_culls_dead_overwritten_writer_from_version_flow() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        let dead_writer = graph.add_graphics_pass(WritePass {
+            output: texture.clone(),
+        });
+        let live_writer = graph.add_graphics_pass(WritePass {
+            output: texture.clone(),
+        });
+        graph
+            .add_texture_sink(&texture, ExternalSinkKind::ExportTexture)
+            .expect("texture sink should be added");
+
+        graph.compile().expect("compile should succeed");
+
+        assert_eq!(graph.order, vec![live_writer.0]);
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(compiled.culled_passes, vec![dead_writer.0]);
     }
 
     #[test]
@@ -3890,6 +4431,66 @@ mod tests {
             ] if *pass_index == writer.0
                 && *present_index == present.0
                 && pass_indices == &vec![inline_a.0, inline_b.0]
+        ));
+    }
+
+    #[test]
+    fn compile_prefers_longer_graphics_run_over_lower_index_compute() {
+        let mut graph = FrameGraph::new();
+        let compute = graph.add_compute_pass(ComputeStubPass);
+        let surface_a = graph.add_graphics_pass(MergeableSurfacePass);
+        let surface_b = graph.add_graphics_pass(MergeableSurfacePass);
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(
+            compiled.execution_plan.ordered_passes,
+            vec![surface_a.0, surface_b.0, compute.0]
+        );
+        assert!(matches!(
+            &compiled.execution_plan.steps[..],
+            [
+                CompiledExecuteStep::GraphicsPassGroup(RenderPassGroup { pass_indices, .. }),
+                CompiledExecuteStep::ComputePass { pass_index },
+            ] if pass_indices == &vec![surface_a.0, surface_b.0] && *pass_index == compute.0
+        ));
+    }
+
+    #[test]
+    fn compile_finishes_parallel_prep_before_final_target_batch() {
+        let mut graph = FrameGraph::new();
+        let prep_tex_a = graph.declare_texture::<()>(test_texture_desc());
+        let prep_tex_b = graph.declare_texture::<()>(test_texture_desc());
+        let prep_a = graph.add_graphics_pass(MergeablePrepPass {
+            output: prep_tex_a.clone(),
+        });
+        let prep_b = graph.add_graphics_pass(MergeablePrepPass {
+            output: prep_tex_b.clone(),
+        });
+        let final_a = graph.add_graphics_pass(MergeableFinalReadPass {
+            input: InSlot::with_handle(prep_tex_a.handle().expect("texture a handle")),
+        });
+        let final_b = graph.add_graphics_pass(MergeableFinalReadPass {
+            input: InSlot::with_handle(prep_tex_b.handle().expect("texture b handle")),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        assert_eq!(
+            compiled.execution_plan.ordered_passes,
+            vec![prep_a.0, prep_b.0, final_a.0, final_b.0]
+        );
+        assert!(matches!(
+            &compiled.execution_plan.steps[..],
+            [
+                CompiledExecuteStep::GraphicsPass { pass_index: prep_first },
+                CompiledExecuteStep::GraphicsPass { pass_index: prep_second },
+                CompiledExecuteStep::GraphicsPassGroup(RenderPassGroup { pass_indices, .. }),
+            ] if *prep_first == prep_a.0
+                && *prep_second == prep_b.0
+                && pass_indices == &vec![final_a.0, final_b.0]
         ));
     }
 
