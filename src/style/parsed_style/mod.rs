@@ -1,4 +1,4 @@
-use crate::style::color::{Color, ColorLike};
+use crate::style::color::{Color, ColorLike, IntoColor};
 
 use std::collections::HashMap;
 use std::ops::Add;
@@ -1587,6 +1587,170 @@ pub struct Style {
     declarations: Vec<Declaration>,
     index: HashMap<PropertyId, usize>,
     hover: Option<Box<Style>>,
+}
+
+pub trait IntoStyleFieldValue<T> {
+    fn into_style_field_value(self) -> T;
+}
+
+impl IntoStyleFieldValue<Length> for Length {
+    fn into_style_field_value(self) -> Length {
+        self
+    }
+}
+
+impl IntoStyleFieldValue<Length> for f32 {
+    fn into_style_field_value(self) -> Length {
+        Length::px(self)
+    }
+}
+
+impl IntoStyleFieldValue<Length> for f64 {
+    fn into_style_field_value(self) -> Length {
+        Length::px(self as f32)
+    }
+}
+
+impl IntoStyleFieldValue<Length> for i32 {
+    fn into_style_field_value(self) -> Length {
+        Length::px(self as f32)
+    }
+}
+
+impl IntoStyleFieldValue<Length> for i64 {
+    fn into_style_field_value(self) -> Length {
+        Length::px(self as f32)
+    }
+}
+
+impl IntoStyleFieldValue<Length> for u32 {
+    fn into_style_field_value(self) -> Length {
+        Length::px(self as f32)
+    }
+}
+
+impl IntoStyleFieldValue<Length> for usize {
+    fn into_style_field_value(self) -> Length {
+        Length::px(self as f32)
+    }
+}
+
+impl IntoStyleFieldValue<FontSize> for FontSize {
+    fn into_style_field_value(self) -> FontSize {
+        self
+    }
+}
+
+impl IntoStyleFieldValue<FontSize> for f32 {
+    fn into_style_field_value(self) -> FontSize {
+        self.into_font_size()
+    }
+}
+
+impl IntoStyleFieldValue<FontSize> for f64 {
+    fn into_style_field_value(self) -> FontSize {
+        self.into_font_size()
+    }
+}
+
+impl IntoStyleFieldValue<FontSize> for i32 {
+    fn into_style_field_value(self) -> FontSize {
+        self.into_font_size()
+    }
+}
+
+impl IntoStyleFieldValue<FontSize> for i64 {
+    fn into_style_field_value(self) -> FontSize {
+        self.into_font_size()
+    }
+}
+
+impl IntoStyleFieldValue<FontSize> for u32 {
+    fn into_style_field_value(self) -> FontSize {
+        self.into_font_size()
+    }
+}
+
+impl IntoStyleFieldValue<FontSize> for usize {
+    fn into_style_field_value(self) -> FontSize {
+        self.into_font_size()
+    }
+}
+
+impl<T> IntoStyleFieldValue<Color> for T
+where
+    T: IntoColor<Color>,
+{
+    fn into_style_field_value(self) -> Color {
+        self.into_color()
+    }
+}
+
+impl IntoStyleFieldValue<FontWeight> for FontWeight {
+    fn into_style_field_value(self) -> FontWeight {
+        self
+    }
+}
+
+impl IntoStyleFieldValue<FontWeight> for u16 {
+    fn into_style_field_value(self) -> FontWeight {
+        self.into_font_weight()
+    }
+}
+
+impl IntoStyleFieldValue<FontWeight> for u32 {
+    fn into_style_field_value(self) -> FontWeight {
+        self.into_font_weight()
+    }
+}
+
+impl IntoStyleFieldValue<FontWeight> for usize {
+    fn into_style_field_value(self) -> FontWeight {
+        self.into_font_weight()
+    }
+}
+
+impl IntoStyleFieldValue<FontWeight> for i32 {
+    fn into_style_field_value(self) -> FontWeight {
+        self.into_font_weight()
+    }
+}
+
+impl IntoStyleFieldValue<FontWeight> for i64 {
+    fn into_style_field_value(self) -> FontWeight {
+        self.into_font_weight()
+    }
+}
+
+pub fn insert_style_length<V>(style: &mut Style, property: PropertyId, value: V)
+where
+    V: IntoStyleFieldValue<Length>,
+{
+    style.insert(property, ParsedValue::Length(value.into_style_field_value()));
+}
+
+pub fn insert_style_font_size<V>(style: &mut Style, property: PropertyId, value: V)
+where
+    V: IntoStyleFieldValue<FontSize>,
+{
+    style.insert(property, ParsedValue::FontSize(value.into_style_field_value()));
+}
+
+pub fn style_color_value<V>(value: V) -> ParsedValue
+where
+    V: IntoStyleFieldValue<Color>,
+{
+    ParsedValue::Color(value.into_style_field_value())
+}
+
+pub fn insert_style_font_weight<V>(style: &mut Style, property: PropertyId, value: V)
+where
+    V: IntoStyleFieldValue<FontWeight>,
+{
+    style.insert(
+        property,
+        ParsedValue::FontWeight(value.into_style_field_value()),
+    );
 }
 
 impl Style {
