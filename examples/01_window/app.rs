@@ -1,5 +1,5 @@
 use crate::platform::{
-    key_to_string, map_cursor_icon, map_device_button, map_mouse_button, with_shadow,
+    key_to_string, map_cursor_icon, map_device_button, map_mouse_button,
 };
 use crate::rfgui::ui::{RsxNode, rsx, take_state_dirty};
 use crate::rfgui::{ColorLike, Viewport};
@@ -18,6 +18,11 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{DeviceEvent, ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window as WinitWindow, WindowId};
+
+#[cfg(target_os = "macos")]
+use crate::platform::{
+    with_shadow,
+};
 
 #[derive(Default)]
 pub struct App {
