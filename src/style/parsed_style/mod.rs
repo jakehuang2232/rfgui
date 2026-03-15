@@ -1726,14 +1726,20 @@ pub fn insert_style_length<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<Length>,
 {
-    style.insert(property, ParsedValue::Length(value.into_style_field_value()));
+    style.insert(
+        property,
+        ParsedValue::Length(value.into_style_field_value()),
+    );
 }
 
 pub fn insert_style_font_size<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<FontSize>,
 {
-    style.insert(property, ParsedValue::FontSize(value.into_style_field_value()));
+    style.insert(
+        property,
+        ParsedValue::FontSize(value.into_style_field_value()),
+    );
 }
 
 pub fn style_color_value<V>(value: V) -> ParsedValue

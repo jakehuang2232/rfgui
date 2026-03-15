@@ -16,6 +16,13 @@ use crate::ui::{
 };
 use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
+use crate::view::promotion::{
+    PromotedLayerUpdate, PromotionDecision, PromotionState, ViewportPromotionConfig,
+    active_channels_by_node, evaluate_promotion,
+};
+use crate::view::promotion_builder::{
+    collect_promoted_layer_updates, collect_promotion_candidates,
+};
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 use crate::{ColorLike, Cursor, HexColor, Style};
 use arboard::Clipboard;
@@ -146,6 +153,43 @@ fn format_trace_render_tree(root: &TraceRenderNode) -> String {
     let mut output = String::new();
     append_node(&mut output, root, None, "", true);
     output.trim_end().to_string()
+}
+
+fn format_promotion_trace(
+    decisions: &[PromotionDecision],
+    updates: &[PromotedLayerUpdate],
+    base_threshold: i32,
+) -> String {
+    let promoted = decisions
+        .iter()
+        .filter(|decision| decision.should_promote)
+        .collect::<Vec<_>>();
+    let reraster_count = updates
+        .iter()
+        .filter(|update| {
+            matches!(
+                update.kind,
+                crate::view::promotion::PromotedLayerUpdateKind::Reraster
+            )
+        })
+        .count();
+    let reuse_count = updates
+        .iter()
+        .filter(|update| {
+            matches!(
+                update.kind,
+                crate::view::promotion::PromotedLayerUpdateKind::Reuse
+            )
+        })
+        .count();
+    format!(
+        "[promotion] promoted={}/{} base_threshold={} updates(reuse={}, reraster={})",
+        promoted.len(),
+        decisions.len(),
+        base_threshold,
+        reuse_count,
+        reraster_count
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -367,6 +411,10 @@ pub struct Viewport {
     debug_options: ViewportDebugOptions,
     frame_stats: FrameStats,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
+    promotion_state: PromotionState,
+    promotion_config: ViewportPromotionConfig,
+    promoted_layer_updates: Vec<PromotedLayerUpdate>,
+    promoted_base_signatures: HashMap<u64, u64>,
     input_state: InputState,
     clipboard: Option<Clipboard>,
     clipboard_fallback: Option<String>,
@@ -403,6 +451,11 @@ struct FrameBufferEntry {
 
 impl Viewport {
     const DEFAULT_MSAA_SAMPLE_COUNT: u32 = 4;
+
+    fn invalidate_promoted_layer_reuse(&mut self) {
+        self.promoted_base_signatures.clear();
+        self.promoted_layer_updates.clear();
+    }
 
     fn normalize_msaa_sample_count(sample_count: u32) -> u32 {
         match sample_count {
@@ -995,6 +1048,75 @@ impl Viewport {
             || layout_result.keep_running
     }
 
+    fn update_promotion_state(&mut self, roots: &[Box<dyn super::base_component::ElementTrait>]) {
+        let active_channels = active_channels_by_node(&self.transition_claims);
+        let candidates = collect_promotion_candidates(
+            roots,
+            &active_channels,
+            (self.logical_width, self.logical_height),
+        );
+        self.promotion_state = evaluate_promotion(
+            candidates,
+            (self.logical_width, self.logical_height),
+            self.promotion_config,
+        );
+        let (updates, next_signatures) = collect_promoted_layer_updates(
+            roots,
+            &self.promotion_state.promoted_node_ids,
+            &self.promoted_base_signatures,
+        );
+        self.promoted_layer_updates = updates;
+        self.promoted_base_signatures = next_signatures;
+    }
+
+    fn apply_promotion_runtime(&self, ctx: &mut super::base_component::UiBuildContext) {
+        let promoted_update_kinds = self
+            .promoted_layer_updates
+            .iter()
+            .map(|update| (update.node_id, update.kind))
+            .collect::<HashMap<_, _>>();
+        ctx.set_promoted_runtime(
+            Arc::new(self.promotion_state.promoted_node_ids.clone()),
+            Arc::new(promoted_update_kinds),
+        );
+    }
+
+    fn composite_promoted_root(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut super::base_component::UiBuildContext,
+        root: &dyn super::base_component::ElementTrait,
+        layer_target: super::render_pass::draw_rect_pass::RenderTargetOut,
+    ) {
+        let snapshot = root.box_model_snapshot();
+        let opacity = root.promotion_node_info().opacity.clamp(0.0, 1.0);
+        let parent_target = ctx
+            .current_target()
+            .unwrap_or_else(|| ctx.allocate_target(graph));
+        let pass = super::render_pass::composite_layer_pass::CompositeLayerPass::new(
+            super::render_pass::composite_layer_pass::CompositeLayerParams {
+                rect_pos: [snapshot.x, snapshot.y],
+                rect_size: [snapshot.width.max(0.0), snapshot.height.max(0.0)],
+                corner_radii: [snapshot.border_radius; 4],
+                opacity,
+                scissor_rect: None,
+            },
+            super::render_pass::composite_layer_pass::CompositeLayerInput {
+                layer: super::render_pass::composite_layer_pass::LayerIn::with_handle(
+                    layer_target
+                        .handle()
+                        .expect("promoted root layer target should exist"),
+                ),
+                pass_context: ctx.graphics_pass_context(),
+            },
+            super::render_pass::composite_layer_pass::CompositeLayerOutput {
+                render_target: parent_target,
+            },
+        );
+        graph.add_graphics_pass(pass);
+        ctx.set_current_target(parent_target);
+    }
+
     pub fn new() -> Self {
         let debug_options = ViewportDebugOptions::from_env();
         Viewport {
@@ -1035,6 +1157,10 @@ impl Viewport {
             debug_options,
             frame_stats: FrameStats::new(debug_options.trace_fps),
             frame_box_models: Vec::new(),
+            promotion_state: PromotionState::default(),
+            promotion_config: ViewportPromotionConfig::default(),
+            promoted_layer_updates: Vec::new(),
+            promoted_base_signatures: HashMap::new(),
             input_state: InputState::default(),
             clipboard: Clipboard::new().ok(),
             clipboard_fallback: None,
@@ -1098,6 +1224,7 @@ impl Viewport {
             return;
         }
         self.msaa_sample_count = normalized;
+        self.invalidate_promoted_layer_reuse();
         self.needs_reconfigure = true;
         if self.surface.is_some() && self.device.is_some() {
             self.create_frame_attachments();
@@ -1189,6 +1316,7 @@ impl Viewport {
         }
         self.pending_size = Some((width, height));
         self.needs_reconfigure = true;
+        self.invalidate_promoted_layer_reuse();
     }
 
     pub fn set_style(&mut self, style: Style) {
@@ -1219,6 +1347,7 @@ impl Viewport {
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         self.scale_factor = scale_factor.max(0.0001);
         self.update_logical_size(self.surface_config.width, self.surface_config.height);
+        self.invalidate_promoted_layer_reuse();
     }
 
     pub fn scale_factor(&self) -> f32 {
@@ -1335,6 +1464,7 @@ impl Viewport {
             self.device = Some(device);
             self.queue = Some(queue);
             self.release_render_resource_caches();
+            self.invalidate_promoted_layer_reuse();
             self.create_frame_attachments();
             self.needs_reconfigure = false;
             if let Some(device) = self.device.as_ref() {
@@ -1369,6 +1499,7 @@ impl Viewport {
         surface.configure(device, &self.surface_config);
         let device_for_prewarm = device.clone();
         self.release_render_resource_caches();
+        self.invalidate_promoted_layer_reuse();
         self.create_frame_attachments();
         if let Some(queue) = self.queue.as_ref() {
             crate::view::render_pass::prewarm_text_pipeline(
@@ -1546,6 +1677,8 @@ impl Viewport {
         let relayout_after_transition_elapsed_ms =
             relayout_after_transition_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        self.update_promotion_state(roots);
+
         let build_graph_started_at = Instant::now();
         self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
@@ -1555,6 +1688,7 @@ impl Viewport {
             self.surface_config.format,
             self.scale_factor,
         );
+        self.apply_promotion_runtime(&mut ctx);
         let clear_uses_premultiplied_alpha = matches!(
             self.surface_config.alpha_mode,
             wgpu::CompositeAlphaMode::PostMultiplied | wgpu::CompositeAlphaMode::PreMultiplied
@@ -1588,14 +1722,64 @@ impl Viewport {
         graph.add_graphics_pass(clear_pass);
         ctx.set_current_target(output);
         for root in roots.iter_mut() {
-            let next_state = root.build(
-                &mut graph,
-                super::base_component::UiBuildContext::from_parts(
+            if ctx.is_node_promoted(root.id()) {
+                let update_kind = ctx
+                    .promoted_update_kind(root.id())
+                    .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
+                let can_reuse =
+                    matches!(
+                        update_kind,
+                        crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                    ) && super::base_component::can_reuse_promoted_subtree(root.as_ref(), &ctx);
+                let mut root_ctx = super::base_component::UiBuildContext::from_parts(
                     ctx.viewport(),
-                    ctx.state_clone(),
-                ),
-            );
-            ctx.set_state(next_state);
+                    super::base_component::BuildState::for_layer_subtree(),
+                );
+                let layer_target = root_ctx.allocate_promoted_layer_target(&mut graph, root.id());
+                root_ctx.set_current_target(layer_target);
+                let layer_target = if can_reuse {
+                    graph.add_graphics_pass(super::render_pass::RetainLayerPass::new(layer_target));
+                    layer_target
+                } else {
+                    graph.add_graphics_pass(super::frame_graph::ClearPass::new(
+                        super::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+                        super::render_pass::clear_pass::ClearInput {
+                            pass_context: root_ctx.graphics_pass_context(),
+                            clear_depth_stencil: true,
+                        },
+                        super::render_pass::clear_pass::ClearOutput {
+                            render_target: layer_target,
+                        },
+                    ));
+                    let next_state = if let Some(element) =
+                        root.as_any_mut()
+                            .downcast_mut::<super::base_component::Element>()
+                    {
+                        let base_state = element.build_base_only(&mut graph, root_ctx);
+                        element.compose_promoted_children_only(
+                            &mut graph,
+                            super::base_component::UiBuildContext::from_parts(
+                                ctx.viewport(),
+                                base_state,
+                            ),
+                        )
+                    } else {
+                        root.build(&mut graph, root_ctx)
+                    };
+                    ctx.merge_child_state_side_effects(&next_state);
+                    next_state.current_target().unwrap_or(layer_target)
+                };
+                self.composite_promoted_root(&mut graph, &mut ctx, root.as_ref(), layer_target);
+            } else {
+                let next_state = root.build(
+                    &mut graph,
+                    super::base_component::UiBuildContext::from_parts(
+                        ctx.viewport(),
+                        ctx.state_clone(),
+                    ),
+                );
+                ctx.set_state(next_state);
+            }
         }
         let mut deferred_node_ids = ctx.take_deferred_node_ids();
         let mut deferred_index = 0usize;
@@ -1773,6 +1957,14 @@ impl Viewport {
                 ],
             );
             println!("{}", format_trace_render_tree(&trace_root));
+            println!(
+                "{}",
+                format_promotion_trace(
+                    &self.promotion_state.decisions,
+                    &self.promoted_layer_updates,
+                    self.promotion_config.base_threshold,
+                )
+            );
         }
         self.frame_stats.record_frame(frame_start.elapsed());
         self.last_frame_graph = Some(graph);
@@ -1896,6 +2088,20 @@ impl Viewport {
         )
     }
 
+    pub(crate) fn acquire_persistent_render_target(
+        &mut self,
+        stable_key: u64,
+        desc: TextureDesc,
+    ) -> Option<RenderTargetBundle> {
+        let device = self.device.as_ref()?;
+        self.offscreen_render_target_pool.acquire_persistent(
+            device,
+            stable_key,
+            desc,
+            self.msaa_sample_count,
+        )
+    }
+
     pub(crate) fn acquire_frame_buffer(
         &mut self,
         allocation_id: AllocationId,
@@ -2012,6 +2218,22 @@ impl Viewport {
 
     pub fn frame_box_models(&self) -> &[super::base_component::BoxModelSnapshot] {
         &self.frame_box_models
+    }
+
+    pub fn promotion_decisions(&self) -> &[PromotionDecision] {
+        &self.promotion_state.decisions
+    }
+
+    pub fn promoted_layer_updates(&self) -> &[PromotedLayerUpdate] {
+        &self.promoted_layer_updates
+    }
+
+    pub fn promotion_config(&self) -> ViewportPromotionConfig {
+        self.promotion_config
+    }
+
+    pub fn set_promotion_config(&mut self, config: ViewportPromotionConfig) {
+        self.promotion_config = config;
     }
 
     pub fn set_focused_node_id(&mut self, node_id: Option<u64>) {

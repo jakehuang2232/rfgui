@@ -32,6 +32,7 @@ pub(crate) struct RenderTargetBundle {
 pub(crate) struct OffscreenRenderTargetPool {
     entries: HashMap<u32, RenderTargetEntry>,
     frame_bindings: HashMap<u32, u32>,
+    persistent_bindings: HashMap<u64, u32>,
     frame_epoch: u64,
     next_entry_id: u32,
 }
@@ -45,6 +46,7 @@ impl OffscreenRenderTargetPool {
         Self {
             entries: HashMap::new(),
             frame_bindings: HashMap::new(),
+            persistent_bindings: HashMap::new(),
             frame_epoch: 0,
             next_entry_id: 0,
         }
@@ -59,6 +61,7 @@ impl OffscreenRenderTargetPool {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.frame_bindings.clear();
+        self.persistent_bindings.clear();
         self.frame_epoch = 0;
         self.next_entry_id = 0;
     }
@@ -82,6 +85,7 @@ impl OffscreenRenderTargetPool {
         let mut best_fit: Option<u32> = None;
         for (&entry_id, entry) in &self.entries {
             if entry.frame_busy_epoch == self.frame_epoch
+                || self.persistent_bindings.values().any(|&id| id == entry_id)
                 || entry.format != format
                 || entry.dimension != dimension
                 || entry.msaa_sample_count != msaa_sample_count
@@ -112,6 +116,67 @@ impl OffscreenRenderTargetPool {
         }
         self.frame_bindings.insert(allocation_id.0, entry_id);
         self.evict();
+        self.bundle_for_entry(entry_id)
+    }
+
+    pub fn acquire_persistent(
+        &mut self,
+        device: &wgpu::Device,
+        stable_key: u64,
+        desc: TextureDesc,
+        msaa_sample_count: u32,
+    ) -> Option<RenderTargetBundle> {
+        let width = desc.width().max(1);
+        let height = desc.height().max(1);
+        let format = desc.format();
+        let dimension = desc.dimension();
+
+        let entry_id = match self.persistent_bindings.get(&stable_key).copied() {
+            Some(entry_id) => {
+                let recreate = self.entries.get(&entry_id).is_none_or(|entry| {
+                    entry.format != format
+                        || entry.dimension != dimension
+                        || entry.msaa_sample_count != msaa_sample_count
+                        || entry.width != width
+                        || entry.height != height
+                });
+                if recreate {
+                    self.remove_entry(entry_id);
+                    let new_entry_id = self.next_entry_id;
+                    self.next_entry_id = self.next_entry_id.saturating_add(1);
+                    self.entries.insert(
+                        new_entry_id,
+                        Self::create_entry(
+                            device,
+                            width,
+                            height,
+                            format,
+                            dimension,
+                            msaa_sample_count,
+                        ),
+                    );
+                    self.persistent_bindings.insert(stable_key, new_entry_id);
+                    new_entry_id
+                } else {
+                    entry_id
+                }
+            }
+            None => {
+                let new_entry_id = self.next_entry_id;
+                self.next_entry_id = self.next_entry_id.saturating_add(1);
+                self.entries.insert(
+                    new_entry_id,
+                    Self::create_entry(device, width, height, format, dimension, msaa_sample_count),
+                );
+                self.persistent_bindings.insert(stable_key, new_entry_id);
+                new_entry_id
+            }
+        };
+
+        if let Some(entry) = self.entries.get_mut(&entry_id) {
+            entry.frame_busy_epoch = self.frame_epoch;
+            entry.last_used_epoch = self.frame_epoch;
+        }
         self.bundle_for_entry(entry_id)
     }
 
@@ -250,6 +315,8 @@ impl OffscreenRenderTargetPool {
         self.entries.remove(&entry_id);
         self.frame_bindings
             .retain(|_, bound_id| *bound_id != entry_id);
+        self.persistent_bindings
+            .retain(|_, bound_id| *bound_id != entry_id);
     }
 }
 
@@ -286,9 +353,14 @@ pub(crate) fn render_target_bundle(
     handle: TextureHandle,
 ) -> Option<RenderTargetBundle> {
     let desc = texture_desc_for_handle(ctx, handle)?;
-    let allocation_id = ctx.texture_allocation_id(handle)?;
+    if let Some(allocation_id) = ctx.texture_allocation_id(handle) {
+        return ctx
+            .viewport()
+            .acquire_offscreen_render_target(allocation_id, desc);
+    }
+    let stable_key = ctx.texture_stable_key(handle)?;
     ctx.viewport()
-        .acquire_offscreen_render_target(allocation_id, desc)
+        .acquire_persistent_render_target(stable_key, desc)
 }
 
 pub(crate) fn render_target_size(

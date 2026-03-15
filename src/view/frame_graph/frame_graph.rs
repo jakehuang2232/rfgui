@@ -648,6 +648,7 @@ pub struct CompiledGraph {
     pub resource_timelines: Vec<CompiledResourceTimeline>,
     texture_allocation_ids: HashMap<TextureHandle, AllocationId>,
     buffer_allocation_ids: HashMap<BufferHandle, AllocationId>,
+    texture_stable_keys: HashMap<TextureHandle, u64>,
 }
 
 #[derive(Clone)]
@@ -940,13 +941,14 @@ impl FrameGraph {
         self.compile()?;
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
-        let (texture_allocations, buffer_allocations) = {
+        let (texture_allocations, texture_stable_keys, buffer_allocations) = {
             let compiled = self
                 .compiled_graph
                 .as_ref()
                 .expect("compiled graph should exist");
             (
                 compiled.texture_allocation_ids.clone(),
+                compiled.texture_stable_keys.clone(),
                 compiled.buffer_allocation_ids.clone(),
             )
         };
@@ -955,6 +957,7 @@ impl FrameGraph {
             &textures,
             &buffers,
             &texture_allocations,
+            &texture_stable_keys,
             &buffer_allocations,
         );
         for &index in &self.order {
@@ -1031,6 +1034,13 @@ impl FrameGraph {
             self.build_resource_state_timelines(&ordered_passes)?;
         let (resources, allocation_plan, texture_allocation_ids, buffer_allocation_ids) =
             self.build_compiled_resources(&live_passes, &ordered_passes);
+        let texture_stable_keys = resources
+            .iter()
+            .filter_map(|resource| match resource.handle {
+                ResourceHandle::Texture(handle) => resource.stable_key.map(|key| (handle, key)),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
         let culled_passes = (0..self.passes.len())
             .filter(|index| !live_passes.contains(index))
             .collect::<Vec<_>>();
@@ -1072,6 +1082,7 @@ impl FrameGraph {
             resource_timelines,
             texture_allocation_ids,
             buffer_allocation_ids,
+            texture_stable_keys,
         })
     }
 
@@ -1274,7 +1285,10 @@ impl FrameGraph {
     }
 
     fn resource_has_external_input(&self, resource: ResourceHandle) -> bool {
-        self.resource_metadata(resource).lifetime == ResourceLifetime::Imported
+        matches!(
+            self.resource_metadata(resource).lifetime,
+            ResourceLifetime::Imported | ResourceLifetime::Persistent
+        )
     }
 
     fn compute_batch_anchor_info(
@@ -1752,13 +1766,14 @@ impl FrameGraph {
         let mut pass_first_seen_order: Vec<String> = Vec::new();
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
-        let (texture_allocations, buffer_allocations) = {
+        let (texture_allocations, texture_stable_keys, buffer_allocations) = {
             let compiled = self
                 .compiled_graph
                 .as_ref()
                 .expect("compiled graph should exist");
             (
                 compiled.texture_allocation_ids.clone(),
+                compiled.texture_stable_keys.clone(),
                 compiled.buffer_allocation_ids.clone(),
             )
         };
@@ -1767,6 +1782,7 @@ impl FrameGraph {
             &textures,
             &buffers,
             &texture_allocations,
+            &texture_stable_keys,
             &buffer_allocations,
         );
         for step in self.execute_steps.clone() {
@@ -3120,6 +3136,7 @@ pub trait FrameResourceContext {
     fn textures(&self) -> &[TextureDesc];
     fn buffers(&self) -> &[BufferDesc];
     fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId>;
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64>;
     fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId>;
 
     fn buffer_desc(&self, handle: BufferHandle) -> Option<BufferDesc> {
@@ -3138,6 +3155,7 @@ pub struct PrepareContext<'a, 'b> {
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
     texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'b HashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
 }
 
@@ -3147,6 +3165,7 @@ impl<'a, 'b> PrepareContext<'a, 'b> {
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
         texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+        texture_stable_keys: &'b HashMap<TextureHandle, u64>,
         buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
@@ -3154,6 +3173,7 @@ impl<'a, 'b> PrepareContext<'a, 'b> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
         }
     }
@@ -3187,6 +3207,10 @@ impl FrameResourceContext for PrepareContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+        self.texture_stable_keys.get(&handle).copied()
+    }
+
     fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
         self.buffer_allocation_ids.get(&handle).copied()
     }
@@ -3197,6 +3221,7 @@ pub struct RecordContext<'a, 'b> {
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
     texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'b HashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
     detail_timings: HashMap<String, f64>,
     detail_counts: HashMap<String, usize>,
@@ -3209,6 +3234,7 @@ impl<'a, 'b> RecordContext<'a, 'b> {
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
         texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
+        texture_stable_keys: &'b HashMap<TextureHandle, u64>,
         buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
@@ -3216,6 +3242,7 @@ impl<'a, 'b> RecordContext<'a, 'b> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
             detail_timings: HashMap::new(),
             detail_counts: HashMap::new(),
@@ -3277,6 +3304,10 @@ impl FrameResourceContext for RecordContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+        self.texture_stable_keys.get(&handle).copied()
+    }
+
     fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
         self.buffer_allocation_ids.get(&handle).copied()
     }
@@ -3287,6 +3318,7 @@ pub struct GraphicsRecordContext<'ctx, 'res> {
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
     texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'res HashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
     detail_timings: &'ctx mut HashMap<String, f64>,
     detail_counts: &'ctx mut HashMap<String, usize>,
@@ -3300,6 +3332,7 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
             detail_timings,
             detail_counts,
@@ -3310,6 +3343,7 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
             detail_timings,
             detail_counts,
@@ -3363,6 +3397,10 @@ impl FrameResourceContext for GraphicsRecordContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+        self.texture_stable_keys.get(&handle).copied()
+    }
+
     fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
         self.buffer_allocation_ids.get(&handle).copied()
     }
@@ -3373,6 +3411,7 @@ pub struct ComputeRecordContext<'ctx, 'res> {
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
     texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'res HashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
     detail_timings: &'ctx mut HashMap<String, f64>,
     detail_counts: &'ctx mut HashMap<String, usize>,
@@ -3386,6 +3425,7 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
             detail_timings,
             detail_counts,
@@ -3396,6 +3436,7 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
             detail_timings,
             detail_counts,
@@ -3449,6 +3490,10 @@ impl FrameResourceContext for ComputeRecordContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+        self.texture_stable_keys.get(&handle).copied()
+    }
+
     fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {
         self.buffer_allocation_ids.get(&handle).copied()
     }
@@ -3459,6 +3504,7 @@ pub struct TransferRecordContext<'ctx, 'res> {
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
     texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'res HashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
     detail_timings: &'ctx mut HashMap<String, f64>,
     detail_counts: &'ctx mut HashMap<String, usize>,
@@ -3472,6 +3518,7 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
             detail_timings,
             detail_counts,
@@ -3482,6 +3529,7 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
             textures,
             buffers,
             texture_allocation_ids,
+            texture_stable_keys,
             buffer_allocation_ids,
             detail_timings,
             detail_counts,
@@ -3533,6 +3581,10 @@ impl FrameResourceContext for TransferRecordContext<'_, '_> {
 
     fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId> {
         self.texture_allocation_ids.get(&handle).copied()
+    }
+
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+        self.texture_stable_keys.get(&handle).copied()
     }
 
     fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId> {

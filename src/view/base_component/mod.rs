@@ -42,6 +42,32 @@ pub(crate) fn collect_box_models(root: &dyn ElementTrait) -> Vec<BoxModelSnapsho
     out
 }
 
+pub(crate) fn can_reuse_promoted_subtree(node: &dyn ElementTrait, ctx: &UiBuildContext) -> bool {
+    fn walk(node: &dyn ElementTrait, ctx: &UiBuildContext) -> bool {
+        let Some(children) = node.children() else {
+            return true;
+        };
+        for child in children {
+            if ctx.is_node_promoted(child.id()) {
+                return false;
+            }
+            if child
+                .as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(Element::should_append_to_root_viewport_render)
+            {
+                return false;
+            }
+            if !walk(child.as_ref(), ctx) {
+                return false;
+            }
+        }
+        true
+    }
+
+    walk(node, ctx)
+}
+
 pub(crate) fn build_node_by_id(
     node: &mut dyn ElementTrait,
     node_id: u64,
@@ -49,11 +75,84 @@ pub(crate) fn build_node_by_id(
     ctx: &mut UiBuildContext,
 ) -> bool {
     if node.id() == node_id {
-        let next_state = node.build(
-            graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
-        ctx.set_state(next_state);
+        if ctx.is_node_promoted(node_id) {
+            let update_kind = ctx
+                .promoted_update_kind(node_id)
+                .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
+            let can_reuse = matches!(
+                update_kind,
+                crate::view::promotion::PromotedLayerUpdateKind::Reuse
+            ) && can_reuse_promoted_subtree(node, ctx);
+            let mut node_ctx =
+                UiBuildContext::from_parts(ctx.viewport(), BuildState::for_layer_subtree());
+            let layer_target = node_ctx.allocate_promoted_layer_target(graph, node_id);
+            node_ctx.set_current_target(layer_target);
+            let layer_target = if can_reuse {
+                graph.add_graphics_pass(crate::view::render_pass::RetainLayerPass::new(
+                    layer_target,
+                ));
+                layer_target
+            } else {
+                graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
+                    crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+                    crate::view::render_pass::clear_pass::ClearInput {
+                        pass_context: node_ctx.graphics_pass_context(),
+                        clear_depth_stencil: true,
+                    },
+                    crate::view::render_pass::clear_pass::ClearOutput {
+                        render_target: layer_target,
+                    },
+                ));
+                let next_state = if let Some(element) = node.as_any_mut().downcast_mut::<Element>()
+                {
+                    let base_state = element.build_base_only(graph, node_ctx);
+                    element.compose_promoted_children_only(
+                        graph,
+                        UiBuildContext::from_parts(ctx.viewport(), base_state),
+                    )
+                } else {
+                    node.build(graph, node_ctx)
+                };
+                ctx.merge_child_state_side_effects(&next_state);
+                next_state.current_target().unwrap_or(layer_target)
+            };
+            let snapshot = node.box_model_snapshot();
+            let opacity = node.promotion_node_info().opacity.clamp(0.0, 1.0);
+            let parent_target = ctx.current_target().unwrap_or_else(|| {
+                let target = ctx.allocate_target(graph);
+                ctx.set_current_target(target);
+                target
+            });
+            graph.add_graphics_pass(
+                crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
+                    crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
+                        rect_pos: [snapshot.x, snapshot.y],
+                        rect_size: [snapshot.width.max(0.0), snapshot.height.max(0.0)],
+                        corner_radii: [snapshot.border_radius; 4],
+                        opacity,
+                        scissor_rect: None,
+                    },
+                    crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
+                        layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
+                            layer_target
+                                .handle()
+                                .expect("promoted deferred target should exist"),
+                        ),
+                        pass_context: ctx.graphics_pass_context(),
+                    },
+                    crate::view::render_pass::composite_layer_pass::CompositeLayerOutput {
+                        render_target: parent_target,
+                    },
+                ),
+            );
+            ctx.set_current_target(parent_target);
+        } else {
+            let next_state = node.build(
+                graph,
+                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+            );
+            ctx.set_state(next_state);
+        }
         return true;
     }
     if let Some(children) = node.children_mut() {

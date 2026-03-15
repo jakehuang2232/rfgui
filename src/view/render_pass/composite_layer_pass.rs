@@ -7,7 +7,9 @@ use crate::view::frame_graph::{
     GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{render_target_size, render_target_view};
+use crate::view::render_pass::render_target::{
+    GraphicsPassContext as RenderPassContext, render_target_size, render_target_view,
+};
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -48,6 +50,7 @@ pub type CompositeIndexBufferOut = OutSlot<BufferResource, CompositeIndexBufferT
 #[derive(Default)]
 pub struct CompositeLayerInput {
     pub layer: LayerIn,
+    pub pass_context: RenderPassContext,
 }
 
 #[derive(Default)]
@@ -65,11 +68,14 @@ struct CompositeVertex {
 }
 
 struct CompositeLayerResources {
-    pipeline: wgpu::RenderPipeline,
-    debug_pipeline: wgpu::RenderPipeline,
+    pipeline_no_stencil: wgpu::RenderPipeline,
+    pipeline_stencil_test: wgpu::RenderPipeline,
+    debug_pipeline_no_stencil: wgpu::RenderPipeline,
+    debug_pipeline_stencil_test: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pipeline_format: wgpu::TextureFormat,
+    pipeline_sample_count: u32,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -124,6 +130,14 @@ impl GraphicsPass for CompositeLayerPass {
             builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
                 builder.surface_target(),
             ));
+        }
+        self.params.scissor_rect = intersect_scissor_rects(
+            self.input.pass_context.scissor_rect,
+            self.params.scissor_rect,
+        );
+        if let Some(target) = self.input.pass_context.depth_stencil_target {
+            builder.read_depth(target);
+            builder.read_stencil(target);
         }
     }
 
@@ -186,13 +200,14 @@ impl GraphicsPass for CompositeLayerPass {
             None => return,
         };
         let format = ctx.viewport().surface_format();
+        let sample_count = ctx.viewport().msaa_sample_count();
         let cache = composite_layer_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources = cache.get_or_insert_with(COMPOSITE_LAYER_RESOURCES, || {
-            create_resources(&device, format)
+            create_resources(&device, format, sample_count)
         });
-        if resources.pipeline_format != format {
-            *resources = create_resources(&device, format);
+        if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
+            *resources = create_resources(&device, format, sample_count);
         }
 
         if self.prepared_vertices.is_empty() || self.prepared_indices.is_empty() {
@@ -233,10 +248,22 @@ impl GraphicsPass for CompositeLayerPass {
         });
 
         let debug_geometry_overlay = ctx.viewport().debug_geometry_overlay();
+        let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
+            &resources.pipeline_stencil_test
+        } else {
+            &resources.pipeline_no_stencil
+        };
         if let Some([x, y, width, height]) = scissor_rect_physical {
             ctx.set_scissor_rect(x, y, width, height);
+        } else {
+            ctx.set_scissor_rect(0, 0, target_w, target_h);
         }
-        ctx.set_pipeline(&resources.pipeline);
+        if let Some(clip_id) = self.input.pass_context.stencil_clip_id {
+            ctx.set_stencil_reference(clip_id as u32);
+        } else {
+            ctx.set_stencil_reference(0);
+        }
+        ctx.set_pipeline(pipeline);
         ctx.set_bind_group(0, &bind_group, &[]);
         ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
         ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -264,7 +291,12 @@ impl GraphicsPass for CompositeLayerPass {
                         contents: bytemuck::cast_slice(&debug_indices),
                         usage: wgpu::BufferUsages::INDEX,
                     });
-                ctx.set_pipeline(&resources.debug_pipeline);
+                let debug_pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
+                    &resources.debug_pipeline_stencil_test
+                } else {
+                    &resources.debug_pipeline_no_stencil
+                };
+                ctx.set_pipeline(debug_pipeline);
                 ctx.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
                 ctx.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 ctx.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
@@ -273,7 +305,11 @@ impl GraphicsPass for CompositeLayerPass {
     }
 }
 
-fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> CompositeLayerResources {
+fn create_resources(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> CompositeLayerResources {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("CompositeLayer Shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/layer_composite.wgsl").into()),
@@ -319,11 +355,80 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
         immediate_size: 0,
     });
 
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline_no_stencil = create_composite_pipeline(
+        device,
+        &pipeline_layout,
+        &shader,
+        format,
+        sample_count,
+        CompositeLayerStencilMode::Disabled,
+    );
+    let pipeline_stencil_test = create_composite_pipeline(
+        device,
+        &pipeline_layout,
+        &shader,
+        format,
+        sample_count,
+        CompositeLayerStencilMode::Test,
+    );
+
+    let debug_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Composite Debug Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/debug_color.wgsl").into()),
+    });
+    let debug_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Composite Debug Pipeline Layout"),
+        bind_group_layouts: &[],
+        immediate_size: 0,
+    });
+    let debug_pipeline_no_stencil = create_debug_pipeline(
+        device,
+        &debug_pipeline_layout,
+        &debug_shader,
+        format,
+        sample_count,
+        CompositeLayerStencilMode::Disabled,
+    );
+    let debug_pipeline_stencil_test = create_debug_pipeline(
+        device,
+        &debug_pipeline_layout,
+        &debug_shader,
+        format,
+        sample_count,
+        CompositeLayerStencilMode::Test,
+    );
+
+    CompositeLayerResources {
+        pipeline_no_stencil,
+        pipeline_stencil_test,
+        debug_pipeline_no_stencil,
+        debug_pipeline_stencil_test,
+        bind_group_layout,
+        sampler,
+        pipeline_format: format,
+        pipeline_sample_count: sample_count,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CompositeLayerStencilMode {
+    Disabled,
+    Test,
+}
+
+fn create_composite_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    stencil_mode: CompositeLayerStencilMode,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("CompositeLayer Pipeline"),
-        layout: Some(&pipeline_layout),
+        layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<CompositeVertex>() as u64,
@@ -349,7 +454,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -373,30 +478,30 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
             topology: wgpu::PrimitiveTopology::TriangleList,
             ..Default::default()
         },
-        depth_stencil: None,
+        depth_stencil: Some(composite_layer_depth_stencil_state(stencil_mode)),
         multisample: wgpu::MultisampleState {
-            count: 1,
+            count: sample_count,
             mask: !0,
             alpha_to_coverage_enabled: false,
         },
         multiview_mask: None,
         cache: None,
-    });
+    })
+}
 
-    let debug_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Composite Debug Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/debug_color.wgsl").into()),
-    });
-    let debug_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Composite Debug Pipeline Layout"),
-        bind_group_layouts: &[],
-        immediate_size: 0,
-    });
-    let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+fn create_debug_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    stencil_mode: CompositeLayerStencilMode,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Composite Debug Pipeline"),
-        layout: Some(&debug_pipeline_layout),
+        layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &debug_shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<DebugVertex>() as u64,
@@ -417,7 +522,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &debug_shader,
+            module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -430,22 +535,42 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> Compo
             topology: wgpu::PrimitiveTopology::TriangleList,
             ..Default::default()
         },
-        depth_stencil: None,
+        depth_stencil: Some(composite_layer_depth_stencil_state(stencil_mode)),
         multisample: wgpu::MultisampleState {
-            count: 1,
+            count: sample_count,
             mask: !0,
             alpha_to_coverage_enabled: false,
         },
         multiview_mask: None,
         cache: None,
-    });
+    })
+}
 
-    CompositeLayerResources {
-        pipeline,
-        debug_pipeline,
-        bind_group_layout,
-        sampler,
-        pipeline_format: format,
+fn composite_layer_depth_stencil_state(mode: CompositeLayerStencilMode) -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: false,
+        depth_compare: wgpu::CompareFunction::Always,
+        stencil: match mode {
+            CompositeLayerStencilMode::Disabled => wgpu::StencilState::default(),
+            CompositeLayerStencilMode::Test => wgpu::StencilState {
+                front: wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::Equal,
+                    fail_op: wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op: wgpu::StencilOperation::Keep,
+                },
+                back: wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::Equal,
+                    fail_op: wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op: wgpu::StencilOperation::Keep,
+                },
+                read_mask: 0xFF,
+                write_mask: 0x00,
+            },
+        },
+        bias: wgpu::DepthBiasState::default(),
     }
 }
 
@@ -458,6 +583,27 @@ pub fn clear_composite_layer_resources_cache() {
     let cache = composite_layer_resources_cache();
     let mut cache = cache.lock().unwrap();
     cache.clear();
+}
+
+fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let a_right = ax.saturating_add(aw);
+            let a_bottom = ay.saturating_add(ah);
+            let b_right = bx.saturating_add(bw);
+            let b_bottom = by.saturating_add(bh);
+            let left = ax.max(bx);
+            let top = ay.max(by);
+            let right = a_right.min(b_right);
+            let bottom = a_bottom.min(b_bottom);
+            if right <= left || bottom <= top {
+                return None;
+            }
+            Some([left, top, right - left, bottom - top])
+        }
+    }
 }
 
 fn tessellate_composite_layer(

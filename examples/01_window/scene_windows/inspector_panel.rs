@@ -2,8 +2,8 @@ use crate::rfgui::ui::{Binding, RsxNode, rsx};
 use crate::rfgui::{Layout, Length};
 use crate::rfgui_components::{Button, ButtonVariant, Switch, Theme};
 use crate::state::REQUEST_DUMP_FRAME_GRAPH_DOT;
-use std::sync::atomic::Ordering;
 use rfgui::ui::host::Element;
+use std::sync::atomic::Ordering;
 
 pub struct InspectorPanelBindings {
     pub switch_on: Binding<bool>,
