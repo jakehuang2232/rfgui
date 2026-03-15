@@ -266,6 +266,9 @@ impl OffscreenRenderTargetPool {
                 if entry.frame_busy_epoch == self.frame_epoch {
                     return None;
                 }
+                if self.persistent_bindings.values().any(|&id| id == entry_id) {
+                    return None;
+                }
                 if entry.last_used_epoch <= stale_before {
                     return Some(entry_id);
                 }
@@ -295,7 +298,13 @@ impl OffscreenRenderTargetPool {
     fn pick_lru_evictable(&self) -> Option<u32> {
         self.entries
             .iter()
-            .filter(|(_, entry)| entry.frame_busy_epoch != self.frame_epoch)
+            .filter(|(entry_id, entry)| {
+                entry.frame_busy_epoch != self.frame_epoch
+                    && !self
+                        .persistent_bindings
+                        .values()
+                        .any(|&bound_id| bound_id == **entry_id)
+            })
             .min_by(|a, b| {
                 let (_, a_entry) = a;
                 let (_, b_entry) = b;

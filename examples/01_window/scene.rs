@@ -13,7 +13,10 @@ use crate::scene_windows::render_test::{
 use crate::scene_windows::transition_lab::{
     TransitionLabBindings, TransitionLabValues, build as build_transition_lab_window,
 };
-use crate::state::{DEBUG_GEOMETRY_OVERLAY, DEBUG_RENDER_TIME, THEME_DARK_MODE};
+use crate::state::{
+    DEBUG_GEOMETRY_OVERLAY, DEBUG_RENDER_TIME, DEBUG_REUSE_PATH, ENABLE_LAYER_PROMOTION,
+    THEME_DARK_MODE,
+};
 use crate::window_manager::WindowManager;
 use std::sync::atomic::Ordering;
 
@@ -31,6 +34,8 @@ pub fn MainScene() -> RsxNode {
     let component_test_switch = use_state(|| true);
     let debug_geometry_overlay = use_state(|| false);
     let debug_render_time = use_state(|| false);
+    let debug_reuse_path = use_state(|| false);
+    let enable_layer_promotion = use_state(|| ENABLE_LAYER_PROMOTION.load(Ordering::Relaxed));
     let justify_content = use_state(|| JustifyContent::Start);
     let align = use_state(|| Align::Start);
     let cross_size = use_state(|| CrossSize::Fit);
@@ -54,6 +59,8 @@ pub fn MainScene() -> RsxNode {
     let component_test_switch_value = component_test_switch.get();
     let debug_geometry_overlay_value = debug_geometry_overlay.get();
     let debug_render_time_value = debug_render_time.get();
+    let debug_reuse_path_value = debug_reuse_path.get();
+    let enable_layer_promotion_value = enable_layer_promotion.get();
     let style_transition_enabled_value = style_transition_enabled.get();
     let style_target_alt_value = style_target_alt.get();
     let layout_transition_enabled_value = layout_transition_enabled.get();
@@ -70,6 +77,8 @@ pub fn MainScene() -> RsxNode {
     }
     DEBUG_GEOMETRY_OVERLAY.store(debug_geometry_overlay_value, Ordering::Relaxed);
     DEBUG_RENDER_TIME.store(debug_render_time_value, Ordering::Relaxed);
+    DEBUG_REUSE_PATH.store(debug_reuse_path_value, Ordering::Relaxed);
+    ENABLE_LAYER_PROMOTION.store(enable_layer_promotion_value, Ordering::Relaxed);
     let increment_state = click_count.clone();
     let increment = on_click(move |event| {
         increment_state.update(|value| *value += 1);
@@ -87,6 +96,8 @@ pub fn MainScene() -> RsxNode {
                 switch_on: switch_on.binding(),
                 debug_geometry_overlay: debug_geometry_overlay.binding(),
                 debug_render_time: debug_render_time.binding(),
+                debug_reuse_path: debug_reuse_path.binding(),
+                enable_layer_promotion: enable_layer_promotion.binding(),
             },
         )],
         (

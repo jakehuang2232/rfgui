@@ -119,6 +119,23 @@ pub struct OpaqueRectPass {
 const OPAQUE_RECT_DEPTH_BUCKETS: u32 = 1 << 20;
 
 impl DrawRectPass {
+    fn trace_name(&self) -> &'static str {
+        match self.stencil_mode {
+            RectStencilMode::Increment { .. } => "DrawRectPass::StencilIncrement",
+            RectStencilMode::Decrement { .. } => "DrawRectPass::StencilDecrement",
+            RectStencilMode::Test { .. } => match self.render_mode {
+                RectRenderMode::Combined => "DrawRectPass::StencilTestCombined",
+                RectRenderMode::FillOnly => "DrawRectPass::StencilTestFill",
+                RectRenderMode::BorderOnly => "DrawRectPass::StencilTestBorder",
+            },
+            RectStencilMode::Disabled => match self.render_mode {
+                RectRenderMode::Combined => "DrawRectPass::Combined",
+                RectRenderMode::FillOnly => "DrawRectPass::FillOnly",
+                RectRenderMode::BorderOnly => "DrawRectPass::BorderOnly",
+            },
+        }
+    }
+
     pub(crate) fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput {
         &mut self.input
     }
@@ -563,6 +580,10 @@ impl GraphicsPass for DrawRectPass {
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         encode_draw_rect_into_existing_pass(self, ctx, RectShaderVariant::Alpha);
     }
+
+    fn name(&self) -> &'static str {
+        self.trace_name()
+    }
 }
 
 impl GraphicsPass for OpaqueRectPass {
@@ -593,6 +614,23 @@ impl GraphicsPass for OpaqueRectPass {
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         encode_draw_rect_into_existing_pass(&mut self.inner, ctx, RectShaderVariant::Opaque);
+    }
+
+    fn name(&self) -> &'static str {
+        match self.inner.stencil_mode {
+            RectStencilMode::Increment { .. } => "OpaqueRectPass::StencilIncrement",
+            RectStencilMode::Decrement { .. } => "OpaqueRectPass::StencilDecrement",
+            RectStencilMode::Test { .. } => match self.inner.render_mode {
+                RectRenderMode::Combined => "OpaqueRectPass::StencilTestCombined",
+                RectRenderMode::FillOnly => "OpaqueRectPass::StencilTestFill",
+                RectRenderMode::BorderOnly => "OpaqueRectPass::StencilTestBorder",
+            },
+            RectStencilMode::Disabled => match self.inner.render_mode {
+                RectRenderMode::Combined => "OpaqueRectPass::Combined",
+                RectRenderMode::FillOnly => "OpaqueRectPass::FillOnly",
+                RectRenderMode::BorderOnly => "OpaqueRectPass::BorderOnly",
+            },
+        }
     }
 }
 
