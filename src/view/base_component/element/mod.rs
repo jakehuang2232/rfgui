@@ -20,7 +20,8 @@ use crate::ui::{
     MouseDownEvent, MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent,
 };
 use crate::view::frame_graph::texture_resource::TextureHandle;
-use crate::view::frame_graph::{AttachmentTarget, FrameGraph, TextureDesc};
+use crate::view::frame_graph::{AttachmentTarget, FrameGraph, ResourceLifetime, TextureDesc};
+use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::GraphicsPassContext;
@@ -31,7 +32,9 @@ use crate::view::render_pass::{
 use crate::view::viewport::ViewportControl;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
 include!("event_target.rs");
 include!("layout_trait.rs");
 include!("render_trait.rs");
@@ -176,6 +179,14 @@ fn intersect_rect(a: Rect, b: Rect) -> Rect {
     }
 }
 
+fn hash_f32<H: Hasher>(state: &mut H, value: f32) {
+    value.to_bits().hash(state);
+}
+
+pub(crate) fn promoted_layer_stable_key(node_id: u64) -> u64 {
+    0xC0DE_0000_0000_0000u64 | node_id
+}
+
 #[derive(Clone, Copy, Debug)]
 struct AnchorSnapshot {
     x: f32,
@@ -227,7 +238,7 @@ struct ChildClipScope {
     child_clip_id: u8,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ViewportContext {
     color_target: Option<TextureHandle>,
     depth_stencil_target: Option<AttachmentTarget>,
@@ -235,6 +246,8 @@ pub struct ViewportContext {
     target_height: u32,
     target_format: wgpu::TextureFormat,
     scale_factor: f32,
+    promoted_node_ids: Arc<std::collections::HashSet<u64>>,
+    promoted_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
 }
 
 #[derive(Clone)]
@@ -246,6 +259,33 @@ pub struct BuildState {
     clip_id_stack: Vec<u8>,
     deferred_node_ids: Vec<u64>,
     dfs_opaque_rect_order: u32,
+}
+
+impl BuildState {
+    pub(crate) fn current_target(&self) -> Option<RenderTargetOut> {
+        self.target
+    }
+
+    pub(crate) fn for_layer_subtree() -> Self {
+        Self {
+            target: None,
+            depth_stencil_target: Some(AttachmentTarget::Surface),
+            target_pairs: HashMap::new(),
+            scissor_rect: None,
+            clip_id_stack: Vec::new(),
+            deferred_node_ids: Vec::new(),
+            dfs_opaque_rect_order: 0,
+        }
+    }
+
+    pub(crate) fn merge_child_side_effects(&mut self, child: &BuildState) {
+        self.dfs_opaque_rect_order = self.dfs_opaque_rect_order.max(child.dfs_opaque_rect_order);
+        for node_id in &child.deferred_node_ids {
+            if !self.deferred_node_ids.contains(node_id) {
+                self.deferred_node_ids.push(*node_id);
+            }
+        }
+    }
 }
 
 pub struct UiBuildContext {
@@ -268,6 +308,8 @@ impl UiBuildContext {
                 target_height: viewport_height.max(1),
                 target_format: viewport_format,
                 scale_factor: scale_factor.max(0.0001),
+                promoted_node_ids: Arc::new(std::collections::HashSet::new()),
+                promoted_update_kinds: Arc::new(HashMap::new()),
             },
             state: BuildState {
                 target: None,
@@ -286,7 +328,7 @@ impl UiBuildContext {
     }
 
     pub fn viewport(&self) -> ViewportContext {
-        self.viewport
+        self.viewport.clone()
     }
 
     pub fn set_state(&mut self, state: BuildState) {
@@ -303,6 +345,14 @@ impl UiBuildContext {
 
     pub fn allocate_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
         self.next_target(graph)
+    }
+
+    pub(crate) fn allocate_promoted_layer_target(
+        &mut self,
+        graph: &mut FrameGraph,
+        node_id: u64,
+    ) -> RenderTargetOut {
+        self.next_persistent_target(graph, promoted_layer_stable_key(node_id))
     }
 
     pub fn set_current_target(&mut self, target: RenderTargetOut) {
@@ -324,6 +374,38 @@ impl UiBuildContext {
             self.viewport.target_format,
             wgpu::TextureDimension::D2,
         ));
+        let depth_stencil = graph.declare_texture::<RenderTargetTag>(
+            TextureDesc::new(
+                self.viewport.target_width,
+                self.viewport.target_height,
+                wgpu::TextureFormat::Depth24PlusStencil8,
+                wgpu::TextureDimension::D2,
+            )
+            .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT),
+        );
+        if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
+            self.state
+                .target_pairs
+                .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
+        }
+        color
+    }
+
+    fn next_persistent_target(
+        &mut self,
+        graph: &mut FrameGraph,
+        stable_key: u64,
+    ) -> RenderTargetOut {
+        let color = graph.declare_texture_internal::<RenderTargetTag>(
+            TextureDesc::new(
+                self.viewport.target_width,
+                self.viewport.target_height,
+                self.viewport.target_format,
+                wgpu::TextureDimension::D2,
+            ),
+            ResourceLifetime::Persistent,
+            Some(stable_key),
+        );
         let depth_stencil = graph.declare_texture::<RenderTargetTag>(
             TextureDesc::new(
                 self.viewport.target_width,
@@ -409,6 +491,27 @@ impl UiBuildContext {
             stencil_clip_id: self.active_clip_id(),
             depth_stencil_target: self.depth_stencil_target(),
         }
+    }
+
+    pub(crate) fn set_promoted_runtime(
+        &mut self,
+        promoted_node_ids: Arc<std::collections::HashSet<u64>>,
+        promoted_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
+    ) {
+        self.viewport.promoted_node_ids = promoted_node_ids;
+        self.viewport.promoted_update_kinds = promoted_update_kinds;
+    }
+
+    pub(crate) fn is_node_promoted(&self, node_id: u64) -> bool {
+        self.viewport.promoted_node_ids.contains(&node_id)
+    }
+
+    pub(crate) fn promoted_update_kind(&self, node_id: u64) -> Option<PromotedLayerUpdateKind> {
+        self.viewport.promoted_update_kinds.get(&node_id).copied()
+    }
+
+    pub(crate) fn merge_child_state_side_effects(&mut self, child: &BuildState) {
+        self.state.merge_child_side_effects(child);
     }
 }
 
@@ -582,6 +685,14 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
 
     fn hit_test_visible_at(&self, _viewport_x: f32, _viewport_y: f32) -> bool {
         true
+    }
+
+    fn promotion_node_info(&self) -> PromotionNodeInfo {
+        PromotionNodeInfo::default()
+    }
+
+    fn promotion_self_signature(&self) -> u64 {
+        0
     }
 }
 
@@ -758,6 +869,110 @@ impl ElementTrait for Element {
     fn hit_test_visible_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
         self.hit_test_clip_rect
             .map_or(true, |rect| rect.contains(viewport_x, viewport_y))
+    }
+
+    fn promotion_node_info(&self) -> PromotionNodeInfo {
+        let border_width_sum = self.border_widths.left
+            + self.border_widths.right
+            + self.border_widths.top
+            + self.border_widths.bottom;
+        PromotionNodeInfo {
+            estimated_pass_count: (1
+                + usize::from(border_width_sum > 0.0)
+                + (self.box_shadows.len() * 3))
+                .min(u16::MAX as usize) as u16,
+            opacity: self.opacity,
+            has_rounded_clip: self.border_radius > 0.0,
+            has_box_shadow: !self.box_shadows.is_empty(),
+            has_border: border_width_sum > 0.0,
+            is_scroll_container: self.scroll_direction != ScrollDirection::None,
+            is_hovered: self.is_hovered,
+        }
+    }
+
+    fn promotion_self_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.core.should_render.hash(&mut hasher);
+        hash_f32(&mut hasher, self.core.layout_position.x);
+        hash_f32(&mut hasher, self.core.layout_position.y);
+        hash_f32(&mut hasher, self.core.layout_size.width.max(0.0));
+        hash_f32(&mut hasher, self.core.layout_size.height.max(0.0));
+        hash_f32(&mut hasher, self.layout_inner_size.width.max(0.0));
+        hash_f32(&mut hasher, self.layout_inner_size.height.max(0.0));
+        hash_f32(&mut hasher, self.padding.left);
+        hash_f32(&mut hasher, self.padding.right);
+        hash_f32(&mut hasher, self.padding.top);
+        hash_f32(&mut hasher, self.padding.bottom);
+        match self.scroll_direction {
+            ScrollDirection::None => 0_u8,
+            ScrollDirection::Vertical => 1_u8,
+            ScrollDirection::Horizontal => 2_u8,
+            ScrollDirection::Both => 3_u8,
+        }
+        .hash(&mut hasher);
+        hash_f32(&mut hasher, self.scroll_offset.x);
+        hash_f32(&mut hasher, self.scroll_offset.y);
+        hash_f32(&mut hasher, self.content_size.width.max(0.0));
+        hash_f32(&mut hasher, self.content_size.height.max(0.0));
+        hash_f32(&mut hasher, self.opacity);
+        self.background_color
+            .as_ref()
+            .to_rgba_u8()
+            .hash(&mut hasher);
+        self.border_colors
+            .top
+            .as_ref()
+            .to_rgba_u8()
+            .hash(&mut hasher);
+        self.border_colors
+            .right
+            .as_ref()
+            .to_rgba_u8()
+            .hash(&mut hasher);
+        self.border_colors
+            .bottom
+            .as_ref()
+            .to_rgba_u8()
+            .hash(&mut hasher);
+        self.border_colors
+            .left
+            .as_ref()
+            .to_rgba_u8()
+            .hash(&mut hasher);
+        hash_f32(&mut hasher, self.border_widths.left);
+        hash_f32(&mut hasher, self.border_widths.right);
+        hash_f32(&mut hasher, self.border_widths.top);
+        hash_f32(&mut hasher, self.border_widths.bottom);
+        hash_f32(&mut hasher, self.border_radii.top_left);
+        hash_f32(&mut hasher, self.border_radii.top_right);
+        hash_f32(&mut hasher, self.border_radii.bottom_right);
+        hash_f32(&mut hasher, self.border_radii.bottom_left);
+        for shadow in &self.box_shadows {
+            shadow.color.to_rgba_u8().hash(&mut hasher);
+            hash_f32(&mut hasher, shadow.offset_x);
+            hash_f32(&mut hasher, shadow.offset_y);
+            hash_f32(&mut hasher, shadow.blur);
+            hash_f32(&mut hasher, shadow.spread);
+        }
+        let scrollbar_alpha =
+            (self.scrollbar_visibility_alpha().clamp(0.0, 1.0) * 255.0).round() as u16;
+        scrollbar_alpha.hash(&mut hasher);
+        let scrollbar_geometry = self.scrollbar_geometry(0.0, 0.0);
+        for rect in [
+            scrollbar_geometry.vertical_track,
+            scrollbar_geometry.vertical_thumb,
+            scrollbar_geometry.horizontal_track,
+            scrollbar_geometry.horizontal_thumb,
+        ] {
+            rect.is_some().hash(&mut hasher);
+            if let Some(rect) = rect {
+                hash_f32(&mut hasher, rect.width.max(0.0));
+                hash_f32(&mut hasher, rect.height.max(0.0));
+                hash_f32(&mut hasher, rect.x.max(0.0));
+                hash_f32(&mut hasher, rect.y.max(0.0));
+            }
+        }
+        hasher.finish()
     }
 
     fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {

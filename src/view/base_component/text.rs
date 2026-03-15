@@ -8,11 +8,14 @@ use crate::view::render_pass::text_pass::{TextInput, TextOutput};
 use crate::{ColorLike, Cursor, HexColor, Style, TextAlign};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, Layoutable, Position,
     Renderable, Size, UiBuildContext,
 };
+use crate::view::promotion::PromotionNodeInfo;
 
 pub struct Text {
     element: Element,
@@ -369,6 +372,33 @@ impl ElementTrait for Text {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    fn promotion_node_info(&self) -> PromotionNodeInfo {
+        PromotionNodeInfo {
+            estimated_pass_count: 1,
+            opacity: self.opacity,
+            ..Default::default()
+        }
+    }
+
+    fn promotion_self_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.should_render.hash(&mut hasher);
+        self.layout_position.x.to_bits().hash(&mut hasher);
+        self.layout_position.y.to_bits().hash(&mut hasher);
+        self.content.hash(&mut hasher);
+        self.color.to_rgba_u8().hash(&mut hasher);
+        self.font_families.hash(&mut hasher);
+        self.font_size.to_bits().hash(&mut hasher);
+        self.line_height.to_bits().hash(&mut hasher);
+        self.font_weight.hash(&mut hasher);
+        std::mem::discriminant(&self.align).hash(&mut hasher);
+        self.opacity.to_bits().hash(&mut hasher);
+        self.allow_wrap.hash(&mut hasher);
+        self.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
+        self.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
+        hasher.finish()
     }
 }
 

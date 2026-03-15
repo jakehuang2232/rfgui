@@ -7,9 +7,12 @@ use crate::{ColorLike, Cursor as UiCursor, HexColor, Style};
 use glyphon::cosmic_text::{Affinity, Align, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::ui::Binding;
+use crate::view::promotion::PromotionNodeInfo;
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, LayoutConstraints,
@@ -1523,6 +1526,41 @@ impl ElementTrait for TextArea {
         };
         self.apply_cursor_snapshot(*snapshot);
         true
+    }
+
+    fn promotion_node_info(&self) -> PromotionNodeInfo {
+        PromotionNodeInfo {
+            estimated_pass_count: 3,
+            opacity: self.opacity,
+            ..Default::default()
+        }
+    }
+
+    fn promotion_self_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.should_render.hash(&mut hasher);
+        self.layout_position.x.to_bits().hash(&mut hasher);
+        self.layout_position.y.to_bits().hash(&mut hasher);
+        self.content.hash(&mut hasher);
+        self.placeholder.hash(&mut hasher);
+        self.color.to_rgba_u8().hash(&mut hasher);
+        self.placeholder_color.to_rgba_u8().hash(&mut hasher);
+        self.font_families.hash(&mut hasher);
+        self.font_size.to_bits().hash(&mut hasher);
+        self.line_height.to_bits().hash(&mut hasher);
+        self.opacity.to_bits().hash(&mut hasher);
+        self.multiline.hash(&mut hasher);
+        self.read_only.hash(&mut hasher);
+        self.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
+        self.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
+        self.scroll_y.to_bits().hash(&mut hasher);
+        self.cursor_char.hash(&mut hasher);
+        self.selection_anchor_char.hash(&mut hasher);
+        self.selection_focus_char.hash(&mut hasher);
+        self.ime_preedit.hash(&mut hasher);
+        self.ime_preedit_cursor.hash(&mut hasher);
+        self.should_draw_caret().hash(&mut hasher);
+        hasher.finish()
     }
 }
 

@@ -285,9 +285,7 @@ impl Parse for ElementNode {
 }
 
 fn can_recover_incomplete_prop(input: ParseStream) -> bool {
-    input.peek(Token![>])
-        || (input.peek(Token![/]) && input.peek2(Token![>]))
-        || input.peek(Ident)
+    input.peek(Token![>]) || (input.peek(Token![/]) && input.peek2(Token![>])) || input.peek(Ident)
 }
 
 fn parse_prop_value_expr(key: &Ident, input: ParseStream) -> Result<PropValueExpr> {
@@ -1032,24 +1030,29 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 }
             })
         }),
-        "font_weight" => expr_style_tokens("style.font_weight requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_font_weight(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::FontWeight,
-                        #inner,
-                    );
-                }
+        "font_weight" => {
+            expr_style_tokens("style.font_weight requires an expression value", |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        ::rfgui::insert_style_font_weight(
+                            &mut __rsx_style,
+                            ::rfgui::PropertyId::FontWeight,
+                            #inner,
+                        );
+                    }
+                })
             })
-        }),
-        "border_radius" => expr_style_tokens("style.border_radius requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.set_border_radius(::rfgui::IntoBorderRadius::into_border_radius(#inner));
-                }
-            })
-        }),
+        }
+        "border_radius" => expr_style_tokens(
+            "style.border_radius requires an expression value",
+            |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        __rsx_style.set_border_radius(::rfgui::IntoBorderRadius::into_border_radius(#inner));
+                    }
+                })
+            },
+        ),
         "opacity" => expr_style_tokens("style.opacity requires an expression value", |value| {
             expand_maybe_none_style_expr(value, |inner| {
                 quote! {
@@ -1060,26 +1063,30 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 }
             })
         }),
-        "box_shadow" => expr_style_tokens("style.box_shadow requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::BoxShadow,
-                        ::rfgui::ParsedValue::BoxShadow(#inner),
-                    );
-                }
+        "box_shadow" => {
+            expr_style_tokens("style.box_shadow requires an expression value", |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        __rsx_style.insert(
+                            ::rfgui::PropertyId::BoxShadow,
+                            ::rfgui::ParsedValue::BoxShadow(#inner),
+                        );
+                    }
+                })
             })
-        }),
-        "transition" => expr_style_tokens("style.transition requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::Transition,
-                        ::rfgui::ParsedValue::Transition((#inner).into()),
-                    );
-                }
+        }
+        "transition" => {
+            expr_style_tokens("style.transition requires an expression value", |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        __rsx_style.insert(
+                            ::rfgui::PropertyId::Transition,
+                            ::rfgui::ParsedValue::Transition((#inner).into()),
+                        );
+                    }
+                })
             })
-        }),
+        }
         "padding" => expr_style_tokens("style.padding requires an expression value", |value| {
             expand_maybe_none_style_expr(value, |inner| quote! { __rsx_style.set_padding(#inner); })
         }),
@@ -1137,28 +1144,32 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 }
             })
         }),
-        "min_height" => expr_style_tokens("style.min_height requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_length(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::MinHeight,
-                        #inner,
-                    );
-                }
+        "min_height" => {
+            expr_style_tokens("style.min_height requires an expression value", |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        ::rfgui::insert_style_length(
+                            &mut __rsx_style,
+                            ::rfgui::PropertyId::MinHeight,
+                            #inner,
+                        );
+                    }
+                })
             })
-        }),
-        "max_height" => expr_style_tokens("style.max_height requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_length(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::MaxHeight,
-                        #inner,
-                    );
-                }
+        }
+        "max_height" => {
+            expr_style_tokens("style.max_height requires an expression value", |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        ::rfgui::insert_style_length(
+                            &mut __rsx_style,
+                            ::rfgui::PropertyId::MaxHeight,
+                            #inner,
+                        );
+                    }
+                })
             })
-        }),
+        }
         "layout" => expr_style_tokens("style.layout requires an expression value", |value| {
             expand_maybe_none_style_expr(value, |inner| {
                 quote! {
@@ -1169,16 +1180,18 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 }
             })
         }),
-        "cross_size" => expr_style_tokens("style.cross_size requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::CrossSize,
-                        ::rfgui::ParsedValue::CrossSize(#inner),
-                    );
-                }
+        "cross_size" => {
+            expr_style_tokens("style.cross_size requires an expression value", |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        __rsx_style.insert(
+                            ::rfgui::PropertyId::CrossSize,
+                            ::rfgui::ParsedValue::CrossSize(#inner),
+                        );
+                    }
+                })
             })
-        }),
+        }
         "align" => expr_style_tokens("style.align requires an expression value", |value| {
             expand_maybe_none_style_expr(value, |inner| {
                 quote! {
@@ -1200,16 +1213,19 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 }
             })
         }),
-        "scroll_direction" => expr_style_tokens("style.scroll_direction requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::ScrollDirection,
-                        ::rfgui::ParsedValue::ScrollDirection(#inner),
-                    );
-                }
-            })
-        }),
+        "scroll_direction" => expr_style_tokens(
+            "style.scroll_direction requires an expression value",
+            |value| {
+                expand_maybe_none_style_expr(value, |inner| {
+                    quote! {
+                        __rsx_style.insert(
+                            ::rfgui::PropertyId::ScrollDirection,
+                            ::rfgui::ParsedValue::ScrollDirection(#inner),
+                        );
+                    }
+                })
+            },
+        ),
         "cursor" => expr_style_tokens("style.cursor requires an expression value", |value| {
             expand_maybe_none_style_expr(value, |inner| {
                 quote! {
@@ -1680,9 +1696,8 @@ mod tests {
 
     #[test]
     fn recovers_incomplete_prop_before_next_prop() {
-        let parsed =
-            syn::parse_str::<MultipleNodes>(r#"<Element s other="x" />"#)
-                .expect("rsx should recover incomplete prop");
+        let parsed = syn::parse_str::<MultipleNodes>(r#"<Element s other="x" />"#)
+            .expect("rsx should recover incomplete prop");
 
         let node = match &parsed.nodes[0] {
             super::Child::Element(node) => node,
@@ -1745,10 +1760,8 @@ mod tests {
 
     #[test]
     fn recovers_missing_tag_end_and_keeps_following_sibling() {
-        let parsed = syn::parse_str::<MultipleNodes>(
-            r#"<Element foo={bar}</Element><Label />"#,
-        )
-        .expect("rsx should recover missing `>` before closing tag");
+        let parsed = syn::parse_str::<MultipleNodes>(r#"<Element foo={bar}</Element><Label />"#)
+            .expect("rsx should recover missing `>` before closing tag");
 
         assert_eq!(parsed.nodes.len(), 2);
 
@@ -1781,13 +1794,12 @@ mod tests {
             super::Child::Element(node) => node,
             _ => panic!("expected first node to be element"),
         };
-        assert!(matches!(
-            first.props[0].value,
-            PropValueExpr::Invalid(_)
-        ));
+        assert!(matches!(first.props[0].value, PropValueExpr::Invalid(_)));
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
-        assert!(expanded.contains("invalid Rust expression for prop `on_mouse_down` inside `{...}`"));
+        assert!(
+            expanded.contains("invalid Rust expression for prop `on_mouse_down` inside `{...}`")
+        );
 
         match &parsed.nodes[1] {
             super::Child::Element(node) => {
