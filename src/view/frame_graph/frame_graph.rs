@@ -2908,7 +2908,10 @@ fn estimate_compatible_run_length(
 }
 
 fn is_rect_pass_name(name: &str) -> bool {
-    name == std::any::type_name::<DrawRectPass>() || name == std::any::type_name::<OpaqueRectPass>()
+    name == std::any::type_name::<DrawRectPass>()
+        || name == std::any::type_name::<OpaqueRectPass>()
+        || name.starts_with("DrawRectPass::")
+        || name.starts_with("OpaqueRectPass::")
 }
 
 fn is_mergeable_graphics_pass(descriptor: &PassDescriptor) -> bool {

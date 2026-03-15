@@ -170,6 +170,9 @@ pub trait GraphicsPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>);
     fn prepare(&mut self, _ctx: &mut PrepareContext<'_, '_>) {}
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>);
+    fn name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 pub trait ComputePass {
@@ -224,7 +227,7 @@ impl<P: GraphicsPass + 'static> PassNodeDyn for GraphicsPassWrapper<P> {
     }
 
     fn name(&self) -> &'static str {
-        std::any::type_name::<P>()
+        self.pass.name()
     }
 }
 

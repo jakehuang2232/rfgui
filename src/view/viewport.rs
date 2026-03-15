@@ -17,18 +17,19 @@ use crate::ui::{
 use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
 use crate::view::promotion::{
-    PromotedLayerUpdate, PromotionDecision, PromotionState, ViewportPromotionConfig,
-    active_channels_by_node, evaluate_promotion,
+    PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionDecision, PromotionState,
+    ViewportPromotionConfig, active_channels_by_node, evaluate_promotion,
 };
 use crate::view::promotion_builder::{
     collect_promoted_layer_updates, collect_promotion_candidates,
 };
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
+use crate::view::base_component::Renderable;
 use crate::{ColorLike, Cursor, HexColor, Style};
 use arboard::Clipboard;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use wgpu::util::StagingBelt;
 use wgpu::{
@@ -155,6 +156,38 @@ fn format_trace_render_tree(root: &TraceRenderNode) -> String {
     output.trim_end().to_string()
 }
 
+fn build_execute_detail_trace_nodes(
+    ordered_passes: Vec<(String, f64, usize)>,
+) -> Vec<TraceRenderNode> {
+    let mut out = Vec::new();
+    let mut grouped_indices: HashMap<String, usize> = HashMap::new();
+
+    for (name, elapsed_ms, count) in ordered_passes {
+        if let Some((group, detail)) = name.split_once("::") {
+            let index = if let Some(index) = grouped_indices.get(group).copied() {
+                index
+            } else {
+                let index = out.len();
+                out.push(TraceRenderNode::with_children(group, 0.0, Vec::new()));
+                grouped_indices.insert(group.to_string(), index);
+                index
+            };
+            out[index].elapsed_ms += elapsed_ms;
+            out[index].children.push(TraceRenderNode::new(
+                format!("{detail} (count={count})"),
+                elapsed_ms,
+            ));
+        } else {
+            out.push(TraceRenderNode::new(
+                format!("{name} (count={count})"),
+                elapsed_ms,
+            ));
+        }
+    }
+
+    out
+}
+
 fn format_promotion_trace(
     decisions: &[PromotionDecision],
     updates: &[PromotedLayerUpdate],
@@ -192,6 +225,188 @@ fn format_promotion_trace(
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DebugReusePathContext {
+    Root,
+    Child,
+    Deferred,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DebugReusePathRecord {
+    pub node_id: u64,
+    pub context: DebugReusePathContext,
+    pub requested: PromotedLayerUpdateKind,
+    pub can_reuse: bool,
+    pub actual: PromotedLayerUpdateKind,
+    pub reason: Option<&'static str>,
+    pub clip_rect: Option<[u32; 4]>,
+}
+
+fn debug_reuse_path_store() -> &'static Mutex<Vec<DebugReusePathRecord>> {
+    static STORE: OnceLock<Mutex<Vec<DebugReusePathRecord>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn begin_debug_reuse_path_frame() {
+    debug_reuse_path_store().lock().unwrap().clear();
+}
+
+pub(crate) fn record_debug_reuse_path(record: DebugReusePathRecord) {
+    debug_reuse_path_store().lock().unwrap().push(record);
+}
+
+fn snapshot_debug_reuse_path() -> Vec<DebugReusePathRecord> {
+    debug_reuse_path_store().lock().unwrap().clone()
+}
+
+fn format_reuse_path_trace() -> String {
+    let mut records = snapshot_debug_reuse_path();
+    if records.is_empty() {
+        return "[reuse-path]\n  no promoted path activity".to_string();
+    }
+
+    records.sort_by_key(|record| (record.node_id, record.context as u8));
+    let requested_reuse = records
+        .iter()
+        .filter(|record| matches!(record.requested, PromotedLayerUpdateKind::Reuse))
+        .count();
+    let actual_reuse = records
+        .iter()
+        .filter(|record| matches!(record.actual, PromotedLayerUpdateKind::Reuse))
+        .count();
+    let fallback_to_reraster = records
+        .iter()
+        .filter(|record| {
+            matches!(record.requested, PromotedLayerUpdateKind::Reuse)
+                && matches!(record.actual, PromotedLayerUpdateKind::Reraster)
+        })
+        .count();
+
+    let mut lines = vec![
+        "[reuse-path]".to_string(),
+        format!(
+            "  summary: nodes={} requested_reuse={} actual_reuse={} fallback_to_reraster={}",
+            records.len(),
+            requested_reuse,
+            actual_reuse,
+            fallback_to_reraster
+        ),
+    ];
+
+    for record in records {
+        let context = match record.context {
+            DebugReusePathContext::Root => "root",
+            DebugReusePathContext::Child => "child",
+            DebugReusePathContext::Deferred => "deferred",
+        };
+        let requested = match record.requested {
+            PromotedLayerUpdateKind::Reuse => "reuse",
+            PromotedLayerUpdateKind::Reraster => "reraster",
+        };
+        let actual = match record.actual {
+            PromotedLayerUpdateKind::Reuse => "reuse",
+            PromotedLayerUpdateKind::Reraster => "reraster",
+        };
+        let reason = match record.reason {
+            Some("absolute-viewport-clip-inline") => "absolute-viewport-clip-inline",
+            Some("absolute-anchor-clip-inline") => "absolute-anchor-clip-inline",
+            Some("child-scissor-clip-inline") => "child-scissor-clip-inline",
+            Some("child-stencil-clip-inline") => "child-stencil-clip-inline",
+            Some(other) => other,
+            None => "-",
+        };
+        let clip_rect = record
+            .clip_rect
+            .map(|[x, y, w, h]| format!(" clip=[{x},{y},{w},{h}]"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "  - node={} context={} requested={} can_reuse={} actual={} reason={}{}",
+            record.node_id,
+            context,
+            requested,
+            record.can_reuse,
+            actual,
+            reason,
+            clip_rect,
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn append_overlay_line_quad(
+    vertices: &mut Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+    indices: &mut Vec<u32>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    thickness_px: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 0.001 {
+        return;
+    }
+    let nx = -dy / len;
+    let ny = dx / len;
+    let half = thickness_px * 0.5;
+    let corners = [
+        [p0[0] + nx * half, p0[1] + ny * half],
+        [p1[0] + nx * half, p1[1] + ny * half],
+        [p1[0] - nx * half, p1[1] - ny * half],
+        [p0[0] - nx * half, p0[1] - ny * half],
+    ];
+    let base = vertices.len() as u32;
+    for [x, y] in corners {
+        let clip_x = (x / screen_w) * 2.0 - 1.0;
+        let clip_y = 1.0 - (y / screen_h) * 2.0;
+        vertices.push(super::render_pass::debug_overlay_pass::DebugOverlayVertex {
+            position: [clip_x, clip_y],
+            color,
+        });
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn build_reuse_overlay_geometry(
+    snapshot: &super::base_component::BoxModelSnapshot,
+    screen_w: f32,
+    screen_h: f32,
+    color: [f32; 4],
+) -> (
+    Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+    Vec<u32>,
+) {
+    let left = snapshot.x;
+    let top = snapshot.y;
+    let right = snapshot.x + snapshot.width.max(0.0);
+    let bottom = snapshot.y + snapshot.height.max(0.0);
+    if right <= left || bottom <= top {
+        return (Vec::new(), Vec::new());
+    }
+
+    let corners = [[left, top], [right, top], [right, bottom], [left, bottom]];
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for (u, v) in [(0_usize, 1_usize), (1, 2), (2, 3), (3, 0)] {
+        append_overlay_line_quad(
+            &mut vertices,
+            &mut indices,
+            corners[u],
+            corners[v],
+            2.0,
+            color,
+            screen_w,
+            screen_h,
+        );
+    }
+    (vertices, indices)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
@@ -206,6 +421,7 @@ pub enum MouseButton {
 pub struct ViewportDebugOptions {
     pub trace_fps: bool,
     pub trace_render_time: bool,
+    pub trace_reuse_path: bool,
     pub geometry_overlay: bool,
 }
 
@@ -214,6 +430,7 @@ impl ViewportDebugOptions {
         Self {
             trace_fps: std::env::var("RFGUI_TRACE_FPS").is_ok(),
             trace_render_time: std::env::var("RFGUI_TRACE_RENDER_TIME").is_ok(),
+            trace_reuse_path: std::env::var("RFGUI_TRACE_REUSE_PATH").is_ok(),
             geometry_overlay: std::env::var("RFGUI_DEBUG_GEOMETRY_OVERLAY").is_ok(),
         }
     }
@@ -326,6 +543,10 @@ impl<'a> ViewportControl<'a> {
         self.viewport.set_debug_trace_render_time(enabled);
     }
 
+    pub fn set_debug_trace_reuse_path(&mut self, enabled: bool) {
+        self.viewport.set_debug_trace_reuse_path(enabled);
+    }
+
     pub fn set_debug_options(&mut self, options: ViewportDebugOptions) {
         self.viewport.set_debug_options(options);
     }
@@ -415,6 +636,7 @@ pub struct Viewport {
     promotion_config: ViewportPromotionConfig,
     promoted_layer_updates: Vec<PromotedLayerUpdate>,
     promoted_base_signatures: HashMap<u64, u64>,
+    promoted_reuse_cooldown_frames: u8,
     input_state: InputState,
     clipboard: Option<Clipboard>,
     clipboard_fallback: Option<String>,
@@ -451,10 +673,12 @@ struct FrameBufferEntry {
 
 impl Viewport {
     const DEFAULT_MSAA_SAMPLE_COUNT: u32 = 4;
+    const PROMOTED_REUSE_COOLDOWN_FRAMES: u8 = 2;
 
     fn invalidate_promoted_layer_reuse(&mut self) {
         self.promoted_base_signatures.clear();
         self.promoted_layer_updates.clear();
+        self.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
     }
 
     fn normalize_msaa_sample_count(sample_count: u32) -> u32 {
@@ -1060,11 +1284,18 @@ impl Viewport {
             (self.logical_width, self.logical_height),
             self.promotion_config,
         );
-        let (updates, next_signatures) = collect_promoted_layer_updates(
+        let (mut updates, next_signatures) = collect_promoted_layer_updates(
             roots,
             &self.promotion_state.promoted_node_ids,
             &self.promoted_base_signatures,
         );
+        if self.promoted_reuse_cooldown_frames > 0 {
+            for update in &mut updates {
+                update.kind = PromotedLayerUpdateKind::Reraster;
+            }
+            self.promoted_reuse_cooldown_frames =
+                self.promoted_reuse_cooldown_frames.saturating_sub(1);
+        }
         self.promoted_layer_updates = updates;
         self.promoted_base_signatures = next_signatures;
     }
@@ -1161,6 +1392,7 @@ impl Viewport {
             promotion_config: ViewportPromotionConfig::default(),
             promoted_layer_updates: Vec::new(),
             promoted_base_signatures: HashMap::new(),
+            promoted_reuse_cooldown_frames: 0,
             input_state: InputState::default(),
             clipboard: Clipboard::new().ok(),
             clipboard_fallback: None,
@@ -1254,8 +1486,20 @@ impl Viewport {
         self.debug_options.trace_render_time = enabled;
     }
 
+    pub fn debug_trace_reuse_path(&self) -> bool {
+        self.debug_options.trace_reuse_path
+    }
+
+    pub fn set_debug_trace_reuse_path(&mut self, enabled: bool) {
+        self.debug_options.trace_reuse_path = enabled;
+    }
+
     pub fn debug_geometry_overlay(&self) -> bool {
         self.debug_options.geometry_overlay
+    }
+
+    pub fn debug_overlay_enabled(&self) -> bool {
+        self.debug_options.geometry_overlay || self.debug_options.trace_reuse_path
     }
 
     pub fn set_debug_geometry_overlay(&mut self, enabled: bool) {
@@ -1291,6 +1535,53 @@ impl Viewport {
             std::mem::take(&mut self.debug_overlay_vertices),
             std::mem::take(&mut self.debug_overlay_indices),
         )
+    }
+
+    fn push_debug_reuse_overlay_geometry(&mut self) {
+        if !self.debug_options.trace_reuse_path {
+            return;
+        }
+        let screen_w = self.surface_config.width.max(1) as f32;
+        let screen_h = self.surface_config.height.max(1) as f32;
+        let snapshots_by_id = self
+            .frame_box_models
+            .iter()
+            .map(|snapshot| (snapshot.node_id, *snapshot))
+            .collect::<HashMap<_, _>>();
+        let mut overlay_batches = Vec::new();
+        for record in snapshot_debug_reuse_path() {
+            let Some(snapshot) = snapshots_by_id.get(&record.node_id).copied() else {
+                continue;
+            };
+            if !snapshot.should_render {
+                continue;
+            }
+            let color = match (record.actual, record.reason) {
+                (PromotedLayerUpdateKind::Reuse, _) => [0.15, 0.95, 0.35, 0.95],
+                (PromotedLayerUpdateKind::Reraster, Some("child-scissor-clip-inline")) => {
+                    [1.0, 0.9, 0.15, 0.95]
+                }
+                (PromotedLayerUpdateKind::Reraster, Some("child-stencil-clip-inline")) => {
+                    [1.0, 0.55, 0.15, 0.95]
+                }
+                (
+                    PromotedLayerUpdateKind::Reraster,
+                    Some("absolute-viewport-clip-inline" | "absolute-anchor-clip-inline"),
+                ) => [1.0, 0.2, 0.2, 0.95],
+                (PromotedLayerUpdateKind::Reraster, Some(reason))
+                    if reason.ends_with("-inline") =>
+                {
+                    [1.0, 0.8, 0.35, 0.95]
+                }
+                (PromotedLayerUpdateKind::Reraster, _) => [1.0, 0.45, 0.1, 0.95],
+            };
+            let (vertices, indices) =
+                build_reuse_overlay_geometry(&snapshot, screen_w, screen_h, color);
+            overlay_batches.push((vertices, indices));
+        }
+        for (vertices, indices) in overlay_batches {
+            self.push_debug_overlay_geometry(&vertices, &indices);
+        }
     }
 
     pub async fn set_window(&mut self, window: Window) {
@@ -1584,6 +1875,7 @@ impl Viewport {
         now_seconds: f64,
     ) -> bool {
         let frame_start = Instant::now();
+        begin_debug_reuse_path_frame();
         let begin_frame_profile = match self.begin_frame() {
             Some(profile) => profile,
             None => {
@@ -1723,24 +2015,86 @@ impl Viewport {
         ctx.set_current_target(output);
         for root in roots.iter_mut() {
             if ctx.is_node_promoted(root.id()) {
-                let update_kind = ctx
-                    .promoted_update_kind(root.id())
-                    .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
-                let can_reuse =
-                    matches!(
-                        update_kind,
-                        crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                    ) && super::base_component::can_reuse_promoted_subtree(root.as_ref(), &ctx);
+                let root_id = root.id();
+                let requested_update = ctx
+                    .promoted_update_kind(root_id)
+                    .unwrap_or(PromotedLayerUpdateKind::Reraster);
+                if let Some(element) = root
+                    .as_any_mut()
+                    .downcast_mut::<super::base_component::Element>()
+                {
+                    if let Some(reason) = element.inline_promotion_rendering_reason() {
+                        record_debug_reuse_path(DebugReusePathRecord {
+                            node_id: root_id,
+                            context: DebugReusePathContext::Root,
+                            requested: requested_update,
+                            can_reuse: false,
+                            actual: PromotedLayerUpdateKind::Reraster,
+                            reason: Some(reason),
+                            clip_rect: element.absolute_clip_scissor_rect(),
+                        });
+                        let next_state = element.build(
+                            &mut graph,
+                            super::base_component::UiBuildContext::from_parts(
+                                ctx.viewport(),
+                                ctx.state_clone(),
+                            ),
+                        );
+                        ctx.set_state(next_state);
+                        continue;
+                    }
+                }
+                let update_kind = requested_update;
+                let can_reuse_subtree =
+                    super::base_component::can_reuse_promoted_subtree(root.as_ref(), &ctx);
+                let can_reuse = matches!(
+                    update_kind,
+                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                ) && can_reuse_subtree;
                 let mut root_ctx = super::base_component::UiBuildContext::from_parts(
                     ctx.viewport(),
-                    super::base_component::BuildState::for_layer_subtree(),
+                    super::base_component::BuildState::for_layer_subtree_with_ancestor_clip(
+                        ctx.ancestor_clip_context(),
+                    ),
                 );
-                let layer_target = root_ctx.allocate_promoted_layer_target(&mut graph, root.id());
+                let layer_target = root_ctx.allocate_promoted_layer_target(&mut graph, root_id);
                 root_ctx.set_current_target(layer_target);
-                let layer_target = if can_reuse {
-                    graph.add_graphics_pass(super::render_pass::RetainLayerPass::new(layer_target));
-                    layer_target
+                let next_state = if let Some(element) =
+                    root.as_any_mut()
+                        .downcast_mut::<super::base_component::Element>()
+                {
+                    element.build_promoted_layer(
+                        &mut graph,
+                        root_ctx,
+                        update_kind,
+                        can_reuse,
+                        DebugReusePathContext::Root,
+                    )
+                } else if can_reuse {
+                    record_debug_reuse_path(DebugReusePathRecord {
+                        node_id: root.id(),
+                        context: DebugReusePathContext::Root,
+                        requested: update_kind,
+                        can_reuse,
+                        actual: PromotedLayerUpdateKind::Reuse,
+                        reason: None,
+                        clip_rect: None,
+                    });
+                    root_ctx.into_state()
                 } else {
+                    record_debug_reuse_path(DebugReusePathRecord {
+                        node_id: root.id(),
+                        context: DebugReusePathContext::Root,
+                        requested: update_kind,
+                        can_reuse,
+                        actual: PromotedLayerUpdateKind::Reraster,
+                        reason: if matches!(update_kind, PromotedLayerUpdateKind::Reuse) {
+                            Some("reuse-blocked")
+                        } else {
+                            None
+                        },
+                        clip_rect: None,
+                    });
                     graph.add_graphics_pass(super::frame_graph::ClearPass::new(
                         super::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
                         super::render_pass::clear_pass::ClearInput {
@@ -1751,24 +2105,10 @@ impl Viewport {
                             render_target: layer_target,
                         },
                     ));
-                    let next_state = if let Some(element) =
-                        root.as_any_mut()
-                            .downcast_mut::<super::base_component::Element>()
-                    {
-                        let base_state = element.build_base_only(&mut graph, root_ctx);
-                        element.compose_promoted_children_only(
-                            &mut graph,
-                            super::base_component::UiBuildContext::from_parts(
-                                ctx.viewport(),
-                                base_state,
-                            ),
-                        )
-                    } else {
-                        root.build(&mut graph, root_ctx)
-                    };
-                    ctx.merge_child_state_side_effects(&next_state);
-                    next_state.current_target().unwrap_or(layer_target)
+                    root.build(&mut graph, root_ctx)
                 };
+                ctx.merge_child_state_side_effects(&next_state);
+                let layer_target = next_state.current_target().unwrap_or(layer_target);
                 self.composite_promoted_root(&mut graph, &mut ctx, root.as_ref(), layer_target);
             } else {
                 let next_state = root.build(
@@ -1801,9 +2141,10 @@ impl Viewport {
                 deferred_node_ids.extend(newly_deferred);
             }
         }
+        self.push_debug_reuse_overlay_geometry();
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
-            if self.debug_options.geometry_overlay {
+            if self.debug_overlay_enabled() {
                 let debug_pass = super::render_pass::debug_overlay_pass::DebugOverlayPass::new(
                     super::render_pass::debug_overlay_pass::DebugOverlayInput {
                         pass_context: super::render_pass::render_target::GraphicsPassContext {
@@ -1882,24 +2223,15 @@ impl Viewport {
                     0.0,
                 )]
             } else {
-                execute_ordered_passes
-                    .into_iter()
-                    .map(|(name, elapsed_ms, count)| {
-                        TraceRenderNode::new(format!("{name} (count={count})"), elapsed_ms)
-                    })
-                    .collect()
+                build_execute_detail_trace_nodes(execute_ordered_passes)
             };
             if !execute_detail_ordered_passes.is_empty() {
                 let detail_total_ms: f64 = execute_detail_ordered_passes
                     .iter()
                     .map(|(_, elapsed_ms, _)| *elapsed_ms)
                     .sum();
-                let detail_children = execute_detail_ordered_passes
-                    .into_iter()
-                    .map(|(name, elapsed_ms, count)| {
-                        TraceRenderNode::new(format!("{name} (count={count})"), elapsed_ms)
-                    })
-                    .collect();
+                let detail_children =
+                    build_execute_detail_trace_nodes(execute_detail_ordered_passes);
                 execute_children.push(TraceRenderNode::with_children(
                     "execute_detail",
                     detail_total_ms,
@@ -1965,6 +2297,9 @@ impl Viewport {
                     self.promotion_config.base_threshold,
                 )
             );
+        }
+        if self.debug_options.trace_reuse_path {
+            println!("{}", format_reuse_path_trace());
         }
         self.frame_stats.record_frame(frame_start.elapsed());
         self.last_frame_graph = Some(graph);

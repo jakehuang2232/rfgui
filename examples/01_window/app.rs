@@ -1,10 +1,12 @@
 use crate::platform::{key_to_string, map_cursor_icon, map_device_button, map_mouse_button};
+use crate::rfgui::promotion::ViewportPromotionConfig;
 use crate::rfgui::ui::{RsxNode, rsx, take_state_dirty};
 use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::{Theme, init_theme};
 use crate::scene::MainScene;
 use crate::state::{
-    DEBUG_GEOMETRY_OVERLAY, DEBUG_RENDER_TIME, REQUEST_DUMP_FRAME_GRAPH_DOT, THEME_DARK_MODE,
+    DEBUG_GEOMETRY_OVERLAY, DEBUG_RENDER_TIME, DEBUG_REUSE_PATH, ENABLE_LAYER_PROMOTION,
+    REQUEST_DUMP_FRAME_GRAPH_DOT, THEME_DARK_MODE,
 };
 use crate::utils::{app_background_color, current_unix_timestamp, should_dispatch_keyboard_text};
 use rfd::FileDialog;
@@ -194,6 +196,17 @@ impl ApplicationHandler for App {
                     viewport
                         .set_debug_geometry_overlay(DEBUG_GEOMETRY_OVERLAY.load(Ordering::Relaxed));
                     viewport.set_debug_trace_render_time(DEBUG_RENDER_TIME.load(Ordering::Relaxed));
+                    viewport.set_debug_trace_reuse_path(DEBUG_REUSE_PATH.load(Ordering::Relaxed));
+                    let mut promotion_config = viewport.promotion_config();
+                    let enable_layer_promotion =
+                        ENABLE_LAYER_PROMOTION.load(Ordering::Relaxed);
+                    promotion_config.enabled = enable_layer_promotion;
+                    promotion_config.base_threshold = if enable_layer_promotion {
+                        ViewportPromotionConfig::default().base_threshold
+                    } else {
+                        1000
+                    };
+                    viewport.set_promotion_config(promotion_config);
                     let _ = viewport.render_rsx(app);
                 }
                 if REQUEST_DUMP_FRAME_GRAPH_DOT.swap(false, Ordering::AcqRel) {

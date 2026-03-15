@@ -1767,4 +1767,51 @@ mod tests {
             .collect();
         assert!(parent.should_clip_children(&overflow_child_indices, inner_radii));
     }
+
+    #[test]
+    fn child_clip_scope_uses_stencil_without_rounding() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let mut child = Element::new(0.0, 0.0, 140.0, 40.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(140.0)));
+        child.apply_style(style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+
+        let inner_radii = parent.inner_clip_radii(normalize_corner_radii(
+            parent.border_radii,
+            parent.core.layout_size.width.max(0.0),
+            parent.core.layout_size.height.max(0.0),
+        ));
+        assert!(!inner_radii.has_any_rounding());
+
+        let scope = parent.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
+        assert!(scope.is_some());
+        assert!(scope.as_ref().is_some_and(|scope| scope.child_clip_id != 0));
+    }
 }

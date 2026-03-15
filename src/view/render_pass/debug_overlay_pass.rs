@@ -60,7 +60,7 @@ impl GraphicsPass for DebugOverlayPass {
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        if !ctx.viewport().debug_geometry_overlay() {
+        if !ctx.viewport().debug_overlay_enabled() {
             let _ = ctx.viewport().take_debug_overlay_geometry();
             return;
         }

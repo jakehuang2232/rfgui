@@ -27,6 +27,7 @@ pub struct TextureCompositePass {
 #[derive(Clone, Copy, Debug)]
 pub struct TextureCompositeParams {
     pub bounds: [f32; 4],
+    pub uv_bounds: Option<[f32; 4]>,
     pub use_mask: bool,
     pub opacity: f32,
     pub scissor_rect: Option<[u32; 4]>,
@@ -36,6 +37,7 @@ impl Default for TextureCompositeParams {
     fn default() -> Self {
         Self {
             bounds: [0.0, 0.0, 0.0, 0.0],
+            uv_bounds: None,
             use_mask: false,
             opacity: 1.0,
             scissor_rect: None,
@@ -174,19 +176,32 @@ impl GraphicsPass for TextureCompositePass {
             Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
             None => surface_size,
         };
+        let source_size = self
+            .input
+            .source
+            .handle()
+            .and_then(|handle| render_target_size(ctx, handle))
+            .unwrap_or(surface_size);
         if target_w == 0 || target_h == 0 {
             return;
         }
 
         let scale = ctx.viewport.scale_factor();
         let bounds = resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
+        let uv_bounds = resolve_uv_bounds(
+            self.params.uv_bounds,
+            scale,
+            source_size.0 as f32,
+            source_size.1 as f32,
+        );
 
         let uniform = TextureCompositeUniform {
             use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
             opacity: self.params.opacity.clamp(0.0, 1.0),
             _pad: [0.0, 0.0],
         };
-        let (vertices, indices) = quad_for_bounds(bounds, target_w as f32, target_h as f32);
+        let (vertices, indices) =
+            quad_for_bounds(bounds, target_w as f32, target_h as f32, uv_bounds);
 
         if let Some(handle) = self.uniform_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&uniform));
@@ -302,7 +317,12 @@ impl GraphicsPass for TextureCompositePass {
             let scale = ctx.viewport().scale_factor();
             let bounds =
                 resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
-            let (vertices, indices) = quad_for_bounds(bounds, target_w as f32, target_h as f32);
+            let (vertices, indices) = quad_for_bounds(
+                bounds,
+                target_w as f32,
+                target_h as f32,
+                [0.0, 0.0, 1.0, 1.0],
+            );
             fallback_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("TextureComposite Vertex (Fallback)"),
                 contents: bytemuck::cast_slice(&vertices),
@@ -383,7 +403,12 @@ pub(crate) fn composite_immediate(
         contents: bytemuck::bytes_of(&uniform),
         usage: wgpu::BufferUsages::UNIFORM,
     });
-    let (vertices, indices) = quad_for_bounds(bounds, target_size.0 as f32, target_size.1 as f32);
+    let (vertices, indices) = quad_for_bounds(
+        bounds,
+        target_size.0 as f32,
+        target_size.1 as f32,
+        [0.0, 0.0, 1.0, 1.0],
+    );
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("TextureComposite Immediate Vertex"),
         contents: bytemuck::cast_slice(&vertices),
@@ -719,11 +744,16 @@ fn quad_for_bounds(
     bounds: [f32; 4],
     target_w: f32,
     target_h: f32,
+    uv_bounds: [f32; 4],
 ) -> ([CompositeVertex; 4], [u16; 6]) {
     let x = bounds[0];
     let y = bounds[1];
     let w = bounds[2].max(0.0);
     let h = bounds[3].max(0.0);
+    let uv_left = uv_bounds[0];
+    let uv_top = uv_bounds[1];
+    let uv_right = uv_bounds[0] + uv_bounds[2].max(0.0);
+    let uv_bottom = uv_bounds[1] + uv_bounds[3].max(0.0);
     let left = (x / target_w) * 2.0 - 1.0;
     let right = ((x + w) / target_w) * 2.0 - 1.0;
     let top = 1.0 - (y / target_h) * 2.0;
@@ -732,19 +762,19 @@ fn quad_for_bounds(
         [
             CompositeVertex {
                 position: [left, bottom],
-                uv: [0.0, 1.0],
+                uv: [uv_left, uv_bottom],
             },
             CompositeVertex {
                 position: [right, bottom],
-                uv: [1.0, 1.0],
+                uv: [uv_right, uv_bottom],
             },
             CompositeVertex {
                 position: [right, top],
-                uv: [1.0, 0.0],
+                uv: [uv_right, uv_top],
             },
             CompositeVertex {
                 position: [left, top],
-                uv: [0.0, 0.0],
+                uv: [uv_left, uv_top],
             },
         ],
         [0, 1, 2, 0, 2, 3],
@@ -763,6 +793,32 @@ fn resolve_bounds(bounds: [f32; 4], scale: f32, target_w: f32, target_h: f32) ->
     } else {
         scaled
     }
+}
+
+fn resolve_uv_bounds(
+    uv_bounds: Option<[f32; 4]>,
+    scale: f32,
+    source_w: f32,
+    source_h: f32,
+) -> [f32; 4] {
+    let Some(bounds) = uv_bounds else {
+        return [0.0, 0.0, 1.0, 1.0];
+    };
+    if source_w <= 0.0 || source_h <= 0.0 {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    let scaled = [
+        bounds[0] * scale,
+        bounds[1] * scale,
+        bounds[2] * scale,
+        bounds[3] * scale,
+    ];
+    [
+        (scaled[0] / source_w).clamp(0.0, 1.0),
+        (scaled[1] / source_h).clamp(0.0, 1.0),
+        (scaled[2] / source_w).clamp(0.0, 1.0),
+        (scaled[3] / source_h).clamp(0.0, 1.0),
+    ]
 }
 
 fn texture_composite_resources_cache() -> &'static Mutex<ResourceCache<TextureCompositeResources>> {

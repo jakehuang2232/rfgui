@@ -1,4 +1,142 @@
 impl Element {
+    pub(crate) fn inline_promotion_rendering_reason(&self) -> Option<&'static str> {
+        if self.absolute_clip_scissor_rect().is_some() {
+            return Some(match self.computed_style.position.clip_mode() {
+                ClipMode::Viewport => "absolute-viewport-clip-inline",
+                ClipMode::AnchorParent => "absolute-anchor-clip-inline",
+                ClipMode::Parent => "absolute-clip-inline",
+            });
+        }
+        if self.children.is_empty()
+            || self.layout_inner_size.width <= 0.0
+            || self.layout_inner_size.height <= 0.0
+        {
+            return None;
+        }
+        let overflow_child_indices: Vec<bool> = (0..self.children.len())
+            .map(|idx| self.child_renders_outside_inner_clip(idx))
+            .collect();
+        let outer_radii = normalize_corner_radii(
+            self.border_radii,
+            self.core.layout_size.width.max(0.0),
+            self.core.layout_size.height.max(0.0),
+        );
+        let inner_radii = self.inner_clip_radii(outer_radii);
+        if self.should_clip_children(&overflow_child_indices, inner_radii) {
+            Some(if inner_radii.has_any_rounding() {
+                "child-stencil-clip-inline"
+            } else {
+                "child-scissor-clip-inline"
+            })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn requires_inline_promotion_rendering(&self) -> bool {
+        self.inline_promotion_rendering_reason().is_some()
+    }
+
+    fn build_base_descendants_only(
+        &mut self,
+        graph: &mut FrameGraph,
+        mut ctx: UiBuildContext,
+    ) -> BuildState {
+        if !self.core.should_render {
+            if self.has_absolute_descendant_for_hit_test {
+                self.collect_root_viewport_deferred_descendants(&mut ctx);
+            }
+            return ctx.into_state();
+        }
+
+        let previous_scissor_rect = self
+            .absolute_clip_scissor_rect()
+            .map(|scissor| ctx.push_scissor_rect(Some(scissor)));
+
+        let outer_radii = normalize_corner_radii(
+            self.border_radii,
+            self.core.layout_size.width.max(0.0),
+            self.core.layout_size.height.max(0.0),
+        );
+        let inner_radii = self.inner_clip_radii(outer_radii);
+        self.border_radius = outer_radii.max();
+        let pipeline_state = self.build_render_pipeline(
+            graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+            false,
+        );
+        ctx.set_state(pipeline_state);
+
+        let overflow_child_indices: Vec<bool> = (0..self.children.len())
+            .map(|idx| self.child_renders_outside_inner_clip(idx))
+            .collect();
+
+        let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii) {
+            self.begin_child_clip_scope(graph, &mut ctx, inner_radii)
+        } else {
+            None
+        };
+
+        if self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0 {
+            for (idx, child) in self.children.iter_mut().enumerate() {
+                if overflow_child_indices.get(idx).copied().unwrap_or(false) {
+                    continue;
+                }
+                if ctx.is_node_promoted(child.id()) {
+                    continue;
+                }
+                if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                    let viewport = ctx.viewport();
+                    let next_state = element.build_base_descendants_only(graph, ctx);
+                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                } else {
+                    let viewport = ctx.viewport();
+                    let next_state = child.build(graph, ctx);
+                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                }
+            }
+        }
+
+        for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
+            if !is_overflow {
+                continue;
+            }
+            if let Some(child) = self.children.get_mut(idx) {
+                if child
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .is_some_and(Element::should_append_to_root_viewport_render)
+                {
+                    ctx.append_to_defer(child.id());
+                    continue;
+                }
+                if ctx.is_node_promoted(child.id()) {
+                    continue;
+                }
+                if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                    let viewport = ctx.viewport();
+                    let next_state = element.build_base_descendants_only(graph, ctx);
+                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                } else {
+                    let viewport = ctx.viewport();
+                    let next_state = child.build(graph, ctx);
+                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                }
+            }
+        }
+        self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
+        let scrollbar_state = self.render_scrollbars(
+            graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(scrollbar_state);
+
+        if let Some(previous) = previous_scissor_rect {
+            ctx.restore_scissor_rect(previous);
+        }
+        ctx.into_state()
+    }
+
     fn measure_flex_children(&mut self, proposal: LayoutProposal) {
         let bw_l = resolve_px_or_zero(
             self.computed_style.border_widths.left,
@@ -310,6 +448,7 @@ impl Element {
             pass.draw_rect_input_mut().render_target = RenderTargetIn::with_handle(handle);
         }
         pass.draw_rect_input_mut().pass_context = ctx.graphics_pass_context();
+        pass.set_scissor_rect(ctx.scissor_rect());
         pass.draw_rect_output_mut().render_target = input;
         graph.add_graphics_pass(pass);
         ctx.set_current_target(input);
@@ -326,6 +465,7 @@ impl Element {
             pass.draw_rect_input_mut().render_target = RenderTargetIn::with_handle(handle);
         }
         pass.draw_rect_input_mut().pass_context = ctx.graphics_pass_context();
+        pass.set_scissor_rect(ctx.scissor_rect());
         pass.draw_rect_output_mut().render_target = input;
         graph.add_graphics_pass(pass);
         ctx.set_current_target(input);
@@ -528,85 +668,12 @@ impl Element {
     pub(crate) fn build_base_only(
         &mut self,
         graph: &mut FrameGraph,
-        mut ctx: UiBuildContext,
+        ctx: UiBuildContext,
     ) -> BuildState {
-        let previous_scissor_rect = self
-            .absolute_clip_scissor_rect()
-            .map(|scissor| ctx.push_scissor_rect(Some(scissor)));
-
-        let outer_radii = normalize_corner_radii(
-            self.border_radii,
-            self.core.layout_size.width.max(0.0),
-            self.core.layout_size.height.max(0.0),
-        );
-        let inner_radii = self.inner_clip_radii(outer_radii);
-        self.border_radius = outer_radii.max();
-        let pipeline_state = self.build_render_pipeline(
-            graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-            false,
-        );
-        ctx.set_state(pipeline_state);
-
-        let overflow_child_indices: Vec<bool> = (0..self.children.len())
-            .map(|idx| self.child_renders_outside_inner_clip(idx))
-            .collect();
-
-        let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii) {
-            self.begin_child_clip_scope(graph, &mut ctx, inner_radii)
-        } else {
-            None
-        };
-
-        if self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0 {
-            for (idx, child) in self.children.iter_mut().enumerate() {
-                if overflow_child_indices.get(idx).copied().unwrap_or(false) {
-                    continue;
-                }
-                if ctx.is_node_promoted(child.id()) {
-                    continue;
-                }
-                let viewport = ctx.viewport();
-                let next_state = child.build(graph, ctx);
-                ctx = UiBuildContext::from_parts(viewport, next_state);
-            }
-        }
-
-        for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
-            if !is_overflow {
-                continue;
-            }
-            if let Some(child) = self.children.get_mut(idx) {
-                if child
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .is_some_and(Element::should_append_to_root_viewport_render)
-                {
-                    ctx.append_to_defer(child.id());
-                    continue;
-                }
-                if ctx.is_node_promoted(child.id()) {
-                    continue;
-                }
-                let viewport = ctx.viewport();
-                let next_state = child.build(graph, ctx);
-                ctx = UiBuildContext::from_parts(viewport, next_state);
-            }
-        }
-        self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
-        let scrollbar_state = self.render_scrollbars(
-            graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
-        ctx.set_state(scrollbar_state);
-
-        if let Some(previous) = previous_scissor_rect {
-            ctx.restore_scissor_rect(previous);
-        }
-        ctx.into_state()
+        self.build_base_descendants_only(graph, ctx)
     }
 
-    pub(crate) fn compose_promoted_children_only(
+    pub(crate) fn compose_promoted_descendants_only(
         &mut self,
         graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
@@ -624,7 +691,20 @@ impl Element {
             self.core.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
-        let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii) {
+        let should_clip_promoted_descendants =
+            self.should_clip_children(&overflow_child_indices, inner_radii);
+        let use_mask_clip = should_clip_promoted_descendants && inner_radii.has_any_rounding();
+        let previous_inner_scissor = if use_mask_clip {
+            Some(ctx.push_scissor_rect(self.inner_clip_scissor_rect()))
+        } else {
+            None
+        };
+        let mask_target = if use_mask_clip {
+            Some(self.render_promoted_child_clip_mask(graph, &ctx, inner_radii))
+        } else {
+            None
+        };
+        let child_clip_scope = if should_clip_promoted_descendants {
             self.begin_child_clip_scope(graph, &mut ctx, inner_radii)
         } else {
             None
@@ -635,10 +715,19 @@ impl Element {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
-                if !ctx.is_node_promoted(child.id()) {
+                if ctx.is_node_promoted(child.id()) {
+                    Self::build_promoted_child(graph, &mut ctx, child, mask_target);
                     continue;
                 }
-                Self::build_promoted_child(graph, &mut ctx, child);
+                if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                    let viewport = ctx.viewport();
+                    let next_state = if element.requires_inline_promotion_rendering() {
+                        element.build(graph, ctx)
+                    } else {
+                        element.compose_promoted_descendants_only(graph, ctx)
+                    };
+                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                }
             }
         }
 
@@ -655,14 +744,26 @@ impl Element {
                     ctx.append_to_defer(child.id());
                     continue;
                 }
-                if !ctx.is_node_promoted(child.id()) {
+                if ctx.is_node_promoted(child.id()) {
+                    Self::build_promoted_child(graph, &mut ctx, child, mask_target);
                     continue;
                 }
-                Self::build_promoted_child(graph, &mut ctx, child);
+                if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                    let viewport = ctx.viewport();
+                    let next_state = if element.requires_inline_promotion_rendering() {
+                        element.build(graph, ctx)
+                    } else {
+                        element.compose_promoted_descendants_only(graph, ctx)
+                    };
+                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                }
             }
         }
 
         self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
+        if let Some(previous) = previous_inner_scissor {
+            ctx.restore_scissor_rect(previous);
+        }
         if let Some(previous) = previous_scissor_rect {
             ctx.restore_scissor_rect(previous);
         }
@@ -676,26 +777,45 @@ impl Element {
         child: &dyn ElementTrait,
         layer_target: RenderTargetOut,
     ) {
+        let composite_bounds = child.promotion_composite_bounds();
+        Self::composite_layer_target_into_current(
+            graph,
+            ctx,
+            layer_target,
+            composite_bounds,
+            child.promotion_node_info().opacity.clamp(0.0, 1.0),
+            ctx.graphics_pass_context(),
+            ctx.state.scissor_rect,
+        );
+    }
+
+    fn composite_layer_target_into_current(
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        layer_target: RenderTargetOut,
+        composite_bounds: crate::view::base_component::PromotionCompositeBounds,
+        opacity: f32,
+        pass_context: crate::view::render_pass::render_target::GraphicsPassContext,
+        scissor_rect: Option<[u32; 4]>,
+    ) {
         let parent_target = ctx.current_target().unwrap_or_else(|| {
             let target = ctx.allocate_target(graph);
             ctx.set_current_target(target);
             target
         });
-        let composite_bounds = child.promotion_composite_bounds();
-        let opacity = child.promotion_node_info().opacity.clamp(0.0, 1.0);
         let pass = crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
             crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
                 rect_pos: [composite_bounds.x, composite_bounds.y],
                 rect_size: [composite_bounds.width, composite_bounds.height],
                 corner_radii: composite_bounds.corner_radii,
                 opacity,
-                scissor_rect: ctx.state.scissor_rect,
+                scissor_rect,
             },
             crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
                 layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
                     layer_target.handle().expect("promoted layer target should exist"),
                 ),
-                pass_context: ctx.graphics_pass_context(),
+                pass_context,
             },
             crate::view::render_pass::composite_layer_pass::CompositeLayerOutput {
                 render_target: parent_target,
@@ -705,28 +825,318 @@ impl Element {
         ctx.set_current_target(parent_target);
     }
 
+    fn render_promoted_child_clip_mask(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: &UiBuildContext,
+        inner_radii: CornerRadii,
+    ) -> RenderTargetOut {
+        let mut mask_ctx = UiBuildContext::from_parts(
+            ctx.viewport(),
+            BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
+        );
+        let mask_target = mask_ctx.allocate_persistent_target_with_key(
+            graph,
+            crate::view::base_component::promoted_clip_mask_stable_key(self.id()),
+        );
+        mask_ctx.set_current_target(mask_target);
+        graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
+            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+            crate::view::render_pass::clear_pass::ClearInput {
+                pass_context: mask_ctx.graphics_pass_context(),
+                clear_depth_stencil: true,
+            },
+            crate::view::render_pass::clear_pass::ClearOutput {
+                render_target: mask_target,
+            },
+        ));
+        let mut pass = DrawRectPass::new(
+            RectPassParams {
+                position: [self.layout_inner_position.x, self.layout_inner_position.y],
+                size: [self.layout_inner_size.width, self.layout_inner_size.height],
+                fill_color: [1.0, 1.0, 1.0, 1.0],
+                opacity: 1.0,
+                ..Default::default()
+            },
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
+        );
+        pass.set_render_mode(RectRenderMode::FillOnly);
+        pass.set_border_width(0.0);
+        pass.set_border_radii(inner_radii.to_array());
+        let mut mask_ctx = mask_ctx;
+        self.push_pass(graph, &mut mask_ctx, pass);
+        mask_target
+    }
+
+    fn composite_promoted_child_target_with_mask(
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        child: &dyn ElementTrait,
+        layer_target: RenderTargetOut,
+        mask_target: RenderTargetOut,
+    ) {
+        let parent_target = ctx.current_target().unwrap_or_else(|| {
+            let target = ctx.allocate_target(graph);
+            ctx.set_current_target(target);
+            target
+        });
+        let composite_bounds = child.promotion_composite_bounds();
+        let opacity = child.promotion_node_info().opacity.clamp(0.0, 1.0);
+        let pass = crate::view::render_pass::TextureCompositePass::new(
+            crate::view::render_pass::TextureCompositeParams {
+                bounds: [
+                    composite_bounds.x,
+                    composite_bounds.y,
+                    composite_bounds.width,
+                    composite_bounds.height,
+                ],
+                uv_bounds: Some([
+                    composite_bounds.x,
+                    composite_bounds.y,
+                    composite_bounds.width,
+                    composite_bounds.height,
+                ]),
+                use_mask: true,
+                opacity,
+                scissor_rect: ctx.state.scissor_rect,
+            },
+            crate::view::render_pass::TextureCompositeInput {
+                source: crate::view::render_pass::TextureCompositeSourceIn::with_handle(
+                    layer_target.handle().expect("promoted layer target should exist"),
+                ),
+                mask: crate::view::render_pass::TextureCompositeMaskIn::with_handle(
+                    mask_target.handle().expect("promoted clip mask target should exist"),
+                ),
+                pass_context: ctx.graphics_pass_context(),
+            },
+            crate::view::render_pass::TextureCompositeOutput {
+                render_target: parent_target,
+            },
+        );
+        graph.add_graphics_pass(pass);
+        ctx.set_current_target(parent_target);
+    }
+
+    fn has_composited_promoted_descendants(&self, ctx: &UiBuildContext) -> bool {
+        let Some(children) = self.children() else {
+            return false;
+        };
+        for child in children {
+            if child
+                .as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(Element::should_append_to_root_viewport_render)
+            {
+                continue;
+            }
+            if ctx.is_node_promoted(child.id()) {
+                return true;
+            }
+            if let Some(element) = child.as_any().downcast_ref::<Element>() {
+                if element.has_composited_promoted_descendants(ctx) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn build_promoted_layer(
+        &mut self,
+        graph: &mut FrameGraph,
+        ctx: UiBuildContext,
+        requested_update_kind: crate::view::promotion::PromotedLayerUpdateKind,
+        can_reuse_base: bool,
+        context: crate::view::viewport::DebugReusePathContext,
+    ) -> BuildState {
+        crate::view::viewport::record_debug_reuse_path(
+            crate::view::viewport::DebugReusePathRecord {
+                node_id: self.id(),
+                context,
+                requested: requested_update_kind,
+                can_reuse: can_reuse_base,
+                actual: if can_reuse_base {
+                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                } else {
+                    crate::view::promotion::PromotedLayerUpdateKind::Reraster
+                },
+                reason: if matches!(
+                    requested_update_kind,
+                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                ) && !can_reuse_base
+                {
+                    Some("reuse-blocked")
+                } else {
+                    None
+                },
+                clip_rect: self.absolute_clip_scissor_rect(),
+            },
+        );
+        let viewport = ctx.viewport();
+        let mut ctx = ctx;
+        if can_reuse_base {
+            self.collect_root_viewport_deferred_descendants(&mut ctx);
+        }
+        let base_target = ctx.current_target().expect("promoted layer target should exist");
+        let base_state = if can_reuse_base {
+            ctx.into_state()
+        } else {
+            graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
+                crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+                crate::view::render_pass::clear_pass::ClearInput {
+                    pass_context: ctx.graphics_pass_context(),
+                    clear_depth_stencil: true,
+                },
+                crate::view::render_pass::clear_pass::ClearOutput {
+                    render_target: base_target,
+                },
+            ));
+            self.build_base_only(graph, ctx)
+        };
+
+        let probe_ctx = UiBuildContext::from_parts(viewport.clone(), base_state.clone());
+        if !self.has_composited_promoted_descendants(&probe_ctx) {
+            return base_state;
+        }
+
+        let mut compose_ctx = UiBuildContext::from_parts(viewport, base_state);
+        let final_target = compose_ctx.allocate_target(graph);
+        compose_ctx.set_current_target(final_target);
+        graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
+            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+            crate::view::render_pass::clear_pass::ClearInput {
+                pass_context: compose_ctx.graphics_pass_context(),
+                clear_depth_stencil: true,
+            },
+            crate::view::render_pass::clear_pass::ClearOutput {
+                render_target: final_target,
+            },
+        ));
+        let compose_pass_context = compose_ctx.graphics_pass_context();
+        Self::composite_layer_target_into_current(
+            graph,
+            &mut compose_ctx,
+            base_target,
+            self.promotion_composite_bounds(),
+            1.0,
+            compose_pass_context,
+            None,
+        );
+        self.compose_promoted_descendants_only(graph, compose_ctx)
+    }
+
     fn build_promoted_child(
         graph: &mut FrameGraph,
         ctx: &mut UiBuildContext,
         child: &mut Box<dyn ElementTrait>,
+        mask_target: Option<RenderTargetOut>,
     ) {
-        let update_kind = ctx
-            .promoted_update_kind(child.id())
+        let child_id = child.id();
+        let requested_update = ctx
+            .promoted_update_kind(child_id)
             .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
+        let has_ancestor_scissor = ctx.scissor_rect().is_some();
+        let has_ancestor_stencil = ctx.current_clip_id() != 0;
+        if has_ancestor_scissor && !has_ancestor_stencil {
+            crate::view::viewport::record_debug_reuse_path(
+                crate::view::viewport::DebugReusePathRecord {
+                    node_id: child_id,
+                    context: crate::view::viewport::DebugReusePathContext::Child,
+                    requested: requested_update,
+                    can_reuse: false,
+                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                    reason: Some("ancestor-scissor-inline"),
+                    clip_rect: None,
+                },
+            );
+            let viewport = ctx.viewport();
+            let next_state = child.build(graph, UiBuildContext::from_parts(viewport, ctx.state_clone()));
+            ctx.set_state(next_state);
+            let _ = mask_target;
+            return;
+        }
+        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+            if let Some(reason) = element.inline_promotion_rendering_reason() {
+                if reason == "child-scissor-clip-inline" {
+                    // Rect-only child clip can still be enforced via scissor during composition.
+                } else {
+                crate::view::viewport::record_debug_reuse_path(
+                    crate::view::viewport::DebugReusePathRecord {
+                        node_id: child_id,
+                        context: crate::view::viewport::DebugReusePathContext::Child,
+                        requested: requested_update,
+                        can_reuse: false,
+                        actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                        reason: Some(reason),
+                        clip_rect: element.absolute_clip_scissor_rect(),
+                    },
+                );
+                let viewport = ctx.viewport();
+                let next_state =
+                    element.build(graph, UiBuildContext::from_parts(viewport, ctx.state_clone()));
+                ctx.set_state(next_state);
+                let _ = mask_target;
+                return;
+                }
+            }
+        }
+
+        let update_kind = requested_update;
+        let reuse_result = crate::view::base_component::can_reuse_promoted_subtree(
+            child.as_ref(),
+            ctx,
+        );
         let can_reuse = matches!(
             update_kind,
             crate::view::promotion::PromotedLayerUpdateKind::Reuse
-        ) && crate::view::base_component::can_reuse_promoted_subtree(child.as_ref(), ctx);
-        let mut child_ctx =
-            UiBuildContext::from_parts(ctx.viewport(), BuildState::for_layer_subtree());
+        ) && reuse_result;
+        let mut child_ctx = UiBuildContext::from_parts(
+            ctx.viewport(),
+            BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
+        );
         let layer_target = child_ctx.allocate_promoted_layer_target(graph, child.id());
         child_ctx.set_current_target(layer_target);
-        let layer_target = if can_reuse {
-            graph.add_graphics_pass(crate::view::render_pass::RetainLayerPass::new(
-                layer_target,
-            ));
-            layer_target
+        let child_state = if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+            element.build_promoted_layer(
+                graph,
+                child_ctx,
+                update_kind,
+                can_reuse,
+                crate::view::viewport::DebugReusePathContext::Child,
+            )
+        } else if can_reuse {
+            crate::view::viewport::record_debug_reuse_path(
+                crate::view::viewport::DebugReusePathRecord {
+                    node_id: child.id(),
+                    context: crate::view::viewport::DebugReusePathContext::Child,
+                    requested: update_kind,
+                    can_reuse,
+                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reuse,
+                    reason: None,
+                    clip_rect: None,
+                },
+            );
+            child_ctx.into_state()
         } else {
+            crate::view::viewport::record_debug_reuse_path(
+                crate::view::viewport::DebugReusePathRecord {
+                    node_id: child.id(),
+                    context: crate::view::viewport::DebugReusePathContext::Child,
+                    requested: update_kind,
+                    can_reuse,
+                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                    reason: if matches!(
+                        update_kind,
+                        crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                    ) {
+                        Some("reuse-blocked")
+                    } else {
+                        None
+                    },
+                    clip_rect: None,
+                },
+            );
             graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
                 crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
                 crate::view::render_pass::clear_pass::ClearInput {
@@ -737,18 +1147,20 @@ impl Element {
                     render_target: layer_target,
                 },
             ));
-            let child_state = if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                let base_state = element.build_base_only(graph, child_ctx);
-                element.compose_promoted_children_only(
-                    graph,
-                    UiBuildContext::from_parts(ctx.viewport(), base_state),
-                )
-            } else {
-                child.build(graph, child_ctx)
-            };
-            ctx.merge_child_state_side_effects(&child_state);
-            child_state.target.unwrap_or(layer_target)
+            child.build(graph, child_ctx)
         };
-        Self::composite_promoted_child_target(graph, ctx, child.as_ref(), layer_target);
+        ctx.merge_child_state_side_effects(&child_state);
+        let layer_target = child_state.target.unwrap_or(layer_target);
+        if let Some(mask_target) = mask_target {
+            Self::composite_promoted_child_target_with_mask(
+                graph,
+                ctx,
+                child.as_ref(),
+                layer_target,
+                mask_target,
+            );
+        } else {
+            Self::composite_promoted_child_target(graph, ctx, child.as_ref(), layer_target);
+        }
     }
 }

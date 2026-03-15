@@ -50,6 +50,7 @@ use std::time::{Duration, Instant};
 trait DrawRectIoPass {
     fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput;
     fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput;
+    fn set_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>);
 }
 
 impl DrawRectIoPass for DrawRectPass {
@@ -60,6 +61,10 @@ impl DrawRectIoPass for DrawRectPass {
     fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput {
         DrawRectPass::draw_rect_output_mut(self)
     }
+
+    fn set_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) {
+        DrawRectPass::set_scissor_rect(self, scissor_rect);
+    }
 }
 
 impl DrawRectIoPass for OpaqueRectPass {
@@ -69,6 +74,10 @@ impl DrawRectIoPass for OpaqueRectPass {
 
     fn draw_rect_output_mut(&mut self) -> &mut DrawRectOutput {
         OpaqueRectPass::draw_rect_output_mut(self)
+    }
+
+    fn set_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) {
+        OpaqueRectPass::set_scissor_rect(self, scissor_rect);
     }
 }
 
@@ -187,6 +196,10 @@ pub(crate) fn promoted_layer_stable_key(node_id: u64) -> u64 {
     0xC0DE_0000_0000_0000u64 | node_id
 }
 
+pub(crate) fn promoted_clip_mask_stable_key(node_id: u64) -> u64 {
+    0xC11E_0000_0000_0000u64 | node_id
+}
+
 #[derive(Clone, Copy, Debug)]
 struct AnchorSnapshot {
     x: f32,
@@ -238,6 +251,11 @@ struct ChildClipScope {
     child_clip_id: u8,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AncestorClipContext {
+    scissor_rect: Option<[u32; 4]>,
+}
+
 #[derive(Clone)]
 pub struct ViewportContext {
     color_target: Option<TextureHandle>,
@@ -266,12 +284,14 @@ impl BuildState {
         self.target
     }
 
-    pub(crate) fn for_layer_subtree() -> Self {
+    pub(crate) fn for_layer_subtree_with_ancestor_clip(
+        ancestor_clip: AncestorClipContext,
+    ) -> Self {
         Self {
             target: None,
             depth_stencil_target: Some(AttachmentTarget::Surface),
             target_pairs: HashMap::new(),
-            scissor_rect: None,
+            scissor_rect: ancestor_clip.scissor_rect,
             clip_id_stack: Vec::new(),
             deferred_node_ids: Vec::new(),
             dfs_opaque_rect_order: 0,
@@ -355,6 +375,14 @@ impl UiBuildContext {
         self.next_persistent_target(graph, promoted_layer_stable_key(node_id))
     }
 
+    pub(crate) fn allocate_persistent_target_with_key(
+        &mut self,
+        graph: &mut FrameGraph,
+        stable_key: u64,
+    ) -> RenderTargetOut {
+        self.next_persistent_target(graph, stable_key)
+    }
+
     pub fn set_current_target(&mut self, target: RenderTargetOut) {
         self.state.depth_stencil_target = target
             .handle()
@@ -435,6 +463,12 @@ impl UiBuildContext {
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {
         self.state.scissor_rect
+    }
+
+    pub(crate) fn ancestor_clip_context(&self) -> AncestorClipContext {
+        AncestorClipContext {
+            scissor_rect: self.scissor_rect(),
+        }
     }
 
     fn current_clip_id(&self) -> u8 {
@@ -702,7 +736,7 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
             y: snapshot.y,
             width: snapshot.width.max(0.0),
             height: snapshot.height.max(0.0),
-            corner_radii: [snapshot.border_radius; 4],
+            corner_radii: [0.0; 4],
         }
     }
 }
@@ -934,6 +968,14 @@ impl ElementTrait for Element {
         hash_f32(&mut hasher, self.scroll_offset.y);
         hash_f32(&mut hasher, self.content_size.width.max(0.0));
         hash_f32(&mut hasher, self.content_size.height.max(0.0));
+        hash_f32(&mut hasher, self.layout_transition_visual_offset_x);
+        hash_f32(&mut hasher, self.layout_transition_visual_offset_y);
+        self.layout_transition_override_width
+            .map(f32::to_bits)
+            .hash(&mut hasher);
+        self.layout_transition_override_height
+            .map(f32::to_bits)
+            .hash(&mut hasher);
         hash_f32(&mut hasher, self.opacity);
         self.background_color
             .as_ref()
@@ -1018,11 +1060,7 @@ impl ElementTrait for Element {
             y: min_y,
             width: (max_x - min_x).max(0.0),
             height: (max_y - min_y).max(0.0),
-            corner_radii: if self.box_shadows.is_empty() {
-                [snapshot.border_radius; 4]
-            } else {
-                [0.0; 4]
-            },
+            corner_radii: [0.0; 4],
         }
     }
 

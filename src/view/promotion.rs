@@ -48,6 +48,7 @@ impl PromotionScoreBreakdown {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewportPromotionConfig {
+    pub enabled: bool,
     pub base_threshold: i32,
     pub max_layers: usize,
     pub max_surface_bytes_multiplier: f32,
@@ -57,6 +58,7 @@ pub struct ViewportPromotionConfig {
 impl Default for ViewportPromotionConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             base_threshold: 35,
             max_layers: 12,
             max_surface_bytes_multiplier: 12.0,
@@ -124,6 +126,9 @@ pub(crate) fn evaluate_promotion(
     viewport_size: (f32, f32),
     config: ViewportPromotionConfig,
 ) -> PromotionState {
+    if !config.enabled {
+        return PromotionState::default();
+    }
     let max_surface_bytes = estimate_surface_budget_bytes(viewport_size, config);
     let mut state = PromotionState::default();
 

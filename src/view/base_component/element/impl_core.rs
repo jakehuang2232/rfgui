@@ -1,7 +1,7 @@
 impl Element {
     const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
 
-    fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
+    pub(crate) fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         if self.computed_style.position.mode() != PositionMode::Absolute {
             return None;
         }
