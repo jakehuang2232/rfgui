@@ -694,6 +694,17 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
     fn promotion_self_signature(&self) -> u64 {
         0
     }
+
+    fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {
+        let snapshot = self.box_model_snapshot();
+        PromotionCompositeBounds {
+            x: snapshot.x,
+            y: snapshot.y,
+            width: snapshot.width.max(0.0),
+            height: snapshot.height.max(0.0),
+            corner_radii: [snapshot.border_radius; 4],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -706,6 +717,15 @@ pub struct BoxModelSnapshot {
     pub height: f32,
     pub border_radius: f32,
     pub should_render: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PromotionCompositeBounds {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub corner_radii: [f32; 4],
 }
 
 type MouseDownHandler = Box<dyn FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>)>;
@@ -973,6 +993,37 @@ impl ElementTrait for Element {
             }
         }
         hasher.finish()
+    }
+
+    fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {
+        let snapshot = self.box_model_snapshot();
+        let mut min_x = snapshot.x;
+        let mut min_y = snapshot.y;
+        let mut max_x = snapshot.x + snapshot.width.max(0.0);
+        let mut max_y = snapshot.y + snapshot.height.max(0.0);
+        for shadow in &self.box_shadows {
+            let blur_padding = shadow.blur.max(0.0) * 1.5;
+            let spread = shadow.spread.max(0.0);
+            min_x = min_x.min(snapshot.x + shadow.offset_x - spread - blur_padding);
+            min_y = min_y.min(snapshot.y + shadow.offset_y - spread - blur_padding);
+            max_x = max_x.max(
+                snapshot.x + snapshot.width.max(0.0) + shadow.offset_x + spread + blur_padding,
+            );
+            max_y = max_y.max(
+                snapshot.y + snapshot.height.max(0.0) + shadow.offset_y + spread + blur_padding,
+            );
+        }
+        PromotionCompositeBounds {
+            x: min_x,
+            y: min_y,
+            width: (max_x - min_x).max(0.0),
+            height: (max_y - min_y).max(0.0),
+            corner_radii: if self.box_shadows.is_empty() {
+                [snapshot.border_radius; 4]
+            } else {
+                [0.0; 4]
+            },
+        }
     }
 
     fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {

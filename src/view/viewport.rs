@@ -1088,16 +1088,16 @@ impl Viewport {
         root: &dyn super::base_component::ElementTrait,
         layer_target: super::render_pass::draw_rect_pass::RenderTargetOut,
     ) {
-        let snapshot = root.box_model_snapshot();
+        let composite_bounds = root.promotion_composite_bounds();
         let opacity = root.promotion_node_info().opacity.clamp(0.0, 1.0);
         let parent_target = ctx
             .current_target()
             .unwrap_or_else(|| ctx.allocate_target(graph));
         let pass = super::render_pass::composite_layer_pass::CompositeLayerPass::new(
             super::render_pass::composite_layer_pass::CompositeLayerParams {
-                rect_pos: [snapshot.x, snapshot.y],
-                rect_size: [snapshot.width.max(0.0), snapshot.height.max(0.0)],
-                corner_radii: [snapshot.border_radius; 4],
+                rect_pos: [composite_bounds.x, composite_bounds.y],
+                rect_size: [composite_bounds.width, composite_bounds.height],
+                corner_radii: composite_bounds.corner_radii,
                 opacity,
                 scissor_rect: None,
             },

@@ -681,13 +681,13 @@ impl Element {
             ctx.set_current_target(target);
             target
         });
-        let snapshot = child.box_model_snapshot();
+        let composite_bounds = child.promotion_composite_bounds();
         let opacity = child.promotion_node_info().opacity.clamp(0.0, 1.0);
         let pass = crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
             crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
-                rect_pos: [snapshot.x, snapshot.y],
-                rect_size: [snapshot.width.max(0.0), snapshot.height.max(0.0)],
-                corner_radii: [snapshot.border_radius; 4],
+                rect_pos: [composite_bounds.x, composite_bounds.y],
+                rect_size: [composite_bounds.width, composite_bounds.height],
+                corner_radii: composite_bounds.corner_radii,
                 opacity,
                 scissor_rect: ctx.state.scissor_rect,
             },
