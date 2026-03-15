@@ -116,7 +116,7 @@ pub(crate) fn build_node_by_id(
                 ctx.merge_child_state_side_effects(&next_state);
                 next_state.current_target().unwrap_or(layer_target)
             };
-            let snapshot = node.box_model_snapshot();
+            let composite_bounds = node.promotion_composite_bounds();
             let opacity = node.promotion_node_info().opacity.clamp(0.0, 1.0);
             let parent_target = ctx.current_target().unwrap_or_else(|| {
                 let target = ctx.allocate_target(graph);
@@ -126,9 +126,9 @@ pub(crate) fn build_node_by_id(
             graph.add_graphics_pass(
                 crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
                     crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
-                        rect_pos: [snapshot.x, snapshot.y],
-                        rect_size: [snapshot.width.max(0.0), snapshot.height.max(0.0)],
-                        corner_radii: [snapshot.border_radius; 4],
+                        rect_pos: [composite_bounds.x, composite_bounds.y],
+                        rect_size: [composite_bounds.width, composite_bounds.height],
+                        corner_radii: composite_bounds.corner_radii,
                         opacity,
                         scissor_rect: None,
                     },
