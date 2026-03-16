@@ -78,6 +78,7 @@ pub struct DrawRectPass {
     scissor_rect: Option<[u32; 4]>,
     stencil_mode: RectStencilMode,
     color_write_enabled: bool,
+    clear_target: bool,
     render_mode: RectRenderMode,
     uniform_buffer: RectUniformBufferOut,
     prepared_bind_group: Option<wgpu::BindGroup>,
@@ -167,6 +168,7 @@ impl DrawRectPass {
             scissor_rect: None,
             stencil_mode: RectStencilMode::Disabled,
             color_write_enabled: true,
+            clear_target: false,
             render_mode: RectRenderMode::Combined,
             uniform_buffer: RectUniformBufferOut::default(),
             prepared_bind_group: None,
@@ -189,6 +191,10 @@ impl DrawRectPass {
 
     pub fn set_stencil_decrement(&mut self, clip_id: u8) {
         self.stencil_mode = RectStencilMode::Decrement { clip_id };
+    }
+
+    pub fn set_clear_target(&mut self, clear_target: bool) {
+        self.clear_target = clear_target;
     }
 
     pub fn set_color_write_enabled(&mut self, enabled: bool) {
@@ -560,16 +566,38 @@ impl GraphicsPass for DrawRectPass {
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             builder.write_color(
                 &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
+                if self.clear_target {
+                    GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0])
+                } else {
+                    GraphicsColorAttachmentDescriptor::load(target)
+                },
             );
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
-                builder.surface_target(),
-            ));
+            builder.write_surface_color(if self.clear_target {
+                GraphicsColorAttachmentDescriptor::clear(
+                    builder.surface_target(),
+                    [0.0, 0.0, 0.0, 0.0],
+                )
+            } else {
+                GraphicsColorAttachmentDescriptor::load(builder.surface_target())
+            });
         }
         if let Some(target) = self.input.pass_context.depth_stencil_target {
-            builder.read_depth(target);
-            builder.read_stencil(target);
+            if self.clear_target {
+                builder.write_depth(
+                    target,
+                    crate::view::frame_graph::AttachmentLoadOp::Clear,
+                    Some(1.0),
+                );
+                builder.write_stencil(
+                    target,
+                    crate::view::frame_graph::AttachmentLoadOp::Clear,
+                    Some(0),
+                );
+            } else {
+                builder.read_depth(target);
+                builder.read_stencil(target);
+            }
         }
     }
 
@@ -594,16 +622,38 @@ impl GraphicsPass for OpaqueRectPass {
         if let Some(target) = builder.texture_target(&self.inner.output.render_target) {
             builder.write_color(
                 &self.inner.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
+                if self.inner.clear_target {
+                    GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0])
+                } else {
+                    GraphicsColorAttachmentDescriptor::load(target)
+                },
             );
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
-                builder.surface_target(),
-            ));
+            builder.write_surface_color(if self.inner.clear_target {
+                GraphicsColorAttachmentDescriptor::clear(
+                    builder.surface_target(),
+                    [0.0, 0.0, 0.0, 0.0],
+                )
+            } else {
+                GraphicsColorAttachmentDescriptor::load(builder.surface_target())
+            });
         }
         if let Some(target) = self.inner.input.pass_context.depth_stencil_target {
-            builder.read_depth(target);
-            builder.read_stencil(target);
+            if self.inner.clear_target {
+                builder.write_depth(
+                    target,
+                    crate::view::frame_graph::AttachmentLoadOp::Clear,
+                    Some(1.0),
+                );
+                builder.write_stencil(
+                    target,
+                    crate::view::frame_graph::AttachmentLoadOp::Clear,
+                    Some(0),
+                );
+            } else {
+                builder.read_depth(target);
+                builder.read_stencil(target);
+            }
         }
     }
 

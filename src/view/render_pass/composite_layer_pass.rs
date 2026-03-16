@@ -38,6 +38,7 @@ pub struct CompositeLayerParams {
     pub corner_radii: [f32; 4], // [top_left, top_right, bottom_right, bottom_left]
     pub opacity: f32,
     pub scissor_rect: Option<[u32; 4]>,
+    pub clear_target: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -124,20 +125,42 @@ impl GraphicsPass for CompositeLayerPass {
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             builder.write_color(
                 &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
+                if self.params.clear_target {
+                    GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0])
+                } else {
+                    GraphicsColorAttachmentDescriptor::load(target)
+                },
             );
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
-                builder.surface_target(),
-            ));
+            builder.write_surface_color(if self.params.clear_target {
+                GraphicsColorAttachmentDescriptor::clear(
+                    builder.surface_target(),
+                    [0.0, 0.0, 0.0, 0.0],
+                )
+            } else {
+                GraphicsColorAttachmentDescriptor::load(builder.surface_target())
+            });
         }
         self.params.scissor_rect = intersect_scissor_rects(
             self.input.pass_context.scissor_rect,
             self.params.scissor_rect,
         );
         if let Some(target) = self.input.pass_context.depth_stencil_target {
-            builder.read_depth(target);
-            builder.read_stencil(target);
+            if self.params.clear_target {
+                builder.write_depth(
+                    target,
+                    crate::view::frame_graph::AttachmentLoadOp::Clear,
+                    Some(1.0),
+                );
+                builder.write_stencil(
+                    target,
+                    crate::view::frame_graph::AttachmentLoadOp::Clear,
+                    Some(0),
+                );
+            } else {
+                builder.read_depth(target);
+                builder.read_stencil(target);
+            }
         }
     }
 

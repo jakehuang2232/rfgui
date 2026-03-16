@@ -198,8 +198,7 @@ impl ApplicationHandler for App {
                     viewport.set_debug_trace_render_time(DEBUG_RENDER_TIME.load(Ordering::Relaxed));
                     viewport.set_debug_trace_reuse_path(DEBUG_REUSE_PATH.load(Ordering::Relaxed));
                     let mut promotion_config = viewport.promotion_config();
-                    let enable_layer_promotion =
-                        ENABLE_LAYER_PROMOTION.load(Ordering::Relaxed);
+                    let enable_layer_promotion = ENABLE_LAYER_PROMOTION.load(Ordering::Relaxed);
                     promotion_config.enabled = enable_layer_promotion;
                     promotion_config.base_threshold = if enable_layer_promotion {
                         ViewportPromotionConfig::default().base_threshold

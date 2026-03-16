@@ -5,8 +5,8 @@ use crate::transition::{
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
     CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
     ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin,
-    StyleTransitionPlugin, TrackKey, TrackTarget, Transition, TransitionFrame, TransitionHost,
-    TransitionPluginId, VisualTransitionPlugin,
+    StyleField, StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition,
+    TransitionFrame, TransitionHost, TransitionPluginId, VisualTransitionPlugin,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyEventData,
@@ -14,6 +14,7 @@ use crate::ui::{
     MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, RsxNode, TextInputEvent,
     ViewportListenerAction, ViewportListenerHandle, take_state_dirty,
 };
+use crate::view::base_component::Renderable;
 use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
 use crate::view::promotion::{
@@ -21,10 +22,9 @@ use crate::view::promotion::{
     ViewportPromotionConfig, active_channels_by_node, evaluate_promotion,
 };
 use crate::view::promotion_builder::{
-    collect_promoted_layer_updates, collect_promotion_candidates,
+    collect_debug_subtree_signatures, collect_promoted_layer_updates, collect_promotion_candidates,
 };
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
-use crate::view::base_component::Renderable;
 use crate::{ColorLike, Cursor, HexColor, Style};
 use arboard::Clipboard;
 use std::any::Any;
@@ -248,8 +248,38 @@ fn debug_reuse_path_store() -> &'static Mutex<Vec<DebugReusePathRecord>> {
     STORE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn debug_style_sample_store() -> &'static Mutex<Vec<String>> {
+    static STORE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DebugStyleSampleRecord {
+    target: u64,
+    promoted_root: Option<u64>,
+}
+
+fn debug_style_sample_record_store() -> &'static Mutex<Vec<DebugStyleSampleRecord>> {
+    static STORE: OnceLock<Mutex<Vec<DebugStyleSampleRecord>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn debug_style_promotion_store() -> &'static Mutex<Vec<String>> {
+    static STORE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn debug_style_request_store() -> &'static Mutex<Vec<String>> {
+    static STORE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 pub(crate) fn begin_debug_reuse_path_frame() {
     debug_reuse_path_store().lock().unwrap().clear();
+    debug_style_sample_store().lock().unwrap().clear();
+    debug_style_sample_record_store().lock().unwrap().clear();
+    debug_style_promotion_store().lock().unwrap().clear();
+    debug_style_request_store().lock().unwrap().clear();
 }
 
 pub(crate) fn record_debug_reuse_path(record: DebugReusePathRecord) {
@@ -258,6 +288,41 @@ pub(crate) fn record_debug_reuse_path(record: DebugReusePathRecord) {
 
 fn snapshot_debug_reuse_path() -> Vec<DebugReusePathRecord> {
     debug_reuse_path_store().lock().unwrap().clone()
+}
+
+fn record_debug_style_sample(line: String) {
+    debug_style_sample_store().lock().unwrap().push(line);
+}
+
+fn snapshot_debug_style_samples() -> Vec<String> {
+    debug_style_sample_store().lock().unwrap().clone()
+}
+
+fn record_debug_style_sample_record(record: DebugStyleSampleRecord) {
+    debug_style_sample_record_store()
+        .lock()
+        .unwrap()
+        .push(record);
+}
+
+fn snapshot_debug_style_sample_records() -> Vec<DebugStyleSampleRecord> {
+    debug_style_sample_record_store().lock().unwrap().clone()
+}
+
+fn record_debug_style_promotion(line: String) {
+    debug_style_promotion_store().lock().unwrap().push(line);
+}
+
+fn snapshot_debug_style_promotion() -> Vec<String> {
+    debug_style_promotion_store().lock().unwrap().clone()
+}
+
+fn record_debug_style_request(line: String) {
+    debug_style_request_store().lock().unwrap().push(line);
+}
+
+fn snapshot_debug_style_requests() -> Vec<String> {
+    debug_style_request_store().lock().unwrap().clone()
 }
 
 fn format_reuse_path_trace() -> String {
@@ -322,17 +387,73 @@ fn format_reuse_path_trace() -> String {
             .unwrap_or_default();
         lines.push(format!(
             "  - node={} context={} requested={} can_reuse={} actual={} reason={}{}",
-            record.node_id,
-            context,
-            requested,
-            record.can_reuse,
-            actual,
-            reason,
-            clip_rect,
+            record.node_id, context, requested, record.can_reuse, actual, reason, clip_rect,
         ));
     }
 
     lines.join("\n")
+}
+
+fn format_style_sample_trace() -> String {
+    let lines = snapshot_debug_style_samples();
+    if lines.is_empty() {
+        return "[style-sample]\n  no style samples".to_string();
+    }
+    let mut out = vec![
+        "[style-sample]".to_string(),
+        format!("  summary: samples={}", lines.len()),
+    ];
+    out.extend(lines.into_iter().map(|line| format!("  - {line}")));
+    out.join("\n")
+}
+
+fn format_style_promotion_trace() -> String {
+    let lines = snapshot_debug_style_promotion();
+    if lines.is_empty() {
+        return "[style-promotion]\n  no sampled promoted roots".to_string();
+    }
+    let mut out = vec![
+        "[style-promotion]".to_string(),
+        format!("  summary: roots={}", lines.len()),
+    ];
+    out.extend(lines.into_iter().map(|line| format!("  - {line}")));
+    out.join("\n")
+}
+
+fn format_style_request_trace() -> String {
+    let lines = snapshot_debug_style_requests();
+    if lines.is_empty() {
+        return "[style-request]\n  no style requests".to_string();
+    }
+    let mut out = vec![
+        "[style-request]".to_string(),
+        format!("  summary: requests={}", lines.len()),
+    ];
+    out.extend(lines.into_iter().map(|line| format!("  - {line}")));
+    out.join("\n")
+}
+
+fn format_style_field(field: StyleField) -> &'static str {
+    match field {
+        StyleField::Opacity => "opacity",
+        StyleField::BorderRadius => "border_radius",
+        StyleField::BackgroundColor => "background_color",
+        StyleField::Color => "foreground_color",
+        StyleField::BorderTopColor => "border_top_color",
+        StyleField::BorderRightColor => "border_right_color",
+        StyleField::BorderBottomColor => "border_bottom_color",
+        StyleField::BorderLeftColor => "border_left_color",
+    }
+}
+
+fn format_style_value(value: StyleValue) -> String {
+    match value {
+        StyleValue::Scalar(value) => format!("{value:.3}"),
+        StyleValue::Color(color) => {
+            let [r, g, b, a] = color.to_rgba_u8();
+            format!("rgba({r},{g},{b},{a})")
+        }
+    }
 }
 
 fn append_overlay_line_quad(
@@ -636,6 +757,8 @@ pub struct Viewport {
     promotion_config: ViewportPromotionConfig,
     promoted_layer_updates: Vec<PromotedLayerUpdate>,
     promoted_base_signatures: HashMap<u64, u64>,
+    promoted_composition_signatures: HashMap<u64, u64>,
+    debug_previous_subtree_signatures: HashMap<u64, (u64, u64, u64, bool)>,
     promoted_reuse_cooldown_frames: u8,
     input_state: InputState,
     clipboard: Option<Clipboard>,
@@ -677,6 +800,8 @@ impl Viewport {
 
     fn invalidate_promoted_layer_reuse(&mut self) {
         self.promoted_base_signatures.clear();
+        self.promoted_composition_signatures.clear();
+        self.debug_previous_subtree_signatures.clear();
         self.promoted_layer_updates.clear();
         self.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
     }
@@ -790,6 +915,99 @@ impl Viewport {
             }
         }
         wgpu::CompositeAlphaMode::Auto
+    }
+
+    fn trace_style_sample_apply(
+        &self,
+        roots: &[Box<dyn super::base_component::ElementTrait>],
+        target: u64,
+        field: StyleField,
+        value: StyleValue,
+        applied: bool,
+        before_signatures: Option<(u64, u64)>,
+    ) {
+        if !self.debug_options.trace_reuse_path {
+            return;
+        }
+        let promoted_root = roots.iter().find_map(|root| {
+            let root_id = root.id();
+            if !self.promotion_state.promoted_node_ids.contains(&root_id) {
+                return None;
+            }
+            if root_id == target
+                || super::base_component::subtree_contains_node(root.as_ref(), root_id, target)
+            {
+                Some(root_id)
+            } else {
+                None
+            }
+        });
+        let state = roots.iter().rev().find_map(|root| {
+            super::base_component::get_debug_element_render_state_by_id(root.as_ref(), target)
+        });
+        let ancestry = roots.iter().rev().find_map(|root| {
+            super::base_component::get_node_ancestry_ids(root.as_ref(), target)
+        });
+        let after_signatures = roots.iter().rev().find_map(|root| {
+            super::base_component::get_debug_promotion_signatures_by_id(root.as_ref(), target)
+        });
+        let state_desc = match state {
+            Some(state) => format!(
+                "bg=rgba({},{},{},{}) fg=rgba({},{},{},{}) opacity={:.3} border_radius={:.3}",
+                state.background_rgba[0],
+                state.background_rgba[1],
+                state.background_rgba[2],
+                state.background_rgba[3],
+                state.foreground_rgba[0],
+                state.foreground_rgba[1],
+                state.foreground_rgba[2],
+                state.foreground_rgba[3],
+                state.opacity,
+                state.border_radius,
+            ),
+            None => "state=missing".to_string(),
+        };
+        let promoted_root_desc = promoted_root
+            .map(|node_id| format!("promoted_root={node_id}"))
+            .unwrap_or_else(|| "promoted_root=none".to_string());
+        let signature_desc = match (before_signatures, after_signatures) {
+            (Some((before_self, before_clip)), Some((after_self, after_clip))) => format!(
+                "sig_self={}=>{} sig_clip={}=>{}",
+                before_self, after_self, before_clip, after_clip
+            ),
+            (None, Some((after_self, after_clip))) => {
+                format!("sig_self=missing=>{} sig_clip=missing=>{}", after_self, after_clip)
+            }
+            (Some((before_self, before_clip)), None) => {
+                format!("sig_self={}=>missing sig_clip={}=>missing", before_self, before_clip)
+            }
+            (None, None) => "sig=missing".to_string(),
+        };
+        let ancestry_desc = ancestry
+            .map(|path| {
+                let joined = path
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join("->");
+                format!("ancestry={joined}")
+            })
+            .unwrap_or_else(|| "ancestry=missing".to_string());
+        record_debug_style_sample_record(DebugStyleSampleRecord {
+            target,
+            promoted_root,
+        });
+        record_debug_style_sample(format!(
+            "node={} field={} sample={} applied={} {} {} {} {}",
+            target,
+            format_style_field(field),
+            format_style_value(value),
+            applied,
+            promoted_root_desc,
+            ancestry_desc,
+            signature_desc,
+            state_desc,
+        ));
     }
 
     fn cancel_pointer_interactions(
@@ -1058,6 +1276,17 @@ impl Viewport {
                 claims: &mut self.transition_claims,
             };
             for request in style_requests {
+                if self.debug_options.trace_reuse_path {
+                    record_debug_style_request(format!(
+                        "target={} field={} from={} to={} duration_ms={} delay_ms={}",
+                        request.target,
+                        format_style_field(request.field),
+                        format_style_value(request.from),
+                        format_style_value(request.to),
+                        request.transition.duration_ms,
+                        request.transition.delay_ms,
+                    ));
+                }
                 let _ = self.style_transition_plugin.start_style_track(
                     &mut host,
                     request.target,
@@ -1147,6 +1376,13 @@ impl Viewport {
         }
         let style_samples = self.style_transition_plugin.take_samples();
         for sample in style_samples {
+            let before_signatures = roots.iter().rev().find_map(|root| {
+                super::base_component::get_debug_promotion_signatures_by_id(
+                    root.as_ref(),
+                    sample.target,
+                )
+            });
+            let mut applied = false;
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_style_field_by_id(
                     root.as_mut(),
@@ -1155,9 +1391,18 @@ impl Viewport {
                     sample.value,
                 ) {
                     changed = true;
+                    applied = true;
                     break;
                 }
             }
+            self.trace_style_sample_apply(
+                roots,
+                sample.target,
+                sample.field,
+                sample.value,
+                applied,
+                before_signatures,
+            );
         }
         let visual_samples = self.visual_transition_plugin.take_samples();
         for sample in visual_samples {
@@ -1226,6 +1471,13 @@ impl Viewport {
             changed |= Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
         }
         for sample in self.style_transition_plugin.take_samples() {
+            let before_signatures = roots.iter().rev().find_map(|root| {
+                super::base_component::get_debug_promotion_signatures_by_id(
+                    root.as_ref(),
+                    sample.target,
+                )
+            });
+            let mut applied = false;
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_style_field_by_id(
                     root.as_mut(),
@@ -1234,9 +1486,18 @@ impl Viewport {
                     sample.value,
                 ) {
                     changed = true;
+                    applied = true;
                     break;
                 }
             }
+            self.trace_style_sample_apply(
+                roots,
+                sample.target,
+                sample.field,
+                sample.value,
+                applied,
+                before_signatures,
+            );
         }
         for sample in self.visual_transition_plugin.take_samples() {
             for root in roots.iter_mut().rev() {
@@ -1284,20 +1545,79 @@ impl Viewport {
             (self.logical_width, self.logical_height),
             self.promotion_config,
         );
-        let (mut updates, next_signatures) = collect_promoted_layer_updates(
-            roots,
-            &self.promotion_state.promoted_node_ids,
-            &self.promoted_base_signatures,
-        );
+        let (mut updates, next_base_signatures, next_composition_signatures) =
+            collect_promoted_layer_updates(
+                roots,
+                &self.promotion_state.promoted_node_ids,
+                &self.promoted_base_signatures,
+                &self.promoted_composition_signatures,
+            );
+        if self.debug_options.trace_reuse_path {
+            let subtree_signatures =
+                collect_debug_subtree_signatures(roots, &self.promotion_state.promoted_node_ids);
+            let previous_subtree_signatures = &self.debug_previous_subtree_signatures;
+            let mut sampled_roots = snapshot_debug_style_sample_records()
+                .into_iter()
+                .filter_map(|record| record.promoted_root.map(|root| (record.target, root)))
+                .collect::<Vec<_>>();
+            sampled_roots.sort_unstable();
+            sampled_roots.dedup();
+            for (target, root_id) in sampled_roots {
+                if let Some(update) = updates.iter().find(|update| update.node_id == root_id) {
+                    let ancestry = roots
+                        .iter()
+                        .rev()
+                        .find_map(|root| super::base_component::get_node_ancestry_ids(root.as_ref(), target))
+                        .unwrap_or_default();
+                    let walk_desc = ancestry
+                        .into_iter()
+                        .filter_map(|node_id| {
+                            subtree_signatures
+                                .get(&node_id)
+                                .map(|(base, comp, output, has_output)| {
+                                    let prev = previous_subtree_signatures.get(&node_id).copied();
+                                    let prev_desc = prev
+                                        .map(|(prev_base, prev_comp, prev_output, prev_has_out)| {
+                                            format!(
+                                                "prev_base={prev_base},prev_comp={prev_comp},prev_out={prev_output},prev_has_out={prev_has_out},"
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    format!(
+                                        "{node_id}[{prev_desc}base={base},comp={comp},out={output},has_out={has_output}]"
+                                    )
+                                })
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    record_debug_style_promotion(format!(
+                        "target={} promoted_root={} kind={:?} prev_base={:?} base={} prev_comp={:?} comp={} walk={}",
+                        target,
+                        root_id,
+                        update.kind,
+                        update.previous_base_signature,
+                        update.base_signature,
+                        update.previous_composition_signature,
+                        update.composition_signature,
+                        walk_desc
+                    ));
+                }
+            }
+            self.debug_previous_subtree_signatures = subtree_signatures;
+        } else {
+            self.debug_previous_subtree_signatures.clear();
+        }
         if self.promoted_reuse_cooldown_frames > 0 {
             for update in &mut updates {
                 update.kind = PromotedLayerUpdateKind::Reraster;
+                update.composition_kind = PromotedLayerUpdateKind::Reraster;
             }
             self.promoted_reuse_cooldown_frames =
                 self.promoted_reuse_cooldown_frames.saturating_sub(1);
         }
         self.promoted_layer_updates = updates;
-        self.promoted_base_signatures = next_signatures;
+        self.promoted_base_signatures = next_base_signatures;
+        self.promoted_composition_signatures = next_composition_signatures;
     }
 
     fn apply_promotion_runtime(&self, ctx: &mut super::base_component::UiBuildContext) {
@@ -1306,9 +1626,15 @@ impl Viewport {
             .iter()
             .map(|update| (update.node_id, update.kind))
             .collect::<HashMap<_, _>>();
+        let promoted_composition_update_kinds = self
+            .promoted_layer_updates
+            .iter()
+            .map(|update| (update.node_id, update.composition_kind))
+            .collect::<HashMap<_, _>>();
         ctx.set_promoted_runtime(
             Arc::new(self.promotion_state.promoted_node_ids.clone()),
             Arc::new(promoted_update_kinds),
+            Arc::new(promoted_composition_update_kinds),
         );
     }
 
@@ -1331,6 +1657,7 @@ impl Viewport {
                 corner_radii: composite_bounds.corner_radii,
                 opacity,
                 scissor_rect: None,
+                clear_target: false,
             },
             super::render_pass::composite_layer_pass::CompositeLayerInput {
                 layer: super::render_pass::composite_layer_pass::LayerIn::with_handle(
@@ -1392,6 +1719,8 @@ impl Viewport {
             promotion_config: ViewportPromotionConfig::default(),
             promoted_layer_updates: Vec::new(),
             promoted_base_signatures: HashMap::new(),
+            promoted_composition_signatures: HashMap::new(),
+            debug_previous_subtree_signatures: HashMap::new(),
             promoted_reuse_cooldown_frames: 0,
             input_state: InputState::default(),
             clipboard: Clipboard::new().ok(),
@@ -2024,24 +2353,28 @@ impl Viewport {
                     .downcast_mut::<super::base_component::Element>()
                 {
                     if let Some(reason) = element.inline_promotion_rendering_reason() {
-                        record_debug_reuse_path(DebugReusePathRecord {
-                            node_id: root_id,
-                            context: DebugReusePathContext::Root,
-                            requested: requested_update,
-                            can_reuse: false,
-                            actual: PromotedLayerUpdateKind::Reraster,
-                            reason: Some(reason),
-                            clip_rect: element.absolute_clip_scissor_rect(),
-                        });
-                        let next_state = element.build(
-                            &mut graph,
-                            super::base_component::UiBuildContext::from_parts(
-                                ctx.viewport(),
-                                ctx.state_clone(),
-                            ),
-                        );
-                        ctx.set_state(next_state);
-                        continue;
+                        if reason != "child-scissor-clip-inline"
+                            && reason != "child-stencil-clip-inline"
+                        {
+                            record_debug_reuse_path(DebugReusePathRecord {
+                                node_id: root_id,
+                                context: DebugReusePathContext::Root,
+                                requested: requested_update,
+                                can_reuse: false,
+                                actual: PromotedLayerUpdateKind::Reraster,
+                                reason: Some(reason),
+                                clip_rect: element.absolute_clip_scissor_rect(),
+                            });
+                            let next_state = element.build(
+                                &mut graph,
+                                super::base_component::UiBuildContext::from_parts(
+                                    ctx.viewport(),
+                                    ctx.state_clone(),
+                                ),
+                            );
+                            ctx.set_state(next_state);
+                            continue;
+                        }
                     }
                 }
                 let update_kind = requested_update;
@@ -2300,6 +2633,9 @@ impl Viewport {
         }
         if self.debug_options.trace_reuse_path {
             println!("{}", format_reuse_path_trace());
+            println!("{}", format_style_request_trace());
+            println!("{}", format_style_sample_trace());
+            println!("{}", format_style_promotion_trace());
         }
         self.frame_stats.record_frame(frame_start.elapsed());
         self.last_frame_graph = Some(graph);

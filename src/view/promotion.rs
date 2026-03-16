@@ -104,6 +104,9 @@ pub struct PromotedLayerUpdate {
     pub kind: PromotedLayerUpdateKind,
     pub base_signature: u64,
     pub previous_base_signature: Option<u64>,
+    pub composition_kind: PromotedLayerUpdateKind,
+    pub composition_signature: u64,
+    pub previous_composition_signature: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

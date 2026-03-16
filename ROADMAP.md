@@ -1,60 +1,85 @@
 # ROADMAP
 
-## 目標
-- 建立 typed-only 的樣式與佈局能力，避免字串解析路徑。
-- 讓 RSX 撰寫體驗更一致，並維持互動狀態穩定（hover/scroll/node id）。
-- 以可驗收的里程碑推進：每項都要有測試與範例。
+## Goals
+- Establish typed-only style and layout capabilities and avoid string-based parsing paths.
+- Keep the RSX authoring experience consistent while preserving stable interactive state such as hover, scroll, and node identity.
+- Move forward through verifiable milestones, with tests and examples for every item.
 
-## 里程碑 M1（近期）
+## Recent Progress (2026-03)
 
-### 1. 新增 `:focus` 狀態樣式
-**範圍**
-- parsed style 新增 focus 狀態欄位（typed）。
-- computed style 合併 focus 狀態規則。
-- element sync + renderer 支援 focus 狀態切換重繪。
-- RSX/schema 可宣告 focus 相關 style。
+### Promoted Layer / Reuse Status
+- The promoted layer pipeline now has three distinct signatures: `base_signature`, `composition_signature`, and `output_signature`.
+- `output_signature` now propagates correctly through the entire subtree instead of only applying to `self_is_promoted` nodes.
+- In `Transition Plugin Lab`, `StyleTransitionPlugin` changes on non-promoted children inside a promoted root now correctly dirty the promoted root.
+- `foreground_color` is now included in `promotion_self_signature()`, preventing false `Reuse` results for `TransitionProperty::Color`.
 
-**執行步驟**
-1. 在 `parsed_style` 新增 focus 變體（不走字串鍵值）。
-2. 在 `computed_style` 加入 focus 合成規則，維持 struct 化欄位。
-3. 在事件流程接入 focus/blur，觸發節點重繪。
-4. 在 renderer 套用 focus 視覺（例如 outline/border 變化）。
-5. 補測試與範例（鍵盤導覽、點擊切換 focus）。
+### Clip / Child Composition Status
+- The incorrect optimization that used scissor-only clipping for non-rounded child clip scopes has been reverted; stencil child clip is the correct path again.
+- Promoted layer reuse is no longer permanently blocked by `absolute clip` or `child stencil clip` categories; reuse now depends on the final clip geometry result.
+- Absolute clip and child clip state are now part of promotion invalidation and are compared using the final geometry actually consumed by rendering.
 
-**驗收條件**
-- focus/blur 後，目標節點可穩定更新視覺。
-- 不會導致整棵樹重建或 node id 漂移。
-- 測試涵蓋 focus 切換與重繪路徑。
+### Final Layer Reuse / Frame Graph Status
+- Promoted layers can now reuse final layer output, not just base textures.
+- `compose_promoted_descendants_only(...)` now exits early when a subtree has no promoted or deferred work, avoiding unnecessary descendant composition work every frame.
+- The frame graph compiler can now absorb leading clears by merging `ClearPass -> first writer` into a single physical pass, reducing same-target `Clear -> Load` fragmentation.
+- `TextPass` attachment declarations now align with other 2D passes on the same target, reducing unnecessary pass splits.
 
-### 2. `Display` 命名調整為 `Layout`
-**範圍**
-- 型別、欄位、RSX schema、文件與範例的命名統一。
-- 僅做語意對齊，不引入行為變更。
+### Debugging / Verification Support
+- `Debug Reuse Path` can now be enabled independently, without requiring `Debug Render Time`.
+- A reuse overlay and Inspector legend are now available to visualize `actual reuse`, `actual reraster`, and inline fallback categories directly on screen.
+- Style sample and promotion walk traces were added to verify that style transition samples are applied to the live tree and correctly dirty the owning promoted root.
+- Regression tests were added for `StyleTransitionPlugin` and lab-like nested structures to verify that promoted roots reraster when nested non-promoted children change style.
 
-**執行步驟**
-1. 盤點 `Display` 的 enum/type/欄位與公開 API。
-2. 以相容遷移方式改名為 `Layout`（必要時先保留 alias）。
-3. 更新 rsx-macro/schema 錯誤訊息與文件用語。
-4. 更新 examples 與 README 對應片段。
+## Milestone M1 (Near Term)
 
-**驗收條件**
-- 專案可編譯、既有測試通過。
-- `Layout` 成為主命名；舊命名若保留需標記 deprecate。
-- 無行為回歸（layout 結果與改名前一致）。
+### 1. Add `:focus` State Styling
+**Scope**
+- Add typed focus-state fields to parsed style.
+- Merge focus-state rules into computed style.
+- Support redraw on focus-state transitions in element sync and renderer.
+- Allow focus-related style declarations through RSX/schema.
 
-## 里程碑 M2（下一步）
+**Execution Steps**
+1. Add a focus variant to `parsed_style` without introducing string-key lookups.
+2. Add focus composition rules to `computed_style` while keeping struct-based fields.
+3. Hook focus/blur into the event flow and trigger node redraws.
+4. Apply focus visuals in the renderer, such as outline or border changes.
+5. Add tests and examples for keyboard navigation and click-driven focus changes.
 
-### 3. `Position::Absolute` 重構為 `Placement`
-**目標**
-- 用單一 `Placement` 模型同時支援 `Edges`（CSS 風格）與 `Align`（UI 對齊點風格）。
-- 保持 typed-only，遵守 `%` 在可解析容器下才生效的規則。
+**Acceptance Criteria**
+- The target node updates its visuals consistently after focus/blur.
+- Focus changes do not rebuild the whole tree or cause node id drift.
+- Tests cover focus switching and redraw paths.
 
-**精簡設計草案**
+### 2. Rename `Display` to `Layout`
+**Scope**
+- Unify naming across types, fields, RSX schema, docs, and examples.
+- Keep this as a semantic rename only, with no behavior changes.
+
+**Execution Steps**
+1. Inventory all public APIs, enums, types, and fields that currently use `Display`.
+2. Rename them to `Layout` with a compatibility migration path, keeping aliases temporarily if needed.
+3. Update rsx-macro/schema diagnostics and documentation wording.
+4. Update matching examples and README snippets.
+
+**Acceptance Criteria**
+- The project builds and existing tests pass.
+- `Layout` becomes the primary name; any retained old names are marked deprecated.
+- No layout behavior regressions are introduced.
+
+## Milestone M2 (Next)
+
+### 3. Refactor `Position::Absolute` into `Placement`
+**Goal**
+- Use a single `Placement` model to support both `Edges` (CSS-style) and `Align` (UI anchor-style) positioning.
+- Keep the system typed-only and preserve the rule that `%` only resolves against definite container sizes.
+
+**Condensed Design Draft**
 ```rust
 #[derive(Clone, Debug)]
 pub struct AbsSpec {
     pub anchor: Option<AnchorName>,
-    pub placement: AbsPlacement, // Edges 與 Align 二選一
+    pub placement: AbsPlacement,
 }
 
 #[derive(Clone, Debug)]
@@ -84,116 +109,157 @@ pub struct Axis2<T> {
 }
 ```
 
-**執行步驟（依專案規範順序）**
-1. `parsed_style`：加入 `Placement` typed 欄位與解析入口。
-2. `computed_style`：建立 `AbsSpec/AbsPlacement` 對應欄位。
-3. `schema/macro`：RSX props 綁定到新型別，移除舊 absolute 寫法。
-4. `element sync`：將 placement 同步到 element 佈局資料。
-5. `renderer/layout solver`：實作 Edges 與 Align 的定位計算。
-6. `tests + examples`：覆蓋 `%`、anchor、line wrap 交互情境。
+**Execution Steps**
+1. Add typed `Placement` fields and parsing entry points in `parsed_style`.
+2. Add matching `AbsSpec/AbsPlacement` fields in `computed_style`.
+3. Bind RSX props to the new types through schema/macro and remove the old absolute API path.
+4. Sync placement state into element layout data.
+5. Implement `Edges` and `Align` positioning in the renderer/layout solver.
+6. Add tests and examples covering `%`, anchors, and wrapping interactions.
 
-**驗收條件**
-- `Edges` 路徑可涵蓋 top/right/bottom/left 任意組合。
-- `Align` 路徑可用 `Length::percent(0/50/100)` 與 `offset` 取得預期位置。
-- 容器尺寸不定時，`%` 不反向影響父層量測。
-- 舊 absolute API 有遷移說明與 deprecate 策略。
+**Acceptance Criteria**
+- `Edges` supports arbitrary combinations of top/right/bottom/left.
+- `Align` supports expected positions using `Length::percent(0/50/100)` and `offset`.
+- `%` does not back-propagate into parent measurement when the container size is indefinite.
+- The old absolute API has a migration path and deprecation strategy.
 
-### 4. 整理 `base_element` trait 能力邊界
-**目標**
-- 盤點並收斂 `ElementTrait`、`Layoutable`、`EventTarget`、`Renderable` 的責任邊界。
-- 降低 `as_any + downcast::<Element>` 依賴，改用能力導向介面。
-- 此階段先完成設計與遷移計畫，不先做大規模行為變更。
+### 4. Reorganize `base_element` Trait Boundaries
+**Goal**
+- Audit and reduce responsibility overlap between `ElementTrait`, `Layoutable`, `EventTarget`, and `Renderable`.
+- Reduce reliance on `as_any + downcast::<Element>` and move toward capability-oriented interfaces.
+- This stage focuses on design and migration planning, not a large behavior rewrite.
 
-**範圍**
-- 輸出能力矩陣（容器/文字/可編輯元件各自需要的能力）。
-- 定義最小核心節點介面與可選能力 trait（layout / event / render / transition / snapshot）。
-- 盤點 `mod.rs` 與 `element.rs` 內的 downcast 熱點並提出替代 API。
+**Scope**
+- Produce a capability matrix for containers, text nodes, and editable components.
+- Define a minimal core node interface plus optional capability traits for layout, events, rendering, transitions, and snapshots.
+- Audit downcast-heavy paths in `mod.rs` and `element.rs` and propose replacement APIs.
 
-**執行步驟**
-1. 建立現況盤點文件：trait 方法使用率、呼叫點、元件覆寫差異。
-2. 設計「核心介面 + 能力 trait」草案（先不改行為）。
-3. 列出所有 downcast 呼叫點與對應替代方法（例如 transition/hit-test/defer render）。
-4. 規劃分階段遷移順序與相容策略（避免一次性重寫）。
-5. 補上回歸測試清單與風險控制項。
+**Execution Steps**
+1. Produce an audit document of trait method usage, call sites, and per-component overrides.
+2. Draft a "core interface + capability traits" design without changing behavior yet.
+3. List downcast call sites and proposed replacements, such as transition, hit-test, and deferred render APIs.
+4. Plan a staged migration order and compatibility strategy to avoid a big-bang rewrite.
+5. Add a regression test list and risk controls.
 
-**驗收條件**
-- 有可執行的遷移清單（含檔案、方法、順序）。
-- 明確標出可刪除的 downcast 路徑與替代 API。
-- 不引入字串樣式管線，維持 typed-only 原則。
+**Acceptance Criteria**
+- A concrete migration checklist exists with files, methods, and order.
+- Downcast-removal candidates and replacement APIs are clearly identified.
+- The design keeps the typed-only rule and does not reintroduce string style paths.
 
-### 5. 以 Layout 接管 Bounds，並移除獨立 Bounds 管線
-**目標**
-- 以 layout 結果作為唯一幾何來源，移除額外 `bounds` 概念與同步成本。
-- hit-test、clip、可視判定、scroll 範圍統一依據 `layout_position/layout_size/layout_inner_*`。
+### 5. Let Layout Fully Replace Bounds
+**Goal**
+- Make layout results the single source of truth for geometry and remove the separate `bounds` concept and sync cost.
+- Use `layout_position/layout_size/layout_inner_*` consistently for hit-testing, clipping, visibility, and scroll ranges.
 
-**範圍**
-- 事件命中與 bubbling 的 local 座標計算。
-- 渲染裁切與可視判定流程。
-- scroll 邊界與內容大小推導。
+**Scope**
+- Event hit-testing and bubbling local coordinate calculation.
+- Render clipping and visibility evaluation.
+- Scroll bounds and content size derivation.
 
-**執行步驟**
-1. 盤點所有 `bounds` 讀寫點與等價 layout 欄位來源。
-2. 建立 layout 幾何存取 API（outer/inner/content/clip）作為唯一入口。
-3. 先切換 hit-test 與事件 local 座標到 layout 幾何。
-4. 再切換 render clip/可視判定與 scroll 邊界計算。
-5. 移除剩餘 `bounds` 欄位與同步邏輯，補上遷移註記。
+**Execution Steps**
+1. Audit all `bounds` reads/writes and map them to equivalent layout fields.
+2. Introduce a layout geometry access API for outer/inner/content/clip geometry.
+3. Switch hit-testing and local event coordinates to layout geometry first.
+4. Then switch render clip/visibility and scroll bounds to layout geometry.
+5. Remove remaining `bounds` fields and sync logic and document the migration.
 
-**驗收條件**
-- `bounds` 不再作為資料來源；幾何判定全由 layout 提供。
-- hover/scroll/焦點互動不回歸，node id 與狀態維持穩定。
-- `%` 尺寸、absolute clip、scroll bubble 路徑測試通過。
+**Acceptance Criteria**
+- `bounds` is no longer a geometry source.
+- Hover, scroll, and focus behavior remain stable without node id drift.
+- Tests pass for `%`, absolute clip, and scroll bubbling paths.
 
-## 里程碑 M3（Viewport 整理）
+## Milestone M3 (Viewport Cleanup)
 
-### 6. Viewport 現況架構盤點（layout/renderer/style/rsx schema）
-**目標**
-- 明確化 viewport 在 `layout -> renderer -> style -> rsx schema` 的資料流與責任邊界。
-- 作為後續效能與可維護性重構的基準文件。
+### 6. Audit Current Viewport Architecture (layout / renderer / style / rsx schema)
+**Goal**
+- Clarify viewport responsibilities and data flow across `layout -> renderer -> style -> rsx schema`.
+- Establish a baseline document for later performance and maintainability work.
 
-**現況摘要**
-1. `Viewport` 主導每幀流程：`measure -> place -> collect_box_models -> build graph -> compile -> execute`。
-2. transition 在 layout 後會再觸發一次 `place + collect_box_models`（需要時）。
-3. `Element::measure` 有 `layout_dirty + last_layout_proposal` 快取；`place` 仍完整執行。
-4. `%/vw/vh` 透過 typed `Length::resolve_with_base` 解算，`%` 在 base 不可解時不回推父層。
-5. absolute 的 `ClipMode::Viewport` / `CollisionBoundary::Viewport` 於 place 階段依 runtime viewport 尺寸解算。
-6. RSX macro 以 `ElementStylePropSchema` 做 style key 編譯期檢查。
+**Current Summary**
+1. `Viewport` drives the frame lifecycle: `measure -> place -> collect_box_models -> build graph -> compile -> execute`.
+2. Transitions can trigger an extra `place + collect_box_models` after layout when needed.
+3. `Element::measure` already has `layout_dirty + last_layout_proposal` caching, while `place` still runs fully.
+4. `%/vw/vh` are resolved via typed `Length::resolve_with_base`, and `%` does not back-propagate when the base is indefinite.
+5. Absolute `ClipMode::Viewport` and `CollisionBoundary::Viewport` are resolved during place using the runtime viewport size.
+6. The RSX macro uses `ElementStylePropSchema` for compile-time style key validation.
 
-**輸出物**
-- 一份維護中的架構圖（文字版即可）與模組責任對照。
-- 一份 hot path 清單（layout、build graph、hit-test、transition）。
+**Outputs**
+- A maintained architecture map, even if text-only.
+- A hot-path inventory covering layout, build graph, hit-testing, and transitions.
 
-### 7. Viewport 問題清單收斂（效能 / 可維護性 / 可讀性）
-**效能問題**
-1. 每幀都重建並 compile frame graph，CPU 開銷高。
-2. post-layout transition 觸發二次 `place + collect_box_models`，動畫密集時成本放大。
-3. `overflow_child_indices.contains(&idx)` 在 loop 內重複線性查找，存在 O(n^2) 風險。
+### 7. Consolidate Viewport Problem List (Performance / Maintainability / Readability)
+**Performance Issues**
+1. The frame graph is rebuilt and recompiled every frame, which is CPU-expensive.
+2. Post-layout transitions can trigger a second `place + collect_box_models`, amplifying animation cost.
+3. `overflow_child_indices.contains(&idx)` is used in a loop and can cause O(n^2) behavior.
 
-**可維護性問題**
-1. `PLACEMENT_RUNTIME` 使用 thread-local 隱式狀態，資料流不透明。
-2. `ElementPropSchema` / renderer 仍保留 legacy 視覺 props（如 `padding_x`），與 typed-style 單一路徑不一致。
-3. `TextAreaPropSchema` 仍含 `String/f64` 幾何與顏色欄位，未與 typed-style 收斂。
+**Maintainability Issues**
+1. `PLACEMENT_RUNTIME` uses thread-local implicit state, making data flow harder to reason about.
+2. `ElementPropSchema` and renderer paths still carry legacy visual props such as `padding_x`, which conflict with the typed-style single path.
+3. `TextAreaPropSchema` still contains `String/f64` geometry and color fields instead of typed style fields.
 
-**可讀性問題**
-1. `viewport.rs` 與 `element.rs` 職責過重（layout/render/input/transition 混合），檔案過大。
-2. `set_size` / `set_scale_factor` 不主動 request redraw，依賴呼叫端記憶，語意不夠直觀。
+**Readability Issues**
+1. `viewport.rs` and `element.rs` still mix layout, render, input, and transition responsibilities and remain too large.
+2. `set_size` and `set_scale_factor` do not explicitly request redraw, relying on callers to remember to do so.
 
-### 8. Viewport 改善方案（不含風險控管）
-**短期（先拿效能）**
-1. 將 `overflow_child_indices` 改為 `Vec<bool>` 或 `HashSet<usize>`，移除 O(n^2) 路徑。
-2. transition 分流：僅幾何變更才觸發 relayout；純樣式/視覺變更避免二次 place。
-3. 導入 frame graph 重用策略：優先快取靜態 pass 結構，僅更新動態參數。
+### 8. Viewport Improvement Plan (Without Risk Controls)
+**Short Term**
+1. Replace `overflow_child_indices` with `Vec<bool>` or `HashSet<usize>` to remove the O(n^2) path.
+2. Split transitions by effect type so only geometry changes trigger relayout, while pure visual changes avoid a second place pass.
+3. Introduce frame graph reuse so static pass structure can be cached and only dynamic parameters need updating.
 
-**中期（提高可維護性）**
-1. `viewport` 拆模組：`input_dispatch.rs`、`render_pipeline.rs`、`transition_runtime.rs`。
-2. `element` 拆模組：`measure.rs`、`place.rs`、`clip_hit_test.rs`、`paint.rs`。
-3. 將 `PLACEMENT_RUNTIME` 改為顯式 `PlacementContext` 傳遞，降低隱式共享狀態。
+**Mid Term**
+1. Split `viewport` into `input_dispatch.rs`, `render_pipeline.rs`, and `transition_runtime.rs`.
+2. Split `element` into `measure.rs`, `place.rs`, `clip_hit_test.rs`, and `paint.rs`.
+3. Replace `PLACEMENT_RUNTIME` with an explicit `PlacementContext`.
 
-**中期（schema/API 收斂）**
-1. 移除 `ElementPropSchema` legacy 視覺欄位，統一走 `style`。
-2. `TextArea` 幾何與顏色改用 typed style（`Length` / `ColorLike`）。
-3. RSX macro 繼續保留編譯期 schema 驗證，並與 AGENTS typed-only 規範同步。
+**Mid Term (Schema / API Convergence)**
+1. Remove legacy visual fields from `ElementPropSchema` and route everything through `style`.
+2. Move `TextArea` geometry and color to typed style (`Length` / `ColorLike`).
+3. Keep RSX macro compile-time schema validation aligned with the typed-only rules in AGENTS.
 
-## 跨里程碑品質門檻
-- 每一項能力都需附最小可重現 example。
-- 回歸測試優先順序：`%` 解析、scroll 狀態穩定、hover/focus 重繪、border radius 裁切一致性。
-- 僅使用 typed API（`Length`/`Border`/`BorderRadius`/`ColorLike`），禁止字串 style 管線。
+## Milestone M4 (Promoted Layer Performance Convergence)
+
+### 9. Reduce Fixed Stencil Cost in Promoted Composition
+**Goal**
+- Now that promoted layer reuse is correct, reduce the fixed per-frame `StencilIncrement/StencilDecrement` and clip-scope pass cost.
+
+**Execution Steps**
+1. Make composition-stage clip decisions depend only on descendants that are actually composited, not all children.
+2. Evaluate whether child clip scopes can be moved further into the promoted final layer cache instead of being rebuilt on the parent target every frame.
+3. Add pass / draw-call tracing that separates clip stencil, text, and shadow/blur fixed costs.
+
+**Acceptance Criteria**
+- `StencilIncrement/StencilDecrement` counts drop further while reuse remains enabled.
+- `actual_reuse` does not regress and rendering correctness stays intact.
+
+### 10. Reduce Intermediate Targets and Pass Fragmentation in Shadow / Blur
+**Goal**
+- Reduce the current `different_target` split count by simplifying intermediate target switching and ping-pong behavior in shadow / blur modules.
+
+**Execution Steps**
+1. Audit target flow in `ShadowFillPass` and `BlurStagePass`.
+2. Merge reusable intermediate targets where possible and reduce unnecessary switching between `Fixed(1)` and `SurfaceDefault`.
+3. Evaluate whether blur passes can avoid extra clear operations and target bouncing.
+
+**Acceptance Criteria**
+- `execute(passes=...)` drops further.
+- Metal captures show materially fewer `different_target` split cases.
+
+### 11. Clean Up Promotion / Reuse Debugging and Warnings
+**Goal**
+- Keep the necessary debugging tools while reducing long-term noise from temporary trace code and warnings.
+
+**Execution Steps**
+1. Keep `Debug Reuse Path` and the overlay, but narrow deep style/promotion traces so they are only enabled when explicitly needed.
+2. Remove or refactor currently unused debug fields in `promotion_builder.rs`.
+3. Document the purpose and limitations of the current debug overlays and traces.
+
+**Acceptance Criteria**
+- `cargo check` no longer reports the known promotion debug warnings.
+- Normal runs do not emit unnecessary debug logs.
+
+## Cross-Milestone Quality Bar
+- Every capability must include a minimal reproducible example.
+- Regression test priority remains: `%` resolution, stable scroll state, hover/focus redraw, and consistent border-radius clipping.
+- Only typed APIs are allowed (`Length`, `Border`, `BorderRadius`, `ColorLike`); string-based style pipelines remain forbidden.

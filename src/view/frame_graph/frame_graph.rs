@@ -974,6 +974,164 @@ impl FrameGraph {
         self.compiled_graph.as_ref()
     }
 
+    pub fn debug_graphics_split_reasons(&self) -> Vec<String> {
+        fn step_label(step: &ExecuteStep, passes: &[PassNode]) -> Option<String> {
+            match step {
+                ExecuteStep::GraphicsPass { index } => {
+                    Some(format!("{}#{}", passes[*index].pass.name(), index))
+                }
+                ExecuteStep::GraphicsPassGroup(group) => {
+                    let first = group.pass_indices.first().copied()?;
+                    let last = group.pass_indices.last().copied()?;
+                    let first_name = passes[first].pass.name();
+                    let last_name = passes[last].pass.name();
+                    Some(format!(
+                        "{}#{} .. {}#{} ({} passes)",
+                        first_name,
+                        first,
+                        last_name,
+                        last,
+                        group.pass_indices.len()
+                    ))
+                }
+                _ => None,
+            }
+        }
+
+        fn step_key(step: &ExecuteStep, passes: &[PassNode]) -> Option<RenderPassCompatibilityKey> {
+            match step {
+                ExecuteStep::GraphicsPass { index } => {
+                    render_pass_descriptor_compatibility(&passes[*index].descriptor)
+                }
+                ExecuteStep::GraphicsPassGroup(group) => Some(group.compatibility.clone()),
+                _ => None,
+            }
+        }
+
+        fn summarize_attachment_target(
+            key: &RenderPassCompatibilityKey,
+        ) -> Option<AttachmentTarget> {
+            key.color_attachments
+                .first()
+                .map(|attachment| attachment.target)
+        }
+
+        fn split_reasons(
+            left: &RenderPassCompatibilityKey,
+            right: &RenderPassCompatibilityKey,
+        ) -> Vec<String> {
+            let mut reasons = Vec::new();
+            if left.sample_count != right.sample_count {
+                reasons.push(format!(
+                    "sample_count {:?} -> {:?}",
+                    left.sample_count, right.sample_count
+                ));
+            }
+            if left.color_attachments != right.color_attachments {
+                if left.color_attachments.len() != right.color_attachments.len() {
+                    reasons.push(format!(
+                        "color_attachment_count {} -> {}",
+                        left.color_attachments.len(),
+                        right.color_attachments.len()
+                    ));
+                } else {
+                    for (idx, (a, b)) in left
+                        .color_attachments
+                        .iter()
+                        .zip(right.color_attachments.iter())
+                        .enumerate()
+                    {
+                        if a.target != b.target {
+                            reasons.push(format!(
+                                "color[{idx}].target {:?} -> {:?}",
+                                a.target, b.target
+                            ));
+                        }
+                        if a.resolve_target != b.resolve_target {
+                            reasons.push(format!(
+                                "color[{idx}].resolve {:?} -> {:?}",
+                                a.resolve_target, b.resolve_target
+                            ));
+                        }
+                        if a.load_op != b.load_op {
+                            reasons.push(format!(
+                                "color[{idx}].load {:?} -> {:?}",
+                                a.load_op, b.load_op
+                            ));
+                        }
+                        if a.store_op != b.store_op {
+                            reasons.push(format!(
+                                "color[{idx}].store {:?} -> {:?}",
+                                a.store_op, b.store_op
+                            ));
+                        }
+                        if a.clear_color_bits != b.clear_color_bits {
+                            reasons.push(format!(
+                                "color[{idx}].clear {:?} -> {:?}",
+                                a.clear_color_bits, b.clear_color_bits
+                            ));
+                        }
+                    }
+                }
+            }
+            if left.depth_stencil_attachment != right.depth_stencil_attachment {
+                match (
+                    left.depth_stencil_attachment.as_ref(),
+                    right.depth_stencil_attachment.as_ref(),
+                ) {
+                    (Some((lt, ld, ls)), Some((rt, rd, rs))) => {
+                        if lt != rt {
+                            reasons.push(format!("depth_stencil.target {:?} -> {:?}", lt, rt));
+                        }
+                        if ld != rd {
+                            reasons.push(format!("depth {:?} -> {:?}", ld, rd));
+                        }
+                        if ls != rs {
+                            reasons.push(format!("stencil {:?} -> {:?}", ls, rs));
+                        }
+                    }
+                    (None, Some(_)) => reasons.push("depth_stencil none -> some".to_string()),
+                    (Some(_), None) => reasons.push("depth_stencil some -> none".to_string()),
+                    (None, None) => {}
+                }
+            }
+            reasons
+        }
+
+        let mut out = Vec::new();
+        let mut previous: Option<(&ExecuteStep, RenderPassCompatibilityKey, String)> = None;
+        for step in &self.execute_steps {
+            let Some(label) = step_label(step, &self.passes) else {
+                previous = None;
+                continue;
+            };
+            let Some(key) = step_key(step, &self.passes) else {
+                previous = None;
+                continue;
+            };
+            if let Some((_, prev_key, prev_label)) = &previous
+                && prev_key != &key
+            {
+                let same_target =
+                    summarize_attachment_target(prev_key) == summarize_attachment_target(&key);
+                let reasons = split_reasons(prev_key, &key);
+                let target_note = if same_target {
+                    "same_target"
+                } else {
+                    "different_target"
+                };
+                out.push(format!(
+                    "{target_note}: {}  ->  {} | {}",
+                    prev_label,
+                    label,
+                    reasons.join(", ")
+                ));
+            }
+            previous = Some((step, key, label));
+        }
+        out
+    }
+
     fn annotate_resource_versions(&mut self) {
         let mut latest_texture_version: HashMap<TextureHandle, TextureVersionId> = HashMap::new();
         let mut latest_buffer_version: HashMap<BufferHandle, BufferVersionId> = HashMap::new();
@@ -1431,6 +1589,7 @@ impl FrameGraph {
                     };
                     let mut pass_indices = vec![index];
                     let mut end = cursor + 1;
+                    let mut absorbed_load_variant: Option<RenderPassCompatibilityKey> = None;
                     while end < order.len() {
                         let next_index = order[end];
                         if self.passes[next_index].descriptor.kind != PassKind::Graphics {
@@ -1441,8 +1600,18 @@ impl FrameGraph {
                         else {
                             break;
                         };
-                        if current_key != next_key {
-                            break;
+                        let matches_current = current_key == next_key;
+                        let matches_absorbed = absorbed_load_variant
+                            .as_ref()
+                            .is_some_and(|key| key == &next_key);
+                        if !matches_current && !matches_absorbed {
+                            if absorbed_load_variant.is_none()
+                                && can_absorb_leading_clear_pass(&current_key, &next_key)
+                            {
+                                absorbed_load_variant = Some(next_key.clone());
+                            } else {
+                                break;
+                            }
                         }
                         pass_indices.push(next_index);
                         end += 1;
@@ -2942,6 +3111,78 @@ fn render_pass_descriptor_compatibility(
         return None;
     };
     Some(render_pass_compatibility_for_graphics(graphics))
+}
+
+fn can_absorb_leading_clear_pass(
+    clear_key: &RenderPassCompatibilityKey,
+    load_key: &RenderPassCompatibilityKey,
+) -> bool {
+    if clear_key.sample_count != load_key.sample_count {
+        return false;
+    }
+    if clear_key.color_attachments.len() != load_key.color_attachments.len() {
+        return false;
+    }
+    for (clear, load) in clear_key
+        .color_attachments
+        .iter()
+        .zip(load_key.color_attachments.iter())
+    {
+        if clear.target != load.target
+            || clear.resolve_target != load.resolve_target
+            || clear.store_op != load.store_op
+        {
+            return false;
+        }
+        if clear.load_op != AttachmentLoadOp::Clear {
+            return false;
+        }
+        if load.load_op != AttachmentLoadOp::Load {
+            return false;
+        }
+    }
+
+    match (
+        clear_key.depth_stencil_attachment.as_ref(),
+        load_key.depth_stencil_attachment.as_ref(),
+    ) {
+        (None, None) => {}
+        (
+            Some((clear_target, clear_depth, clear_stencil)),
+            Some((load_target, load_depth, load_stencil)),
+        ) => {
+            if clear_target != load_target {
+                return false;
+            }
+            match (clear_depth, load_depth) {
+                (None, None) => {}
+                (Some(clear_depth), Some(load_depth)) => {
+                    if clear_depth.store_op != load_depth.store_op
+                        || clear_depth.load_op != AttachmentLoadOp::Clear
+                        || load_depth.load_op != AttachmentLoadOp::Load
+                    {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+            match (clear_stencil, load_stencil) {
+                (None, None) => {}
+                (Some(clear_stencil), Some(load_stencil)) => {
+                    if clear_stencil.store_op != load_stencil.store_op
+                        || clear_stencil.load_op != AttachmentLoadOp::Clear
+                        || load_stencil.load_op != AttachmentLoadOp::Load
+                    {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        _ => return false,
+    }
+
+    true
 }
 
 fn render_pass_compatibility_for_graphics(
