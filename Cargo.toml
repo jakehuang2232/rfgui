@@ -7,6 +7,7 @@ edition = "2024"
 members = [
     "rsx-macro",
     "lib/rfgui-components",
+    "examples/01_window",
 ]
 
 [dependencies]
@@ -15,15 +16,8 @@ bytemuck = { version = "1.14", features = ["derive"] }
 once_cell = "1.21.3"
 glyphon = "0.10"
 arboard = "3.6.1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rfgui-rsx = { path = "rsx-macro" }
-
-[lib]
-
-[dev-dependencies]
-winit = "0.30.12"
-pollster = "0.3"
-rfgui-components = { path = "lib/rfgui-components" }
-rfd = "0.17.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26.1"

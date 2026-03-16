@@ -48,7 +48,7 @@ cargo build
 ### Run demo
 
 ```bash
-cargo run --example 01_window
+cargo run -p example-01-window --bin 01_window
 ```
 
 ## Project Layout

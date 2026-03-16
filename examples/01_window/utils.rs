@@ -1,5 +1,8 @@
+use crate::rfgui::ui::host::ImageSource;
 use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::Theme;
+use std::path::PathBuf;
+use std::sync::{OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn current_unix_timestamp() -> u64 {
@@ -39,4 +42,28 @@ pub fn app_background_color(is_dark: bool) -> Box<dyn ColorLike> {
     } else {
         Theme::light().color.background.base
     }
+}
+
+pub fn output_asset_path(file_name: &str) -> PathBuf {
+    let executable = std::env::current_exe().expect("failed to resolve current executable path");
+    executable
+        .parent()
+        .expect("failed to resolve executable directory")
+        .join("assets")
+        .join(file_name)
+}
+
+pub fn output_image_source(file_name: &str) -> ImageSource {
+    static LOGO_SOURCE: OnceLock<ImageSource> = OnceLock::new();
+    if file_name == "rfgui-logo.png" {
+        return LOGO_SOURCE
+            .get_or_init(|| load_output_image_source(file_name))
+            .clone();
+    }
+    load_output_image_source(file_name)
+}
+
+fn load_output_image_source(file_name: &str) -> ImageSource {
+    let path = output_asset_path(file_name);
+    ImageSource::Path(path)
 }

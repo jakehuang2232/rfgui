@@ -1,0 +1,17 @@
+[package]
+name = "example-01-window"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[[bin]]
+name = "01_window"
+path = "src/main.rs"
+
+[dependencies]
+rfgui = { path = "../.." }
+rfgui-components = { path = "../../lib/rfgui-components" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+winit = "0.30.12"
+pollster = "0.3"
+rfd = "0.17.2"

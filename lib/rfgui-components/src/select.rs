@@ -26,6 +26,7 @@ pub struct SelectProps<DataType, ValueType: 'static> {
 
 #[derive(Clone)]
 struct SelectMenuItem {
+    key: usize,
     label: String,
     selected: bool,
     disabled: bool,
@@ -65,6 +66,7 @@ where
                 });
 
                 SelectMenuItem {
+                    key: index,
                     label,
                     selected,
                     disabled,
@@ -236,6 +238,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
 
             rsx! {
                 <Element
+                    key={item.key}
                     style={{
                         layout: Layout::flow().row().no_wrap(),
                         padding: theme.component.input.padding,

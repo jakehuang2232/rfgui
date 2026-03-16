@@ -70,7 +70,7 @@ pub(crate) fn collect_promoted_layer_updates(
 ) {
     struct WalkState {
         base_signature: u64,
-        composition_signature: u64,
+        _composition_signature: u64,
         output_signature: u64,
         has_promoted_output: bool,
     }
@@ -196,7 +196,7 @@ pub(crate) fn collect_promoted_layer_updates(
         }
         WalkState {
             base_signature,
-            composition_signature,
+            _composition_signature: composition_signature,
             output_signature,
             has_promoted_output,
         }
@@ -226,7 +226,7 @@ pub(crate) fn collect_debug_subtree_signatures(
 ) -> HashMap<u64, (u64, u64, u64, bool)> {
     struct WalkState {
         base_signature: u64,
-        composition_signature: u64,
+        _composition_signature: u64,
         output_signature: u64,
         has_promoted_output: bool,
     }
@@ -321,7 +321,7 @@ pub(crate) fn collect_debug_subtree_signatures(
         );
         WalkState {
             base_signature,
-            composition_signature,
+            _composition_signature: composition_signature,
             output_signature,
             has_promoted_output,
         }
@@ -446,7 +446,11 @@ mod tests {
             true
         }
 
-        fn release_track_claim(&mut self, plugin_id: TransitionPluginId, key: TrackKey<TrackTarget>) {
+        fn release_track_claim(
+            &mut self,
+            plugin_id: TransitionPluginId,
+            key: TrackKey<TrackTarget>,
+        ) {
             if self.claims.get(&key).copied() == Some(plugin_id) {
                 self.claims.remove(&key);
             }

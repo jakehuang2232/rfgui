@@ -647,6 +647,25 @@ impl Element {
         self.layout_dirty = true;
     }
 
+    pub(crate) fn replace_children(
+        &mut self,
+        mut children: Vec<Box<dyn ElementTrait>>,
+    ) -> Vec<Box<dyn ElementTrait>> {
+        self.has_absolute_descendant_for_hit_test = false;
+        for child in &mut children {
+            if child.parent_id() != Some(self.core.id) {
+                child.set_parent_id(Some(self.core.id));
+            }
+            if let Some(element) = child.as_any().downcast_ref::<Element>() {
+                self.has_absolute_descendant_for_hit_test |= element
+                    .is_absolute_positioned_for_hit_test()
+                    || element.has_absolute_descendant_for_hit_test;
+            }
+        }
+        self.layout_dirty = true;
+        std::mem::replace(&mut self.children, children)
+    }
+
     pub(crate) fn has_absolute_descendant_for_hit_test(&self) -> bool {
         self.has_absolute_descendant_for_hit_test
     }

@@ -58,8 +58,8 @@ pub fn GlobalKeyCounterCard(title: String) -> RsxNode {
                 font_size: theme.typography.size.sm,
             }}>
                 <Text>Scroll test: scroll here, then move the card.</Text>
-                {scroll_lines.iter().map(|line| rsx! {
-                    <Text>{line.clone()}</Text>
+                {scroll_lines.iter().enumerate().map(|(index, line)| rsx! {
+                    <Text key={index}>{line.clone()}</Text>
                 }).collect::<Vec<RsxNode>>()}
             </Element>
             <Element style={{

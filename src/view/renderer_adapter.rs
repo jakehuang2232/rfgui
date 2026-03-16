@@ -1,12 +1,13 @@
 use crate::HexColor;
 use crate::Style;
+use crate::ui::host::{ImageFit, ImageSampling, ImageSource};
 use crate::ui::{
     Binding, FromPropValue, GlobalKey, Patch, PropValue, RenderBackend, RsxElementNode, RsxKey,
     RsxNode, RsxNodeIdentity,
 };
 use crate::view::Viewport;
-use crate::view::base_component::{Element, ElementTrait, Text, TextArea};
-use crate::{AnchorName, Color, Cursor, Length, ParsedValue, PropertyId};
+use crate::view::base_component::{Element, ElementTrait, Image, Text, TextArea};
+use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -509,6 +510,7 @@ fn convert_element(
     match node.tag.as_str() {
         "Text" => convert_text_element(node, path, global_path, inherited_text_style),
         "TextArea" => convert_text_area_element(node, path, global_path, inherited_text_style),
+        "Image" => convert_image_element(node, path, global_path, inherited_text_style),
         _ => {
             if let Ok(map) = element_factories().read() {
                 if let Some(factory) = map.get(&node.tag) {
@@ -1008,6 +1010,119 @@ fn convert_text_area_element(
         text_area.set_placeholder(placeholder);
     }
     Ok(Box::new(text_area))
+}
+
+fn convert_image_element(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<Box<dyn ElementTrait>, String> {
+    if !node.children.is_empty() {
+        return Err("<Image> does not accept children; use loading/error props".to_string());
+    }
+
+    let mut source: Option<ImageSource> = None;
+    let mut fit = ImageFit::Contain;
+    let mut sampling = ImageSampling::Linear;
+    let mut style: Option<Style> = None;
+    let mut loading = Vec::new();
+    let mut error = Vec::new();
+
+    for (key, value) in &node.props {
+        if key.as_str() == "key" {
+            continue;
+        }
+        match key.as_str() {
+            "source" => source = Some(ImageSource::from_prop_value(value.clone())?),
+            "fit" => fit = ImageFit::from_prop_value(value.clone())?,
+            "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
+            "style" => style = Some(as_style(value, key)?),
+            "loading" => {
+                loading = convert_image_slot(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "loading",
+                )?
+            }
+            "error" => {
+                error = convert_image_slot(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "error",
+                )?
+            }
+            _ => return Err(format!("unknown prop `{}` on <Image>", key)),
+        }
+    }
+
+    let mut image = Image::new_with_id(
+        stable_node_id_from_parts("Image", path, global_path.as_ref()),
+        source.ok_or_else(|| "<Image> requires `source`".to_string())?,
+    );
+    image.set_fit(fit);
+    image.set_sampling(sampling);
+    if let Some(style) = style {
+        image.apply_style(style);
+    } else {
+        image.apply_style(Style::new());
+    }
+    image.set_loading_slot(loading);
+    image.set_error_slot(error);
+    Ok(Box::new(image))
+}
+
+fn convert_image_slot(
+    value: &PropValue,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+    slot_name: &str,
+) -> Result<Vec<Box<dyn ElementTrait>>, String> {
+    let slot_node = RsxNode::from_prop_value(value.clone())?;
+    let mut wrapper = Element::new_with_id(
+        stable_node_id_from_parts(slot_name, path, global_path.as_ref()),
+        0.0,
+        0.0,
+        10_000.0,
+        10_000.0,
+    );
+    let mut wrapper_style = Style::new();
+    wrapper_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .left(Length::px(0.0))
+                .right(Length::px(0.0))
+                .top(Length::px(0.0))
+                .bottom(Length::px(0.0)),
+        ),
+    );
+    wrapper.apply_style(wrapper_style);
+
+    let mut slot_path = Vec::with_capacity(path.len() + 1);
+    slot_path.extend_from_slice(path);
+    slot_path.push(stable_node_id(NodeIdSeed::Local {
+        kind: slot_name,
+        path,
+    }));
+    let slot_global_path = child_global_node_path(
+        global_path.as_ref(),
+        &slot_node,
+        slot_path[slot_path.len() - 1],
+    );
+    append_child_nodes_flattening_fragments(
+        &mut wrapper,
+        &slot_node,
+        &slot_path,
+        slot_global_path,
+        inherited_text_style,
+    )?;
+    Ok(vec![Box::new(wrapper)])
 }
 
 fn stable_node_id(seed: NodeIdSeed<'_>) -> u64 {

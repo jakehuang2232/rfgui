@@ -10,7 +10,8 @@ use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, render_target_size, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
+use crate::ui::host::ImageSampling;
+use std::sync::{Arc, Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
 const TEXTURE_COMPOSITE_RESOURCES: u64 = 205;
@@ -66,6 +67,12 @@ pub type TextureCompositeIndexBufferOut = OutSlot<BufferResource, TextureComposi
 #[derive(Default)]
 pub struct TextureCompositeInput {
     pub source: TextureCompositeSourceIn,
+    pub sampled_source_key: Option<u64>,
+    pub sampled_source_size: Option<(u32, u32)>,
+    pub sampled_source_upload: Option<Arc<[u8]>>,
+    pub sampled_upload_state_key: Option<u64>,
+    pub sampled_upload_generation: Option<u64>,
+    pub sampled_source_sampling: Option<ImageSampling>,
     pub mask: TextureCompositeMaskIn,
     pub pass_context: RenderPassContext,
 }
@@ -91,10 +98,12 @@ struct CompositeVertex {
 }
 
 struct TextureCompositeResources {
-    pipeline_no_stencil: wgpu::RenderPipeline,
+    pipeline_no_depth: wgpu::RenderPipeline,
+    pipeline_depth_no_stencil: wgpu::RenderPipeline,
     pipeline_stencil_test: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
+    linear_sampler: wgpu::Sampler,
+    nearest_sampler: wgpu::Sampler,
     pipeline_format: wgpu::TextureFormat,
     pipeline_sample_count: u32,
 }
@@ -181,6 +190,7 @@ impl GraphicsPass for TextureCompositePass {
             .source
             .handle()
             .and_then(|handle| render_target_size(ctx, handle))
+            .or(self.input.sampled_source_size)
             .unwrap_or(surface_size);
         if target_w == 0 || target_h == 0 {
             return;
@@ -190,7 +200,11 @@ impl GraphicsPass for TextureCompositePass {
         let bounds = resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
         let uv_bounds = resolve_uv_bounds(
             self.params.uv_bounds,
-            scale,
+            if self.input.sampled_source_key.is_none() && self.input.source.handle().is_some() {
+                scale
+            } else {
+                1.0
+            },
             source_size.0 as f32,
             source_size.1 as f32,
         );
@@ -215,10 +229,36 @@ impl GraphicsPass for TextureCompositePass {
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        let Some(source_handle) = self.input.source.handle() else {
-            return;
-        };
-        let Some(source_view) = render_target_view(ctx.frame_resources(), source_handle) else {
+        let source_view = if let Some(source_handle) = self.input.source.handle() {
+            let Some(source_view) = render_target_view(ctx.frame_resources(), source_handle) else {
+                return;
+            };
+            source_view
+        } else if let Some(sampled_key) = self.input.sampled_source_key {
+            if let (Some(bytes), Some((width, height))) = (
+                self.input.sampled_source_upload.as_ref(),
+                self.input.sampled_source_size,
+            ) {
+                if ctx.viewport().upload_sampled_texture_rgba(
+                    sampled_key,
+                    width,
+                    height,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    bytes.as_ref(),
+                ) {
+                    if let (Some(state_key), Some(generation)) = (
+                        self.input.sampled_upload_state_key,
+                        self.input.sampled_upload_generation,
+                    ) {
+                        crate::view::image_resource::mark_uploaded(state_key, generation);
+                    }
+                }
+            }
+            let Some(source_view) = ctx.viewport().sampled_texture_view(sampled_key) else {
+                return;
+            };
+            source_view
+        } else {
             return;
         };
         let mask_view = self
@@ -279,7 +319,10 @@ impl GraphicsPass for TextureCompositePass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&resources.sampler),
+                    resource: wgpu::BindingResource::Sampler(match self.input.sampled_source_sampling {
+                        Some(ImageSampling::Nearest) => &resources.nearest_sampler,
+                        _ => &resources.linear_sampler,
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -347,10 +390,13 @@ impl GraphicsPass for TextureCompositePass {
             ctx.viewport()
                 .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
         });
-        let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
-            &resources.pipeline_stencil_test
-        } else {
-            &resources.pipeline_no_stencil
+        let pipeline = match (
+            self.input.pass_context.depth_stencil_target.is_some(),
+            self.input.pass_context.stencil_clip_id.is_some(),
+        ) {
+            (true, true) => &resources.pipeline_stencil_test,
+            (true, false) => &resources.pipeline_depth_no_stencil,
+            (false, _) => &resources.pipeline_no_depth,
         };
         encode_pass(
             ctx,
@@ -433,7 +479,7 @@ pub(crate) fn composite_immediate(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::Sampler(&resources.sampler),
+                resource: wgpu::BindingResource::Sampler(&resources.linear_sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
@@ -474,7 +520,7 @@ pub(crate) fn composite_immediate(
         });
     encode_raw_pass(
         &mut pass,
-        &resources.pipeline_no_stencil,
+        &resources.pipeline_no_depth,
         &bind_group,
         &vertex_buffer,
         &index_buffer,
@@ -592,13 +638,23 @@ fn create_resources(
         ],
     });
 
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("TextureComposite Sampler"),
+    let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("TextureComposite Linear Sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         address_mode_w: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    });
+    let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("TextureComposite Nearest Sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
@@ -609,13 +665,21 @@ fn create_resources(
         immediate_size: 0,
     });
 
-    let pipeline_no_stencil = create_pipeline(
+    let pipeline_no_depth = create_pipeline(
         device,
         &pipeline_layout,
         &shader,
         format,
         sample_count,
-        TextureCompositeStencilMode::Disabled,
+        TextureCompositeDepthMode::None,
+    );
+    let pipeline_depth_no_stencil = create_pipeline(
+        device,
+        &pipeline_layout,
+        &shader,
+        format,
+        sample_count,
+        TextureCompositeDepthMode::DepthNoStencil,
     );
     let pipeline_stencil_test = create_pipeline(
         device,
@@ -623,23 +687,26 @@ fn create_resources(
         &shader,
         format,
         sample_count,
-        TextureCompositeStencilMode::Test,
+        TextureCompositeDepthMode::DepthStencilTest,
     );
 
     TextureCompositeResources {
-        pipeline_no_stencil,
+        pipeline_no_depth,
+        pipeline_depth_no_stencil,
         pipeline_stencil_test,
         bind_group_layout,
-        sampler,
+        linear_sampler,
+        nearest_sampler,
         pipeline_format: format,
         pipeline_sample_count: sample_count,
     }
 }
 
 #[derive(Clone, Copy)]
-enum TextureCompositeStencilMode {
-    Disabled,
-    Test,
+enum TextureCompositeDepthMode {
+    None,
+    DepthNoStencil,
+    DepthStencilTest,
 }
 
 fn create_pipeline(
@@ -648,7 +715,7 @@ fn create_pipeline(
     shader: &wgpu::ShaderModule,
     format: wgpu::TextureFormat,
     sample_count: u32,
-    stencil_mode: TextureCompositeStencilMode,
+    depth_mode: TextureCompositeDepthMode,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("TextureComposite Pipeline"),
@@ -699,7 +766,7 @@ fn create_pipeline(
             topology: wgpu::PrimitiveTopology::TriangleList,
             ..Default::default()
         },
-        depth_stencil: Some(texture_composite_depth_stencil_state(stencil_mode)),
+        depth_stencil: texture_composite_depth_stencil_state(depth_mode),
         multisample: wgpu::MultisampleState {
             count: sample_count,
             mask: !0,
@@ -711,15 +778,22 @@ fn create_pipeline(
 }
 
 fn texture_composite_depth_stencil_state(
-    mode: TextureCompositeStencilMode,
-) -> wgpu::DepthStencilState {
-    wgpu::DepthStencilState {
-        format: wgpu::TextureFormat::Depth24PlusStencil8,
-        depth_write_enabled: false,
-        depth_compare: wgpu::CompareFunction::Always,
-        stencil: match mode {
-            TextureCompositeStencilMode::Disabled => wgpu::StencilState::default(),
-            TextureCompositeStencilMode::Test => wgpu::StencilState {
+    mode: TextureCompositeDepthMode,
+) -> Option<wgpu::DepthStencilState> {
+    match mode {
+        TextureCompositeDepthMode::None => None,
+        TextureCompositeDepthMode::DepthNoStencil => Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        TextureCompositeDepthMode::DepthStencilTest => Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState {
                 front: wgpu::StencilFaceState {
                     compare: wgpu::CompareFunction::Equal,
                     fail_op: wgpu::StencilOperation::Keep,
@@ -735,8 +809,8 @@ fn texture_composite_depth_stencil_state(
                 read_mask: 0xFF,
                 write_mask: 0x00,
             },
-        },
-        bias: wgpu::DepthBiasState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
     }
 }
 
@@ -850,5 +924,22 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
             }
             Some([left, top, right - left, bottom - top])
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_uv_bounds;
+
+    #[test]
+    fn resolve_uv_bounds_scales_render_target_sources() {
+        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 2.0, 200.0, 400.0);
+        assert_eq!(uv, [0.1, 0.1, 0.3, 0.2]);
+    }
+
+    #[test]
+    fn resolve_uv_bounds_does_not_scale_sampled_image_sources() {
+        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 1.0, 200.0, 400.0);
+        assert_eq!(uv, [0.05, 0.05, 0.15, 0.1]);
     }
 }

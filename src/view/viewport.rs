@@ -745,6 +745,7 @@ pub struct Viewport {
     depth_view: Option<wgpu::TextureView>,
     frame_state: Option<FrameState>,
     offscreen_render_target_pool: OffscreenRenderTargetPool,
+    sampled_texture_cache: HashMap<u64, SampledTextureEntry>,
     frame_buffer_pool: HashMap<u32, FrameBufferEntry>,
     upload_staging_belt: Option<StagingBelt>,
     pending_size: Option<(u32, u32)>,
@@ -792,6 +793,14 @@ struct FrameBufferEntry {
     buffer: wgpu::Buffer,
     size: u64,
     usage: wgpu::BufferUsages,
+}
+
+struct SampledTextureEntry {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
 }
 
 impl Viewport {
@@ -945,9 +954,10 @@ impl Viewport {
         let state = roots.iter().rev().find_map(|root| {
             super::base_component::get_debug_element_render_state_by_id(root.as_ref(), target)
         });
-        let ancestry = roots.iter().rev().find_map(|root| {
-            super::base_component::get_node_ancestry_ids(root.as_ref(), target)
-        });
+        let ancestry = roots
+            .iter()
+            .rev()
+            .find_map(|root| super::base_component::get_node_ancestry_ids(root.as_ref(), target));
         let after_signatures = roots.iter().rev().find_map(|root| {
             super::base_component::get_debug_promotion_signatures_by_id(root.as_ref(), target)
         });
@@ -976,10 +986,16 @@ impl Viewport {
                 before_self, after_self, before_clip, after_clip
             ),
             (None, Some((after_self, after_clip))) => {
-                format!("sig_self=missing=>{} sig_clip=missing=>{}", after_self, after_clip)
+                format!(
+                    "sig_self=missing=>{} sig_clip=missing=>{}",
+                    after_self, after_clip
+                )
             }
             (Some((before_self, before_clip)), None) => {
-                format!("sig_self={}=>missing sig_clip={}=>missing", before_self, before_clip)
+                format!(
+                    "sig_self={}=>missing sig_clip={}=>missing",
+                    before_self, before_clip
+                )
             }
             (None, None) => "sig=missing".to_string(),
         };
@@ -1567,7 +1583,9 @@ impl Viewport {
                     let ancestry = roots
                         .iter()
                         .rev()
-                        .find_map(|root| super::base_component::get_node_ancestry_ids(root.as_ref(), target))
+                        .find_map(|root| {
+                            super::base_component::get_node_ancestry_ids(root.as_ref(), target)
+                        })
                         .unwrap_or_default();
                     let walk_desc = ancestry
                         .into_iter()
@@ -1707,6 +1725,7 @@ impl Viewport {
             depth_view: None,
             frame_state: None,
             offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
+            sampled_texture_cache: HashMap::new(),
             frame_buffer_pool: HashMap::new(),
             upload_staging_belt: None,
             pending_size: None,
@@ -2643,7 +2662,8 @@ impl Viewport {
     }
 
     pub fn render_rsx(&mut self, root: &RsxNode) -> Result<(), String> {
-        let state_changed = take_state_dirty();
+        let state_changed =
+            take_state_dirty() || crate::view::image_resource::take_image_redraw_dirty();
         let needs_rebuild = state_changed || self.last_rsx_root.as_ref() != Some(root);
         if needs_rebuild {
             // Clear and save current scroll states
@@ -2773,6 +2793,86 @@ impl Viewport {
         )
     }
 
+    pub(crate) fn upload_sampled_texture_rgba(
+        &mut self,
+        stable_key: u64,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        bytes: &[u8],
+    ) -> bool {
+        let Some(device) = self.device.as_ref() else {
+            return false;
+        };
+        let Some(queue) = self.queue.as_ref() else {
+            return false;
+        };
+        let width = width.max(1);
+        let height = height.max(1);
+        let recreate = self
+            .sampled_texture_cache
+            .get(&stable_key)
+            .is_none_or(|entry| {
+                entry.width != width || entry.height != height || entry.format != format
+            });
+        if recreate {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Sampled Image Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.sampled_texture_cache.insert(
+                stable_key,
+                SampledTextureEntry {
+                    texture,
+                    view,
+                    width,
+                    height,
+                    format,
+                },
+            );
+        }
+        let Some(entry) = self.sampled_texture_cache.get(&stable_key) else {
+            return false;
+        };
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &entry.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width.saturating_mul(4)),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        true
+    }
+
+    pub(crate) fn sampled_texture_view(&self, stable_key: u64) -> Option<wgpu::TextureView> {
+        self.sampled_texture_cache
+            .get(&stable_key)
+            .map(|entry| entry.view.clone())
+    }
+
     pub(crate) fn acquire_frame_buffer(
         &mut self,
         allocation_id: AllocationId,
@@ -2863,6 +2963,8 @@ impl Viewport {
         crate::view::render_pass::composite_layer_pass::clear_composite_layer_resources_cache();
         crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
         self.offscreen_render_target_pool.clear();
+        self.sampled_texture_cache.clear();
+        crate::view::image_resource::invalidate_uploaded_images();
         self.frame_buffer_pool.clear();
         self.upload_staging_belt = None;
     }

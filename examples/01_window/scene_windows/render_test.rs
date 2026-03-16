@@ -1,5 +1,5 @@
 use crate::components::GlobalKeyRenderTestBlock;
-use crate::rfgui::ui::host::{Element, Text, TextArea};
+use crate::rfgui::ui::host::{Element, Image, ImageFit, Text, TextArea};
 use crate::rfgui::ui::{Binding, ClickHandlerProp, RsxNode, rsx};
 use crate::rfgui::{
     Align, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, CrossSize,
@@ -7,6 +7,7 @@ use crate::rfgui::{
     TransitionProperty,
 };
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
+use crate::utils::output_image_source;
 
 pub struct RenderTestBindings {
     pub justify_content: Binding<JustifyContent>,
@@ -141,6 +142,51 @@ pub fn build(
                 ],
             }}>
                 Border Radius + Border + Shadow
+            </Element>
+            <Element style={{
+                width: Length::px(220.0),
+                height: Length::px(170.0),
+                background: theme.color.layer.surface.clone(),
+                border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()),
+                border_radius: theme.radius.lg,
+                padding: Padding::uniform(theme.spacing.sm),
+                layout: Layout::flow().column().no_wrap(),
+                gap: theme.spacing.xs,
+                color: theme.color.text.primary.clone(),
+            }}>
+                <Text>Image Test</Text>
+                <Image
+                    source={output_image_source("rfgui-logo.png")}
+                    fit={ImageFit::Contain}
+                    style={{
+                        width: Length::percent(100.0),
+                        height: Length::px(120.0),
+                        background: theme.color.layer.raised.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
+                        border_radius: theme.radius.md,
+                    }}
+                    loading={rsx! {
+                        <Element style={{
+                            width: Length::percent(100.0),
+                            height: Length::percent(100.0),
+                            background: theme.color.layer.raised.clone(),
+                            color: theme.color.text.secondary.clone(),
+                        }}>
+                            <Text>Loading logo...</Text>
+                        </Element>
+                    }}
+                    error={rsx! {
+                        <Element style={{
+                            width: Length::percent(100.0),
+                            height: Length::percent(100.0),
+                            background: Color::hex("#b91c1c"),
+                            color: theme.color.background.base.clone(),
+                            padding: Padding::uniform(theme.spacing.sm),
+                        }}>
+                            <Text>Logo load failed</Text>
+                        </Element>
+                    }}
+                />
             </Element>
             <Element style={{
                 width: Length::px(170.0),

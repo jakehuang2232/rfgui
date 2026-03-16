@@ -400,16 +400,27 @@ impl UiBuildContext {
     }
 
     fn next_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
-        let color = graph.declare_texture::<RenderTargetTag>(TextureDesc::new(
-            self.viewport.target_width,
-            self.viewport.target_height,
-            self.viewport.target_format,
-            wgpu::TextureDimension::D2,
-        ));
-        let depth_stencil = graph.declare_texture::<RenderTargetTag>(
+        self.next_target_with_desc(
+            graph,
             TextureDesc::new(
                 self.viewport.target_width,
                 self.viewport.target_height,
+                self.viewport.target_format,
+                wgpu::TextureDimension::D2,
+            ),
+        )
+    }
+
+    fn next_target_with_desc(
+        &mut self,
+        graph: &mut FrameGraph,
+        desc: TextureDesc,
+    ) -> RenderTargetOut {
+        let color = graph.declare_texture::<RenderTargetTag>(desc);
+        let depth_stencil = graph.declare_texture::<RenderTargetTag>(
+            TextureDesc::new(
+                desc.width(),
+                desc.height(),
                 wgpu::TextureFormat::Depth24PlusStencil8,
                 wgpu::TextureDimension::D2,
             )
@@ -428,20 +439,33 @@ impl UiBuildContext {
         graph: &mut FrameGraph,
         stable_key: u64,
     ) -> RenderTargetOut {
-        let color = graph.declare_texture_internal::<RenderTargetTag>(
+        self.next_persistent_target_with_desc(
+            graph,
             TextureDesc::new(
                 self.viewport.target_width,
                 self.viewport.target_height,
                 self.viewport.target_format,
                 wgpu::TextureDimension::D2,
             ),
+            stable_key,
+        )
+    }
+
+    fn next_persistent_target_with_desc(
+        &mut self,
+        graph: &mut FrameGraph,
+        desc: TextureDesc,
+        stable_key: u64,
+    ) -> RenderTargetOut {
+        let color = graph.declare_texture_internal::<RenderTargetTag>(
+            desc,
             ResourceLifetime::Persistent,
             Some(stable_key),
         );
         let depth_stencil = graph.declare_texture::<RenderTargetTag>(
             TextureDesc::new(
-                self.viewport.target_width,
-                self.viewport.target_height,
+                desc.width(),
+                desc.height(),
                 wgpu::TextureFormat::Depth24PlusStencil8,
                 wgpu::TextureDimension::D2,
             )
@@ -1223,7 +1247,6 @@ impl ElementTrait for Element {
 }
 
 impl Element {
-    
     pub(crate) fn debug_render_state(&self) -> DebugElementRenderState {
         DebugElementRenderState {
             background_rgba: self.background_color.as_ref().to_rgba_u8(),
