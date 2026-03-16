@@ -351,7 +351,7 @@ mod tests {
                 on_focus: None,
                 on_blur: None,
             },
-            (
+            vec![
                 create_element(
                     PhantomData::<Text>,
                     TextPropSchema {
@@ -376,7 +376,7 @@ mod tests {
                     },
                     "B",
                 ),
-            ),
+            ],
         );
 
         let RsxNode::Element(root) = tree else {

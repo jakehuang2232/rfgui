@@ -425,6 +425,12 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
                 .handle()
                 .map(TextureCompositeSourceIn::with_handle)
                 .unwrap_or_default(),
+            sampled_source_key: None,
+            sampled_source_size: None,
+            sampled_source_upload: None,
+            sampled_upload_state_key: None,
+            sampled_upload_generation: None,
+            sampled_source_sampling: None,
             mask: shadow_mask_layer
                 .handle()
                 .map(TextureCompositeMaskIn::with_handle)

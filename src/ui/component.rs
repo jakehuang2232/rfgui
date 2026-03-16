@@ -2,6 +2,7 @@ use crate::ui::{
     GlobalKey, IntoRsxNode, RsxKey, RsxNode, RsxNodeIdentity, register_global_key,
     render_component, with_component_key,
 };
+use std::collections::HashSet;
 use std::marker::PhantomData;
 
 pub trait RsxChildrenPolicy {
@@ -173,37 +174,34 @@ impl IntoRsxChildren for Option<RsxNode> {
     }
 }
 
-macro_rules! impl_into_rsx_children_tuple {
-    ($($name:ident),+ $(,)?) => {
-        impl<$($name),+> IntoRsxChildren for ($($name,)+)
-        where
-            $($name: IntoRsxNode,)+
-        {
-            #[allow(non_snake_case)]
-            fn into_rsx_children(self) -> Vec<RsxNode> {
-                let ($($name,)+) = self;
-                vec![$($name.into_rsx_node(),)+]
-            }
+pub fn append_rsx_child_node<T>(children: &mut Vec<RsxNode>, value: T)
+where
+    T: IntoRsxNode,
+{
+    match value.into_rsx_node() {
+        RsxNode::Fragment(fragment) => {
+            validate_dynamic_rsx_children(&fragment.children);
+            children.extend(fragment.children);
         }
-    };
+        node => children.push(node),
+    }
 }
 
-impl_into_rsx_children_tuple!(A);
-impl_into_rsx_children_tuple!(A, B);
-impl_into_rsx_children_tuple!(A, B, C);
-impl_into_rsx_children_tuple!(A, B, C, D);
-impl_into_rsx_children_tuple!(A, B, C, D, E);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I, J);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I, J, K);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I, J, K, L);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
-impl_into_rsx_children_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
+fn validate_dynamic_rsx_children(children: &[RsxNode]) {
+    if children.len() <= 1 {
+        return;
+    }
+
+    let mut seen_keys = HashSet::new();
+    for child in children {
+        let Some(key) = child.identity().key.clone() else {
+            panic!("dynamic RSX children require `key` on each child root");
+        };
+        if !seen_keys.insert(key) {
+            panic!("dynamic RSX children require unique sibling keys");
+        }
+    }
+}
 
 pub fn create_element<T, P, C>(element_type: PhantomData<T>, props: P, children: C) -> RsxNode
 where
@@ -270,6 +268,7 @@ where
 mod tests {
     use super::{GlobalKey, RsxChildrenPolicy, RsxComponent, create_element_with_key};
     use crate::style::{Color, FontSize, FontWeight, Length, ParsedValue, PropertyId};
+    use crate::ui::host::{Element, Text};
     use crate::ui::{Patch, RsxKey, RsxNode, component, reconcile, rsx};
     use std::marker::PhantomData;
 
@@ -356,6 +355,81 @@ mod tests {
 
         let patches = reconcile(Some(&old), &new);
         assert!(matches!(patches.as_slice(), [Patch::ReplaceRoot(_)]));
+    }
+
+    #[test]
+    fn rsx_supports_more_than_sixteen_direct_children() {
+        let node = rsx! {
+            <Element>
+                <Text>A</Text>
+                <Text>B</Text>
+                <Text>C</Text>
+                <Text>D</Text>
+                <Text>E</Text>
+                <Text>F</Text>
+                <Text>G</Text>
+                <Text>H</Text>
+                <Text>I</Text>
+                <Text>J</Text>
+                <Text>K</Text>
+                <Text>L</Text>
+                <Text>M</Text>
+                <Text>N</Text>
+                <Text>O</Text>
+                <Text>P</Text>
+                <Text>Q</Text>
+            </Element>
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.children.len(), 17);
+    }
+
+    #[test]
+    #[should_panic(expected = "dynamic RSX children require `key` on each child root")]
+    fn dynamic_iterable_children_require_keys() {
+        let _ = rsx! {
+            <Element>
+                {vec![rsx! { <Text>A</Text> }, rsx! { <Text>B</Text> }]}
+            </Element>
+        };
+    }
+
+    #[test]
+    #[should_panic(expected = "dynamic RSX children require unique sibling keys")]
+    fn dynamic_iterable_children_require_unique_keys() {
+        let _ = rsx! {
+            <Element>
+                {vec![
+                    rsx! { <Text key={1}>A</Text> },
+                    rsx! { <Text key={1}>B</Text> },
+                ]}
+            </Element>
+        };
+    }
+
+    #[test]
+    fn dynamic_iterable_children_with_keys_are_supported() {
+        let node = rsx! {
+            <Element>
+                {vec![
+                    rsx! { <Text key={1}>A</Text> },
+                    rsx! { <Text key={2}>B</Text> },
+                ]}
+            </Element>
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.children.len(), 2);
+        assert!(
+            node.children
+                .iter()
+                .all(|child| child.identity().key.is_some())
+        );
     }
 
     #[test]

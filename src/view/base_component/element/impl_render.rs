@@ -899,6 +899,12 @@ impl Element {
                 source: crate::view::render_pass::TextureCompositeSourceIn::with_handle(
                     layer_target.handle().expect("promoted layer target should exist"),
                 ),
+                sampled_source_key: None,
+                sampled_source_size: None,
+                sampled_source_upload: None,
+                sampled_upload_state_key: None,
+                sampled_upload_generation: None,
+                sampled_source_sampling: None,
                 mask: crate::view::render_pass::TextureCompositeMaskIn::with_handle(
                     mask_target.handle().expect("promoted clip mask target should exist"),
                 ),

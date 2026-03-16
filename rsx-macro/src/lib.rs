@@ -519,7 +519,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     let tag = &element.tag;
     let close_tag = &element.close_tag;
     let has_children = !element.children.is_empty();
-    let child_exprs = element.children.iter().map(expand_node);
+    let child_appends = element.children.iter().map(expand_child_append);
     let diagnostics = &element.diagnostics;
 
     let prop_schema_checks = element
@@ -541,9 +541,13 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         quote! {}
     };
     let children_value = if has_children {
-        quote! { (#(#child_exprs),*) }
+        quote! {{
+            let mut __rsx_children = ::std::vec::Vec::new();
+            #(#child_appends)*
+            __rsx_children
+        }}
     } else {
-        quote! { () }
+        quote! { ::std::vec::Vec::new() }
     };
     quote! {
         {
@@ -577,6 +581,22 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
                 #children_value,
                 #component_key,
             )
+        }
+    }
+}
+
+fn expand_child_append(child: &Child) -> proc_macro2::TokenStream {
+    match child {
+        Child::Expr(expr) => {
+            quote! {
+                ::rfgui::ui::append_rsx_child_node(&mut __rsx_children, #expr);
+            }
+        }
+        _ => {
+            let node = expand_node(child);
+            quote! {
+                __rsx_children.push(#node);
+            }
         }
     }
 }

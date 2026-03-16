@@ -8,10 +8,37 @@ use crate::{
     Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, FontFamily, FontSize, FontWeight,
     Layout, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign, Transitions,
 };
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 
 pub struct Element;
 pub struct Text;
 pub struct TextArea;
+pub struct Image;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageFit {
+    Contain,
+    Cover,
+    Fill,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageSampling {
+    Linear,
+    Nearest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImageSource {
+    Path(PathBuf),
+    Rgba {
+        width: u32,
+        height: u32,
+        pixels: Arc<[u8]>,
+    },
+}
 
 #[props]
 pub struct ElementPropSchema {
@@ -89,6 +116,16 @@ pub struct TextAreaPropSchema {
     pub multiline: Option<bool>,
     pub read_only: Option<bool>,
     pub max_length: Option<i64>,
+}
+
+#[props]
+pub struct ImagePropSchema {
+    pub source: ImageSource,
+    pub style: Option<Style>,
+    pub fit: Option<ImageFit>,
+    pub sampling: Option<ImageSampling>,
+    pub loading: Option<RsxNode>,
+    pub error: Option<RsxNode>,
 }
 
 impl RsxComponent<ElementPropSchema> for Element {
@@ -249,6 +286,37 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         node
     }
 }
+
+impl RsxComponent<ImagePropSchema> for Image {
+    fn render(props: ImagePropSchema, _children: Vec<RsxNode>) -> RsxNode {
+        let mut node = RsxNode::element("Image").with_prop(
+            "source",
+            crate::ui::IntoPropValue::into_prop_value(props.source),
+        );
+        if let Some(style) = props.style {
+            node = node.with_prop("style", style);
+        }
+        if let Some(fit) = props.fit {
+            node = node.with_prop("fit", crate::ui::IntoPropValue::into_prop_value(fit));
+        }
+        if let Some(sampling) = props.sampling {
+            node = node.with_prop(
+                "sampling",
+                crate::ui::IntoPropValue::into_prop_value(sampling),
+            );
+        }
+        if let Some(loading) = props.loading {
+            node = node.with_prop(
+                "loading",
+                crate::ui::IntoPropValue::into_prop_value(loading),
+            );
+        }
+        if let Some(error) = props.error {
+            node = node.with_prop("error", crate::ui::IntoPropValue::into_prop_value(error));
+        }
+        node
+    }
+}
 impl RsxChildrenPolicy for Element {
     const ACCEPTS_CHILDREN: bool = true;
 }
@@ -259,6 +327,86 @@ impl RsxChildrenPolicy for Text {
 
 impl RsxChildrenPolicy for TextArea {
     const ACCEPTS_CHILDREN: bool = true;
+}
+
+impl RsxChildrenPolicy for Image {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
+impl crate::ui::IntoPropValue for ImageFit {
+    fn into_prop_value(self) -> crate::ui::PropValue {
+        crate::ui::PropValue::Shared(crate::ui::SharedPropValue::new(Rc::new(self)))
+    }
+}
+
+impl crate::ui::IntoPropValue for ImageSampling {
+    fn into_prop_value(self) -> crate::ui::PropValue {
+        crate::ui::PropValue::Shared(crate::ui::SharedPropValue::new(Rc::new(self)))
+    }
+}
+
+impl crate::ui::FromPropValue for ImageSampling {
+    fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
+        match value {
+            crate::ui::PropValue::Shared(shared) => shared
+                .value()
+                .downcast::<ImageSampling>()
+                .map(|value| *value)
+                .map_err(|_| "expected ImageSampling value".to_string()),
+            _ => Err("expected ImageSampling value".to_string()),
+        }
+    }
+}
+
+impl crate::ui::FromPropValue for ImageFit {
+    fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
+        match value {
+            crate::ui::PropValue::Shared(shared) => shared
+                .value()
+                .downcast::<ImageFit>()
+                .map(|value| *value)
+                .map_err(|_| "expected ImageFit value".to_string()),
+            _ => Err("expected ImageFit value".to_string()),
+        }
+    }
+}
+
+impl crate::ui::IntoPropValue for ImageSource {
+    fn into_prop_value(self) -> crate::ui::PropValue {
+        crate::ui::PropValue::Shared(crate::ui::SharedPropValue::new(Rc::new(self)))
+    }
+}
+
+impl crate::ui::FromPropValue for ImageSource {
+    fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
+        match value {
+            crate::ui::PropValue::Shared(shared) => shared
+                .value()
+                .downcast::<ImageSource>()
+                .map(|value| (*value).clone())
+                .map_err(|_| "expected ImageSource value".to_string()),
+            _ => Err("expected ImageSource value".to_string()),
+        }
+    }
+}
+
+impl crate::ui::IntoPropValue for RsxNode {
+    fn into_prop_value(self) -> crate::ui::PropValue {
+        crate::ui::PropValue::Shared(crate::ui::SharedPropValue::new(Rc::new(self)))
+    }
+}
+
+impl crate::ui::FromPropValue for RsxNode {
+    fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
+        match value {
+            crate::ui::PropValue::Shared(shared) => shared
+                .value()
+                .downcast::<RsxNode>()
+                .map(|value| (*value).clone())
+                .map_err(|_| "expected RsxNode value".to_string()),
+            _ => Err("expected RsxNode value".to_string()),
+        }
+    }
 }
 
 fn is_unset_font_size(font_size: FontSize) -> bool {

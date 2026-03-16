@@ -14,11 +14,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod core;
 mod element;
+mod image;
 mod text;
 mod text_area;
 
 pub(crate) use core::*;
 pub use element::*;
+pub use image::*;
 pub use text::*;
 pub use text_area::*;
 

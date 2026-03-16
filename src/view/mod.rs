@@ -1,5 +1,6 @@
 pub mod base_component;
 pub mod frame_graph;
+pub(crate) mod image_resource;
 pub mod promotion;
 mod promotion_builder;
 pub mod render_pass;
