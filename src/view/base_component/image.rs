@@ -1,12 +1,12 @@
 use crate::ui::host::{ImageFit, ImageSampling, ImageSource};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
-    ImageSnapshot, ensure_image_resource, needs_upload, snapshot_image,
+    ImageSnapshot, acquire_image_resource, needs_upload, release_image_resource, snapshot_image,
 };
+use crate::view::render_pass::TextureCompositePass;
 use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams,
 };
-use crate::view::render_pass::TextureCompositePass;
 use crate::{ParsedValue, PropertyId, Style};
 
 use super::{
@@ -15,7 +15,6 @@ use super::{
 };
 
 const PLACEHOLDER_SIZE: f32 = 120.0;
-const SOURCE_TEXTURE_KEY_PREFIX: u64 = 0x1A6E_0000_0000_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveSlot {
@@ -44,7 +43,7 @@ impl Image {
         element.apply_style(base_style);
         Self {
             element,
-            source_key: ensure_image_resource(&source),
+            source_key: acquire_image_resource(&source),
             source,
             fit: ImageFit::Contain,
             sampling: ImageSampling::Linear,
@@ -75,7 +74,6 @@ impl Image {
     }
 
     fn snapshot(&mut self) -> ImageSnapshot {
-        self.source_key = ensure_image_resource(&self.source);
         snapshot_image(self.source_key).unwrap_or(ImageSnapshot::Loading)
     }
 
@@ -370,6 +368,12 @@ impl Layoutable for Image {
     }
 }
 
+impl Drop for Image {
+    fn drop(&mut self) {
+        release_image_resource(&self.source, self.source_key);
+    }
+}
+
 impl Renderable for Image {
     fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> super::BuildState {
         let snapshot = self.snapshot();
@@ -409,12 +413,16 @@ impl Renderable for Image {
                 bounds: draw_bounds,
                 uv_bounds: Some(uv_bounds),
                 use_mask: false,
-                opacity: self.element.opacity_for_render(),
+                opacity: if ctx.is_node_promoted(self.id()) {
+                    1.0
+                } else {
+                    self.element.promotion_node_info().opacity.clamp(0.0, 1.0)
+                },
                 scissor_rect: None,
             },
             TextureCompositeInput {
                 source: Default::default(),
-                sampled_source_key: Some(SOURCE_TEXTURE_KEY_PREFIX | self.source_key),
+                sampled_source_key: Some(self.source_key),
                 sampled_source_size: Some((image.width, image.height)),
                 sampled_source_upload: if should_upload {
                     Some(image.pixels.clone())

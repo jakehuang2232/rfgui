@@ -1,3 +1,4 @@
+use crate::ui::host::ImageSampling;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferResource, PrepareContext, ResourceCache};
@@ -10,7 +11,6 @@ use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, render_target_size, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use crate::ui::host::ImageSampling;
 use std::sync::{Arc, Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -319,10 +319,12 @@ impl GraphicsPass for TextureCompositePass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(match self.input.sampled_source_sampling {
-                        Some(ImageSampling::Nearest) => &resources.nearest_sampler,
-                        _ => &resources.linear_sampler,
-                    }),
+                    resource: wgpu::BindingResource::Sampler(
+                        match self.input.sampled_source_sampling {
+                            Some(ImageSampling::Nearest) => &resources.nearest_sampler,
+                            _ => &resources.linear_sampler,
+                        },
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,

@@ -13,6 +13,8 @@ mod tests {
         Align, AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
         CrossSize, JustifyContent, Length, Operator, Position, Style,
     };
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
 
     #[test]
     fn justify_content_space_evenly_distributes_free_space() {
@@ -1814,4 +1816,78 @@ mod tests {
         assert!(scope.is_some());
         assert!(scope.as_ref().is_some_and(|scope| scope.child_clip_id != 0));
     }
+
+    #[test]
+    fn scrollbar_renders_after_promoted_child_composite() {
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+        );
+        parent.apply_style(parent_style);
+        let _ = parent.set_hovered(true);
+        parent.set_scrollbar_shadow_blur_radius(0.0);
+
+        let child = Element::new(0.0, 0.0, 120.0, 360.0);
+        parent.add_child(Box::new(child));
+        let child_id = parent.children().expect("has child")[0].id();
+
+        parent.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        ctx.set_promoted_runtime(
+            Arc::new(HashSet::from([child_id])),
+            Arc::new(HashMap::new()),
+            Arc::new(HashMap::new()),
+        );
+
+        let next_state = parent.build(
+            &mut graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(next_state);
+
+        let pass_names = graph
+            .pass_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+        let last_child_composite = pass_names
+            .iter()
+            .rposition(|name| name.contains("CompositeLayerPass"))
+            .expect("expected promoted child composite pass");
+        let last_draw_rect = pass_names
+            .iter()
+            .rposition(|name| name.contains("draw_rect_pass::DrawRectPass"))
+            .expect("expected scrollbar draw rect pass");
+
+        assert!(
+            last_draw_rect > last_child_composite,
+            "expected scrollbar draw rect after promoted child composite, passes: {pass_names:?}"
+        );
+    }
+
 }

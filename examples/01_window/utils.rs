@@ -2,7 +2,6 @@ use crate::rfgui::ui::host::ImageSource;
 use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::Theme;
 use std::path::PathBuf;
-use std::sync::{OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn current_unix_timestamp() -> u64 {
@@ -54,16 +53,6 @@ pub fn output_asset_path(file_name: &str) -> PathBuf {
 }
 
 pub fn output_image_source(file_name: &str) -> ImageSource {
-    static LOGO_SOURCE: OnceLock<ImageSource> = OnceLock::new();
-    if file_name == "rfgui-logo.png" {
-        return LOGO_SOURCE
-            .get_or_init(|| load_output_image_source(file_name))
-            .clone();
-    }
-    load_output_image_source(file_name)
-}
-
-fn load_output_image_source(file_name: &str) -> ImageSource {
     let path = output_asset_path(file_name);
     ImageSource::Path(path)
 }

@@ -1028,7 +1028,6 @@ impl ElementTrait for Element {
         self.layout_transition_override_height
             .map(f32::to_bits)
             .hash(&mut hasher);
-        hash_f32(&mut hasher, self.opacity);
         self.background_color
             .as_ref()
             .to_rgba_u8()

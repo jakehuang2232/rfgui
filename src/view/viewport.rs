@@ -801,11 +801,14 @@ struct SampledTextureEntry {
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
+    byte_size: u64,
 }
 
 impl Viewport {
     const DEFAULT_MSAA_SAMPLE_COUNT: u32 = 4;
     const PROMOTED_REUSE_COOLDOWN_FRAMES: u8 = 2;
+    const SAMPLED_TEXTURE_PRESSURE_BYTES: u64 = 128 * 1024 * 1024;
+    const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 96 * 1024 * 1024;
 
     fn invalidate_promoted_layer_reuse(&mut self) {
         self.promoted_base_signatures.clear();
@@ -1664,7 +1667,15 @@ impl Viewport {
         layer_target: super::render_pass::draw_rect_pass::RenderTargetOut,
     ) {
         let composite_bounds = root.promotion_composite_bounds();
-        let opacity = root.promotion_node_info().opacity.clamp(0.0, 1.0);
+        let opacity = if root
+            .as_any()
+            .downcast_ref::<super::base_component::Element>()
+            .is_some()
+        {
+            1.0
+        } else {
+            root.promotion_node_info().opacity.clamp(0.0, 1.0)
+        };
         let parent_target = ctx
             .current_target()
             .unwrap_or_else(|| ctx.allocate_target(graph));
@@ -2839,6 +2850,7 @@ impl Viewport {
                     width,
                     height,
                     format,
+                    byte_size: width as u64 * height as u64 * 4,
                 },
             );
         }
@@ -2864,6 +2876,7 @@ impl Viewport {
                 depth_or_array_layers: 1,
             },
         );
+        self.evict_sampled_textures_under_pressure();
         true
     }
 
@@ -2871,6 +2884,43 @@ impl Viewport {
         self.sampled_texture_cache
             .get(&stable_key)
             .map(|entry| entry.view.clone())
+    }
+
+    fn total_sampled_texture_bytes(&self) -> u64 {
+        self.sampled_texture_cache
+            .values()
+            .map(|entry| entry.byte_size)
+            .sum()
+    }
+
+    fn evict_sampled_textures_under_pressure(&mut self) {
+        let mut total_bytes = self.total_sampled_texture_bytes();
+        if total_bytes <= Self::SAMPLED_TEXTURE_PRESSURE_BYTES {
+            return;
+        }
+
+        let mut candidates = self
+            .sampled_texture_cache
+            .keys()
+            .filter_map(|key| {
+                let retention = crate::view::image_resource::image_asset_retention_info(*key)?;
+                if retention.ref_count == 0 {
+                    Some((*key, retention.last_access_tick))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(_, tick)| *tick);
+
+        for (key, _) in candidates {
+            if total_bytes <= Self::SAMPLED_TEXTURE_EVICT_TO_BYTES {
+                break;
+            }
+            if let Some(entry) = self.sampled_texture_cache.remove(&key) {
+                total_bytes = total_bytes.saturating_sub(entry.byte_size);
+            }
+        }
     }
 
     pub(crate) fn acquire_frame_buffer(
