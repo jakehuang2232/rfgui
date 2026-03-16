@@ -1548,7 +1548,6 @@ impl ElementTrait for TextArea {
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
         self.line_height.to_bits().hash(&mut hasher);
-        self.opacity.to_bits().hash(&mut hasher);
         self.multiline.hash(&mut hasher);
         self.read_only.hash(&mut hasher);
         self.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
@@ -1884,7 +1883,11 @@ impl Renderable for TextArea {
             return ctx.into_state();
         }
 
-        let opacity = self.opacity.clamp(0.0, 1.0);
+        let opacity = if ctx.is_node_promoted(self.id()) {
+            1.0
+        } else {
+            self.opacity.clamp(0.0, 1.0)
+        };
         if opacity <= 0.0 {
             return ctx.into_state();
         }

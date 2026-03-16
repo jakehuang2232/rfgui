@@ -76,7 +76,6 @@ pub(crate) fn collect_promoted_layer_updates(
     }
 
     fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut DefaultHasher) {
-        node.promotion_self_signature().hash(hasher);
         node.promotion_clip_intersection_signature().hash(hasher);
         let bounds = node.promotion_composite_bounds();
         bounds.x.to_bits().hash(hasher);
@@ -232,7 +231,6 @@ pub(crate) fn collect_debug_subtree_signatures(
     }
 
     fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut DefaultHasher) {
-        node.promotion_self_signature().hash(hasher);
         node.promotion_clip_intersection_signature().hash(hasher);
         let bounds = node.promotion_composite_bounds();
         bounds.x.to_bits().hash(hasher);
@@ -544,6 +542,47 @@ mod tests {
             .unwrap();
         assert_eq!(parent.kind, PromotedLayerUpdateKind::Reuse);
         assert_eq!(child.kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn promoted_opacity_change_reuses_base_but_reraster_composition() {
+        let mut root = Element::new_with_id(1, 0.0, 0.0, 200.0, 200.0);
+        root.set_opacity(0.6);
+        let child = Element::new_with_id(2, 0.0, 0.0, 100.0, 100.0);
+        root.add_child(Box::new(child));
+
+        let roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(root)];
+        let promoted = HashSet::from([1_u64]);
+        let (first_updates, first_base_signatures, first_composition_signatures) =
+            collect_promoted_layer_updates(&roots, &promoted, &HashMap::new(), &HashMap::new());
+        assert_eq!(first_updates.len(), 1);
+        assert_eq!(first_updates[0].kind, PromotedLayerUpdateKind::Reraster);
+        assert_eq!(
+            first_updates[0].composition_kind,
+            PromotedLayerUpdateKind::Reraster
+        );
+
+        let mut roots = roots;
+        let root = roots[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("root should be element");
+        root.set_opacity(0.3);
+
+        let (second_updates, _, _) = collect_promoted_layer_updates(
+            &roots,
+            &promoted,
+            &first_base_signatures,
+            &first_composition_signatures,
+        );
+        assert_eq!(second_updates.len(), 1);
+        let root_update = &second_updates[0];
+        assert_eq!(root_update.node_id, 1);
+        assert_eq!(root_update.kind, PromotedLayerUpdateKind::Reuse);
+        assert_eq!(
+            root_update.composition_kind,
+            PromotedLayerUpdateKind::Reraster
+        );
     }
 
     #[test]

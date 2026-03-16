@@ -230,7 +230,11 @@ pub(crate) fn build_node_by_id(
             ctx.merge_child_state_side_effects(&next_state);
             let layer_target = next_state.current_target().unwrap_or(layer_target);
             let composite_bounds = node.promotion_composite_bounds();
-            let opacity = node.promotion_node_info().opacity.clamp(0.0, 1.0);
+            let opacity = if node.as_any().downcast_ref::<Element>().is_some() {
+                1.0
+            } else {
+                node.promotion_node_info().opacity.clamp(0.0, 1.0)
+            };
             let parent_target = ctx.current_target().unwrap_or_else(|| {
                 let target = ctx.allocate_target(graph);
                 ctx.set_current_target(target);

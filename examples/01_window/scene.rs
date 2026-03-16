@@ -4,6 +4,7 @@ use crate::rfgui_components::{Theme, set_theme, use_theme};
 use crate::scene_windows::component_test::{
     ComponentTestBindings, ComponentTestValues, build as build_component_test_window,
 };
+use crate::scene_windows::image_test::build as build_image_test_window;
 use crate::scene_windows::inspector_panel::{
     InspectorPanelBindings, build as build_inspector_panel,
 };
@@ -169,6 +170,12 @@ pub fn MainScene() -> RsxNode {
             },
         )],
         (760.0, 520.0),
+    );
+
+    window_manager.push(
+        "Image Test",
+        vec![build_image_test_window(&theme)],
+        (480.0, 480.0),
     );
     RsxNode::fragment(window_manager.into_nodes(window_z_order.binding()))
 }

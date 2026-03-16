@@ -130,7 +130,11 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(WinitWindow::default_attributes().with_transparent(true))
+                .create_window(
+                    WinitWindow::default_attributes()
+                        .with_transparent(true)
+                        .with_title("RFGUI Example"),
+                )
                 .unwrap(),
         );
         let mut viewport = Viewport::new();

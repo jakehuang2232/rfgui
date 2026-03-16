@@ -579,10 +579,6 @@ impl Element {
         )
     }
 
-    pub(crate) fn opacity_for_render(&self) -> f32 {
-        self.opacity.clamp(0.0, 1.0)
-    }
-
     pub fn apply_style(&mut self, style: Style) {
         self.parsed_style = self.parsed_style.clone() + style;
         self.recompute_style();

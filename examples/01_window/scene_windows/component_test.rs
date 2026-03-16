@@ -43,7 +43,7 @@ pub fn build(
             width: Length::percent(100.0),
             height: Length::percent(100.0),
             layout: Layout::flow().column().no_wrap(),
-            gap: theme.spacing.md,
+            gap: theme.spacing.sm,
             padding: Padding::uniform(theme.spacing.md),
             color: theme.color.text.secondary.clone(),
             font_size: theme.typography.size.sm,

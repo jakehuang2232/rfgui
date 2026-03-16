@@ -33,10 +33,11 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(source_tex, tex_sampler, in.uv);
-    var alpha = color.a;
+    var factor = 1.0;
     if composite.data.x > 0.5 {
-        alpha = alpha * textureSample(mask_tex, tex_sampler, in.uv).a;
+        factor = factor * textureSample(mask_tex, tex_sampler, in.uv).a;
     }
-    alpha = alpha * clamp(composite.data.y, 0.0, 1.0);
+    factor = factor * clamp(composite.data.y, 0.0, 1.0);
+    let alpha = color.a * factor;
     return vec4<f32>(color.rgb * alpha, alpha);
 }

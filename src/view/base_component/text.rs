@@ -394,7 +394,6 @@ impl ElementTrait for Text {
         self.line_height.to_bits().hash(&mut hasher);
         self.font_weight.hash(&mut hasher);
         std::mem::discriminant(&self.align).hash(&mut hasher);
-        self.opacity.to_bits().hash(&mut hasher);
         self.allow_wrap.hash(&mut hasher);
         self.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
         self.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
@@ -628,7 +627,11 @@ impl Renderable for Text {
             return ctx.into_state();
         }
 
-        let opacity = self.opacity.clamp(0.0, 1.0);
+        let opacity = if ctx.is_node_promoted(self.id()) {
+            1.0
+        } else {
+            self.opacity.clamp(0.0, 1.0)
+        };
         if opacity <= 0.0 {
             return ctx.into_state();
         }
