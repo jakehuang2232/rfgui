@@ -148,14 +148,7 @@ impl GraphicsPass for TextPass {
         if self.params.stencil_clip_id.is_none() {
             self.params.stencil_clip_id = self.input.pass_context.stencil_clip_id;
         }
-        if self.params.stencil_clip_id.is_some()
-            && self.input.pass_context.depth_stencil_target.is_some()
-        {
-            let target = self
-                .input
-                .pass_context
-                .depth_stencil_target
-                .expect("checked is_some");
+        if let Some(target) = self.input.pass_context.depth_stencil_target {
             builder.read_depth(target);
             builder.read_stencil(target);
         }
@@ -235,7 +228,7 @@ impl GraphicsPass for TextPass {
         );
         let renderer_key = TextRendererKey {
             sample_count: viewport.msaa_sample_count(),
-            stencil_enabled: self.params.stencil_clip_id.is_some(),
+            stencil_enabled: self.input.pass_context.depth_stencil_target.is_some(),
         };
         if let Some(prepared) = self.prepared.as_mut() {
             if prepared.renderer_key == renderer_key

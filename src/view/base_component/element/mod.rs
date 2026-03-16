@@ -200,6 +200,10 @@ pub(crate) fn promoted_clip_mask_stable_key(node_id: u64) -> u64 {
     0xC11E_0000_0000_0000u64 | node_id
 }
 
+pub(crate) fn promoted_final_layer_stable_key(node_id: u64) -> u64 {
+    0xC0DE_F1A1_0000_0000u64 | node_id
+}
+
 #[derive(Clone, Copy, Debug)]
 struct AnchorSnapshot {
     x: f32,
@@ -266,6 +270,7 @@ pub struct ViewportContext {
     scale_factor: f32,
     promoted_node_ids: Arc<std::collections::HashSet<u64>>,
     promoted_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
+    promoted_composition_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
 }
 
 #[derive(Clone)]
@@ -284,9 +289,7 @@ impl BuildState {
         self.target
     }
 
-    pub(crate) fn for_layer_subtree_with_ancestor_clip(
-        ancestor_clip: AncestorClipContext,
-    ) -> Self {
+    pub(crate) fn for_layer_subtree_with_ancestor_clip(ancestor_clip: AncestorClipContext) -> Self {
         Self {
             target: None,
             depth_stencil_target: Some(AttachmentTarget::Surface),
@@ -330,6 +333,7 @@ impl UiBuildContext {
                 scale_factor: scale_factor.max(0.0001),
                 promoted_node_ids: Arc::new(std::collections::HashSet::new()),
                 promoted_update_kinds: Arc::new(HashMap::new()),
+                promoted_composition_update_kinds: Arc::new(HashMap::new()),
             },
             state: BuildState {
                 target: None,
@@ -531,9 +535,11 @@ impl UiBuildContext {
         &mut self,
         promoted_node_ids: Arc<std::collections::HashSet<u64>>,
         promoted_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
+        promoted_composition_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
     ) {
         self.viewport.promoted_node_ids = promoted_node_ids;
         self.viewport.promoted_update_kinds = promoted_update_kinds;
+        self.viewport.promoted_composition_update_kinds = promoted_composition_update_kinds;
     }
 
     pub(crate) fn is_node_promoted(&self, node_id: u64) -> bool {
@@ -542,6 +548,16 @@ impl UiBuildContext {
 
     pub(crate) fn promoted_update_kind(&self, node_id: u64) -> Option<PromotedLayerUpdateKind> {
         self.viewport.promoted_update_kinds.get(&node_id).copied()
+    }
+
+    pub(crate) fn promoted_composition_update_kind(
+        &self,
+        node_id: u64,
+    ) -> Option<PromotedLayerUpdateKind> {
+        self.viewport
+            .promoted_composition_update_kinds
+            .get(&node_id)
+            .copied()
     }
 
     pub(crate) fn merge_child_state_side_effects(&mut self, child: &BuildState) {
@@ -729,6 +745,10 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
         0
     }
 
+    fn promotion_clip_intersection_signature(&self) -> u64 {
+        0
+    }
+
     fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {
         let snapshot = self.box_model_snapshot();
         PromotionCompositeBounds {
@@ -760,6 +780,14 @@ pub struct PromotionCompositeBounds {
     pub width: f32,
     pub height: f32,
     pub corner_radii: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DebugElementRenderState {
+    pub background_rgba: [u8; 4],
+    pub foreground_rgba: [u8; 4],
+    pub opacity: f32,
+    pub border_radius: f32,
 }
 
 type MouseDownHandler = Box<dyn FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>)>;
@@ -981,6 +1009,7 @@ impl ElementTrait for Element {
             .as_ref()
             .to_rgba_u8()
             .hash(&mut hasher);
+        self.foreground_color.to_rgba_u8().hash(&mut hasher);
         self.border_colors
             .top
             .as_ref()
@@ -1032,6 +1061,62 @@ impl ElementTrait for Element {
                 hash_f32(&mut hasher, rect.height.max(0.0));
                 hash_f32(&mut hasher, rect.x.max(0.0));
                 hash_f32(&mut hasher, rect.y.max(0.0));
+            }
+        }
+        hasher.finish()
+    }
+
+    fn promotion_clip_intersection_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.absolute_clip_scissor_rect()
+            .is_some()
+            .hash(&mut hasher);
+        if let Some([x, y, width, height]) = self.absolute_clip_scissor_rect() {
+            let clip = Rect {
+                x: x as f32,
+                y: y as f32,
+                width: width as f32,
+                height: height as f32,
+            };
+            let bounds = self.promotion_composite_bounds();
+            let element_rect = Rect {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width.max(0.0),
+                height: bounds.height.max(0.0),
+            };
+            let intersection = intersect_rect(clip, element_rect);
+            hash_f32(&mut hasher, intersection.x);
+            hash_f32(&mut hasher, intersection.y);
+            hash_f32(&mut hasher, intersection.width);
+            hash_f32(&mut hasher, intersection.height);
+        }
+        if !self.children.is_empty()
+            && self.layout_inner_size.width > 0.0
+            && self.layout_inner_size.height > 0.0
+        {
+            let overflow_child_indices: Vec<bool> = (0..self.children.len())
+                .map(|idx| self.child_renders_outside_inner_clip(idx))
+                .collect();
+            let outer_radii = normalize_corner_radii(
+                self.border_radii,
+                self.core.layout_size.width.max(0.0),
+                self.core.layout_size.height.max(0.0),
+            );
+            let inner_radii = self.inner_clip_radii(outer_radii);
+            let should_clip_children =
+                self.should_clip_children(&overflow_child_indices, inner_radii);
+            should_clip_children.hash(&mut hasher);
+            if should_clip_children {
+                let inner = self.inner_clip_rect();
+                hash_f32(&mut hasher, inner.x);
+                hash_f32(&mut hasher, inner.y);
+                hash_f32(&mut hasher, inner.width);
+                hash_f32(&mut hasher, inner.height);
+                hash_f32(&mut hasher, inner_radii.top_left);
+                hash_f32(&mut hasher, inner_radii.top_right);
+                hash_f32(&mut hasher, inner_radii.bottom_right);
+                hash_f32(&mut hasher, inner_radii.bottom_left);
             }
         }
         hasher.finish()
@@ -1134,5 +1219,17 @@ impl ElementTrait for Element {
         // Recompute against current parsed_style so transitions can bridge from old -> new style.
         self.recompute_style();
         true
+    }
+}
+
+impl Element {
+    
+    pub(crate) fn debug_render_state(&self) -> DebugElementRenderState {
+        DebugElementRenderState {
+            background_rgba: self.background_color.as_ref().to_rgba_u8(),
+            foreground_rgba: self.foreground_color.to_rgba_u8(),
+            opacity: self.opacity,
+            border_radius: self.border_radius,
+        }
     }
 }

@@ -1,12 +1,5 @@
 impl Element {
     pub(crate) fn inline_promotion_rendering_reason(&self) -> Option<&'static str> {
-        if self.absolute_clip_scissor_rect().is_some() {
-            return Some(match self.computed_style.position.clip_mode() {
-                ClipMode::Viewport => "absolute-viewport-clip-inline",
-                ClipMode::AnchorParent => "absolute-anchor-clip-inline",
-                ClipMode::Parent => "absolute-clip-inline",
-            });
-        }
         if self.children.is_empty()
             || self.layout_inner_size.width <= 0.0
             || self.layout_inner_size.height <= 0.0
@@ -678,6 +671,15 @@ impl Element {
         graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
     ) -> BuildState {
+        let has_deferred_descendants = self.children.iter().any(|child| {
+            child.as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(Element::should_append_to_root_viewport_render)
+        });
+        if !self.has_composited_promoted_descendants(&ctx) && !has_deferred_descendants {
+            return ctx.into_state();
+        }
+
         let previous_scissor_rect = self
             .absolute_clip_scissor_rect()
             .map(|scissor| ctx.push_scissor_rect(Some(scissor)));
@@ -810,6 +812,7 @@ impl Element {
                 corner_radii: composite_bounds.corner_radii,
                 opacity,
                 scissor_rect,
+                clear_target: false,
             },
             crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
                 layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
@@ -840,16 +843,6 @@ impl Element {
             crate::view::base_component::promoted_clip_mask_stable_key(self.id()),
         );
         mask_ctx.set_current_target(mask_target);
-        graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-            crate::view::render_pass::clear_pass::ClearInput {
-                pass_context: mask_ctx.graphics_pass_context(),
-                clear_depth_stencil: true,
-            },
-            crate::view::render_pass::clear_pass::ClearOutput {
-                render_target: mask_target,
-            },
-        ));
         let mut pass = DrawRectPass::new(
             RectPassParams {
                 position: [self.layout_inner_position.x, self.layout_inner_position.y],
@@ -864,6 +857,7 @@ impl Element {
         pass.set_render_mode(RectRenderMode::FillOnly);
         pass.set_border_width(0.0);
         pass.set_border_radii(inner_radii.to_array());
+        pass.set_clear_target(true);
         let mut mask_ctx = mask_ctx;
         self.push_pass(graph, &mut mask_ctx, pass);
         mask_target
@@ -950,29 +944,6 @@ impl Element {
         can_reuse_base: bool,
         context: crate::view::viewport::DebugReusePathContext,
     ) -> BuildState {
-        crate::view::viewport::record_debug_reuse_path(
-            crate::view::viewport::DebugReusePathRecord {
-                node_id: self.id(),
-                context,
-                requested: requested_update_kind,
-                can_reuse: can_reuse_base,
-                actual: if can_reuse_base {
-                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                } else {
-                    crate::view::promotion::PromotedLayerUpdateKind::Reraster
-                },
-                reason: if matches!(
-                    requested_update_kind,
-                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                ) && !can_reuse_base
-                {
-                    Some("reuse-blocked")
-                } else {
-                    None
-                },
-                clip_rect: self.absolute_clip_scissor_rect(),
-            },
-        );
         let viewport = ctx.viewport();
         let mut ctx = ctx;
         if can_reuse_base {
@@ -996,32 +967,101 @@ impl Element {
         };
 
         let probe_ctx = UiBuildContext::from_parts(viewport.clone(), base_state.clone());
-        if !self.has_composited_promoted_descendants(&probe_ctx) {
+        let has_composited_descendants = self.has_composited_promoted_descendants(&probe_ctx);
+        let requested_composition_update_kind = probe_ctx
+            .promoted_composition_update_kind(self.id())
+            .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
+        let can_reuse_final = can_reuse_base
+            && matches!(
+                requested_composition_update_kind,
+                crate::view::promotion::PromotedLayerUpdateKind::Reuse
+            );
+        crate::view::viewport::record_debug_reuse_path(
+            crate::view::viewport::DebugReusePathRecord {
+                node_id: self.id(),
+                context,
+                requested: requested_update_kind,
+                can_reuse: if has_composited_descendants {
+                    can_reuse_final
+                } else {
+                    can_reuse_base
+                },
+                actual: if has_composited_descendants {
+                    if can_reuse_final {
+                        crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                    } else {
+                        crate::view::promotion::PromotedLayerUpdateKind::Reraster
+                    }
+                } else if can_reuse_base {
+                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                } else {
+                    crate::view::promotion::PromotedLayerUpdateKind::Reraster
+                },
+                reason: if matches!(
+                    requested_update_kind,
+                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
+                ) && !can_reuse_base
+                {
+                    Some("reuse-blocked")
+                } else if has_composited_descendants
+                    && can_reuse_base
+                    && matches!(
+                        requested_composition_update_kind,
+                        crate::view::promotion::PromotedLayerUpdateKind::Reraster
+                    )
+                {
+                    Some("composition-reraster")
+                } else {
+                    None
+                },
+                clip_rect: self.absolute_clip_scissor_rect(),
+            },
+        );
+        if !has_composited_descendants {
             return base_state;
         }
 
         let mut compose_ctx = UiBuildContext::from_parts(viewport, base_state);
-        let final_target = compose_ctx.allocate_target(graph);
-        compose_ctx.set_current_target(final_target);
-        graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-            crate::view::render_pass::clear_pass::ClearInput {
-                pass_context: compose_ctx.graphics_pass_context(),
-                clear_depth_stencil: true,
-            },
-            crate::view::render_pass::clear_pass::ClearOutput {
-                render_target: final_target,
-            },
-        ));
-        let compose_pass_context = compose_ctx.graphics_pass_context();
-        Self::composite_layer_target_into_current(
+        let final_target = compose_ctx.allocate_persistent_target_with_key(
             graph,
-            &mut compose_ctx,
-            base_target,
-            self.promotion_composite_bounds(),
-            1.0,
-            compose_pass_context,
-            None,
+            crate::view::base_component::promoted_final_layer_stable_key(self.id()),
+        );
+        if can_reuse_final {
+            let mut reused_state = compose_ctx.into_state();
+            reused_state.target = Some(final_target);
+            return reused_state;
+        }
+        compose_ctx.set_current_target(final_target);
+        let compose_pass_context = compose_ctx.graphics_pass_context();
+        let parent_target = compose_ctx
+            .current_target()
+            .expect("promoted final target should exist");
+        graph.add_graphics_pass(
+            crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
+                crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
+                    rect_pos: [
+                        self.promotion_composite_bounds().x,
+                        self.promotion_composite_bounds().y,
+                    ],
+                    rect_size: [
+                        self.promotion_composite_bounds().width,
+                        self.promotion_composite_bounds().height,
+                    ],
+                    corner_radii: self.promotion_composite_bounds().corner_radii,
+                    opacity: 1.0,
+                    scissor_rect: None,
+                    clear_target: true,
+                },
+                crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
+                    layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
+                        base_target.handle().expect("promoted base target should exist"),
+                    ),
+                    pass_context: compose_pass_context,
+                },
+                crate::view::render_pass::composite_layer_pass::CompositeLayerOutput {
+                    render_target: parent_target,
+                },
+            ),
         );
         self.compose_promoted_descendants_only(graph, compose_ctx)
     }
@@ -1058,8 +1098,11 @@ impl Element {
         }
         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
             if let Some(reason) = element.inline_promotion_rendering_reason() {
-                if reason == "child-scissor-clip-inline" {
-                    // Rect-only child clip can still be enforced via scissor during composition.
+                if reason == "child-scissor-clip-inline"
+                    || reason == "child-stencil-clip-inline"
+                {
+                    // Child clip geometry is tracked in promotion signatures; do not block
+                    // promoted child reuse solely because the container clips its children.
                 } else {
                 crate::view::viewport::record_debug_reuse_path(
                     crate::view::viewport::DebugReusePathRecord {

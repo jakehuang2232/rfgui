@@ -58,6 +58,72 @@ pub(crate) fn can_reuse_promoted_subtree(node: &dyn ElementTrait, _ctx: &UiBuild
     walk(node)
 }
 
+pub(crate) fn get_debug_element_render_state_by_id(
+    root: &dyn ElementTrait,
+    node_id: u64,
+) -> Option<DebugElementRenderState> {
+    if root.id() == node_id {
+        return root
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::debug_render_state);
+    }
+    if let Some(children) = root.children() {
+        for child in children {
+            if let Some(state) = get_debug_element_render_state_by_id(child.as_ref(), node_id) {
+                return Some(state);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn get_debug_promotion_signatures_by_id(
+    root: &dyn ElementTrait,
+    node_id: u64,
+) -> Option<(u64, u64)> {
+    if root.id() == node_id {
+        return Some((
+            root.promotion_self_signature(),
+            root.promotion_clip_intersection_signature(),
+        ));
+    }
+    if let Some(children) = root.children() {
+        for child in children {
+            if let Some(signatures) = get_debug_promotion_signatures_by_id(child.as_ref(), node_id)
+            {
+                return Some(signatures);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn get_node_ancestry_ids(root: &dyn ElementTrait, node_id: u64) -> Option<Vec<u64>> {
+    fn walk(node: &dyn ElementTrait, target_id: u64, path: &mut Vec<u64>) -> bool {
+        path.push(node.id());
+        if node.id() == target_id {
+            return true;
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                if walk(child.as_ref(), target_id, path) {
+                    return true;
+                }
+            }
+        }
+        path.pop();
+        false
+    }
+
+    let mut path = Vec::new();
+    if walk(root, node_id, &mut path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn build_node_by_id(
     node: &mut dyn ElementTrait,
     node_id: u64,
@@ -68,25 +134,29 @@ pub(crate) fn build_node_by_id(
         if ctx.is_node_promoted(node_id) {
             if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
                 if let Some(reason) = element.inline_promotion_rendering_reason() {
-                    crate::view::viewport::record_debug_reuse_path(
-                        crate::view::viewport::DebugReusePathRecord {
-                            node_id,
-                            context: crate::view::viewport::DebugReusePathContext::Deferred,
-                            requested: ctx
-                                .promoted_update_kind(node_id)
-                                .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster),
-                            can_reuse: false,
-                            actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                            reason: Some(reason),
-                            clip_rect: element.absolute_clip_scissor_rect(),
-                        },
-                    );
-                    let next_state = element.build(
-                        graph,
-                        UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-                    );
-                    ctx.set_state(next_state);
-                    return true;
+                    if reason != "child-scissor-clip-inline"
+                        && reason != "child-stencil-clip-inline"
+                    {
+                        crate::view::viewport::record_debug_reuse_path(
+                            crate::view::viewport::DebugReusePathRecord {
+                                node_id,
+                                context: crate::view::viewport::DebugReusePathContext::Deferred,
+                                requested: ctx.promoted_update_kind(node_id).unwrap_or(
+                                    crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                                ),
+                                can_reuse: false,
+                                actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                                reason: Some(reason),
+                                clip_rect: element.absolute_clip_scissor_rect(),
+                            },
+                        );
+                        let next_state = element.build(
+                            graph,
+                            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+                        );
+                        ctx.set_state(next_state);
+                        return true;
+                    }
                 }
             }
             let update_kind = ctx
@@ -112,37 +182,37 @@ pub(crate) fn build_node_by_id(
                     crate::view::viewport::DebugReusePathContext::Deferred,
                 )
             } else if can_reuse {
-                    crate::view::viewport::record_debug_reuse_path(
-                        crate::view::viewport::DebugReusePathRecord {
-                            node_id,
-                            context: crate::view::viewport::DebugReusePathContext::Deferred,
-                            requested: update_kind,
-                            can_reuse,
-                            actual: crate::view::promotion::PromotedLayerUpdateKind::Reuse,
-                            reason: None,
-                            clip_rect: None,
-                        },
-                    );
+                crate::view::viewport::record_debug_reuse_path(
+                    crate::view::viewport::DebugReusePathRecord {
+                        node_id,
+                        context: crate::view::viewport::DebugReusePathContext::Deferred,
+                        requested: update_kind,
+                        can_reuse,
+                        actual: crate::view::promotion::PromotedLayerUpdateKind::Reuse,
+                        reason: None,
+                        clip_rect: None,
+                    },
+                );
                 node_ctx.into_state()
             } else {
-                    crate::view::viewport::record_debug_reuse_path(
-                        crate::view::viewport::DebugReusePathRecord {
-                            node_id,
-                            context: crate::view::viewport::DebugReusePathContext::Deferred,
-                            requested: update_kind,
+                crate::view::viewport::record_debug_reuse_path(
+                    crate::view::viewport::DebugReusePathRecord {
+                        node_id,
+                        context: crate::view::viewport::DebugReusePathContext::Deferred,
+                        requested: update_kind,
                         can_reuse,
                         actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
                         reason: if matches!(
                             update_kind,
                             crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                            ) {
-                                Some("reuse-blocked")
-                            } else {
-                                None
-                            },
-                            clip_rect: None,
+                        ) {
+                            Some("reuse-blocked")
+                        } else {
+                            None
                         },
-                    );
+                        clip_rect: None,
+                    },
+                );
                 graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
                     crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
                     crate::view::render_pass::clear_pass::ClearInput {
@@ -172,6 +242,7 @@ pub(crate) fn build_node_by_id(
                         corner_radii: composite_bounds.corner_radii,
                         opacity,
                         scissor_rect: None,
+                        clear_target: false,
                     },
                     crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
                         layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
