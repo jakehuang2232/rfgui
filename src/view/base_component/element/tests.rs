@@ -1890,4 +1890,133 @@ mod tests {
         );
     }
 
+    #[test]
+    fn promoted_scroll_container_without_promoted_descendants_still_renders_scrollbar() {
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+        );
+        parent.apply_style(parent_style);
+        let _ = parent.set_hovered(true);
+        parent.set_scrollbar_shadow_blur_radius(0.0);
+
+        let child = Element::new(0.0, 0.0, 120.0, 360.0);
+        parent.add_child(Box::new(child));
+        let parent_id = parent.id();
+
+        parent.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        ctx.set_promoted_runtime(
+            Arc::new(HashSet::from([parent_id])),
+            Arc::new(HashMap::new()),
+            Arc::new(HashMap::new()),
+        );
+
+        let mut layer_ctx = UiBuildContext::from_parts(
+            ctx.viewport(),
+            super::BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
+        );
+        let layer_target = layer_ctx.allocate_promoted_layer_target(&mut graph, parent_id);
+        layer_ctx.set_current_target(layer_target);
+        let next_state = parent.build_promoted_layer(
+            &mut graph,
+            layer_ctx,
+            crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+            false,
+            crate::view::viewport::DebugReusePathContext::Root,
+        );
+        ctx.set_state(next_state);
+
+        let pass_names = graph
+            .pass_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+
+        assert!(
+            pass_names
+                .iter()
+                .any(|name| name.contains("draw_rect_pass::DrawRectPass")),
+            "expected scrollbar draw rect in promoted root base path, passes: {pass_names:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_container_build_restores_scissor_and_clip_state() {
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+        );
+        parent.apply_style(parent_style);
+        let child = Element::new(0.0, 0.0, 120.0, 360.0);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+
+        let next_state = parent.build(
+            &mut graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+
+        assert_eq!(
+            next_state.scissor_rect, None,
+            "scroll container build should not leak scissor rect to sibling roots"
+        );
+        assert!(
+            next_state.clip_id_stack.is_empty(),
+            "scroll container build should not leak clip ids to sibling roots"
+        );
+    }
+
 }

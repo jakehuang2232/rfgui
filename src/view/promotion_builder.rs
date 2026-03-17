@@ -31,22 +31,28 @@ pub(crate) fn collect_promotion_candidates(
 
         let (visible_area_ratio, viewport_coverage, distance_to_viewport) =
             visibility_metrics(snapshot, viewport_size);
-        out.push(PromotionCandidate {
-            node_id: snapshot.node_id,
-            parent_id: snapshot.parent_id,
-            width: snapshot.width.max(0.0),
-            height: snapshot.height.max(0.0),
-            subtree_node_count,
-            estimated_pass_count,
-            visible_area_ratio,
-            viewport_coverage,
-            distance_to_viewport,
-            info,
-            active_channels: active_channels
-                .get(&snapshot.node_id)
-                .cloned()
-                .unwrap_or_default(),
-        });
+        // Root windows with box shadows currently regress when promoted:
+        // redraw may reuse/composite the root layer incorrectly and drop the
+        // outer shadow / show a fringe. Keep only those top-level nodes on the
+        // inline path so nested promoted descendants still work.
+        if !(snapshot.parent_id.is_none() && info.has_box_shadow) {
+            out.push(PromotionCandidate {
+                node_id: snapshot.node_id,
+                parent_id: snapshot.parent_id,
+                width: snapshot.width.max(0.0),
+                height: snapshot.height.max(0.0),
+                subtree_node_count,
+                estimated_pass_count,
+                visible_area_ratio,
+                viewport_coverage,
+                distance_to_viewport,
+                info,
+                active_channels: active_channels
+                    .get(&snapshot.node_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
+        }
 
         (subtree_node_count, estimated_pass_count)
     }
@@ -405,13 +411,13 @@ fn rect_distance(a: Rect, b: Rect) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::Color;
+    use crate::style::{BoxShadow, Color, ParsedValue, PropertyId, Style};
     use crate::transition::{
         CHANNEL_STYLE_BACKGROUND_COLOR, ClaimMode, StyleField, StyleTransition,
         StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition, TransitionFrame,
         TransitionHost, TransitionPluginId,
     };
-    use crate::view::base_component::{Element, ElementTrait, set_style_field_by_id};
+    use crate::view::base_component::{Element, ElementTrait, EventTarget, set_style_field_by_id};
     use std::collections::{HashMap, HashSet};
 
     #[derive(Default)]
@@ -459,6 +465,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn root_nodes_with_box_shadow_are_not_promotion_candidates() {
+        let mut shadowed_root = Element::new(24.0, 16.0, 120.0, 80.0);
+        let shadowed_root_id = shadowed_root.id();
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::BoxShadow,
+            ParsedValue::BoxShadow(vec![
+                BoxShadow::new()
+                    .color(Color::rgba(0, 0, 0, 128))
+                    .offset_y(8.0)
+                    .blur(16.0),
+            ]),
+        );
+        shadowed_root.apply_style(root_style);
+
+        let mut parent = Element::new(0.0, 0.0, 240.0, 180.0);
+        let mut shadowed_child = Element::new(12.0, 12.0, 120.0, 80.0);
+        let shadowed_child_id = shadowed_child.id();
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BoxShadow,
+            ParsedValue::BoxShadow(vec![
+                BoxShadow::new()
+                    .color(Color::rgba(0, 0, 0, 128))
+                    .offset_y(8.0)
+                    .blur(16.0),
+            ]),
+        );
+        shadowed_child.apply_style(child_style);
+        parent.add_child(Box::new(shadowed_child));
+
+        let roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(shadowed_root), Box::new(parent)];
+        let candidates = collect_promotion_candidates(
+            &roots,
+            &HashMap::<u64, HashSet<crate::transition::ChannelId>>::new(),
+            (320.0, 200.0),
+        );
+
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.node_id != shadowed_root_id),
+            "shadowed root should stay on inline render path: {candidates:#?}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.node_id == shadowed_child_id),
+            "shadowed nested nodes should remain eligible so nested promotion keeps working"
+        );
+    }
+
     fn build_style_transition_lab_like_tree() -> Vec<Box<dyn ElementTrait>> {
         let mut root = Element::new_with_id(1, 0.0, 0.0, 720.0, 520.0);
         let mut intro = Element::new_with_id(2, 16.0, 16.0, 320.0, 20.0);
@@ -496,6 +555,26 @@ mod tests {
         cards_row.add_child(Box::new(style_card));
         root.add_child(Box::new(cards_row));
         vec![Box::new(root)]
+    }
+
+    fn build_cross_root_scroll_and_nested_promoted_tree() -> Vec<Box<dyn ElementTrait>> {
+        let mut scroll_root = Element::new_with_id(1, 0.0, 0.0, 240.0, 180.0);
+        let mut scroll_style = Style::new();
+        scroll_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+        );
+        scroll_root.apply_style(scroll_style);
+        let scroll_child = Element::new_with_id(2, 0.0, 0.0, 240.0, 480.0);
+        scroll_root.add_child(Box::new(scroll_child));
+
+        let mut promoted_root = Element::new_with_id(10, 320.0, 0.0, 240.0, 180.0);
+        let mut promoted_child = Element::new_with_id(11, 16.0, 16.0, 180.0, 120.0);
+        let promoted_grandchild = Element::new_with_id(12, 24.0, 24.0, 96.0, 48.0);
+        promoted_child.add_child(Box::new(promoted_grandchild));
+        promoted_root.add_child(Box::new(promoted_child));
+
+        vec![Box::new(scroll_root), Box::new(promoted_root)]
     }
 
     #[test]
@@ -679,5 +758,50 @@ mod tests {
         let root_update = &updates[0];
         assert_eq!(root_update.node_id, 1);
         assert_eq!(root_update.kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn scrolling_one_root_does_not_dirty_another_roots_nested_promoted_chain() {
+        let promoted = HashSet::from([10_u64, 11_u64, 12_u64]);
+        let roots = build_cross_root_scroll_and_nested_promoted_tree();
+        let (first_updates, first_base_signatures, first_composition_signatures) =
+            collect_promoted_layer_updates(&roots, &promoted, &HashMap::new(), &HashMap::new());
+        assert_eq!(first_updates.len(), 3);
+        assert!(
+            first_updates
+                .iter()
+                .all(|update| update.kind == PromotedLayerUpdateKind::Reraster)
+        );
+
+        let mut roots = roots;
+        let scroll_root = roots[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("scroll root should be element");
+        scroll_root.set_scroll_offset((0.0, 80.0));
+
+        let (second_updates, _, _) = collect_promoted_layer_updates(
+            &roots,
+            &promoted,
+            &first_base_signatures,
+            &first_composition_signatures,
+        );
+        assert_eq!(second_updates.len(), 3);
+        for node_id in [10_u64, 11_u64, 12_u64] {
+            let update = second_updates
+                .iter()
+                .find(|update| update.node_id == node_id)
+                .expect("promoted update should exist");
+            assert_eq!(
+                update.kind,
+                PromotedLayerUpdateKind::Reuse,
+                "scrolling a different root should not dirty promoted node {node_id}"
+            );
+            assert_eq!(
+                update.composition_kind,
+                PromotedLayerUpdateKind::Reuse,
+                "scrolling a different root should not dirty promoted composition for node {node_id}"
+            );
+        }
     }
 }

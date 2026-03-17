@@ -1,0 +1,19 @@
+<Element>
+    Third Party Licenses
+</Element>
+
+{{#each licenses}}
+<Element>
+    {{name}}
+</Element>
+
+<Element>Used by:</Element>
+
+{{#each used_by}}
+<Element>{{crate.name}} {{crate.version}}</Element>
+{{/each}}
+
+<Element>
+    {{text}}
+</Element>
+{{/each}}
