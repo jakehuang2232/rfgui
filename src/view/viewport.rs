@@ -434,7 +434,6 @@ fn format_style_request_trace() -> String {
     out.join("\n")
 }
 
-
 fn format_style_field(field: StyleField) -> &'static str {
     match field {
         StyleField::Opacity => "opacity",
@@ -904,6 +903,9 @@ pub struct Viewport {
     offscreen_render_target_pool: OffscreenRenderTargetPool,
     sampled_texture_cache: HashMap<u64, SampledTextureEntry>,
     frame_buffer_pool: HashMap<u32, FrameBufferEntry>,
+    draw_rect_uniform_pool: Vec<DrawRectUniformBufferEntry>,
+    draw_rect_uniform_cursor: usize,
+    draw_rect_uniform_offset: u64,
     upload_staging_belt: Option<StagingBelt>,
     pending_size: Option<(u32, u32)>,
     needs_reconfigure: bool,
@@ -950,6 +952,12 @@ struct FrameBufferEntry {
     buffer: wgpu::Buffer,
     size: u64,
     usage: wgpu::BufferUsages,
+}
+
+#[derive(Clone)]
+struct DrawRectUniformBufferEntry {
+    buffer: wgpu::Buffer,
+    size: u64,
 }
 
 struct SampledTextureEntry {
@@ -1905,6 +1913,9 @@ impl Viewport {
             offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
             sampled_texture_cache: HashMap::new(),
             frame_buffer_pool: HashMap::new(),
+            draw_rect_uniform_pool: Vec::new(),
+            draw_rect_uniform_cursor: 0,
+            draw_rect_uniform_offset: 0,
             upload_staging_belt: None,
             pending_size: None,
             needs_reconfigure: false,
@@ -3181,6 +3192,76 @@ impl Viewport {
         true
     }
 
+    pub(crate) fn upload_draw_rect_uniform(
+        &mut self,
+        data: &[u8],
+        slot_size: u64,
+        chunk_size: u64,
+    ) -> Option<(wgpu::Buffer, u32)> {
+        if data.is_empty() || data.len() as u64 > slot_size {
+            return None;
+        }
+        let device = self.device.as_ref()?.clone();
+        if self.upload_staging_belt.is_none() {
+            self.upload_staging_belt = Some(StagingBelt::new(device.clone(), 1024 * 1024));
+        }
+        let required_size = chunk_size.max(slot_size).max(1);
+        let has_current_capacity = self
+            .draw_rect_uniform_pool
+            .get(self.draw_rect_uniform_cursor)
+            .is_some_and(|entry| {
+                entry.size >= required_size
+                    && self.draw_rect_uniform_offset.saturating_add(slot_size) <= entry.size
+            });
+        if !has_current_capacity
+            && self
+                .draw_rect_uniform_pool
+                .get(self.draw_rect_uniform_cursor)
+                .is_some()
+        {
+            self.draw_rect_uniform_cursor = self.draw_rect_uniform_cursor.saturating_add(1);
+            self.draw_rect_uniform_offset = 0;
+        }
+        let target_index = self.draw_rect_uniform_cursor;
+        if self.draw_rect_uniform_pool.len() <= target_index {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("DrawRect Uniform Ring Buffer"),
+                size: required_size,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.draw_rect_uniform_pool
+                .push(DrawRectUniformBufferEntry {
+                    buffer,
+                    size: required_size,
+                });
+        } else if self.draw_rect_uniform_pool[target_index].size < required_size {
+            self.draw_rect_uniform_pool[target_index] = DrawRectUniformBufferEntry {
+                buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("DrawRect Uniform Ring Buffer"),
+                    size: required_size,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                size: required_size,
+            };
+        }
+        let dynamic_offset = self.draw_rect_uniform_offset;
+        let Some(size) = wgpu::BufferSize::new(slot_size) else {
+            return None;
+        };
+        let buffer = self.draw_rect_uniform_pool[target_index].buffer.clone();
+        let frame = self.frame_state.as_mut()?;
+        let staging_belt = self.upload_staging_belt.as_mut()?;
+        let mut mapped =
+            staging_belt.write_buffer(&mut frame.encoder, &buffer, dynamic_offset, size);
+        mapped.fill(0);
+        mapped[..data.len()].copy_from_slice(data);
+        drop(mapped);
+        self.draw_rect_uniform_offset = self.draw_rect_uniform_offset.saturating_add(slot_size);
+        Some((buffer, dynamic_offset as u32))
+    }
+
     pub fn release_render_resource_caches(&mut self) {
         crate::view::render_pass::draw_rect_pass::clear_draw_rect_resources_cache();
         crate::view::render_pass::shadow_module::clear_shadow_resources_cache();
@@ -3192,6 +3273,9 @@ impl Viewport {
         self.sampled_texture_cache.clear();
         crate::view::image_resource::invalidate_uploaded_images();
         self.frame_buffer_pool.clear();
+        self.draw_rect_uniform_pool.clear();
+        self.draw_rect_uniform_cursor = 0;
+        self.draw_rect_uniform_offset = 0;
         self.upload_staging_belt = None;
     }
 
@@ -4094,6 +4178,8 @@ impl Viewport {
             return None;
         }
         self.offscreen_render_target_pool.begin_frame();
+        self.draw_rect_uniform_cursor = 0;
+        self.draw_rect_uniform_offset = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
 

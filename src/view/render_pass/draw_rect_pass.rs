@@ -1,10 +1,8 @@
 use crate::view::frame_graph::AttachmentTarget;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
-use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, PrepareContext,
+    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, render_target_size,
@@ -80,8 +78,8 @@ pub struct DrawRectPass {
     color_write_enabled: bool,
     clear_target: bool,
     render_mode: RectRenderMode,
-    uniform_buffer: RectUniformBufferOut,
     prepared_bind_group: Option<wgpu::BindGroup>,
+    prepared_dynamic_offset: u32,
     input: DrawRectInput,
     output: DrawRectOutput,
 }
@@ -145,15 +143,6 @@ impl DrawRectPass {
         &mut self.output
     }
 
-    fn build_uniform_buffer(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
-        self.uniform_buffer = builder.create_buffer(BufferDesc {
-            size: RECT_UNIFORM_SLOT_SIZE * RECT_UNIFORM_SLOT_COUNT as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            label: Some("DrawRect Uniform Ring Buffer"),
-        });
-        builder.read_buffer(&self.uniform_buffer, BufferReadUsage::Uniform);
-    }
-
     fn inherit_stencil_clip_if_needed(&mut self) {
         if matches!(self.stencil_mode, RectStencilMode::Disabled)
             && let Some(clip_id) = self.input.pass_context.stencil_clip_id
@@ -170,8 +159,8 @@ impl DrawRectPass {
             color_write_enabled: true,
             clear_target: false,
             render_mode: RectRenderMode::Combined,
-            uniform_buffer: RectUniformBufferOut::default(),
             prepared_bind_group: None,
+            prepared_dynamic_offset: 0,
             input,
             output,
         }
@@ -322,10 +311,6 @@ impl DrawRectPass {
         ctx: &mut PrepareContext<'_, '_>,
         variant: RectShaderVariant,
     ) {
-        let Some(handle) = self.uniform_buffer.handle() else {
-            self.prepared_bind_group = None;
-            return;
-        };
         let surface_size = ctx.viewport.surface_size();
         let (target_w, target_h) = match self.output.render_target.handle() {
             Some(target) => render_target_size(ctx, target).unwrap_or(surface_size),
@@ -383,10 +368,19 @@ impl DrawRectPass {
                     .push_debug_overlay_geometry(&overlay_vertices, &debug_indices);
             }
         }
-        let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&params));
+        let Some((buffer, dynamic_offset)) = ctx.viewport.upload_draw_rect_uniform(
+            bytemuck::bytes_of(&params),
+            RECT_UNIFORM_SLOT_SIZE,
+            RECT_UNIFORM_SLOT_SIZE * RECT_UNIFORM_SLOT_COUNT as u64,
+        ) else {
+            self.prepared_bind_group = None;
+            self.prepared_dynamic_offset = 0;
+            return;
+        };
 
         let Some(device) = ctx.viewport.device().cloned() else {
             self.prepared_bind_group = None;
+            self.prepared_dynamic_offset = 0;
             return;
         };
         let format = ctx.viewport.surface_format();
@@ -428,10 +422,6 @@ impl DrawRectPass {
                 self.render_mode,
             );
         }
-        let Some(buffer) = ctx.acquire_buffer(handle) else {
-            self.prepared_bind_group = None;
-            return;
-        };
         self.prepared_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("DrawRect Bind Group (Prepared)"),
             layout: &resources.bind_group_layout,
@@ -444,6 +434,7 @@ impl DrawRectPass {
                 }),
             }],
         }));
+        self.prepared_dynamic_offset = dynamic_offset;
     }
 }
 
@@ -513,16 +504,13 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
 }
 
 const RECT_RESOURCES_BASE: u64 = 10;
-const RECT_UNIFORM_SLOT_SIZE: u64 = 256;
+pub(crate) const RECT_UNIFORM_SLOT_SIZE: u64 = 256;
 const RECT_UNIFORM_SLOT_COUNT: u32 = 4096;
 
 #[derive(Clone, Copy)]
 pub struct RenderTargetTag;
 pub type RenderTargetIn = InSlot<TextureResource, RenderTargetTag>;
 pub type RenderTargetOut = OutSlot<TextureResource, RenderTargetTag>;
-#[derive(Clone, Copy)]
-pub struct RectUniformBufferTag;
-pub type RectUniformBufferOut = OutSlot<BufferResource, RectUniformBufferTag>;
 pub type AlphaRectPass = DrawRectPass;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -561,7 +549,6 @@ pub struct DrawRectDraw {
 impl GraphicsPass for DrawRectPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        self.build_uniform_buffer(builder);
         self.inherit_stencil_clip_if_needed();
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             builder.write_color(
@@ -617,7 +604,6 @@ impl GraphicsPass for DrawRectPass {
 impl GraphicsPass for OpaqueRectPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        self.inner.build_uniform_buffer(builder);
         self.inner.inherit_stencil_clip_if_needed();
         if let Some(target) = builder.texture_target(&self.inner.output.render_target) {
             builder.write_color(
@@ -834,7 +820,12 @@ fn encode_draw_rect_into_existing_pass(
     ctx.set_pipeline(&pipeline);
     ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
     ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-    ctx.set_bind_group(0, &bind_group, &[0]);
+    let dynamic_offset = if pass_def.prepared_bind_group.is_some() {
+        pass_def.prepared_dynamic_offset
+    } else {
+        0
+    };
+    ctx.set_bind_group(0, &bind_group, &[dynamic_offset]);
     if let Some(stencil_reference) = stencil_reference {
         ctx.set_stencil_reference(stencil_reference as u32);
     }
