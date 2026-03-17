@@ -127,8 +127,9 @@ fn rgba_key(width: u32, height: u32, pixels: &Arc<[u8]>) -> u64 {
 }
 
 fn decode_path_image(path: &Path) -> Result<(u32, u32, Arc<[u8]>), Arc<str>> {
-    let decoded = image::open(path)
-        .map_err(|err| Arc::<str>::from(format!("Failed to load image {}: {err}", path.display())))?;
+    let decoded = image::open(path).map_err(|err| {
+        Arc::<str>::from(format!("Failed to load image {}: {err}", path.display()))
+    })?;
     let rgba = decoded.to_rgba8();
     let (width, height) = rgba.dimensions();
     Ok((width, height, Arc::<[u8]>::from(rgba.into_raw())))

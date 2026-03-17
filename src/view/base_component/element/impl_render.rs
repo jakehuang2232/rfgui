@@ -1034,7 +1034,13 @@ impl Element {
             },
         );
         if !has_composited_descendants {
-            return base_state;
+            if can_reuse_base {
+                return base_state;
+            }
+            return self.render_scrollbars(
+                graph,
+                UiBuildContext::from_parts(viewport, base_state),
+            );
         }
 
         let mut compose_ctx = UiBuildContext::from_parts(viewport, base_state);

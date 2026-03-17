@@ -29,6 +29,7 @@ use crate::{ColorLike, Cursor, HexColor, Style};
 use arboard::Clipboard;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::ops::Sub;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use wgpu::util::StagingBelt;
@@ -433,6 +434,7 @@ fn format_style_request_trace() -> String {
     out.join("\n")
 }
 
+
 fn format_style_field(field: StyleField) -> &'static str {
     match field {
         StyleField::Opacity => "opacity",
@@ -493,11 +495,155 @@ fn append_overlay_line_quad(
     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
+fn append_overlay_rect_quad(
+    vertices: &mut Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+    indices: &mut Vec<u32>,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    if right <= left || bottom <= top {
+        return;
+    }
+    let base = vertices.len() as u32;
+    for [x, y] in [[left, top], [right, top], [right, bottom], [left, bottom]] {
+        let clip_x = (x / screen_w) * 2.0 - 1.0;
+        let clip_y = 1.0 - (y / screen_h) * 2.0;
+        vertices.push(super::render_pass::debug_overlay_pass::DebugOverlayVertex {
+            position: [clip_x, clip_y],
+            color,
+        });
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn digit_segments(digit: char) -> Option<&'static [usize]> {
+    match digit {
+        '0' => Some(&[0, 1, 2, 4, 5, 6]),
+        '1' => Some(&[2, 5]),
+        '2' => Some(&[0, 2, 3, 4, 6]),
+        '3' => Some(&[0, 2, 3, 5, 6]),
+        '4' => Some(&[1, 2, 3, 5]),
+        '5' => Some(&[0, 1, 3, 5, 6]),
+        '6' => Some(&[0, 1, 3, 4, 5, 6]),
+        '7' => Some(&[0, 2, 5]),
+        '8' => Some(&[0, 1, 2, 3, 4, 5, 6]),
+        '9' => Some(&[0, 1, 2, 3, 5, 6]),
+        _ => None,
+    }
+}
+
+fn append_overlay_digit(
+    vertices: &mut Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+    indices: &mut Vec<u32>,
+    digit: char,
+    x: f32,
+    y: f32,
+    scale: f32,
+    color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    let Some(segments) = digit_segments(digit) else {
+        return;
+    };
+    let thickness = 1.5 * scale;
+    let width = 7.0 * scale;
+    let height = 12.0 * scale;
+    let mid = y + height * 0.5;
+    let horizontal_width = (width - thickness).max(thickness);
+    let vertical_height = (height * 0.5 - thickness).max(thickness);
+    let segment_rects = [
+        (x, y, x + horizontal_width, y + thickness),
+        (x, y, x + thickness, y + vertical_height),
+        (x + width - thickness, y, x + width, y + vertical_height),
+        (
+            x,
+            mid - thickness * 0.5,
+            x + horizontal_width,
+            mid + thickness * 0.5,
+        ),
+        (x, mid, x + thickness, y + height),
+        (x + width - thickness, mid, x + width, y + height),
+        (x, y + height - thickness, x + horizontal_width, y + height),
+    ];
+
+    for segment in segments {
+        let (left, top, right, bottom) = segment_rects[*segment];
+        append_overlay_rect_quad(
+            vertices, indices, left, top, right, bottom, color, screen_w, screen_h,
+        );
+    }
+}
+
+fn append_overlay_label_geometry(
+    vertices: &mut Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+    indices: &mut Vec<u32>,
+    snapshot: &super::base_component::BoxModelSnapshot,
+    label: &str,
+    accent_color: [f32; 4],
+    screen_w: f32,
+    screen_h: f32,
+) {
+    if label.is_empty() {
+        return;
+    }
+
+    let digit_scale = 0.8;
+    let digit_width = 7.0 * digit_scale;
+    let digit_height = 12.0 * digit_scale;
+    let digit_gap = 1.5;
+    let padding_x = 3.0;
+    let padding_y = 2.5;
+    let text_width = label.chars().count() as f32 * digit_width
+        + label.chars().count().saturating_sub(1) as f32 * digit_gap;
+    let label_width = text_width + padding_x * 2.0;
+    let label_height = digit_height + padding_y * 2.0;
+    let left = snapshot.x.max(0.0);
+    let top = snapshot.y.sub(label_height).max(0.0);
+    let right = (left + label_width).min(screen_w);
+    let bottom = (top + label_height).min(screen_h);
+
+    append_overlay_rect_quad(
+        vertices,
+        indices,
+        left,
+        top,
+        right,
+        bottom,
+        [accent_color[0], accent_color[1], accent_color[2], 0.7],
+        screen_w,
+        screen_h,
+    );
+
+    let mut cursor_x = left + padding_x;
+    let text_top = top + padding_y;
+    for digit in label.chars() {
+        append_overlay_digit(
+            vertices,
+            indices,
+            digit,
+            cursor_x,
+            text_top,
+            digit_scale,
+            [0.0, 0.0, 0.0, 0.9],
+            screen_w,
+            screen_h,
+        );
+        cursor_x += digit_width + digit_gap;
+    }
+}
+
 fn build_reuse_overlay_geometry(
     snapshot: &super::base_component::BoxModelSnapshot,
     screen_w: f32,
     screen_h: f32,
     color: [f32; 4],
+    label: Option<&str>,
 ) -> (
     Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
     Vec<u32>,
@@ -520,6 +666,17 @@ fn build_reuse_overlay_geometry(
             corners[u],
             corners[v],
             2.0,
+            color,
+            screen_w,
+            screen_h,
+        );
+    }
+    if let Some(label) = label {
+        append_overlay_label_geometry(
+            &mut vertices,
+            &mut indices,
+            snapshot,
+            label,
             color,
             screen_w,
             screen_h,
@@ -1553,17 +1710,27 @@ impl Viewport {
     }
 
     fn update_promotion_state(&mut self, roots: &[Box<dyn super::base_component::ElementTrait>]) {
+        let previous_promoted_node_ids = self.promotion_state.promoted_node_ids.clone();
         let active_channels = active_channels_by_node(&self.transition_claims);
         let candidates = collect_promotion_candidates(
             roots,
             &active_channels,
             (self.logical_width, self.logical_height),
         );
-        self.promotion_state = evaluate_promotion(
+        let next_promotion_state = evaluate_promotion(
             candidates,
             (self.logical_width, self.logical_height),
             self.promotion_config,
         );
+        let promotion_topology_changed =
+            previous_promoted_node_ids != next_promotion_state.promoted_node_ids;
+        self.promotion_state = next_promotion_state;
+        if promotion_topology_changed {
+            self.promoted_base_signatures.clear();
+            self.promoted_composition_signatures.clear();
+            self.promoted_layer_updates.clear();
+            self.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
+        }
         let (mut updates, next_base_signatures, next_composition_signatures) =
             collect_promoted_layer_updates(
                 roots,
@@ -1908,6 +2075,7 @@ impl Viewport {
             .map(|snapshot| (snapshot.node_id, *snapshot))
             .collect::<HashMap<_, _>>();
         let mut overlay_batches = Vec::new();
+        let promoted_node_ids = self.promotion_state.promoted_node_ids.clone();
         for record in snapshot_debug_reuse_path() {
             let Some(snapshot) = snapshots_by_id.get(&record.node_id).copied() else {
                 continue;
@@ -1934,8 +2102,16 @@ impl Viewport {
                 }
                 (PromotedLayerUpdateKind::Reraster, _) => [1.0, 0.45, 0.1, 0.95],
             };
-            let (vertices, indices) =
-                build_reuse_overlay_geometry(&snapshot, screen_w, screen_h, color);
+            let label = promoted_node_ids
+                .contains(&record.node_id)
+                .then(|| record.node_id.to_string());
+            let (vertices, indices) = build_reuse_overlay_geometry(
+                &snapshot,
+                screen_w,
+                screen_h,
+                color,
+                label.as_deref(),
+            );
             overlay_batches.push((vertices, indices));
         }
         for (vertices, indices) in overlay_batches {
@@ -4144,7 +4320,11 @@ impl<'a> FrameParts<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MouseButton, PendingClick, is_valid_click_candidate};
+    use super::{
+        MouseButton, PendingClick, append_overlay_label_geometry, build_reuse_overlay_geometry,
+        is_valid_click_candidate,
+    };
+    use crate::view::base_component::BoxModelSnapshot;
 
     #[test]
     fn click_requires_same_button_and_target() {
@@ -4201,5 +4381,56 @@ mod tests {
             16.0,
             10.0
         ));
+    }
+
+    #[test]
+    fn reuse_overlay_geometry_adds_node_id_label_when_requested() {
+        let snapshot = BoxModelSnapshot {
+            node_id: 42,
+            parent_id: None,
+            x: 10.0,
+            y: 12.0,
+            width: 50.0,
+            height: 20.0,
+            border_radius: 0.0,
+            should_render: true,
+        };
+
+        let (plain_vertices, plain_indices) =
+            build_reuse_overlay_geometry(&snapshot, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
+        let (label_vertices, label_indices) =
+            build_reuse_overlay_geometry(&snapshot, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], Some("42"));
+
+        assert!(label_vertices.len() > plain_vertices.len());
+        assert!(label_indices.len() > plain_indices.len());
+    }
+
+    #[test]
+    fn overlay_label_geometry_generates_background_and_digits() {
+        let snapshot = BoxModelSnapshot {
+            node_id: 7,
+            parent_id: None,
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+            border_radius: 0.0,
+            should_render: true,
+        };
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        append_overlay_label_geometry(
+            &mut vertices,
+            &mut indices,
+            &snapshot,
+            "7",
+            [0.0, 1.0, 0.0, 1.0],
+            100.0,
+            100.0,
+        );
+
+        assert!(!vertices.is_empty());
+        assert!(!indices.is_empty());
     }
 }
