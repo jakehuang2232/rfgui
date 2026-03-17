@@ -1,10 +1,10 @@
 use crate::rfgui::ui::{RsxNode, component, globalState, on_click, use_state};
 use crate::rfgui::{Align, CrossSize, JustifyContent};
 use crate::rfgui_components::{Theme, set_theme, use_theme};
+use crate::scene_windows::about_panel::build as build_about_panel;
 use crate::scene_windows::component_test::{
     ComponentTestBindings, ComponentTestValues, build as build_component_test_window,
 };
-use crate::scene_windows::about_panel::build as build_about_panel;
 use crate::scene_windows::inspector_panel::{
     InspectorPanelBindings, build as build_inspector_panel,
 };
@@ -172,10 +172,6 @@ pub fn MainScene() -> RsxNode {
         (760.0, 520.0),
     );
 
-    window_manager.push(
-        "About",
-        vec![build_about_panel(&theme)],
-        (360.0, 280.0),
-    );
+    window_manager.push("About", vec![build_about_panel(&theme)], (360.0, 280.0));
     RsxNode::fragment(window_manager.into_nodes(window_z_order.binding()))
 }

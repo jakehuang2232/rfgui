@@ -149,7 +149,6 @@ impl Image {
             (false, false) => {}
         }
     }
-
 }
 
 impl ElementTrait for Image {
