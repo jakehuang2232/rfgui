@@ -6,7 +6,8 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_size,
+    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
+    render_target_origin, render_target_size,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use glyphon::cosmic_text::{Align, Weight};
@@ -47,6 +48,7 @@ struct TextPreparedState {
     renderer: Option<TextRenderer>,
     prepare_signature: u64,
     stencil_clip_id: Option<u8>,
+    resolution: Resolution,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -173,6 +175,16 @@ impl GraphicsPass for TextPass {
             return;
         }
 
+        let output_handle = self.output.render_target.handle();
+        let fallback_surface_size = ctx.viewport.surface_size();
+        let target_size = match output_handle {
+            Some(handle) => render_target_size(ctx, handle).unwrap_or(fallback_surface_size),
+            None => fallback_surface_size,
+        };
+        let target_origin = output_handle
+            .and_then(|handle| render_target_origin(ctx, handle))
+            .unwrap_or((0, 0));
+
         let viewport = &mut ctx.viewport;
         let device = match viewport.device().cloned() {
             Some(device) => device,
@@ -182,30 +194,38 @@ impl GraphicsPass for TextPass {
             Some(queue) => queue,
             None => return,
         };
-        let (screen_w, screen_h) = viewport.surface_size();
+        let (screen_w, screen_h) = target_size;
         let scale = viewport.scale_factor();
         let format = viewport.surface_format();
+        let resolution = Resolution {
+            width: screen_w,
+            height: screen_h,
+        };
         let mut global = text_resources(&device, &queue, format);
         let resources = global.resources.as_mut().unwrap();
-        resources.viewport.update(
-            &queue,
-            Resolution {
-                width: screen_w,
-                height: screen_h,
-            },
-        );
+        let glyphon_viewport = resources.take_viewport(&device, &queue, resolution);
 
         let bounds = match resolve_text_bounds(
-            self.params.x * scale,
-            self.params.y * scale,
+            self.params.x * scale - target_origin.0 as f32,
+            self.params.y * scale - target_origin.1 as f32,
             self.params.width * scale,
             self.params.height * scale,
             screen_w,
             screen_h,
-            physical_scissor_rect(self.params.scissor_rect, scale, (screen_w, screen_h)),
+            self.params.scissor_rect.and_then(|scissor_rect| {
+                logical_scissor_to_target_physical(
+                    viewport,
+                    scissor_rect,
+                    target_origin,
+                    (screen_w, screen_h),
+                )
+            }),
         ) {
             Some(bounds) => bounds,
-            None => return,
+            None => {
+                resources.put_viewport(resolution, glyphon_viewport);
+                return;
+            }
         };
         let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
         let buffer = resources.prepare_buffer(
@@ -221,8 +241,8 @@ impl GraphicsPass for TextPass {
         );
         let text_area = build_text_area(
             &buffer,
-            self.params.x * scale,
-            self.params.y * scale,
+            self.params.x * scale - target_origin.0 as f32,
+            self.params.y * scale - target_origin.1 as f32,
             bounds,
             to_glyphon_color(self.params.color, self.params.opacity),
         );
@@ -235,17 +255,20 @@ impl GraphicsPass for TextPass {
                 && prepared.prepare_signature == prepare_signature
             {
                 prepared.stencil_clip_id = self.params.stencil_clip_id;
+                resources.put_viewport(resolution, glyphon_viewport);
                 return;
             }
         }
         if viewport.debug_geometry_overlay() {
+            let (overlay_w, overlay_h) = viewport.surface_size();
             let overlay = build_text_debug_overlay(
                 &buffer,
-                self.params.x * scale,
-                self.params.y * scale,
+                self.params.x * scale - target_origin.0 as f32,
+                self.params.y * scale - target_origin.1 as f32,
                 bounds,
-                screen_w as f32,
-                screen_h as f32,
+                [target_origin.0 as f32, target_origin.1 as f32],
+                overlay_w as f32,
+                overlay_h as f32,
             );
             if !overlay.vertices.is_empty() && !overlay.indices.is_empty() {
                 let overlay_vertices: Vec<
@@ -279,18 +302,18 @@ impl GraphicsPass for TextPass {
             }
             None => resources.take_renderer(&device, renderer_key),
         };
-        if renderer
+        let prepare_result = renderer
             .prepare(
                 &device,
                 &queue,
                 &mut resources.font_system,
                 &mut resources.atlas,
-                &resources.viewport,
+                &glyphon_viewport,
                 vec![text_area],
                 &mut resources.swash_cache,
-            )
-            .is_err()
-        {
+            );
+        resources.put_viewport(resolution, glyphon_viewport);
+        if prepare_result.is_err() {
             resources.put_renderer(renderer_key, renderer);
             return;
         }
@@ -299,6 +322,7 @@ impl GraphicsPass for TextPass {
             renderer: Some(renderer),
             prepare_signature,
             stencil_clip_id: self.params.stencil_clip_id,
+            resolution,
         });
     }
 
@@ -317,16 +341,28 @@ impl GraphicsPass for TextPass {
         let format = ctx.viewport().surface_format();
         let mut global = text_resources(&device, &queue, format);
         let resources = global.resources.as_mut().unwrap();
+        let Some(glyphon_viewport) = resources.viewport(prepared.resolution) else {
+            return;
+        };
         let target_size = match self.output.render_target.handle() {
             Some(handle) => render_target_size(ctx.frame_resources(), handle)
                 .unwrap_or(ctx.viewport().surface_size()),
             None => ctx.viewport().surface_size(),
         };
-        let scissor_rect = physical_scissor_rect(
-            self.params.scissor_rect,
-            ctx.viewport().scale_factor(),
-            target_size,
-        );
+        let target_origin = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+            .unwrap_or((0, 0));
+        let scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
+            logical_scissor_to_target_physical(
+                ctx.viewport(),
+                scissor_rect,
+                target_origin,
+                target_size,
+            )
+        });
         let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
         let Some(renderer) = prepared.renderer.as_mut() else {
             return;
@@ -337,7 +373,7 @@ impl GraphicsPass for TextPass {
             ctx.set_scissor_rect(0, 0, target_size.0, target_size.1);
         }
         ctx.set_stencil_reference(stencil_reference);
-        let _ = renderer.render(&resources.atlas, &resources.viewport, ctx.raw_render_pass());
+        let _ = renderer.render(&resources.atlas, glyphon_viewport, ctx.raw_render_pass());
     }
 }
 
@@ -414,6 +450,7 @@ fn resolve_text_bounds(
     })
 }
 
+#[cfg(test)]
 fn physical_scissor_rect(
     scissor_rect: Option<[u32; 4]>,
     scale: f32,
@@ -463,12 +500,13 @@ fn build_text_area<'a>(
 }
 
 struct TextResources {
+    cache: Cache,
     font_system: FontSystem,
     swash_cache: SwashCache,
     atlas: TextAtlas,
-    viewport: GlyphonViewport,
     format: wgpu::TextureFormat,
     renderers: HashMap<TextRendererKey, TextRenderer>,
+    viewports: HashMap<(u32, u32), GlyphonViewport>,
 }
 
 impl TextResources {
@@ -477,16 +515,40 @@ impl TextResources {
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let atlas = TextAtlas::new(device, queue, &cache, format);
-        let viewport = GlyphonViewport::new(device, &cache);
 
         Self {
+            cache,
             font_system,
             swash_cache,
             atlas,
-            viewport,
             format,
             renderers: HashMap::new(),
+            viewports: HashMap::new(),
         }
+    }
+
+    fn take_viewport(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        resolution: Resolution,
+    ) -> GlyphonViewport {
+        let key = (resolution.width, resolution.height);
+        let mut viewport = self
+            .viewports
+            .remove(&key)
+            .unwrap_or_else(|| GlyphonViewport::new(device, &self.cache));
+        viewport.update(queue, resolution);
+        viewport
+    }
+
+    fn put_viewport(&mut self, resolution: Resolution, viewport: GlyphonViewport) {
+        self.viewports
+            .insert((resolution.width, resolution.height), viewport);
+    }
+
+    fn viewport(&self, resolution: Resolution) -> Option<&GlyphonViewport> {
+        self.viewports.get(&(resolution.width, resolution.height))
     }
 
     fn take_renderer(&mut self, device: &wgpu::Device, key: TextRendererKey) -> TextRenderer {
@@ -576,6 +638,7 @@ fn build_text_debug_overlay(
     left: f32,
     top: f32,
     bounds: TextBounds,
+    global_origin: [f32; 2],
     screen_w: f32,
     screen_h: f32,
 ) -> TextDebugOverlay {
@@ -598,10 +661,10 @@ fn build_text_debug_overlay(
                 continue;
             }
             let corners = [
-                [rect[0], rect[1]],
-                [rect[2], rect[1]],
-                [rect[2], rect[3]],
-                [rect[0], rect[3]],
+                [rect[0] + global_origin[0], rect[1] + global_origin[1]],
+                [rect[2] + global_origin[0], rect[1] + global_origin[1]],
+                [rect[2] + global_origin[0], rect[3] + global_origin[1]],
+                [rect[0] + global_origin[0], rect[3] + global_origin[1]],
             ];
             for (u, v) in [(0_usize, 1_usize), (1, 2), (2, 3), (3, 0)] {
                 append_text_debug_line_quad(

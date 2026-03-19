@@ -681,6 +681,39 @@ pub struct ExecuteProfile {
     pub detail_ordered: Vec<(String, f64, usize)>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct CompileGraphProfile {
+    pub total_ms: f64,
+    pub build_version_producers_ms: f64,
+    pub latest_resource_versions_ms: f64,
+    pub discover_sink_passes_ms: f64,
+    pub discover_live_passes_ms: f64,
+    pub build_live_dependency_graph_ms: f64,
+    pub toposort_live_passes_ms: f64,
+    pub build_execution_plan_ms: f64,
+    pub build_resource_state_timelines_ms: f64,
+    pub build_compiled_resources_ms: f64,
+    pub assemble_compiled_passes_ms: f64,
+    pub sink_pass_count: usize,
+    pub live_pass_count: usize,
+    pub ordered_pass_count: usize,
+    pub execution_step_count: usize,
+    pub compiled_resource_count: usize,
+    pub culled_pass_count: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CompileProfile {
+    pub total_ms: f64,
+    pub setup_passes_ms: f64,
+    pub annotate_resource_versions_ms: f64,
+    pub build_compiled_graph_ms: f64,
+    pub prepare_upload_ms: f64,
+    pub setup_pass_count: usize,
+    pub prepare_pass_count: usize,
+    pub graph: CompileGraphProfile,
+}
+
 impl FrameGraph {
     pub fn new() -> Self {
         Self {
@@ -856,7 +889,8 @@ impl FrameGraph {
         super::slot::OutSlot::with_handle(handle)
     }
 
-    pub fn compile(&mut self) -> Result<(), FrameGraphError> {
+    fn compile_profiled_internal(&mut self) -> Result<CompileProfile, FrameGraphError> {
+        let compile_started_at = Instant::now();
         self.order.clear();
         self.compiled_graph = None;
         self.compiled = false;
@@ -871,6 +905,7 @@ impl FrameGraph {
         let mut buffer_metadata = std::mem::take(&mut self.buffer_metadata);
         let mut build_errors: Vec<FrameGraphError> = Vec::new();
 
+        let setup_started_at = Instant::now();
         for node in &mut self.passes {
             let mut builder = PassBuilderState {
                 descriptor: &mut node.descriptor,
@@ -883,6 +918,7 @@ impl FrameGraph {
             };
             node.pass.setup(&mut builder);
         }
+        let setup_passes_ms = setup_started_at.elapsed().as_secs_f64() * 1000.0;
 
         self.textures = textures;
         self.buffers = buffers;
@@ -894,9 +930,14 @@ impl FrameGraph {
             return Err(err);
         }
 
+        let annotate_started_at = Instant::now();
         self.annotate_resource_versions();
+        let annotate_resource_versions_ms = annotate_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        let compiled_graph = self.build_compiled_graph()?;
+        let build_compiled_graph_started_at = Instant::now();
+        let (compiled_graph, graph_profile) = self.build_compiled_graph_profiled()?;
+        let build_compiled_graph_ms =
+            build_compiled_graph_started_at.elapsed().as_secs_f64() * 1000.0;
         self.order = compiled_graph.execution_plan.ordered_passes.clone();
         self.execute_steps = compiled_graph
             .execution_plan
@@ -934,11 +975,27 @@ impl FrameGraph {
 
         self.compiled_graph = Some(compiled_graph);
         self.compiled = true;
-        Ok(())
+        Ok(CompileProfile {
+            total_ms: compile_started_at.elapsed().as_secs_f64() * 1000.0,
+            setup_passes_ms,
+            annotate_resource_versions_ms,
+            build_compiled_graph_ms,
+            prepare_upload_ms: 0.0,
+            setup_pass_count: self.passes.len(),
+            prepare_pass_count: 0,
+            graph: graph_profile,
+        })
     }
 
-    pub fn compile_with_upload(&mut self, viewport: &mut Viewport) -> Result<(), FrameGraphError> {
-        self.compile()?;
+    pub fn compile(&mut self) -> Result<(), FrameGraphError> {
+        self.compile_profiled_internal().map(|_| ())
+    }
+
+    pub fn compile_with_upload(
+        &mut self,
+        viewport: &mut Viewport,
+    ) -> Result<CompileProfile, FrameGraphError> {
+        let mut profile = self.compile_profiled_internal()?;
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
         let (texture_allocations, texture_stable_keys, buffer_allocations) = {
@@ -952,6 +1009,7 @@ impl FrameGraph {
                 compiled.buffer_allocation_ids.clone(),
             )
         };
+        let prepare_started_at = Instant::now();
         let mut ctx = PrepareContext::new(
             viewport,
             &textures,
@@ -963,7 +1021,10 @@ impl FrameGraph {
         for &index in &self.order {
             self.passes[index].pass.prepare(&mut ctx);
         }
-        Ok(())
+        profile.prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.prepare_pass_count = self.order.len();
+        profile.total_ms += profile.prepare_upload_ms;
+        Ok(profile)
     }
 
     pub fn pass_descriptors(&self) -> Vec<&PassDescriptor> {
@@ -1178,20 +1239,64 @@ impl FrameGraph {
         let _ = (version_producers, consumed_versions, produced_versions);
     }
 
-    fn build_compiled_graph(&self) -> Result<CompiledGraph, FrameGraphError> {
+    fn build_compiled_graph_profiled(
+        &self,
+    ) -> Result<(CompiledGraph, CompileGraphProfile), FrameGraphError> {
+        let total_started_at = Instant::now();
+
+        let build_version_producers_started_at = Instant::now();
         let version_producers = self.build_version_producers();
+        let build_version_producers_ms =
+            build_version_producers_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let latest_resource_versions_started_at = Instant::now();
         let latest_resource_versions = self.latest_resource_versions();
+        let latest_resource_versions_ms =
+            latest_resource_versions_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let discover_sink_passes_started_at = Instant::now();
         let sink_passes =
             self.discover_sink_passes(&version_producers, &latest_resource_versions)?;
+        let discover_sink_passes_ms =
+            discover_sink_passes_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let discover_live_passes_started_at = Instant::now();
         let live_passes = self.discover_live_passes(&sink_passes, &version_producers)?;
+        let discover_live_passes_ms =
+            discover_live_passes_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let build_live_dependency_graph_started_at = Instant::now();
         let (graph_edges, indegree) =
             self.build_live_dependency_graph(&live_passes, &version_producers)?;
+        let build_live_dependency_graph_ms = build_live_dependency_graph_started_at
+            .elapsed()
+            .as_secs_f64()
+            * 1000.0;
+
+        let toposort_live_passes_started_at = Instant::now();
         let ordered_passes = self.toposort_live_passes(&live_passes, &graph_edges, indegree)?;
+        let toposort_live_passes_ms =
+            toposort_live_passes_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let build_execution_plan_started_at = Instant::now();
         let execution_steps = self.build_execution_plan(&ordered_passes);
+        let build_execution_plan_ms =
+            build_execution_plan_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let build_resource_state_timelines_started_at = Instant::now();
         let (pass_state_transitions, resource_transitions, resource_timelines) =
             self.build_resource_state_timelines(&ordered_passes)?;
+        let build_resource_state_timelines_ms = build_resource_state_timelines_started_at
+            .elapsed()
+            .as_secs_f64()
+            * 1000.0;
+
+        let build_compiled_resources_started_at = Instant::now();
         let (resources, allocation_plan, texture_allocation_ids, buffer_allocation_ids) =
             self.build_compiled_resources(&live_passes, &ordered_passes);
+        let build_compiled_resources_ms =
+            build_compiled_resources_started_at.elapsed().as_secs_f64() * 1000.0;
+
         let texture_stable_keys = resources
             .iter()
             .filter_map(|resource| match resource.handle {
@@ -1203,6 +1308,7 @@ impl FrameGraph {
             .filter(|index| !live_passes.contains(index))
             .collect::<Vec<_>>();
         let live_set = live_passes.iter().copied().collect::<HashSet<_>>();
+        let assemble_compiled_passes_started_at = Instant::now();
         let compiled_passes = ordered_passes
             .iter()
             .map(|&index| {
@@ -1225,8 +1331,10 @@ impl FrameGraph {
             })
             .filter(|pass| live_set.contains(&pass.original_index))
             .collect::<Vec<_>>();
+        let assemble_compiled_passes_ms =
+            assemble_compiled_passes_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        Ok(CompiledGraph {
+        let compiled_graph = CompiledGraph {
             passes: compiled_passes,
             resources,
             external_sinks: self.external_sinks.clone(),
@@ -1241,7 +1349,28 @@ impl FrameGraph {
             texture_allocation_ids,
             buffer_allocation_ids,
             texture_stable_keys,
-        })
+        };
+        let profile = CompileGraphProfile {
+            total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
+            build_version_producers_ms,
+            latest_resource_versions_ms,
+            discover_sink_passes_ms,
+            discover_live_passes_ms,
+            build_live_dependency_graph_ms,
+            toposort_live_passes_ms,
+            build_execution_plan_ms,
+            build_resource_state_timelines_ms,
+            build_compiled_resources_ms,
+            assemble_compiled_passes_ms,
+            sink_pass_count: sink_passes.len(),
+            live_pass_count: live_passes.len(),
+            ordered_pass_count: compiled_graph.execution_plan.ordered_passes.len(),
+            execution_step_count: compiled_graph.execution_plan.steps.len(),
+            compiled_resource_count: compiled_graph.resources.len(),
+            culled_pass_count: compiled_graph.culled_passes.len(),
+        };
+
+        Ok((compiled_graph, profile))
     }
 
     fn discover_sink_passes(

@@ -173,7 +173,8 @@ pub(crate) fn build_node_by_id(
                 ctx.viewport(),
                 BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
             );
-            let layer_target = node_ctx.allocate_promoted_layer_target(graph, node_id);
+            let layer_target =
+                node_ctx.allocate_promoted_layer_target(graph, node_id, node.promotion_composite_bounds());
             node_ctx.set_current_target(layer_target);
             let next_state = if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
                 element.build_promoted_layer(

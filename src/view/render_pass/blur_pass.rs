@@ -8,7 +8,8 @@ use crate::view::frame_graph::{
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    render_target_format, render_target_size, render_target_view,
+    logical_scissor_to_target_physical, render_target_format, render_target_origin,
+    render_target_size, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
@@ -196,8 +197,16 @@ impl GraphicsPass for BlurPass {
         });
 
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport()
-                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
+            logical_scissor_to_target_physical(
+                ctx.viewport(),
+                scissor_rect,
+                self.output
+                    .render_target
+                    .handle()
+                    .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+                    .unwrap_or((0, 0)),
+                (target_w, target_h),
+            )
         });
 
         if let Some([x, y, width, height]) = scissor_rect_physical {

@@ -316,6 +316,22 @@ pub struct UiBuildContext {
     state: BuildState,
 }
 
+fn texture_desc_for_logical_bounds(
+    bounds: PromotionCompositeBounds,
+    scale_factor: f32,
+    target_format: wgpu::TextureFormat,
+) -> TextureDesc {
+    let scale = scale_factor.max(0.0001);
+    let origin_x = (bounds.x * scale).floor().max(0.0) as u32;
+    let origin_y = (bounds.y * scale).floor().max(0.0) as u32;
+    let max_x = ((bounds.x + bounds.width.max(0.0)) * scale).ceil().max(0.0) as u32;
+    let max_y = ((bounds.y + bounds.height.max(0.0)) * scale).ceil().max(0.0) as u32;
+    let width = max_x.saturating_sub(origin_x).max(1);
+    let height = max_y.saturating_sub(origin_y).max(1);
+    TextureDesc::new(width, height, target_format, wgpu::TextureDimension::D2)
+        .with_origin(origin_x, origin_y)
+}
+
 impl UiBuildContext {
     pub fn new(
         viewport_width: u32,
@@ -375,16 +391,34 @@ impl UiBuildContext {
         &mut self,
         graph: &mut FrameGraph,
         node_id: u64,
+        bounds: PromotionCompositeBounds,
     ) -> RenderTargetOut {
-        self.next_persistent_target(graph, promoted_layer_stable_key(node_id))
+        self.next_persistent_target_with_desc(
+            graph,
+            texture_desc_for_logical_bounds(
+                bounds,
+                self.viewport.scale_factor,
+                self.viewport.target_format,
+            ),
+            promoted_layer_stable_key(node_id),
+        )
     }
 
     pub(crate) fn allocate_persistent_target_with_key(
         &mut self,
         graph: &mut FrameGraph,
         stable_key: u64,
+        bounds: PromotionCompositeBounds,
     ) -> RenderTargetOut {
-        self.next_persistent_target(graph, stable_key)
+        self.next_persistent_target_with_desc(
+            graph,
+            texture_desc_for_logical_bounds(
+                bounds,
+                self.viewport.scale_factor,
+                self.viewport.target_format,
+            ),
+            stable_key,
+        )
     }
 
     pub fn set_current_target(&mut self, target: RenderTargetOut) {
@@ -432,23 +466,6 @@ impl UiBuildContext {
                 .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
         }
         color
-    }
-
-    fn next_persistent_target(
-        &mut self,
-        graph: &mut FrameGraph,
-        stable_key: u64,
-    ) -> RenderTargetOut {
-        self.next_persistent_target_with_desc(
-            graph,
-            TextureDesc::new(
-                self.viewport.target_width,
-                self.viewport.target_height,
-                self.viewport.target_format,
-                wgpu::TextureDimension::D2,
-            ),
-            stable_key,
-        )
     }
 
     fn next_persistent_target_with_desc(

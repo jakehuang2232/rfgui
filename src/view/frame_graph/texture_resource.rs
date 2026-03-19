@@ -4,6 +4,8 @@ use super::slot::ResourceType;
 pub struct TextureDesc {
     width: u32,
     height: u32,
+    origin_x: u32,
+    origin_y: u32,
     format: wgpu::TextureFormat,
     dimension: wgpu::TextureDimension,
     usage: wgpu::TextureUsages,
@@ -30,6 +32,8 @@ impl TextureDesc {
         Self {
             width,
             height,
+            origin_x: 0,
+            origin_y: 0,
             format,
             dimension,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -42,6 +46,12 @@ impl TextureDesc {
 
     pub fn with_usage(mut self, usage: wgpu::TextureUsages) -> Self {
         self.usage = usage;
+        self
+    }
+
+    pub fn with_origin(mut self, origin_x: u32, origin_y: u32) -> Self {
+        self.origin_x = origin_x;
+        self.origin_y = origin_y;
         self
     }
 
@@ -60,6 +70,10 @@ impl TextureDesc {
 
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
+    }
+
+    pub fn origin(&self) -> (u32, u32) {
+        (self.origin_x, self.origin_y)
     }
 
     pub fn dimension(&self) -> wgpu::TextureDimension {

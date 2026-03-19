@@ -8,7 +8,8 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_size, render_target_view,
+    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
+    render_target_origin, render_target_size, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -29,6 +30,7 @@ pub struct TextureCompositePass {
 pub struct TextureCompositeParams {
     pub bounds: [f32; 4],
     pub uv_bounds: Option<[f32; 4]>,
+    pub mask_uv_bounds: Option<[f32; 4]>,
     pub use_mask: bool,
     pub opacity: f32,
     pub scissor_rect: Option<[u32; 4]>,
@@ -39,6 +41,7 @@ impl Default for TextureCompositeParams {
         Self {
             bounds: [0.0, 0.0, 0.0, 0.0],
             uv_bounds: None,
+            mask_uv_bounds: None,
             use_mask: false,
             opacity: 1.0,
             scissor_rect: None,
@@ -94,7 +97,8 @@ struct TextureCompositeUniform {
 #[repr(C)]
 struct CompositeVertex {
     position: [f32; 2],
-    uv: [f32; 2],
+    source_uv: [f32; 2],
+    mask_uv: [f32; 2],
 }
 
 struct TextureCompositeResources {
@@ -185,6 +189,18 @@ impl GraphicsPass for TextureCompositePass {
             Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
             None => surface_size,
         };
+        let target_origin = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_origin(ctx, handle))
+            .unwrap_or((0, 0));
+        let source_origin = self
+            .input
+            .source
+            .handle()
+            .and_then(|handle| render_target_origin(ctx, handle))
+            .unwrap_or((0, 0));
         let source_size = self
             .input
             .source
@@ -192,12 +208,30 @@ impl GraphicsPass for TextureCompositePass {
             .and_then(|handle| render_target_size(ctx, handle))
             .or(self.input.sampled_source_size)
             .unwrap_or(surface_size);
+        let mask_origin = self
+            .input
+            .mask
+            .handle()
+            .and_then(|handle| render_target_origin(ctx, handle))
+            .unwrap_or(source_origin);
+        let mask_size = self
+            .input
+            .mask
+            .handle()
+            .and_then(|handle| render_target_size(ctx, handle))
+            .unwrap_or(source_size);
         if target_w == 0 || target_h == 0 {
             return;
         }
 
         let scale = ctx.viewport.scale_factor();
-        let bounds = resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
+        let bounds = resolve_bounds(
+            self.params.bounds,
+            scale,
+            target_w as f32,
+            target_h as f32,
+            [target_origin.0 as f32, target_origin.1 as f32],
+        );
         let uv_bounds = resolve_uv_bounds(
             self.params.uv_bounds,
             if self.input.sampled_source_key.is_none() && self.input.source.handle().is_some() {
@@ -207,6 +241,14 @@ impl GraphicsPass for TextureCompositePass {
             },
             source_size.0 as f32,
             source_size.1 as f32,
+            [source_origin.0 as f32, source_origin.1 as f32],
+        );
+        let mask_uv_bounds = resolve_uv_bounds(
+            self.params.mask_uv_bounds.or(self.params.uv_bounds),
+            scale,
+            mask_size.0 as f32,
+            mask_size.1 as f32,
+            [mask_origin.0 as f32, mask_origin.1 as f32],
         );
 
         let uniform = TextureCompositeUniform {
@@ -214,8 +256,13 @@ impl GraphicsPass for TextureCompositePass {
             opacity: self.params.opacity.clamp(0.0, 1.0),
             _pad: [0.0, 0.0],
         };
-        let (vertices, indices) =
-            quad_for_bounds(bounds, target_w as f32, target_h as f32, uv_bounds);
+        let (vertices, indices) = quad_for_bounds(
+            bounds,
+            target_w as f32,
+            target_h as f32,
+            uv_bounds,
+            mask_uv_bounds,
+        );
 
         if let Some(handle) = self.uniform_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&uniform));
@@ -359,14 +406,64 @@ impl GraphicsPass for TextureCompositePass {
                 }
                 None => surface_size,
             };
+            let target_origin = self
+                .output
+                .render_target
+                .handle()
+                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+                .unwrap_or((0, 0));
             let scale = ctx.viewport().scale_factor();
-            let bounds =
-                resolve_bounds(self.params.bounds, scale, target_w as f32, target_h as f32);
+            let bounds = resolve_bounds(
+                self.params.bounds,
+                scale,
+                target_w as f32,
+                target_h as f32,
+                [target_origin.0 as f32, target_origin.1 as f32],
+            );
+            let source_origin = self
+                .input
+                .source
+                .handle()
+                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+                .unwrap_or((0, 0));
+            let source_size = self
+                .input
+                .source
+                .handle()
+                .and_then(|handle| render_target_size(ctx.frame_resources(), handle))
+                .unwrap_or(surface_size);
+            let mask_origin = self
+                .input
+                .mask
+                .handle()
+                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+                .unwrap_or(source_origin);
+            let mask_size = self
+                .input
+                .mask
+                .handle()
+                .and_then(|handle| render_target_size(ctx.frame_resources(), handle))
+                .unwrap_or(source_size);
+            let source_uv_bounds = resolve_uv_bounds(
+                self.params.uv_bounds,
+                scale,
+                source_size.0 as f32,
+                source_size.1 as f32,
+                [source_origin.0 as f32, source_origin.1 as f32],
+            );
+            let mask_uv_bounds = resolve_uv_bounds(
+                self.params.mask_uv_bounds.or(self.params.uv_bounds),
+                scale,
+                mask_size.0 as f32,
+                mask_size.1 as f32,
+                [mask_origin.0 as f32, mask_origin.1 as f32],
+            );
             let (vertices, indices) = quad_for_bounds(
                 bounds,
                 target_w as f32,
                 target_h as f32,
-                [0.0, 0.0, 1.0, 1.0],
+                source_uv_bounds,
+                mask_uv_bounds,
             );
             fallback_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("TextureComposite Vertex (Fallback)"),
@@ -388,9 +485,19 @@ impl GraphicsPass for TextureCompositePass {
             }
             None => surface_size,
         };
+        let target_origin = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+            .unwrap_or((0, 0));
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport()
-                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
+            logical_scissor_to_target_physical(
+                ctx.viewport(),
+                scissor_rect,
+                target_origin,
+                (target_w, target_h),
+            )
         });
         let pipeline = match (
             self.input.pass_context.depth_stencil_target.is_some(),
@@ -455,6 +562,7 @@ pub(crate) fn composite_immediate(
         bounds,
         target_size.0 as f32,
         target_size.1 as f32,
+        [0.0, 0.0, 1.0, 1.0],
         [0.0, 0.0, 1.0, 1.0],
     );
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -739,6 +847,11 @@ fn create_pipeline(
                         offset: std::mem::size_of::<[f32; 2]>() as u64,
                         shader_location: 1,
                     },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: (std::mem::size_of::<[f32; 2]>() * 2) as u64,
+                        shader_location: 2,
+                    },
                 ],
             }],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -820,16 +933,21 @@ fn quad_for_bounds(
     bounds: [f32; 4],
     target_w: f32,
     target_h: f32,
-    uv_bounds: [f32; 4],
+    source_uv_bounds: [f32; 4],
+    mask_uv_bounds: [f32; 4],
 ) -> ([CompositeVertex; 4], [u16; 6]) {
     let x = bounds[0];
     let y = bounds[1];
     let w = bounds[2].max(0.0);
     let h = bounds[3].max(0.0);
-    let uv_left = uv_bounds[0];
-    let uv_top = uv_bounds[1];
-    let uv_right = uv_bounds[0] + uv_bounds[2].max(0.0);
-    let uv_bottom = uv_bounds[1] + uv_bounds[3].max(0.0);
+    let source_uv_left = source_uv_bounds[0];
+    let source_uv_top = source_uv_bounds[1];
+    let source_uv_right = source_uv_bounds[0] + source_uv_bounds[2].max(0.0);
+    let source_uv_bottom = source_uv_bounds[1] + source_uv_bounds[3].max(0.0);
+    let mask_uv_left = mask_uv_bounds[0];
+    let mask_uv_top = mask_uv_bounds[1];
+    let mask_uv_right = mask_uv_bounds[0] + mask_uv_bounds[2].max(0.0);
+    let mask_uv_bottom = mask_uv_bounds[1] + mask_uv_bounds[3].max(0.0);
     let left = (x / target_w) * 2.0 - 1.0;
     let right = ((x + w) / target_w) * 2.0 - 1.0;
     let top = 1.0 - (y / target_h) * 2.0;
@@ -838,29 +956,39 @@ fn quad_for_bounds(
         [
             CompositeVertex {
                 position: [left, bottom],
-                uv: [uv_left, uv_bottom],
+                source_uv: [source_uv_left, source_uv_bottom],
+                mask_uv: [mask_uv_left, mask_uv_bottom],
             },
             CompositeVertex {
                 position: [right, bottom],
-                uv: [uv_right, uv_bottom],
+                source_uv: [source_uv_right, source_uv_bottom],
+                mask_uv: [mask_uv_right, mask_uv_bottom],
             },
             CompositeVertex {
                 position: [right, top],
-                uv: [uv_right, uv_top],
+                source_uv: [source_uv_right, source_uv_top],
+                mask_uv: [mask_uv_right, mask_uv_top],
             },
             CompositeVertex {
                 position: [left, top],
-                uv: [uv_left, uv_top],
+                source_uv: [source_uv_left, source_uv_top],
+                mask_uv: [mask_uv_left, mask_uv_top],
             },
         ],
         [0, 1, 2, 0, 2, 3],
     )
 }
 
-fn resolve_bounds(bounds: [f32; 4], scale: f32, target_w: f32, target_h: f32) -> [f32; 4] {
+fn resolve_bounds(
+    bounds: [f32; 4],
+    scale: f32,
+    target_w: f32,
+    target_h: f32,
+    target_origin: [f32; 2],
+) -> [f32; 4] {
     let scaled = [
-        bounds[0] * scale,
-        bounds[1] * scale,
+        bounds[0] * scale - target_origin[0],
+        bounds[1] * scale - target_origin[1],
         bounds[2] * scale,
         bounds[3] * scale,
     ];
@@ -876,6 +1004,7 @@ fn resolve_uv_bounds(
     scale: f32,
     source_w: f32,
     source_h: f32,
+    source_origin: [f32; 2],
 ) -> [f32; 4] {
     let Some(bounds) = uv_bounds else {
         return [0.0, 0.0, 1.0, 1.0];
@@ -884,16 +1013,16 @@ fn resolve_uv_bounds(
         return [0.0, 0.0, 1.0, 1.0];
     }
     let scaled = [
-        bounds[0] * scale,
-        bounds[1] * scale,
+        bounds[0] * scale - source_origin[0],
+        bounds[1] * scale - source_origin[1],
         bounds[2] * scale,
         bounds[3] * scale,
     ];
     [
-        (scaled[0] / source_w).clamp(0.0, 1.0),
-        (scaled[1] / source_h).clamp(0.0, 1.0),
-        (scaled[2] / source_w).clamp(0.0, 1.0),
-        (scaled[3] / source_h).clamp(0.0, 1.0),
+        scaled[0] / source_w,
+        scaled[1] / source_h,
+        scaled[2] / source_w,
+        scaled[3] / source_h,
     ]
 }
 
@@ -935,13 +1064,20 @@ mod tests {
 
     #[test]
     fn resolve_uv_bounds_scales_render_target_sources() {
-        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 2.0, 200.0, 400.0);
+        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 2.0, 200.0, 400.0, [0.0, 0.0]);
         assert_eq!(uv, [0.1, 0.1, 0.3, 0.2]);
     }
 
     #[test]
     fn resolve_uv_bounds_does_not_scale_sampled_image_sources() {
-        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 1.0, 200.0, 400.0);
+        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 1.0, 200.0, 400.0, [0.0, 0.0]);
         assert_eq!(uv, [0.05, 0.05, 0.15, 0.1]);
+    }
+
+    #[test]
+    fn resolve_uv_bounds_preserves_negative_offsets_for_offscreen_promoted_content() {
+        let uv =
+            resolve_uv_bounds(Some([-10.0, -20.0, 100.0, 80.0]), 1.0, 200.0, 400.0, [0.0, 0.0]);
+        assert_eq!(uv, [-0.05, -0.05, 0.5, 0.2]);
     }
 }

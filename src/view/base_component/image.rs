@@ -412,6 +412,7 @@ impl Renderable for Image {
             TextureCompositeParams {
                 bounds: draw_bounds,
                 uv_bounds: Some(uv_bounds),
+                mask_uv_bounds: None,
                 use_mask: false,
                 opacity: if ctx.is_node_promoted(self.id()) {
                     1.0

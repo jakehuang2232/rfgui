@@ -189,6 +189,67 @@ fn build_execute_detail_trace_nodes(
     out
 }
 
+fn build_compile_trace_nodes(
+    profile: &crate::view::frame_graph::CompileProfile,
+) -> Vec<TraceRenderNode> {
+    let graph = &profile.graph;
+    vec![
+        TraceRenderNode::new(
+            format!("setup_passes (passes={})", profile.setup_pass_count),
+            profile.setup_passes_ms,
+        ),
+        TraceRenderNode::new(
+            "annotate_resource_versions",
+            profile.annotate_resource_versions_ms,
+        ),
+        TraceRenderNode::with_children(
+            format!(
+                "build_compiled_graph (live={}, ordered={}, steps={}, resources={}, culled={})",
+                graph.live_pass_count,
+                graph.ordered_pass_count,
+                graph.execution_step_count,
+                graph.compiled_resource_count,
+                graph.culled_pass_count,
+            ),
+            profile.build_compiled_graph_ms,
+            vec![
+                TraceRenderNode::new("build_version_producers", graph.build_version_producers_ms),
+                TraceRenderNode::new(
+                    "latest_resource_versions",
+                    graph.latest_resource_versions_ms,
+                ),
+                TraceRenderNode::new(
+                    format!("discover_sink_passes (count={})", graph.sink_pass_count),
+                    graph.discover_sink_passes_ms,
+                ),
+                TraceRenderNode::new("discover_live_passes", graph.discover_live_passes_ms),
+                TraceRenderNode::new(
+                    "build_live_dependency_graph",
+                    graph.build_live_dependency_graph_ms,
+                ),
+                TraceRenderNode::new("toposort_live_passes", graph.toposort_live_passes_ms),
+                TraceRenderNode::new("build_execution_plan", graph.build_execution_plan_ms),
+                TraceRenderNode::new(
+                    "build_resource_state_timelines",
+                    graph.build_resource_state_timelines_ms,
+                ),
+                TraceRenderNode::new(
+                    "build_compiled_resources",
+                    graph.build_compiled_resources_ms,
+                ),
+                TraceRenderNode::new(
+                    "assemble_compiled_passes",
+                    graph.assemble_compiled_passes_ms,
+                ),
+            ],
+        ),
+        TraceRenderNode::new(
+            format!("prepare_upload (passes={})", profile.prepare_pass_count),
+            profile.prepare_upload_ms,
+        ),
+    ]
+}
+
 fn format_promotion_trace(
     decisions: &[PromotionDecision],
     updates: &[PromotedLayerUpdate],
@@ -2607,7 +2668,11 @@ impl Viewport {
                         ctx.ancestor_clip_context(),
                     ),
                 );
-                let layer_target = root_ctx.allocate_promoted_layer_target(&mut graph, root_id);
+                let layer_target = root_ctx.allocate_promoted_layer_target(
+                    &mut graph,
+                    root_id,
+                    root.promotion_composite_bounds(),
+                );
                 root_ctx.set_current_target(layer_target);
                 let next_state = if let Some(element) =
                     root.as_any_mut()
@@ -2732,15 +2797,19 @@ impl Viewport {
         }
         let build_graph_elapsed_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        let compile_started_at = Instant::now();
+        let mut compile_elapsed_ms = 0.0_f64;
+        let mut compile_children: Vec<TraceRenderNode> = Vec::new();
         let compiled = match graph.compile_with_upload(self) {
-            Ok(()) => true,
+            Ok(profile) => {
+                compile_elapsed_ms = profile.total_ms;
+                compile_children = build_compile_trace_nodes(&profile);
+                true
+            }
             Err(err) => {
                 eprintln!("[warn] frame graph compile failed: {:?}", err);
                 false
             }
         };
-        let compile_elapsed_ms = compile_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let mut execute_elapsed_ms = 0.0_f64;
         let mut execute_pass_count = 0_usize;
@@ -2825,7 +2894,7 @@ impl Viewport {
                         ],
                     ),
                     TraceRenderNode::new("build_graph", build_graph_elapsed_ms),
-                    TraceRenderNode::new("compile", compile_elapsed_ms),
+                    TraceRenderNode::with_children("compile", compile_elapsed_ms, compile_children),
                     TraceRenderNode::with_children(
                         format!("execute (passes={execute_pass_count})"),
                         execute_elapsed_ms,
