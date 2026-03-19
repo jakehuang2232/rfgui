@@ -9,7 +9,7 @@ use crate::view::frame_graph::{
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_size, render_target_view,
+    render_target_origin, render_target_physical_size, render_target_ref, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -185,41 +185,18 @@ impl GraphicsPass for TextureCompositePass {
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let surface_size = ctx.viewport.surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
-            None => surface_size,
-        };
-        let target_origin = self
-            .output
-            .render_target
-            .handle()
-            .and_then(|handle| render_target_origin(ctx, handle))
-            .unwrap_or((0, 0));
-        let source_origin = self
-            .input
-            .source
-            .handle()
-            .and_then(|handle| render_target_origin(ctx, handle))
-            .unwrap_or((0, 0));
-        let source_size = self
-            .input
-            .source
-            .handle()
-            .and_then(|handle| render_target_size(ctx, handle))
-            .or(self.input.sampled_source_size)
-            .unwrap_or(surface_size);
-        let mask_origin = self
-            .input
-            .mask
-            .handle()
-            .and_then(|handle| render_target_origin(ctx, handle))
-            .unwrap_or(source_origin);
-        let mask_size = self
-            .input
-            .mask
-            .handle()
-            .and_then(|handle| render_target_size(ctx, handle))
-            .unwrap_or(source_size);
+        let target_meta =
+            resolve_target_meta(self.output.render_target.handle(), ctx, surface_size, None);
+        let source_meta = resolve_target_meta(
+            self.input.source.handle(),
+            ctx,
+            surface_size,
+            self.input.sampled_source_size,
+        );
+        let mask_meta = resolve_target_meta(self.input.mask.handle(), ctx, source_meta.physical_size, None)
+            .with_fallback_origin(source_meta.global_origin)
+            .with_fallback_logical_origin(source_meta.logical_origin);
+        let (target_w, target_h) = target_meta.logical_size;
         if target_w == 0 || target_h == 0 {
             return;
         }
@@ -230,7 +207,8 @@ impl GraphicsPass for TextureCompositePass {
             scale,
             target_w as f32,
             target_h as f32,
-            [target_origin.0 as f32, target_origin.1 as f32],
+            target_meta.global_origin_f32(),
+            target_meta.logical_origin_f32(),
         );
         let uv_bounds = resolve_uv_bounds(
             self.params.uv_bounds,
@@ -239,16 +217,18 @@ impl GraphicsPass for TextureCompositePass {
             } else {
                 1.0
             },
-            source_size.0 as f32,
-            source_size.1 as f32,
-            [source_origin.0 as f32, source_origin.1 as f32],
+            source_meta.physical_size.0 as f32,
+            source_meta.physical_size.1 as f32,
+            source_meta.global_origin_f32(),
+            source_meta.logical_origin_f32(),
         );
         let mask_uv_bounds = resolve_uv_bounds(
             self.params.mask_uv_bounds.or(self.params.uv_bounds),
             scale,
-            mask_size.0 as f32,
-            mask_size.1 as f32,
-            [mask_origin.0 as f32, mask_origin.1 as f32],
+            mask_meta.physical_size.0 as f32,
+            mask_meta.physical_size.1 as f32,
+            mask_meta.global_origin_f32(),
+            mask_meta.logical_origin_f32(),
         );
 
         let uniform = TextureCompositeUniform {
@@ -400,68 +380,55 @@ impl GraphicsPass for TextureCompositePass {
             (vb, ib)
         } else {
             let surface_size = ctx.viewport().surface_size();
-            let (target_w, target_h) = match self.output.render_target.handle() {
-                Some(handle) => {
-                    render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
-                }
-                None => surface_size,
-            };
-            let target_origin = self
-                .output
-                .render_target
-                .handle()
-                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-                .unwrap_or((0, 0));
+            let target_meta = resolve_target_meta(
+                self.output.render_target.handle(),
+                ctx.frame_resources(),
+                surface_size,
+                None,
+            );
             let scale = ctx.viewport().scale_factor();
             let bounds = resolve_bounds(
                 self.params.bounds,
                 scale,
-                target_w as f32,
-                target_h as f32,
-                [target_origin.0 as f32, target_origin.1 as f32],
+                target_meta.logical_size.0 as f32,
+                target_meta.logical_size.1 as f32,
+                target_meta.global_origin_f32(),
+                target_meta.logical_origin_f32(),
             );
-            let source_origin = self
-                .input
-                .source
-                .handle()
-                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-                .unwrap_or((0, 0));
-            let source_size = self
-                .input
-                .source
-                .handle()
-                .and_then(|handle| render_target_size(ctx.frame_resources(), handle))
-                .unwrap_or(surface_size);
-            let mask_origin = self
-                .input
-                .mask
-                .handle()
-                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-                .unwrap_or(source_origin);
-            let mask_size = self
-                .input
-                .mask
-                .handle()
-                .and_then(|handle| render_target_size(ctx.frame_resources(), handle))
-                .unwrap_or(source_size);
+            let source_meta = resolve_target_meta(
+                self.input.source.handle(),
+                ctx.frame_resources(),
+                surface_size,
+                None,
+            );
+            let mask_meta = resolve_target_meta(
+                self.input.mask.handle(),
+                ctx.frame_resources(),
+                source_meta.physical_size,
+                None,
+            )
+            .with_fallback_origin(source_meta.global_origin)
+            .with_fallback_logical_origin(source_meta.logical_origin);
             let source_uv_bounds = resolve_uv_bounds(
                 self.params.uv_bounds,
                 scale,
-                source_size.0 as f32,
-                source_size.1 as f32,
-                [source_origin.0 as f32, source_origin.1 as f32],
+                source_meta.physical_size.0 as f32,
+                source_meta.physical_size.1 as f32,
+                source_meta.global_origin_f32(),
+                source_meta.logical_origin_f32(),
             );
             let mask_uv_bounds = resolve_uv_bounds(
                 self.params.mask_uv_bounds.or(self.params.uv_bounds),
                 scale,
-                mask_size.0 as f32,
-                mask_size.1 as f32,
-                [mask_origin.0 as f32, mask_origin.1 as f32],
+                mask_meta.physical_size.0 as f32,
+                mask_meta.physical_size.1 as f32,
+                mask_meta.global_origin_f32(),
+                mask_meta.logical_origin_f32(),
             );
             let (vertices, indices) = quad_for_bounds(
                 bounds,
-                target_w as f32,
-                target_h as f32,
+                target_meta.logical_size.0 as f32,
+                target_meta.logical_size.1 as f32,
                 source_uv_bounds,
                 mask_uv_bounds,
             );
@@ -479,23 +446,14 @@ impl GraphicsPass for TextureCompositePass {
         };
 
         let surface_size = ctx.viewport().surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => {
-                render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
-            }
-            None => surface_size,
-        };
-        let target_origin = self
-            .output
-            .render_target
-            .handle()
-            .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-            .unwrap_or((0, 0));
+        let target_meta =
+            resolve_target_meta(self.output.render_target.handle(), ctx.frame_resources(), surface_size, None);
+        let (target_w, target_h) = target_meta.logical_size;
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
             logical_scissor_to_target_physical(
                 ctx.viewport(),
                 scissor_rect,
-                target_origin,
+                target_meta.global_origin,
                 (target_w, target_h),
             )
         });
@@ -517,6 +475,68 @@ impl GraphicsPass for TextureCompositePass {
             scissor_rect_physical,
             self.input.pass_context.stencil_clip_id,
         );
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TextureMeta {
+    global_origin: (u32, u32),
+    logical_origin: (u32, u32),
+    logical_size: (u32, u32),
+    physical_size: (u32, u32),
+}
+
+impl TextureMeta {
+    fn global_origin_f32(self) -> [f32; 2] {
+        [self.global_origin.0 as f32, self.global_origin.1 as f32]
+    }
+
+    fn logical_origin_f32(self) -> [f32; 2] {
+        [self.logical_origin.0 as f32, self.logical_origin.1 as f32]
+    }
+
+    fn with_fallback_origin(mut self, origin: (u32, u32)) -> Self {
+        if self.global_origin == (0, 0) {
+            self.global_origin = origin;
+        }
+        self
+    }
+
+    fn with_fallback_logical_origin(mut self, logical_origin: (u32, u32)) -> Self {
+        if self.logical_origin == (0, 0) {
+            self.logical_origin = logical_origin;
+        }
+        self
+    }
+}
+
+fn resolve_target_meta(
+    handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+    ctx: &mut impl FrameResourceContext,
+    fallback_size: (u32, u32),
+    sampled_size: Option<(u32, u32)>,
+) -> TextureMeta {
+    let texture_ref = handle.and_then(|texture_handle| render_target_ref(ctx, texture_handle));
+    let global_origin = handle
+        .and_then(|texture_handle| render_target_origin(ctx, texture_handle))
+        .unwrap_or((0, 0));
+    let logical_size = texture_ref
+        .map(|resolved| resolved.logical_size())
+        .or(sampled_size)
+        .unwrap_or(fallback_size);
+    let physical_size = texture_ref
+        .map(|resolved| resolved.physical_size())
+        .or(sampled_size)
+        .or_else(|| handle.and_then(|texture_handle| render_target_physical_size(ctx, texture_handle)))
+        .unwrap_or(fallback_size);
+    let logical_origin = texture_ref
+        .map(|resolved| (resolved.logical_origin_x, resolved.logical_origin_y))
+        .unwrap_or((0, 0));
+    TextureMeta {
+        global_origin,
+        logical_origin,
+        logical_size,
+        physical_size,
     }
 }
 
@@ -985,10 +1005,11 @@ fn resolve_bounds(
     target_w: f32,
     target_h: f32,
     target_origin: [f32; 2],
+    target_logical_origin: [f32; 2],
 ) -> [f32; 4] {
     let scaled = [
-        bounds[0] * scale - target_origin[0],
-        bounds[1] * scale - target_origin[1],
+        bounds[0] * scale - target_origin[0] + target_logical_origin[0],
+        bounds[1] * scale - target_origin[1] + target_logical_origin[1],
         bounds[2] * scale,
         bounds[3] * scale,
     ];
@@ -1005,6 +1026,7 @@ fn resolve_uv_bounds(
     source_w: f32,
     source_h: f32,
     source_origin: [f32; 2],
+    source_logical_origin: [f32; 2],
 ) -> [f32; 4] {
     let Some(bounds) = uv_bounds else {
         return [0.0, 0.0, 1.0, 1.0];
@@ -1013,8 +1035,8 @@ fn resolve_uv_bounds(
         return [0.0, 0.0, 1.0, 1.0];
     }
     let scaled = [
-        bounds[0] * scale - source_origin[0],
-        bounds[1] * scale - source_origin[1],
+        bounds[0] * scale - source_origin[0] + source_logical_origin[0],
+        bounds[1] * scale - source_origin[1] + source_logical_origin[1],
         bounds[2] * scale,
         bounds[3] * scale,
     ];

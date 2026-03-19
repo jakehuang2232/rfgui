@@ -35,7 +35,51 @@ fn msaa_texture_label(desc: &TextureDesc) -> String {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureRef {
+    pub texture: TextureHandle,
+    pub logical_origin_x: u32,
+    pub logical_origin_y: u32,
+    pub logical_width: u32,
+    pub logical_height: u32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+}
+
+impl TextureRef {
+    #[allow(dead_code)]
+    pub fn uv_offset_x(&self) -> f32 {
+        self.logical_origin_x as f32 / self.physical_width.max(1) as f32
+    }
+
+    #[allow(dead_code)]
+    pub fn uv_offset_y(&self) -> f32 {
+        self.logical_origin_y as f32 / self.physical_height.max(1) as f32
+    }
+
+    #[allow(dead_code)]
+    pub fn uv_scale_x(&self) -> f32 {
+        self.logical_width as f32 / self.physical_width.max(1) as f32
+    }
+
+    #[allow(dead_code)]
+    pub fn uv_scale_y(&self) -> f32 {
+        self.logical_height as f32 / self.physical_height.max(1) as f32
+    }
+
+    #[allow(dead_code)]
+    pub fn logical_size(&self) -> (u32, u32) {
+        (self.logical_width, self.logical_height)
+    }
+
+    #[allow(dead_code)]
+    pub fn physical_size(&self) -> (u32, u32) {
+        (self.physical_width, self.physical_height)
+    }
+}
+
 pub(crate) struct RenderTargetBundle {
+    pub texture_ref: TextureRef,
     pub view: wgpu::TextureView,
     pub msaa_view: Option<wgpu::TextureView>,
     pub size: (u32, u32),
@@ -191,6 +235,15 @@ impl OffscreenRenderTargetPool {
         let entry = self.entries.get(&entry_id)?;
         let _ = (&entry.texture, &entry.msaa_texture);
         Some(RenderTargetBundle {
+            texture_ref: TextureRef {
+                texture: TextureHandle(0),
+                logical_origin_x: 0,
+                logical_origin_y: 0,
+                logical_width: entry.width,
+                logical_height: entry.height,
+                physical_width: entry.width,
+                physical_height: entry.height,
+            },
             view: entry.view.clone(),
             msaa_view: entry.msaa_view.clone(),
             size: (entry.width, entry.height),
@@ -374,13 +427,34 @@ pub(crate) fn render_target_bundle(
 ) -> Option<RenderTargetBundle> {
     let desc = texture_desc_for_handle(ctx, handle)?;
     if let Some(allocation_id) = ctx.texture_allocation_id(handle) {
-        return ctx
+        let mut bundle = ctx
             .viewport()
-            .acquire_offscreen_render_target(allocation_id, desc);
+            .acquire_offscreen_render_target(allocation_id, desc.clone())?;
+        bundle.texture_ref.texture = handle;
+        bundle.texture_ref.logical_origin_x = 0;
+        bundle.texture_ref.logical_origin_y = 0;
+        bundle.texture_ref.logical_width = desc.width();
+        bundle.texture_ref.logical_height = desc.height();
+        return Some(bundle);
     }
     let stable_key = ctx.texture_stable_key(handle)?;
-    ctx.viewport()
-        .acquire_persistent_render_target(stable_key, desc)
+    let mut bundle = ctx
+        .viewport()
+        .acquire_persistent_render_target(stable_key, desc.clone())?;
+    bundle.texture_ref.texture = handle;
+    bundle.texture_ref.logical_origin_x = 0;
+    bundle.texture_ref.logical_origin_y = 0;
+    bundle.texture_ref.logical_width = desc.width();
+    bundle.texture_ref.logical_height = desc.height();
+    Some(bundle)
+}
+
+#[allow(dead_code)]
+pub(crate) fn render_target_ref(
+    ctx: &mut impl FrameResourceContext,
+    handle: TextureHandle,
+) -> Option<TextureRef> {
+    Some(render_target_bundle(ctx, handle)?.texture_ref)
 }
 
 pub(crate) fn render_target_size(
@@ -388,6 +462,22 @@ pub(crate) fn render_target_size(
     handle: TextureHandle,
 ) -> Option<(u32, u32)> {
     Some(render_target_bundle(ctx, handle)?.size)
+}
+
+#[allow(dead_code)]
+pub(crate) fn render_target_logical_size(
+    ctx: &mut impl FrameResourceContext,
+    handle: TextureHandle,
+) -> Option<(u32, u32)> {
+    Some(render_target_bundle(ctx, handle)?.texture_ref.logical_size())
+}
+
+#[allow(dead_code)]
+pub(crate) fn render_target_physical_size(
+    ctx: &mut impl FrameResourceContext,
+    handle: TextureHandle,
+) -> Option<(u32, u32)> {
+    Some(render_target_bundle(ctx, handle)?.texture_ref.physical_size())
 }
 
 pub(crate) fn render_target_origin(
