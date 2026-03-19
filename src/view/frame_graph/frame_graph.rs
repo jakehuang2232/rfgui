@@ -851,7 +851,7 @@ impl FrameGraph {
     }
 
     pub(crate) fn texture_desc(&self, handle: TextureHandle) -> Option<TextureDesc> {
-        self.textures.get(handle.0 as usize).copied()
+        self.textures.get(handle.0 as usize).cloned()
     }
 
     pub(crate) fn declare_texture_internal<Tag>(
@@ -3383,7 +3383,7 @@ fn build_allocation_plan(
     HashMap<TextureHandle, AllocationId>,
     HashMap<BufferHandle, AllocationId>,
 ) {
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct TextureSlot {
         id: AllocationId,
         desc: TextureDesc,
@@ -3403,7 +3403,7 @@ fn build_allocation_plan(
                 if resource.lifetime != ResourceLifetime::Transient {
                     continue;
                 }
-                let Some(desc) = graph.textures.get(handle.0 as usize).copied() else {
+                let Some(desc) = graph.textures.get(handle.0 as usize).cloned() else {
                     continue;
                 };
                 let chosen = texture_slots

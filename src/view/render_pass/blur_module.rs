@@ -261,12 +261,10 @@ pub fn build_blur_module(
     if downsample > 1 {
         let ds_w = (source_w / downsample).max(1);
         let ds_h = (source_h / downsample).max(1);
-        let downsampled = graph.declare_texture(TextureDesc::new(
-            ds_w,
-            ds_h,
-            params.intermediate_format,
-            wgpu::TextureDimension::D2,
-        ));
+        let downsampled = graph.declare_texture(
+            TextureDesc::new(ds_w, ds_h, params.intermediate_format, wgpu::TextureDimension::D2)
+                .with_label("Blur Intermediate / Downsample"),
+        );
         graph.add_graphics_pass(ClearPass::new(
             ClearParams::new([0.0, 0.0, 0.0, 0.0]),
             ClearInput {
@@ -297,12 +295,15 @@ pub fn build_blur_module(
         blur_height = ds_h;
     }
 
-    let blur_h_target = graph.declare_texture(TextureDesc::new(
-        blur_width,
-        blur_height,
-        params.intermediate_format,
-        wgpu::TextureDimension::D2,
-    ));
+    let blur_h_target = graph.declare_texture(
+        TextureDesc::new(
+            blur_width,
+            blur_height,
+            params.intermediate_format,
+            wgpu::TextureDimension::D2,
+        )
+        .with_label("Blur Intermediate / Horizontal"),
+    );
     graph.add_graphics_pass(ClearPass::new(
         ClearParams::new([0.0, 0.0, 0.0, 0.0]),
         ClearInput {
