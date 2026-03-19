@@ -379,9 +379,49 @@ pub(crate) fn render_target_size(
     Some(render_target_bundle(ctx, handle)?.size)
 }
 
+pub(crate) fn render_target_origin(
+    ctx: &impl FrameResourceContext,
+    handle: TextureHandle,
+) -> Option<(u32, u32)> {
+    Some(texture_desc_for_handle(ctx, handle)?.origin())
+}
+
 pub(crate) fn render_target_format(
     ctx: &impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<wgpu::TextureFormat> {
     Some(texture_desc_for_handle(ctx, handle)?.format())
+}
+
+pub(crate) fn logical_scissor_to_target_physical(
+    viewport: &crate::view::viewport::Viewport,
+    scissor_rect: [u32; 4],
+    target_origin: (u32, u32),
+    target_size: (u32, u32),
+) -> Option<[u32; 4]> {
+    let scale = viewport.scale_factor().max(0.0001);
+    let [x, y, width, height] = scissor_rect;
+    let left = (x as f32 * scale).floor().max(0.0) as i64 - target_origin.0 as i64;
+    let top = (y as f32 * scale).floor().max(0.0) as i64 - target_origin.1 as i64;
+    let right =
+        ((x as f32 + width as f32) * scale).ceil().max(0.0) as i64 - target_origin.0 as i64;
+    let bottom =
+        ((y as f32 + height as f32) * scale).ceil().max(0.0) as i64 - target_origin.1 as i64;
+    let max_w = target_size.0 as i64;
+    let max_h = target_size.1 as i64;
+
+    let clamped_left = left.clamp(0, max_w);
+    let clamped_top = top.clamp(0, max_h);
+    let clamped_right = right.clamp(0, max_w);
+    let clamped_bottom = bottom.clamp(0, max_h);
+    if clamped_right <= clamped_left || clamped_bottom <= clamped_top {
+        return None;
+    }
+
+    Some([
+        clamped_left as u32,
+        clamped_top as u32,
+        (clamped_right - clamped_left) as u32,
+        (clamped_bottom - clamped_top) as u32,
+    ])
 }

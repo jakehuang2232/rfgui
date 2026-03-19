@@ -713,7 +713,12 @@ impl Element {
                         continue;
                     }
                     if ctx.is_node_promoted(child.id()) {
-                        Self::build_promoted_child(graph, &mut ctx, child, mask_target);
+                        Self::build_promoted_child(
+                            graph,
+                            &mut ctx,
+                            child,
+                            mask_target,
+                        );
                         continue;
                     }
                     if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
@@ -742,7 +747,12 @@ impl Element {
                         continue;
                     }
                     if ctx.is_node_promoted(child.id()) {
-                        Self::build_promoted_child(graph, &mut ctx, child, mask_target);
+                        Self::build_promoted_child(
+                            graph,
+                            &mut ctx,
+                            child,
+                            mask_target,
+                        );
                         continue;
                     }
                     if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
@@ -848,6 +858,7 @@ impl Element {
         let mask_target = mask_ctx.allocate_persistent_target_with_key(
             graph,
             crate::view::base_component::promoted_clip_mask_stable_key(self.id()),
+            self.promotion_composite_bounds(),
         );
         mask_ctx.set_current_target(mask_target);
         let mut pass = DrawRectPass::new(
@@ -892,6 +903,12 @@ impl Element {
                     composite_bounds.height,
                 ],
                 uv_bounds: Some([
+                    composite_bounds.x,
+                    composite_bounds.y,
+                    composite_bounds.width,
+                    composite_bounds.height,
+                ]),
+                mask_uv_bounds: Some([
                     composite_bounds.x,
                     composite_bounds.y,
                     composite_bounds.width,
@@ -1047,6 +1064,7 @@ impl Element {
         let final_target = compose_ctx.allocate_persistent_target_with_key(
             graph,
             crate::view::base_component::promoted_final_layer_stable_key(self.id()),
+            self.promotion_composite_bounds(),
         );
         if can_reuse_final {
             let mut reused_state = compose_ctx.into_state();
@@ -1160,7 +1178,11 @@ impl Element {
             ctx.viewport(),
             BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
         );
-        let layer_target = child_ctx.allocate_promoted_layer_target(graph, child.id());
+        let layer_target = child_ctx.allocate_promoted_layer_target(
+            graph,
+            child.id(),
+            child.promotion_composite_bounds(),
+        );
         child_ctx.set_current_target(layer_target);
         let child_state = if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
             element.build_promoted_layer(

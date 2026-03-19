@@ -8,7 +8,8 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_size, render_target_view,
+    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
+    render_target_origin, render_target_size, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
@@ -174,10 +175,17 @@ impl GraphicsPass for CompositeLayerPass {
             None => surface_size,
         };
         let (layer_w, layer_h) = render_target_size(ctx, layer_handle).unwrap_or(surface_size);
+        let target_origin = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_origin(ctx, handle))
+            .unwrap_or((0, 0));
+        let layer_origin = render_target_origin(ctx, layer_handle).unwrap_or((0, 0));
         let scale = ctx.viewport.scale_factor();
         let scaled_rect_pos = [
-            self.params.rect_pos[0] * scale,
-            self.params.rect_pos[1] * scale,
+            self.params.rect_pos[0] * scale - target_origin.0 as f32,
+            self.params.rect_pos[1] * scale - target_origin.1 as f32,
         ];
         let scaled_rect_size = [
             self.params.rect_size[0] * scale,
@@ -193,6 +201,10 @@ impl GraphicsPass for CompositeLayerPass {
             target_h as f32,
             layer_w as f32,
             layer_h as f32,
+            [
+                target_origin.0 as f32 - layer_origin.0 as f32,
+                target_origin.1 as f32 - layer_origin.1 as f32,
+            ],
         );
         self.prepared_vertices = vertices;
         self.prepared_indices = indices;
@@ -218,6 +230,12 @@ impl GraphicsPass for CompositeLayerPass {
             }
             None => surface_size,
         };
+        let target_origin = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+            .unwrap_or((0, 0));
         let device = match ctx.viewport().device() {
             Some(device) => device.clone(),
             None => return,
@@ -266,8 +284,12 @@ impl GraphicsPass for CompositeLayerPass {
             ],
         });
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            ctx.viewport()
-                .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
+            logical_scissor_to_target_physical(
+                ctx.viewport(),
+                scissor_rect,
+                target_origin,
+                (target_w, target_h),
+            )
         });
 
         let debug_geometry_overlay = ctx.viewport().debug_geometry_overlay();
@@ -293,11 +315,13 @@ impl GraphicsPass for CompositeLayerPass {
         ctx.draw_indexed(0..self.prepared_indices.len() as u32, 0, 0..1);
 
         if debug_geometry_overlay {
+            let (overlay_w, overlay_h) = ctx.viewport().surface_size();
             let (debug_vertices, debug_indices) = build_debug_overlay_geometry(
                 &self.prepared_vertices,
                 &self.prepared_indices,
-                target_w as f32,
-                target_h as f32,
+                [target_origin.0 as f32, target_origin.1 as f32],
+                overlay_w as f32,
+                overlay_h as f32,
                 [0.2, 1.0, 0.95, 0.95],
                 [0.2, 1.0, 0.35, 0.95],
             );
@@ -638,6 +662,7 @@ fn tessellate_composite_layer(
     target_h: f32,
     layer_w: f32,
     layer_h: f32,
+    uv_origin_delta: [f32; 2],
 ) -> (Vec<CompositeVertex>, Vec<u32>) {
     let width = size[0].max(0.0);
     let height = size[1].max(0.0);
@@ -676,6 +701,7 @@ fn tessellate_composite_layer(
         target_h,
         layer_w,
         layer_h,
+        uv_origin_delta,
     );
 
     let aa_width = 1.0_f32;
@@ -703,6 +729,7 @@ fn tessellate_composite_layer(
         target_h,
         layer_w,
         layer_h,
+        uv_origin_delta,
     );
 
     (vertices, indices)
@@ -852,6 +879,7 @@ fn append_convex_fan(
     target_h: f32,
     layer_w: f32,
     layer_h: f32,
+    uv_origin_delta: [f32; 2],
 ) {
     let cleaned = sanitize_polygon(polygon);
     if cleaned.len() < 3 {
@@ -860,7 +888,12 @@ fn append_convex_fan(
     for point in &cleaned {
         vertices.push(CompositeVertex {
             position: pixel_to_ndc(point[0], point[1], target_w, target_h),
-            screen_uv: pixel_to_uv(point[0], point[1], layer_w, layer_h),
+            screen_uv: pixel_to_uv(
+                point[0] + uv_origin_delta[0],
+                point[1] + uv_origin_delta[1],
+                layer_w,
+                layer_h,
+            ),
             alpha,
             _pad: 0.0,
         });
@@ -907,6 +940,7 @@ fn append_ring(
     target_h: f32,
     layer_w: f32,
     layer_h: f32,
+    uv_origin_delta: [f32; 2],
 ) {
     let n = outer.len().min(inner.len());
     if n < 3 {
@@ -918,13 +952,23 @@ fn append_ring(
         let ii = inner[i];
         vertices.push(CompositeVertex {
             position: pixel_to_ndc(o[0], o[1], target_w, target_h),
-            screen_uv: pixel_to_uv(o[0], o[1], layer_w, layer_h),
+            screen_uv: pixel_to_uv(
+                o[0] + uv_origin_delta[0],
+                o[1] + uv_origin_delta[1],
+                layer_w,
+                layer_h,
+            ),
             alpha: outer_alpha,
             _pad: 0.0,
         });
         vertices.push(CompositeVertex {
             position: pixel_to_ndc(ii[0], ii[1], target_w, target_h),
-            screen_uv: pixel_to_uv(ii[0], ii[1], layer_w, layer_h),
+            screen_uv: pixel_to_uv(
+                ii[0] + uv_origin_delta[0],
+                ii[1] + uv_origin_delta[1],
+                layer_w,
+                layer_h,
+            ),
             alpha: inner_alpha,
             _pad: 0.0,
         });
@@ -958,6 +1002,7 @@ fn pixel_to_uv(x: f32, y: f32, layer_w: f32, layer_h: f32) -> [f32; 2] {
 fn build_debug_overlay_geometry(
     vertices: &[CompositeVertex],
     indices: &[u32],
+    global_origin: [f32; 2],
     screen_w: f32,
     screen_h: f32,
     edge_color: [f32; 4],
@@ -986,8 +1031,8 @@ fn build_debug_overlay_geometry(
         append_debug_line_quad(
             &mut out_vertices,
             &mut out_indices,
-            ndc_to_pixel(a, screen_w, screen_h),
-            ndc_to_pixel(b, screen_w, screen_h),
+            add_origin(ndc_to_pixel(a, screen_w, screen_h), global_origin),
+            add_origin(ndc_to_pixel(b, screen_w, screen_h), global_origin),
             1.5,
             edge_color,
             screen_w,
@@ -999,7 +1044,7 @@ fn build_debug_overlay_geometry(
         append_debug_point_quad(
             &mut out_vertices,
             &mut out_indices,
-            ndc_to_pixel(v.position, screen_w, screen_h),
+            add_origin(ndc_to_pixel(v.position, screen_w, screen_h), global_origin),
             2.5,
             point_color,
             screen_w,
@@ -1008,6 +1053,10 @@ fn build_debug_overlay_geometry(
     }
 
     (out_vertices, out_indices)
+}
+
+fn add_origin(point: [f32; 2], origin: [f32; 2]) -> [f32; 2] {
+    [point[0] + origin[0], point[1] + origin[1]]
 }
 
 fn append_debug_line_quad(
@@ -1098,6 +1147,7 @@ mod tests {
             600.0,
             800.0,
             600.0,
+            [0.0, 0.0],
         );
         assert!(!vertices.is_empty());
         assert!(!indices.is_empty());
@@ -1121,6 +1171,7 @@ mod tests {
             600.0,
             800.0,
             600.0,
+            [0.0, 0.0],
         );
         assert!(!vertices.is_empty());
         assert!(!indices.is_empty());

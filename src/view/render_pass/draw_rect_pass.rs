@@ -5,7 +5,8 @@ use crate::view::frame_graph::{
     GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_size,
+    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
+    render_target_origin, render_target_size,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
@@ -316,10 +317,16 @@ impl DrawRectPass {
             Some(target) => render_target_size(ctx, target).unwrap_or(surface_size),
             None => surface_size,
         };
+        let target_origin = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|target| render_target_origin(ctx, target))
+            .unwrap_or((0, 0));
         let scale = ctx.viewport.scale_factor();
         let scaled_position = [
-            self.params.position[0] * scale,
-            self.params.position[1] * scale,
+            self.params.position[0] * scale - target_origin.0 as f32,
+            self.params.position[1] * scale - target_origin.1 as f32,
         ];
         let scaled_size = [self.params.size[0] * scale, self.params.size[1] * scale];
         let scaled_border_widths = self.params.border_widths.map(|v| v * scale);
@@ -345,10 +352,12 @@ impl DrawRectPass {
             target_h as f32,
         );
         if ctx.viewport.debug_geometry_overlay() {
+            let (overlay_w, overlay_h) = ctx.viewport.surface_size();
             let (debug_vertices, debug_indices) = build_rect_debug_overlay_geometry(
                 params,
-                target_w as f32,
-                target_h as f32,
+                [target_origin.0 as f32, target_origin.1 as f32],
+                overlay_w as f32,
+                overlay_h as f32,
                 [0.95, 0.2, 0.95, 0.95],
                 [1.0, 0.9, 0.25, 0.95],
             );
@@ -715,6 +724,10 @@ fn encode_draw_rect_into_existing_pass(
         Some(handle) => render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size),
         None => surface_size,
     };
+    let target_origin = draw
+        .color_target
+        .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+        .unwrap_or((0, 0));
     let scale = ctx.viewport().scale_factor();
     let device = match ctx.viewport().device() {
         Some(device) => device.clone(),
@@ -722,7 +735,10 @@ fn encode_draw_rect_into_existing_pass(
     };
     let format = ctx.viewport().surface_format();
     let sample_count = ctx.viewport().msaa_sample_count();
-    let scaled_position = [draw.position[0] * scale, draw.position[1] * scale];
+    let scaled_position = [
+        draw.position[0] * scale - target_origin.0 as f32,
+        draw.position[1] * scale - target_origin.1 as f32,
+    ];
     let scaled_size = [draw.size[0] * scale, draw.size[1] * scale];
     let scaled_border_widths = draw.border_widths.map(|v| v * scale);
     let scaled_border_radii = draw
@@ -814,8 +830,12 @@ fn encode_draw_rect_into_existing_pass(
         })
     };
     let scissor_rect_physical = draw.scissor_rect.and_then(|scissor_rect| {
-        ctx.viewport()
-            .logical_scissor_to_physical(scissor_rect, (target_w, target_h))
+        logical_scissor_to_target_physical(
+            ctx.viewport(),
+            scissor_rect,
+            target_origin,
+            (target_w, target_h),
+        )
     });
     ctx.set_pipeline(&pipeline);
     ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -1132,6 +1152,7 @@ fn create_draw_rect_resources(
 
 fn build_rect_debug_overlay_geometry(
     params: RectParams,
+    global_origin: [f32; 2],
     screen_w: f32,
     screen_h: f32,
     edge_color: [f32; 4],
@@ -1140,6 +1161,10 @@ fn build_rect_debug_overlay_geometry(
     let mut out_vertices = Vec::new();
     let mut out_indices = Vec::new();
     let [left, top, right, bottom] = params.outer_rect;
+    let left = left + global_origin[0];
+    let top = top + global_origin[1];
+    let right = right + global_origin[0];
+    let bottom = bottom + global_origin[1];
     if right <= left || bottom <= top {
         return (out_vertices, out_indices);
     }

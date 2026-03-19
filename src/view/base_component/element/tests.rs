@@ -1941,7 +1941,11 @@ mod tests {
             ctx.viewport(),
             super::BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
         );
-        let layer_target = layer_ctx.allocate_promoted_layer_target(&mut graph, parent_id);
+        let layer_target = layer_ctx.allocate_promoted_layer_target(
+            &mut graph,
+            parent_id,
+            parent.promotion_composite_bounds(),
+        );
         layer_ctx.set_current_target(layer_target);
         let next_state = parent.build_promoted_layer(
             &mut graph,

@@ -16,26 +16,29 @@ var<uniform> composite: CompositeParams;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+    @location(0) source_uv: vec2<f32>,
+    @location(1) mask_uv: vec2<f32>,
 }
 
 @vertex
 fn vs_main(
     @location(0) position: vec2<f32>,
-    @location(1) uv: vec2<f32>,
+    @location(1) source_uv: vec2<f32>,
+    @location(2) mask_uv: vec2<f32>,
 ) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(position, 0.0, 1.0);
-    out.uv = uv;
+    out.source_uv = source_uv;
+    out.mask_uv = mask_uv;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = textureSample(source_tex, tex_sampler, in.uv);
+    let color = textureSample(source_tex, tex_sampler, in.source_uv);
     var factor = 1.0;
     if composite.data.x > 0.5 {
-        factor = factor * textureSample(mask_tex, tex_sampler, in.uv).a;
+        factor = factor * textureSample(mask_tex, tex_sampler, in.mask_uv).a;
     }
     factor = factor * clamp(composite.data.y, 0.0, 1.0);
     let alpha = color.a * factor;
