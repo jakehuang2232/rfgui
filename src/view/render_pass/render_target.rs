@@ -14,6 +14,7 @@ struct RenderTargetEntry {
     view: wgpu::TextureView,
     msaa_texture: Option<wgpu::Texture>,
     msaa_view: Option<wgpu::TextureView>,
+    label: String,
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
@@ -21,6 +22,17 @@ struct RenderTargetEntry {
     msaa_sample_count: u32,
     frame_busy_epoch: u64,
     last_used_epoch: u64,
+}
+
+fn color_texture_label(desc: &TextureDesc) -> String {
+    desc.label().unwrap_or("Render Target Texture").to_string()
+}
+
+fn msaa_texture_label(desc: &TextureDesc) -> String {
+    match desc.label() {
+        Some(label) => format!("{label} / MSAA"),
+        None => "Render Target MSAA Texture".to_string(),
+    }
 }
 
 pub(crate) struct RenderTargetBundle {
@@ -81,6 +93,7 @@ impl OffscreenRenderTargetPool {
         let height = desc.height().max(1);
         let format = desc.format();
         let dimension = desc.dimension();
+        let label = color_texture_label(&desc);
 
         let mut best_fit: Option<u32> = None;
         for (&entry_id, entry) in &self.entries {
@@ -91,6 +104,7 @@ impl OffscreenRenderTargetPool {
                 || entry.msaa_sample_count != msaa_sample_count
                 || entry.width != width
                 || entry.height != height
+                || entry.label != label
             {
                 continue;
             }
@@ -103,10 +117,8 @@ impl OffscreenRenderTargetPool {
         } else {
             let entry_id = self.next_entry_id;
             self.next_entry_id = self.next_entry_id.saturating_add(1);
-            self.entries.insert(
-                entry_id,
-                Self::create_entry(device, width, height, format, dimension, msaa_sample_count),
-            );
+            self.entries
+                .insert(entry_id, Self::create_entry(device, &desc, msaa_sample_count));
             entry_id
         };
 
@@ -130,6 +142,7 @@ impl OffscreenRenderTargetPool {
         let height = desc.height().max(1);
         let format = desc.format();
         let dimension = desc.dimension();
+        let label = color_texture_label(&desc);
 
         let entry_id = match self.persistent_bindings.get(&stable_key).copied() {
             Some(entry_id) => {
@@ -139,6 +152,7 @@ impl OffscreenRenderTargetPool {
                         || entry.msaa_sample_count != msaa_sample_count
                         || entry.width != width
                         || entry.height != height
+                        || entry.label != label
                 });
                 if recreate {
                     self.remove_entry(entry_id);
@@ -146,14 +160,7 @@ impl OffscreenRenderTargetPool {
                     self.next_entry_id = self.next_entry_id.saturating_add(1);
                     self.entries.insert(
                         new_entry_id,
-                        Self::create_entry(
-                            device,
-                            width,
-                            height,
-                            format,
-                            dimension,
-                            msaa_sample_count,
-                        ),
+                        Self::create_entry(device, &desc, msaa_sample_count),
                     );
                     self.persistent_bindings.insert(stable_key, new_entry_id);
                     new_entry_id
@@ -166,7 +173,7 @@ impl OffscreenRenderTargetPool {
                 self.next_entry_id = self.next_entry_id.saturating_add(1);
                 self.entries.insert(
                     new_entry_id,
-                    Self::create_entry(device, width, height, format, dimension, msaa_sample_count),
+                    Self::create_entry(device, &desc, msaa_sample_count),
                 );
                 self.persistent_bindings.insert(stable_key, new_entry_id);
                 new_entry_id
@@ -192,14 +199,16 @@ impl OffscreenRenderTargetPool {
 
     fn create_entry(
         device: &wgpu::Device,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-        dimension: wgpu::TextureDimension,
+        desc: &TextureDesc,
         msaa_sample_count: u32,
     ) -> RenderTargetEntry {
+        let width = desc.width().max(1);
+        let height = desc.height().max(1);
+        let format = desc.format();
+        let dimension = desc.dimension();
+        let color_label = color_texture_label(desc);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Render Target Texture"),
+            label: Some(&color_label),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -217,8 +226,9 @@ impl OffscreenRenderTargetPool {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (msaa_texture, msaa_view) = if msaa_sample_count > 1 {
+            let msaa_label = msaa_texture_label(desc);
             let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Render Target MSAA Texture"),
+                label: Some(&msaa_label),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -241,6 +251,7 @@ impl OffscreenRenderTargetPool {
             view,
             msaa_texture,
             msaa_view,
+            label: color_label,
             width,
             height,
             format,
@@ -333,7 +344,7 @@ fn texture_desc_for_handle(
     ctx: &impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<TextureDesc> {
-    ctx.textures().get(handle.0 as usize).copied()
+    ctx.textures().get(handle.0 as usize).cloned()
 }
 
 pub(crate) fn render_target_view(

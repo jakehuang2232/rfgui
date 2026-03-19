@@ -332,6 +332,31 @@ fn texture_desc_for_logical_bounds(
         .with_origin(origin_x, origin_y)
 }
 
+fn promoted_layer_label(node_id: u64) -> String {
+    format!("Promoted Layer [{node_id}]")
+}
+
+fn promoted_clip_mask_label(node_id: u64) -> String {
+    format!("Promoted Clip Mask [{node_id}]")
+}
+
+fn promoted_final_layer_label(node_id: u64) -> String {
+    format!("Promoted Final Layer [{node_id}]")
+}
+
+fn label_for_persistent_target(stable_key: u64) -> String {
+    let node_id = stable_key & 0x0000_FFFF_FFFF_FFFF;
+    if stable_key & 0xFFFF_0000_0000_0000 == 0xC11E_0000_0000_0000 {
+        promoted_clip_mask_label(node_id)
+    } else if stable_key & 0xFFFF_FFFF_0000_0000 == 0xC0DE_F1A1_0000_0000 {
+        promoted_final_layer_label(node_id)
+    } else if stable_key & 0xFFFF_0000_0000_0000 == 0xC0DE_0000_0000_0000 {
+        promoted_layer_label(node_id)
+    } else {
+        format!("Persistent Render Target [{stable_key:#x}]")
+    }
+}
+
 impl UiBuildContext {
     pub fn new(
         viewport_width: u32,
@@ -399,7 +424,8 @@ impl UiBuildContext {
                 bounds,
                 self.viewport.scale_factor,
                 self.viewport.target_format,
-            ),
+            )
+            .with_label(promoted_layer_label(node_id)),
             promoted_layer_stable_key(node_id),
         )
     }
@@ -441,7 +467,8 @@ impl UiBuildContext {
                 self.viewport.target_height,
                 self.viewport.target_format,
                 wgpu::TextureDimension::D2,
-            ),
+            )
+            .with_label("Offscreen Render Target"),
         )
     }
 
@@ -450,7 +477,11 @@ impl UiBuildContext {
         graph: &mut FrameGraph,
         desc: TextureDesc,
     ) -> RenderTargetOut {
-        let color = graph.declare_texture::<RenderTargetTag>(desc);
+        let depth_label = desc
+            .label()
+            .map(|label| format!("{label} / Depth-Stencil"))
+            .unwrap_or_else(|| "Offscreen Depth-Stencil".to_string());
+        let color = graph.declare_texture::<RenderTargetTag>(desc.clone());
         let depth_stencil = graph.declare_texture::<RenderTargetTag>(
             TextureDesc::new(
                 desc.width(),
@@ -458,7 +489,8 @@ impl UiBuildContext {
                 wgpu::TextureFormat::Depth24PlusStencil8,
                 wgpu::TextureDimension::D2,
             )
-            .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT),
+            .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            .with_label(depth_label),
         );
         if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
             self.state
@@ -471,11 +503,18 @@ impl UiBuildContext {
     fn next_persistent_target_with_desc(
         &mut self,
         graph: &mut FrameGraph,
-        desc: TextureDesc,
+        mut desc: TextureDesc,
         stable_key: u64,
     ) -> RenderTargetOut {
+        if desc.label().is_none() {
+            desc = desc.with_label(label_for_persistent_target(stable_key));
+        }
+        let depth_label = desc
+            .label()
+            .map(|label| format!("{label} / Depth-Stencil"))
+            .unwrap_or_else(|| "Persistent Depth-Stencil".to_string());
         let color = graph.declare_texture_internal::<RenderTargetTag>(
-            desc,
+            desc.clone(),
             ResourceLifetime::Persistent,
             Some(stable_key),
         );
@@ -486,7 +525,8 @@ impl UiBuildContext {
                 wgpu::TextureFormat::Depth24PlusStencil8,
                 wgpu::TextureDimension::D2,
             )
-            .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT),
+            .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            .with_label(depth_label),
         );
         if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
             self.state

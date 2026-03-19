@@ -319,19 +319,25 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
             .collect(),
         spec.mesh.indices.clone(),
     );
-    let shadow_layer = graph.declare_texture(TextureDesc::new(
-        layer_w,
-        layer_h,
-        SHADOW_INTERMEDIATE_FORMAT,
-        wgpu::TextureDimension::D2,
-    ));
-    let shadow_mask_layer = if spec.params.clip_to_geometry {
-        graph.declare_texture(TextureDesc::new(
+    let shadow_layer = graph.declare_texture(
+        TextureDesc::new(
             layer_w,
             layer_h,
             SHADOW_INTERMEDIATE_FORMAT,
             wgpu::TextureDimension::D2,
-        ))
+        )
+        .with_label("Shadow Layer"),
+    );
+    let shadow_mask_layer = if spec.params.clip_to_geometry {
+        graph.declare_texture(
+            TextureDesc::new(
+                layer_w,
+                layer_h,
+                SHADOW_INTERMEDIATE_FORMAT,
+                wgpu::TextureDimension::D2,
+            )
+            .with_label("Shadow Mask Layer"),
+        )
     } else {
         RenderTargetOut::default()
     };
@@ -380,12 +386,15 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
     let blur_radius_px = (spec.params.blur_radius.max(0.0) * scale).max(0.0);
     let mut composite_source = shadow_layer;
     if blur_radius_px > 0.001 {
-        let blurred = graph.declare_texture(TextureDesc::new(
-            layer_w,
-            layer_h,
-            SHADOW_INTERMEDIATE_FORMAT,
-            wgpu::TextureDimension::D2,
-        ));
+        let blurred = graph.declare_texture(
+            TextureDesc::new(
+                layer_w,
+                layer_h,
+                SHADOW_INTERMEDIATE_FORMAT,
+                wgpu::TextureDimension::D2,
+            )
+            .with_label("Shadow Layer / Blurred"),
+        );
         let built = build_blur_module(
             graph,
             BlurModuleParams {

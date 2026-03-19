@@ -1,11 +1,12 @@
 use super::slot::ResourceType;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextureDesc {
     width: u32,
     height: u32,
     origin_x: u32,
     origin_y: u32,
+    label: Option<String>,
     format: wgpu::TextureFormat,
     dimension: wgpu::TextureDimension,
     usage: wgpu::TextureUsages,
@@ -34,6 +35,7 @@ impl TextureDesc {
             height,
             origin_x: 0,
             origin_y: 0,
+            label: None,
             format,
             dimension,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -52,6 +54,11 @@ impl TextureDesc {
     pub fn with_origin(mut self, origin_x: u32, origin_y: u32) -> Self {
         self.origin_x = origin_x;
         self.origin_y = origin_y;
+        self
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
@@ -74,6 +81,10 @@ impl TextureDesc {
 
     pub fn origin(&self) -> (u32, u32) {
         (self.origin_x, self.origin_y)
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
     }
 
     pub fn dimension(&self) -> wgpu::TextureDimension {
