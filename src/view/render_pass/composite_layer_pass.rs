@@ -9,7 +9,7 @@ use crate::view::frame_graph::{
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_size, render_target_view,
+    render_target_origin, render_target_ref, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
@@ -170,11 +170,10 @@ impl GraphicsPass for CompositeLayerPass {
             return;
         };
         let surface_size = ctx.viewport.surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(surface_size),
-            None => surface_size,
-        };
-        let (layer_w, layer_h) = render_target_size(ctx, layer_handle).unwrap_or(surface_size);
+        let target_meta = resolve_texture_meta(self.output.render_target.handle(), ctx, surface_size);
+        let layer_meta = resolve_texture_meta(Some(layer_handle), ctx, surface_size);
+        let (target_w, target_h) = target_meta.logical_size;
+        let (layer_w, layer_h) = layer_meta.physical_size;
         let target_origin = self
             .output
             .render_target
@@ -184,8 +183,10 @@ impl GraphicsPass for CompositeLayerPass {
         let layer_origin = render_target_origin(ctx, layer_handle).unwrap_or((0, 0));
         let scale = ctx.viewport.scale_factor();
         let scaled_rect_pos = [
-            self.params.rect_pos[0] * scale - target_origin.0 as f32,
-            self.params.rect_pos[1] * scale - target_origin.1 as f32,
+            self.params.rect_pos[0] * scale - target_origin.0 as f32
+                + target_meta.logical_origin.0 as f32,
+            self.params.rect_pos[1] * scale - target_origin.1 as f32
+                + target_meta.logical_origin.1 as f32,
         ];
         let scaled_rect_size = [
             self.params.rect_size[0] * scale,
@@ -202,8 +203,10 @@ impl GraphicsPass for CompositeLayerPass {
             layer_w as f32,
             layer_h as f32,
             [
-                target_origin.0 as f32 - layer_origin.0 as f32,
-                target_origin.1 as f32 - layer_origin.1 as f32,
+                target_origin.0 as f32 - layer_origin.0 as f32
+                    + layer_meta.logical_origin.0 as f32,
+                target_origin.1 as f32 - layer_origin.1 as f32
+                    + layer_meta.logical_origin.1 as f32,
             ],
         );
         self.prepared_vertices = vertices;
@@ -224,12 +227,9 @@ impl GraphicsPass for CompositeLayerPass {
             return;
         };
         let surface_size = ctx.viewport().surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => {
-                render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
-            }
-            None => surface_size,
-        };
+        let target_meta =
+            resolve_texture_meta(self.output.render_target.handle(), ctx.frame_resources(), surface_size);
+        let (target_w, target_h) = target_meta.logical_size;
         let target_origin = self
             .output
             .render_target
@@ -349,6 +349,32 @@ impl GraphicsPass for CompositeLayerPass {
                 ctx.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TextureMeta {
+    logical_origin: (u32, u32),
+    logical_size: (u32, u32),
+    physical_size: (u32, u32),
+}
+
+fn resolve_texture_meta(
+    handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+    ctx: &mut impl FrameResourceContext,
+    fallback_size: (u32, u32),
+) -> TextureMeta {
+    let texture_ref = handle.and_then(|texture_handle| render_target_ref(ctx, texture_handle));
+    TextureMeta {
+        logical_origin: texture_ref
+            .map(|resolved| (resolved.logical_origin_x, resolved.logical_origin_y))
+            .unwrap_or((0, 0)),
+        logical_size: texture_ref
+            .map(|resolved| resolved.logical_size())
+            .unwrap_or(fallback_size),
+        physical_size: texture_ref
+            .map(|resolved| resolved.physical_size())
+            .unwrap_or(fallback_size),
     }
 }
 
