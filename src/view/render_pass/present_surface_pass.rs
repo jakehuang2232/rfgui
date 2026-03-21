@@ -2,11 +2,12 @@ use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    BufferDesc, BufferReadUsage, BufferResource, GraphicsColorAttachmentOps,
+    FrameResourceContext, GraphicsPassBuilder, GraphicsPassMergePolicy,
     SampleCountPolicy,
 };
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
-use crate::view::render_pass::render_target::render_target_view;
+use crate::view::render_pass::render_target::{render_target_ref, render_target_view};
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
 
@@ -15,6 +16,7 @@ const PRESENT_SURFACE_RESOURCES: u64 = 401;
 pub struct PresentSurfacePass {
     params: PresentSurfaceParams,
     input: PresentSurfaceInput,
+    uniform_buffer: PresentSurfaceUniformBufferOut,
 }
 
 #[derive(Default)]
@@ -28,6 +30,18 @@ pub struct PresentSurfaceInput {
 #[derive(Default)]
 pub struct PresentSurfaceOutput;
 
+#[derive(Clone, Copy)]
+pub struct PresentSurfaceUniformBufferTag;
+pub type PresentSurfaceUniformBufferOut =
+    OutSlot<BufferResource, PresentSurfaceUniformBufferTag>;
+
+#[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct PresentSurfaceUniform {
+    uv_offset: [f32; 2],
+    uv_scale: [f32; 2],
+}
+
 impl PresentSurfacePass {
     pub fn new(
         params: PresentSurfaceParams,
@@ -35,7 +49,11 @@ impl PresentSurfacePass {
         output: PresentSurfaceOutput,
     ) -> Self {
         let _ = output;
-        Self { params, input }
+        Self {
+            params,
+            input,
+            uniform_buffer: PresentSurfaceUniformBufferOut::default(),
+        }
     }
 }
 
@@ -43,14 +61,33 @@ impl GraphicsPass for PresentSurfacePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
         builder.set_sample_count(SampleCountPolicy::Fixed(1));
+        self.uniform_buffer = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<PresentSurfaceUniform>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("Present Surface Uniform"),
+        });
+        builder.read_buffer(&self.uniform_buffer, BufferReadUsage::Uniform);
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
             builder.read_texture(&mut self.input.source, &source);
         }
-        builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
-            builder.surface_target(),
-            [0.0, 0.0, 0.0, 0.0],
-        ));
+        builder.write_surface_color(GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]));
+    }
+
+    fn prepare(&mut self, ctx: &mut crate::view::frame_graph::PrepareContext<'_, '_>) {
+        let Some(handle) = self.input.source.handle() else {
+            return;
+        };
+        let Some(texture_ref) = render_target_ref(ctx, handle) else {
+            return;
+        };
+        let uniform = PresentSurfaceUniform {
+            uv_offset: [texture_ref.uv_offset_x(), texture_ref.uv_offset_y()],
+            uv_scale: [texture_ref.uv_scale_x(), texture_ref.uv_scale_y()],
+        };
+        if let Some(buffer) = self.uniform_buffer.handle() {
+            let _ = ctx.upload_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
+        }
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
@@ -59,6 +96,12 @@ impl GraphicsPass for PresentSurfacePass {
             return;
         };
         let Some(src_view) = render_target_view(ctx.frame_resources(), input_handle) else {
+            return;
+        };
+        let Some(uniform_handle) = self.uniform_buffer.handle() else {
+            return;
+        };
+        let Some(uniform_buffer) = ctx.frame_resources().acquire_buffer(uniform_handle) else {
             return;
         };
         let Some(device) = ctx.viewport().device().cloned() else {
@@ -86,11 +129,16 @@ impl GraphicsPass for PresentSurfacePass {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&resources.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
             ],
         });
         ctx.set_pipeline(&resources.pipeline);
         ctx.set_bind_group(0, &bind_group, &[]);
         ctx.draw(0..3, 0..1);
+        crate::view::render_pass::debug_overlay_pass::draw_debug_overlay(ctx, None);
     }
 }
 
@@ -127,6 +175,21 @@ impl PresentSurfaceResources {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            std::num::NonZeroU64::new(
+                                std::mem::size_of::<PresentSurfaceUniform>() as u64,
+                            )
+                            .unwrap(),
+                        ),
+                    },
                     count: None,
                 },
             ],

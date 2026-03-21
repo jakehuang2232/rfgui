@@ -17,7 +17,7 @@ pub use frame_graph::{
     CompiledResourceTransition, ComputePassDescriptor, ComputeRecordContext, ConsumedVersion,
     ExternalAllocationPlanEntry, ExternalResource, ExternalSink, ExternalSinkId, ExternalSinkKind,
     ExternalSinkTarget, FrameGraph, FrameGraphError, FrameResourceContext,
-    GraphicsColorAttachmentDescriptor, GraphicsDepthAspectDescriptor,
+    GraphicsColorAttachmentDescriptor, GraphicsColorAttachmentOps, GraphicsDepthAspectDescriptor,
     GraphicsDepthStencilAttachmentDescriptor, GraphicsPassDescriptor, GraphicsPassMergePolicy,
     GraphicsPipelineRequirements, GraphicsRecordContext, GraphicsStencilAspectDescriptor,
     PassDescriptor, PassDetails, PassHandle, PassKind, PassResourceUsage, PrepareContext,

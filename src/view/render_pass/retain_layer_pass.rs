@@ -1,5 +1,5 @@
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
@@ -19,10 +19,8 @@ impl GraphicsPass for RetainLayerPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         if let Some(target) = builder.texture_target(&self.output) {
-            builder.write_color(
-                &self.output,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.output, GraphicsColorAttachmentOps::load());
         }
     }
 

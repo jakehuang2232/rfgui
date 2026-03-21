@@ -1,10 +1,10 @@
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_bundle, render_target_size,
+    GraphicsPassContext as RenderPassContext, render_target_ref, render_target_sample_count,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
@@ -44,83 +44,95 @@ impl GraphicsPass for DebugOverlayPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.write_color(
-                &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::load());
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
-                builder.surface_target(),
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }
-        if let Some(target) = self.input.pass_context.depth_stencil_target {
-            builder.read_depth(target);
-            builder.read_stencil(target);
+        if self.input.pass_context.uses_depth_stencil {
+            builder.read_output_depth();
+            builder.read_output_stencil();
         }
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        if !ctx.viewport().debug_overlay_enabled() {
-            let _ = ctx.viewport().take_debug_overlay_geometry();
-            return;
-        }
-        let (vertices, indices) = ctx.viewport().take_debug_overlay_geometry();
-        if vertices.is_empty() || indices.is_empty() {
-            return;
-        }
-
-        let Some(device) = ctx.viewport().device().cloned() else {
-            return;
-        };
-        let format = ctx.viewport().surface_format();
-        let sample_count = ctx.viewport().msaa_sample_count();
-        let cache = debug_overlay_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(DEBUG_OVERLAY_RESOURCES, || {
-            DebugOverlayResources::new(&device, format, sample_count)
-        });
-        if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
-            *resources = DebugOverlayResources::new(&device, format, sample_count);
-        }
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Frame Debug Overlay Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Frame Debug Overlay Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let surface_size = ctx.viewport().surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(handle) => {
-                if let Some(bundle) = render_target_bundle(ctx.frame_resources(), handle) {
-                    bundle.size
-                } else {
-                    render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
-                }
-            }
-            None => surface_size,
-        };
-        ctx.set_pipeline(&resources.pipeline);
-        ctx.set_scissor_rect(0, 0, target_w, target_h);
-        ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
-        ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        ctx.draw_indexed(0..indices.len() as u32, 0, 0..1);
+        draw_debug_overlay(ctx, self.output.render_target.handle());
     }
+}
+
+pub(crate) fn draw_debug_overlay(
+    ctx: &mut GraphicsCtx<'_, '_, '_, '_>,
+    target_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+) {
+    if !ctx.viewport().debug_overlay_enabled() {
+        let _ = ctx.viewport().take_debug_overlay_geometry();
+        return;
+    }
+    let (vertices, indices) = ctx.viewport().take_debug_overlay_geometry();
+    if vertices.is_empty() || indices.is_empty() {
+        return;
+    }
+
+    let Some(device) = ctx.viewport().device().cloned() else {
+        return;
+    };
+    let format = ctx.viewport().surface_format();
+    let sample_count = match target_handle {
+        Some(handle) => render_target_sample_count(ctx.frame_resources(), handle).unwrap_or(1),
+        None => 1,
+    };
+    let uses_depth_stencil = target_handle.is_some();
+    let cache = debug_overlay_resources_cache();
+    let mut cache = cache.lock().unwrap();
+    let resources = cache.get_or_insert_with(DEBUG_OVERLAY_RESOURCES, || {
+        DebugOverlayResources::new(&device, format, sample_count, uses_depth_stencil)
+    });
+    if resources.pipeline_format != format
+        || resources.pipeline_sample_count != sample_count
+        || resources.uses_depth_stencil != uses_depth_stencil
+    {
+        *resources = DebugOverlayResources::new(&device, format, sample_count, uses_depth_stencil);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Frame Debug Overlay Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Frame Debug Overlay Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    let surface_size = ctx.viewport().surface_size();
+    let (target_w, target_h) = match target_handle {
+        Some(handle) => render_target_ref(ctx.frame_resources(), handle)
+            .map(|texture_ref| texture_ref.physical_size())
+            .unwrap_or(surface_size),
+        None => surface_size,
+    };
+    ctx.set_pipeline(&resources.pipeline);
+    ctx.set_scissor_rect(0, 0, target_w, target_h);
+    ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+    ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+    ctx.draw_indexed(0..indices.len() as u32, 0, 0..1);
 }
 
 struct DebugOverlayResources {
     pipeline: wgpu::RenderPipeline,
     pipeline_format: wgpu::TextureFormat,
     pipeline_sample_count: u32,
+    uses_depth_stencil: bool,
 }
 
 impl DebugOverlayResources {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, sample_count: u32) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+        uses_depth_stencil: bool,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Debug Overlay Shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -170,7 +182,7 @@ impl DebugOverlayResources {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
+            depth_stencil: uses_depth_stencil.then_some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Always,
@@ -189,6 +201,7 @@ impl DebugOverlayResources {
             pipeline,
             pipeline_format: format,
             pipeline_sample_count: sample_count,
+            uses_depth_stencil,
         }
     }
 }

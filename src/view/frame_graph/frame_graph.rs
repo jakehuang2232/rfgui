@@ -334,6 +334,31 @@ pub enum GraphicsPassMergePolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphicsColorAttachmentOps {
+    pub load_op: AttachmentLoadOp,
+    pub store_op: AttachmentStoreOp,
+    pub clear_color: Option<[f64; 4]>,
+}
+
+impl GraphicsColorAttachmentOps {
+    pub fn load() -> Self {
+        Self {
+            load_op: AttachmentLoadOp::Load,
+            store_op: AttachmentStoreOp::Store,
+            clear_color: None,
+        }
+    }
+
+    pub fn clear(clear_color: [f64; 4]) -> Self {
+        Self {
+            load_op: AttachmentLoadOp::Clear,
+            store_op: AttachmentStoreOp::Store,
+            clear_color: Some(clear_color),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsColorAttachmentDescriptor {
     pub target: AttachmentTarget,
     pub load_op: AttachmentLoadOp,
@@ -342,21 +367,12 @@ pub struct GraphicsColorAttachmentDescriptor {
 }
 
 impl GraphicsColorAttachmentDescriptor {
-    pub fn load(target: AttachmentTarget) -> Self {
+    pub fn from_ops(target: AttachmentTarget, ops: GraphicsColorAttachmentOps) -> Self {
         Self {
             target,
-            load_op: AttachmentLoadOp::Load,
-            store_op: AttachmentStoreOp::Store,
-            clear_color: None,
-        }
-    }
-
-    pub fn clear(target: AttachmentTarget, clear_color: [f64; 4]) -> Self {
-        Self {
-            target,
-            load_op: AttachmentLoadOp::Clear,
-            store_op: AttachmentStoreOp::Store,
-            clear_color: Some(clear_color),
+            load_op: ops.load_op,
+            store_op: ops.store_op,
+            clear_color: ops.clear_color,
         }
     }
 }
@@ -662,6 +678,7 @@ enum ExecuteStep {
 pub struct FrameGraph {
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
+    texture_attachment_pairs: HashMap<TextureHandle, AttachmentTarget>,
     buffers: Vec<BufferDesc>,
     texture_metadata: Vec<ResourceMetadata>,
     buffer_metadata: Vec<ResourceMetadata>,
@@ -719,6 +736,7 @@ impl FrameGraph {
         Self {
             passes: Vec::new(),
             textures: Vec::new(),
+            texture_attachment_pairs: HashMap::new(),
             buffers: Vec::new(),
             texture_metadata: Vec::new(),
             buffer_metadata: Vec::new(),
@@ -771,6 +789,14 @@ impl FrameGraph {
         self.compiled_graph = None;
         self.compiled = false;
         handle
+    }
+
+    pub(crate) fn pair_texture_attachment(
+        &mut self,
+        color: TextureHandle,
+        depth_stencil: AttachmentTarget,
+    ) {
+        self.texture_attachment_pairs.insert(color, depth_stencil);
     }
 
     pub fn add_pass_sink(
@@ -910,6 +936,7 @@ impl FrameGraph {
             let mut builder = PassBuilderState {
                 descriptor: &mut node.descriptor,
                 textures: &mut textures,
+                texture_attachment_pairs: &self.texture_attachment_pairs,
                 buffers: &mut buffers,
                 texture_metadata: &mut texture_metadata,
                 buffer_metadata: &mut buffer_metadata,
@@ -1209,6 +1236,7 @@ impl FrameGraph {
                     usage.resource,
                     usage.usage,
                     &descriptor,
+                    &self.texture_metadata,
                     &mut latest_texture_version,
                     &mut latest_buffer_version,
                     &mut next_texture_version,
@@ -1278,8 +1306,16 @@ impl FrameGraph {
         let toposort_live_passes_ms =
             toposort_live_passes_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        let resolve_compiler_managed_attachments_started_at = Instant::now();
+        let compiled_descriptors = self.resolve_compiler_managed_descriptors(&ordered_passes);
+        let _resolve_compiler_managed_attachments_ms =
+            resolve_compiler_managed_attachments_started_at
+                .elapsed()
+                .as_secs_f64()
+                * 1000.0;
+
         let build_execution_plan_started_at = Instant::now();
-        let execution_steps = self.build_execution_plan(&ordered_passes);
+        let execution_steps = self.build_execution_plan(&ordered_passes, &compiled_descriptors);
         let build_execution_plan_ms =
             build_execution_plan_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -1317,7 +1353,7 @@ impl FrameGraph {
                 CompiledPass {
                     original_index: index,
                     name: self.passes[index].descriptor.name,
-                    descriptor: self.passes[index].descriptor.clone(),
+                    descriptor: compiled_descriptors[index].clone(),
                     dependencies,
                     resource_usages: self.passes[index].usages.clone(),
                     input_versions: self.pass_consumed_versions(index),
@@ -1702,16 +1738,18 @@ impl FrameGraph {
         Ok(order)
     }
 
-    fn build_execution_plan(&self, order: &[usize]) -> Vec<CompiledExecuteStep> {
+    fn build_execution_plan(
+        &self,
+        order: &[usize],
+        descriptors: &[PassDescriptor],
+    ) -> Vec<CompiledExecuteStep> {
         let mut steps = Vec::new();
         let mut cursor = 0usize;
         while cursor < order.len() {
             let index = order[cursor];
-            match self.passes[index].descriptor.kind {
+            match descriptors[index].kind {
                 PassKind::Graphics => {
-                    let Some(current_key) =
-                        render_pass_compatibility_key(&self.passes[index].descriptor)
-                    else {
+                    let Some(current_key) = render_pass_compatibility_key(&descriptors[index]) else {
                         steps.push(CompiledExecuteStep::GraphicsPass { pass_index: index });
                         cursor += 1;
                         continue;
@@ -1721,11 +1759,10 @@ impl FrameGraph {
                     let mut absorbed_load_variant: Option<RenderPassCompatibilityKey> = None;
                     while end < order.len() {
                         let next_index = order[end];
-                        if self.passes[next_index].descriptor.kind != PassKind::Graphics {
+                        if descriptors[next_index].kind != PassKind::Graphics {
                             break;
                         }
-                        let Some(next_key) =
-                            render_pass_compatibility_key(&self.passes[next_index].descriptor)
+                        let Some(next_key) = render_pass_compatibility_key(&descriptors[next_index])
                         else {
                             break;
                         };
@@ -1767,6 +1804,44 @@ impl FrameGraph {
             }
         }
         steps
+    }
+
+    fn resolve_compiler_managed_descriptors(
+        &self,
+        ordered_passes: &[usize],
+    ) -> Vec<PassDescriptor> {
+        let mut descriptors = self
+            .passes
+            .iter()
+            .map(|node| node.descriptor.clone())
+            .collect::<Vec<_>>();
+        let mut seen_transient_color_targets = HashSet::<TextureHandle>::new();
+
+        for &pass_index in ordered_passes {
+            let PassDetails::Graphics(graphics) = &mut descriptors[pass_index].details else {
+                continue;
+            };
+
+            for attachment in &mut graphics.color_attachments {
+                if attachment.load_op != AttachmentLoadOp::Load {
+                    continue;
+                }
+                let AttachmentTarget::Texture(handle) = attachment.target else {
+                    continue;
+                };
+                if self.resource_metadata(ResourceHandle::Texture(handle)).lifetime
+                    != ResourceLifetime::Transient
+                {
+                    continue;
+                }
+                if seen_transient_color_targets.insert(handle) {
+                    attachment.load_op = AttachmentLoadOp::Clear;
+                    attachment.clear_color = Some([0.0, 0.0, 0.0, 0.0]);
+                }
+            }
+        }
+
+        descriptors
     }
 
     fn build_compiled_resources(
@@ -2326,6 +2401,11 @@ impl FrameGraph {
         pass_counts: &mut HashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
+        let pass_names = pass_indices
+            .iter()
+            .map(|&index| self.passes[index].descriptor.name.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         let (surface_view, surface_resolve_view, depth_view) = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
@@ -2350,6 +2430,42 @@ impl FrameGraph {
                 return;
             };
             owned_color_views.push((view, resolve_target));
+        }
+        let expected_sample_count =
+            resolve_pass_sample_count(compatibility.sample_count, ctx.viewport.msaa_sample_count());
+        for attachment in &compatibility.color_attachments {
+            let actual_sample_count =
+                color_attachment_sample_count(ctx, attachment.target, attachment.resolve_target);
+            if expected_sample_count != actual_sample_count {
+                eprintln!(
+                    "[error] frame graph color attachment sample-count mismatch before wgpu validation: passes=[{}], target={:?}, expected_sample_count={}, actual_sample_count={}, resolve_target={:?}",
+                    pass_names,
+                    attachment.target,
+                    expected_sample_count,
+                    actual_sample_count,
+                    attachment.resolve_target,
+                );
+                panic!(
+                    "frame graph color attachment sample-count mismatch: passes=[{}]",
+                    pass_names
+                );
+            }
+        }
+        if let Some((target, _, _)) = compatibility.depth_stencil_attachment.as_ref() {
+            let depth_sample_count = depth_attachment_sample_count(ctx, *target);
+            if expected_sample_count != depth_sample_count {
+                eprintln!(
+                    "[error] frame graph depth attachment sample-count mismatch before wgpu validation: passes=[{}], expected_sample_count={}, depth_target={:?}, depth_sample_count={}",
+                    pass_names,
+                    expected_sample_count,
+                    target,
+                    depth_sample_count,
+                );
+                panic!(
+                    "frame graph depth attachment sample-count mismatch: passes=[{}]",
+                    pass_names
+                );
+            }
         }
         for (index, attachment) in compatibility.color_attachments.iter().enumerate() {
             let (view, resolve_target) = &owned_color_views[index];
@@ -2453,6 +2569,12 @@ fn resolve_color_attachment_views(
         }
         AttachmentTarget::Texture(handle) => {
             let resolve_view = render_target_view(ctx, handle);
+            if resolve_target.is_some() && render_target_msaa_view(ctx, handle).is_none() {
+                panic!(
+                    "frame graph resolve target mismatch before wgpu validation: texture {:?} requested resolve attachment but has no MSAA view",
+                    handle
+                );
+            }
             let attachment_view = if resolve_target.is_some() {
                 render_target_msaa_view(ctx, handle).or_else(|| resolve_view.clone())
             } else {
@@ -2462,6 +2584,56 @@ fn resolve_color_attachment_views(
                 attachment_view,
                 resolve_view.filter(|_| resolve_target.is_some()),
             )
+        }
+    }
+}
+
+fn resolve_pass_sample_count(policy: SampleCountPolicy, surface_sample_count: u32) -> u32 {
+    match policy {
+        SampleCountPolicy::Fixed(count) => count.max(1),
+        SampleCountPolicy::SurfaceDefault => surface_sample_count.max(1),
+    }
+}
+
+fn color_attachment_sample_count(
+    ctx: &mut RecordContext<'_, '_>,
+    target: AttachmentTarget,
+    resolve_target: Option<AttachmentTarget>,
+) -> u32 {
+    match target {
+        AttachmentTarget::Surface => {
+            if resolve_target.is_some() {
+                ctx.viewport.msaa_sample_count()
+            } else {
+                1
+            }
+        }
+        AttachmentTarget::Texture(handle) => {
+            if resolve_target.is_some() && render_target_msaa_view(ctx, handle).is_some() {
+                ctx.viewport.msaa_sample_count()
+            } else {
+                1
+            }
+        }
+    }
+}
+
+fn depth_attachment_sample_count(ctx: &mut RecordContext<'_, '_>, target: AttachmentTarget) -> u32 {
+    match target {
+        AttachmentTarget::Surface => {
+            if ctx.viewport.frame_parts().and_then(|parts| parts.depth_view).is_some()
+                && ctx.viewport.msaa_sample_count() > 1
+            {
+                ctx.viewport.msaa_sample_count()
+            } else {
+                1
+            }
+        }
+        AttachmentTarget::Texture(handle) => {
+            let Some(desc) = ctx.textures().get(handle.0 as usize) else {
+                return 1;
+            };
+            desc.sample_count().max(1)
         }
     }
 }
@@ -2519,6 +2691,7 @@ fn annotate_usage_version(
     resource: ResourceHandle,
     usage: ResourceUsage,
     descriptor: &PassDescriptor,
+    texture_metadata: &[ResourceMetadata],
     latest_texture_version: &mut HashMap<TextureHandle, TextureVersionId>,
     latest_buffer_version: &mut HashMap<BufferHandle, BufferVersionId>,
     next_texture_version: &mut u32,
@@ -2529,6 +2702,7 @@ fn annotate_usage_version(
             handle,
             usage,
             descriptor,
+            texture_metadata,
             latest_texture_version,
             next_texture_version,
         ),
@@ -2542,6 +2716,7 @@ fn annotate_texture_usage_version(
     handle: TextureHandle,
     usage: ResourceUsage,
     descriptor: &PassDescriptor,
+    texture_metadata: &[ResourceMetadata],
     latest_versions: &mut HashMap<TextureHandle, TextureVersionId>,
     next_version: &mut u32,
 ) -> (Option<ResourceVersionId>, Option<ResourceVersionId>) {
@@ -2549,6 +2724,10 @@ fn annotate_texture_usage_version(
         .get(&handle)
         .copied()
         .map(ResourceVersionId::Texture);
+    let lifetime = texture_metadata
+        .get(handle.0 as usize)
+        .map(|metadata| metadata.lifetime)
+        .unwrap_or(ResourceLifetime::Transient);
     match usage {
         ResourceUsage::Produced => {
             let write = ResourceVersionId::Texture(allocate_texture_version(
@@ -2576,18 +2755,21 @@ fn annotate_texture_usage_version(
             None,
         ),
         ResourceUsage::ColorAttachmentWrite => {
-            let read =
-                if color_attachment_requires_input(descriptor, ResourceHandle::Texture(handle)) {
-                    current.or_else(|| {
-                        Some(ResourceVersionId::Texture(allocate_texture_version(
-                            handle,
-                            latest_versions,
-                            next_version,
-                        )))
-                    })
-                } else {
-                    None
-                };
+            let should_preserve_existing = color_attachment_requires_input(
+                descriptor,
+                ResourceHandle::Texture(handle),
+            ) && !(current.is_none() && lifetime == ResourceLifetime::Transient);
+            let read = if should_preserve_existing {
+                current.or_else(|| {
+                    Some(ResourceVersionId::Texture(allocate_texture_version(
+                        handle,
+                        latest_versions,
+                        next_version,
+                    )))
+                })
+            } else {
+                None
+            };
             let write = ResourceVersionId::Texture(allocate_texture_version(
                 handle,
                 latest_versions,
@@ -3390,6 +3572,14 @@ fn build_allocation_plan(
         last_use_pass_index: usize,
     }
 
+    #[derive(Clone)]
+    struct TextureCandidate {
+        handle: TextureHandle,
+        desc: TextureDesc,
+        first_use_pass_index: usize,
+        last_use_pass_index: usize,
+    }
+
     let mut next_id = 0u32;
     let mut texture_slots: Vec<TextureSlot> = Vec::new();
     let mut texture_allocations: Vec<TextureAllocationPlanEntry> = Vec::new();
@@ -3397,53 +3587,92 @@ fn build_allocation_plan(
     let mut texture_allocation_ids = HashMap::new();
     let mut buffer_allocation_ids = HashMap::new();
 
+    let mut texture_candidates = resources
+        .iter()
+        .filter_map(|resource| {
+            if resource.lifetime != ResourceLifetime::Transient {
+                return None;
+            }
+            let ResourceHandle::Texture(handle) = resource.handle else {
+                return None;
+            };
+            let desc = graph.textures.get(handle.0 as usize).cloned()?;
+            Some(TextureCandidate {
+                handle,
+                desc,
+                first_use_pass_index: resource.first_use_pass_index,
+                last_use_pass_index: resource.last_use_pass_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    texture_candidates.sort_by(|a, b| {
+        let a_area = a.desc.width() as u64 * a.desc.height() as u64;
+        let b_area = b.desc.width() as u64 * b.desc.height() as u64;
+        a.first_use_pass_index
+            .cmp(&b.first_use_pass_index)
+            .then_with(|| b_area.cmp(&a_area))
+            .then_with(|| b.desc.width().cmp(&a.desc.width()))
+            .then_with(|| b.desc.height().cmp(&a.desc.height()))
+            .then_with(|| a.last_use_pass_index.cmp(&b.last_use_pass_index))
+            .then_with(|| a.handle.0.cmp(&b.handle.0))
+    });
+
+    for candidate in texture_candidates {
+        let desc = candidate.desc.clone();
+        let chosen = texture_slots
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, slot)| {
+                slot.last_use_pass_index < candidate.first_use_pass_index
+                    && slot.desc.format() == desc.format()
+                    && slot.desc.dimension() == desc.dimension()
+                    && slot.desc.usage() == desc.usage()
+                    && slot.desc.sample_count() == desc.sample_count()
+                    && slot.desc.label() == desc.label()
+                    && slot.desc.width() >= desc.width()
+                    && slot.desc.height() >= desc.height()
+            })
+            .min_by(|(_, a), (_, b)| {
+                let a_area = a.desc.width() as u64 * a.desc.height() as u64;
+                let b_area = b.desc.width() as u64 * b.desc.height() as u64;
+                a_area
+                    .cmp(&b_area)
+                    .then_with(|| a.desc.width().cmp(&b.desc.width()))
+                    .then_with(|| a.desc.height().cmp(&b.desc.height()))
+            })
+            .map(|(index, _)| index)
+            .map(|index| {
+                let slot = &mut texture_slots[index];
+                slot.last_use_pass_index = candidate.last_use_pass_index;
+                slot.id
+            })
+            .unwrap_or_else(|| {
+                let id = AllocationId(next_id);
+                next_id = next_id.saturating_add(1);
+                texture_slots.push(TextureSlot {
+                    id,
+                    desc: desc.clone(),
+                    last_use_pass_index: candidate.last_use_pass_index,
+                });
+                texture_allocations.push(TextureAllocationPlanEntry {
+                    allocation_id: id,
+                    owner: AllocationOwner::AllocatorManaged,
+                    resources: Vec::new(),
+                });
+                id
+            });
+        texture_allocation_ids.insert(candidate.handle, chosen);
+        if let Some(entry) = texture_allocations
+            .iter_mut()
+            .find(|entry| entry.allocation_id == chosen)
+        {
+            entry.resources.push(candidate.handle);
+        }
+    }
+
     for resource in resources {
         match resource.handle {
-            ResourceHandle::Texture(handle) => {
-                if resource.lifetime != ResourceLifetime::Transient {
-                    continue;
-                }
-                let Some(desc) = graph.textures.get(handle.0 as usize).cloned() else {
-                    continue;
-                };
-                let chosen = texture_slots
-                    .iter_mut()
-                    .find(|slot| {
-                        slot.last_use_pass_index < resource.first_use_pass_index
-                            && slot.desc.width() == desc.width()
-                            && slot.desc.height() == desc.height()
-                            && slot.desc.format() == desc.format()
-                            && slot.desc.dimension() == desc.dimension()
-                            && slot.desc.usage() == desc.usage()
-                            && slot.desc.sample_count() == desc.sample_count()
-                    })
-                    .map(|slot| {
-                        slot.last_use_pass_index = resource.last_use_pass_index;
-                        slot.id
-                    })
-                    .unwrap_or_else(|| {
-                        let id = AllocationId(next_id);
-                        next_id = next_id.saturating_add(1);
-                        texture_slots.push(TextureSlot {
-                            id,
-                            desc,
-                            last_use_pass_index: resource.last_use_pass_index,
-                        });
-                        texture_allocations.push(TextureAllocationPlanEntry {
-                            allocation_id: id,
-                            owner: AllocationOwner::AllocatorManaged,
-                            resources: Vec::new(),
-                        });
-                        id
-                    });
-                texture_allocation_ids.insert(handle, chosen);
-                if let Some(entry) = texture_allocations
-                    .iter_mut()
-                    .find(|entry| entry.allocation_id == chosen)
-                {
-                    entry.resources.push(handle);
-                }
-            }
+            ResourceHandle::Texture(_) => {}
             ResourceHandle::Buffer(handle) => {
                 if resource.lifetime != ResourceLifetime::Transient {
                     continue;
@@ -4032,9 +4261,10 @@ mod tests {
             let target = builder
                 .texture_target(&self.output)
                 .expect("test output should have texture target");
+            let _ = target;
             builder.write_color(
                 &self.output,
-                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+                GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]),
             );
         }
 
@@ -4066,10 +4296,8 @@ mod tests {
             let target = builder
                 .texture_target(&self.target)
                 .expect("test output should have texture target");
-            builder.write_color(
-                &self.target,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.target, GraphicsColorAttachmentOps::load());
         }
 
         fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
@@ -4091,10 +4319,7 @@ mod tests {
 
     impl GraphicsPass for SurfacePass {
         fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
-                builder.surface_target(),
-                [0.0, 0.0, 0.0, 0.0],
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]));
         }
 
         fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
@@ -4103,10 +4328,7 @@ mod tests {
     impl GraphicsPass for MergeableSurfacePass {
         fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
             builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
-                builder.surface_target(),
-                [0.0, 0.0, 0.0, 0.0],
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]));
         }
 
         fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
@@ -4118,9 +4340,10 @@ mod tests {
             let target = builder
                 .texture_target(&self.output)
                 .expect("prep output should have texture target");
+            let _ = target;
             builder.write_color(
                 &self.output,
-                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+                GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]),
             );
         }
 
@@ -4133,10 +4356,7 @@ mod tests {
             if let Some(handle) = self.input.handle() {
                 builder.read_texture(&mut self.input, &OutSlot::with_handle(handle));
             }
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
-                builder.surface_target(),
-                [0.0, 0.0, 0.0, 0.0],
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]));
         }
 
         fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
@@ -4216,10 +4436,8 @@ mod tests {
             let target = builder
                 .texture_target(&self.target)
                 .expect("inline test output should have texture target");
-            builder.write_color(
-                &self.target,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.target, GraphicsColorAttachmentOps::load());
         }
 
         fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}
@@ -4271,9 +4489,10 @@ mod tests {
             let target = builder
                 .texture_target(&self.output)
                 .expect("persistent output should have texture target");
+            let _ = target;
             builder.write_color(
                 &self.output,
-                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+                GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]),
             );
         }
 
@@ -4504,6 +4723,75 @@ mod tests {
             graphics.color_attachments[0].load_op,
             AttachmentLoadOp::Clear
         );
+    }
+
+    #[test]
+    fn compiler_clears_first_transient_color_load_attachment() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_texture::<()>(test_texture_desc());
+        let writer = graph.add_graphics_pass(ModifyPass {
+            target: texture.clone(),
+        });
+        let present = graph.add_graphics_pass(make_present_pass(&texture));
+        graph
+            .add_pass_sink(present, ExternalSinkKind::SurfacePresent)
+            .expect("sink registration should succeed");
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("graph should be compiled");
+        let writer_pass = compiled
+            .passes
+            .iter()
+            .find(|pass| pass.original_index == writer.0)
+            .expect("writer pass should be live");
+        let PassDetails::Graphics(graphics) = &writer_pass.descriptor.details else {
+            panic!("expected graphics pass details");
+        };
+        assert_eq!(graphics.color_attachments.len(), 1);
+        assert_eq!(
+            graphics.color_attachments[0].load_op,
+            AttachmentLoadOp::Clear
+        );
+        assert_eq!(
+            graphics.color_attachments[0].clear_color,
+            Some([0.0, 0.0, 0.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn compiler_keeps_first_persistent_color_load_attachment() {
+        let mut graph = FrameGraph::new();
+        let target = graph.declare_texture_internal::<()>(
+            test_texture_desc(),
+            ResourceLifetime::Persistent,
+            Some(0xBEEF),
+        );
+        let writer = graph.add_graphics_pass(ModifyPass {
+            target: target.clone(),
+        });
+        let present = graph.add_graphics_pass(make_present_pass(&target));
+        graph
+            .add_pass_sink(present, ExternalSinkKind::SurfacePresent)
+            .expect("sink registration should succeed");
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("graph should be compiled");
+        let writer_pass = compiled
+            .passes
+            .iter()
+            .find(|pass| pass.original_index == writer.0)
+            .expect("writer pass should be live");
+        let PassDetails::Graphics(graphics) = &writer_pass.descriptor.details else {
+            panic!("expected graphics pass details");
+        };
+        assert_eq!(graphics.color_attachments.len(), 1);
+        assert_eq!(
+            graphics.color_attachments[0].load_op,
+            AttachmentLoadOp::Load
+        );
+        assert_eq!(graphics.color_attachments[0].clear_color, None);
     }
 
     #[test]
@@ -4976,6 +5264,92 @@ mod tests {
             .expect("resource B should exist");
         assert_eq!(resource_a.allocation_id, resource_b.allocation_id);
         assert_eq!(compiled.allocation_plan.texture_allocations.len(), 1);
+    }
+
+    #[test]
+    fn compile_aliases_smaller_transient_texture_into_earlier_larger_slot() {
+        let mut graph = FrameGraph::new();
+        let large = graph.declare_texture::<()>(TextureDesc::new(
+            200,
+            100,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        ));
+        let small = graph.declare_texture::<()>(TextureDesc::new(
+            100,
+            50,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        ));
+        graph.add_graphics_pass(WritePass {
+            output: large.clone(),
+        });
+        graph.add_graphics_pass(WritePass {
+            output: small.clone(),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let large_resource = compiled
+            .resources
+            .iter()
+            .find(|resource| {
+                resource.handle == ResourceHandle::Texture(large.handle().unwrap())
+            })
+            .expect("large resource should exist");
+        let small_resource = compiled
+            .resources
+            .iter()
+            .find(|resource| {
+                resource.handle == ResourceHandle::Texture(small.handle().unwrap())
+            })
+            .expect("small resource should exist");
+        assert_eq!(large_resource.allocation_id, small_resource.allocation_id);
+        assert_eq!(compiled.allocation_plan.texture_allocations.len(), 1);
+    }
+
+    #[test]
+    fn compile_does_not_alias_larger_transient_texture_after_earlier_smaller_slot() {
+        let mut graph = FrameGraph::new();
+        let small = graph.declare_texture::<()>(TextureDesc::new(
+            100,
+            50,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        ));
+        let large = graph.declare_texture::<()>(TextureDesc::new(
+            200,
+            100,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        ));
+        graph.add_graphics_pass(WritePass {
+            output: small.clone(),
+        });
+        graph.add_graphics_pass(WritePass {
+            output: large.clone(),
+        });
+
+        graph.compile().expect("compile should succeed");
+
+        let compiled = graph.compiled_graph().expect("compiled graph should exist");
+        let small_resource = compiled
+            .resources
+            .iter()
+            .find(|resource| {
+                resource.handle == ResourceHandle::Texture(small.handle().unwrap())
+            })
+            .expect("small resource should exist");
+        let large_resource = compiled
+            .resources
+            .iter()
+            .find(|resource| {
+                resource.handle == ResourceHandle::Texture(large.handle().unwrap())
+            })
+            .expect("large resource should exist");
+        assert_ne!(small_resource.allocation_id, large_resource.allocation_id);
+        assert_eq!(compiled.allocation_plan.texture_allocations.len(), 2);
     }
 
     #[test]

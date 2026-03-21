@@ -1,12 +1,11 @@
-use crate::view::frame_graph::AttachmentTarget;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_size,
+    render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
@@ -191,8 +190,8 @@ impl DrawRectPass {
         self.color_write_enabled = enabled;
     }
 
-    pub fn set_depth_stencil_target(&mut self, depth_stencil_target: Option<AttachmentTarget>) {
-        self.input.pass_context.depth_stencil_target = depth_stencil_target;
+    pub fn set_depth_stencil_target(&mut self, enabled: bool) {
+        self.input.pass_context.uses_depth_stencil = enabled;
     }
 
     pub fn set_render_mode(&mut self, mode: RectRenderMode) {
@@ -313,10 +312,8 @@ impl DrawRectPass {
         variant: RectShaderVariant,
     ) {
         let surface_size = ctx.viewport.surface_size();
-        let (target_w, target_h) = match self.output.render_target.handle() {
-            Some(target) => render_target_size(ctx, target).unwrap_or(surface_size),
-            None => surface_size,
-        };
+        let target_meta = resolve_texture_ref(self.output.render_target.handle(), ctx, surface_size, None);
+        let (target_w, target_h) = target_meta.physical_size;
         let target_origin = self
             .output
             .render_target
@@ -325,8 +322,10 @@ impl DrawRectPass {
             .unwrap_or((0, 0));
         let scale = ctx.viewport.scale_factor();
         let scaled_position = [
-            self.params.position[0] * scale - target_origin.0 as f32,
-            self.params.position[1] * scale - target_origin.1 as f32,
+            self.params.position[0] * scale - target_origin.0 as f32
+                + target_meta.logical_origin.0 as f32,
+            self.params.position[1] * scale - target_origin.1 as f32
+                + target_meta.logical_origin.1 as f32,
         ];
         let scaled_size = [self.params.size[0] * scale, self.params.size[1] * scale];
         let scaled_border_widths = self.params.border_widths.map(|v| v * scale);
@@ -355,7 +354,10 @@ impl DrawRectPass {
             let (overlay_w, overlay_h) = ctx.viewport.surface_size();
             let (debug_vertices, debug_indices) = build_rect_debug_overlay_geometry(
                 params,
-                [target_origin.0 as f32, target_origin.1 as f32],
+                [
+                    target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
+                    target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
+                ],
                 overlay_w as f32,
                 overlay_h as f32,
                 [0.95, 0.2, 0.95, 0.95],
@@ -393,7 +395,12 @@ impl DrawRectPass {
             return;
         };
         let format = ctx.viewport.surface_format();
-        let sample_count = ctx.viewport.msaa_sample_count();
+        let sample_count = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_sample_count(ctx, handle))
+            .unwrap_or_else(|| ctx.viewport.msaa_sample_count());
         let (stencil_class, _) = stencil_class_and_reference(self.stencil_mode);
         let cache_key = rect_resource_cache_key(
             variant,
@@ -560,39 +567,35 @@ impl GraphicsPass for DrawRectPass {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         self.inherit_stencil_clip_if_needed();
         if let Some(target) = builder.texture_target(&self.output.render_target) {
+            let _ = target;
             builder.write_color(
                 &self.output.render_target,
                 if self.clear_target {
-                    GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0])
+                    GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0])
                 } else {
-                    GraphicsColorAttachmentDescriptor::load(target)
+                    GraphicsColorAttachmentOps::load()
                 },
             );
         } else {
             builder.write_surface_color(if self.clear_target {
-                GraphicsColorAttachmentDescriptor::clear(
-                    builder.surface_target(),
-                    [0.0, 0.0, 0.0, 0.0],
-                )
+                GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0])
             } else {
-                GraphicsColorAttachmentDescriptor::load(builder.surface_target())
+                GraphicsColorAttachmentOps::load()
             });
         }
-        if let Some(target) = self.input.pass_context.depth_stencil_target {
+        if self.input.pass_context.uses_depth_stencil {
             if self.clear_target {
-                builder.write_depth(
-                    target,
+                builder.write_output_depth(
                     crate::view::frame_graph::AttachmentLoadOp::Clear,
                     Some(1.0),
                 );
-                builder.write_stencil(
-                    target,
+                builder.write_output_stencil(
                     crate::view::frame_graph::AttachmentLoadOp::Clear,
                     Some(0),
                 );
             } else {
-                builder.read_depth(target);
-                builder.read_stencil(target);
+                builder.read_output_depth();
+                builder.read_output_stencil();
             }
         }
     }
@@ -615,39 +618,35 @@ impl GraphicsPass for OpaqueRectPass {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         self.inner.inherit_stencil_clip_if_needed();
         if let Some(target) = builder.texture_target(&self.inner.output.render_target) {
+            let _ = target;
             builder.write_color(
                 &self.inner.output.render_target,
                 if self.inner.clear_target {
-                    GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0])
+                    GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0])
                 } else {
-                    GraphicsColorAttachmentDescriptor::load(target)
+                    GraphicsColorAttachmentOps::load()
                 },
             );
         } else {
             builder.write_surface_color(if self.inner.clear_target {
-                GraphicsColorAttachmentDescriptor::clear(
-                    builder.surface_target(),
-                    [0.0, 0.0, 0.0, 0.0],
-                )
+                GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0])
             } else {
-                GraphicsColorAttachmentDescriptor::load(builder.surface_target())
+                GraphicsColorAttachmentOps::load()
             });
         }
-        if let Some(target) = self.inner.input.pass_context.depth_stencil_target {
+        if self.inner.input.pass_context.uses_depth_stencil {
             if self.inner.clear_target {
-                builder.write_depth(
-                    target,
+                builder.write_output_depth(
                     crate::view::frame_graph::AttachmentLoadOp::Clear,
                     Some(1.0),
                 );
-                builder.write_stencil(
-                    target,
+                builder.write_output_stencil(
                     crate::view::frame_graph::AttachmentLoadOp::Clear,
                     Some(0),
                 );
             } else {
-                builder.read_depth(target);
-                builder.read_stencil(target);
+                builder.read_output_depth();
+                builder.read_output_stencil();
             }
         }
     }
@@ -720,10 +719,8 @@ fn encode_draw_rect_into_existing_pass(
 ) {
     let draw = pass_def.snapshot_draw();
     let surface_size = ctx.viewport().surface_size();
-    let (target_w, target_h) = match draw.color_target {
-        Some(handle) => render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size),
-        None => surface_size,
-    };
+    let target_meta = resolve_texture_ref(draw.color_target, ctx.frame_resources(), surface_size, None);
+    let (target_w, target_h) = target_meta.physical_size;
     let target_origin = draw
         .color_target
         .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
@@ -734,10 +731,13 @@ fn encode_draw_rect_into_existing_pass(
         None => return,
     };
     let format = ctx.viewport().surface_format();
-    let sample_count = ctx.viewport().msaa_sample_count();
+    let sample_count = draw
+        .color_target
+        .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
+        .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
     let scaled_position = [
-        draw.position[0] * scale - target_origin.0 as f32,
-        draw.position[1] * scale - target_origin.1 as f32,
+        draw.position[0] * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
+        draw.position[1] * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
     ];
     let scaled_size = [draw.size[0] * scale, draw.size[1] * scale];
     let scaled_border_widths = draw.border_widths.map(|v| v * scale);

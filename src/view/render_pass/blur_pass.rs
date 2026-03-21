@@ -2,7 +2,7 @@ use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
     GraphicsPassMergePolicy, PrepareContext, SampleCountPolicy,
 };
 use crate::view::render_pass::composite_layer_pass::LayerIn;
@@ -105,14 +105,10 @@ impl GraphicsPass for BlurPass {
             builder.read_texture(&mut self.input.layer, &source);
         }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.write_color(
-                &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::load());
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
-                builder.surface_target(),
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }
     }
 
@@ -146,7 +142,7 @@ impl GraphicsPass for BlurPass {
         let surface_size = ctx.viewport().surface_size();
         let target_meta =
             resolve_texture_meta(self.output.render_target.handle(), ctx.frame_resources(), surface_size);
-        let (target_w, target_h) = target_meta.logical_size;
+        let (target_w, target_h) = target_meta.physical_size;
         let layer_meta = resolve_texture_meta(Some(layer_handle), ctx.frame_resources(), surface_size);
         let (layer_w, layer_h) = layer_meta.physical_size;
         if layer_w == 0 || layer_h == 0 {

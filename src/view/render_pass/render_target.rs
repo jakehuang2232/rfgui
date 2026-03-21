@@ -1,12 +1,12 @@
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
-use crate::view::frame_graph::{AllocationId, AttachmentTarget, FrameResourceContext};
+use crate::view::frame_graph::{AllocationId, FrameResourceContext};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GraphicsPassContext {
     pub scissor_rect: Option<[u32; 4]>,
     pub stencil_clip_id: Option<u8>,
-    pub depth_stencil_target: Option<AttachmentTarget>,
+    pub uses_depth_stencil: bool,
 }
 
 struct RenderTargetEntry {
@@ -78,11 +78,42 @@ impl TextureRef {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedTextureRef {
+    pub global_origin: (u32, u32),
+    pub logical_origin: (u32, u32),
+    pub logical_size: (u32, u32),
+    pub physical_size: (u32, u32),
+}
+
+impl ResolvedTextureRef {
+    pub fn global_origin_f32(self) -> [f32; 2] {
+        [self.global_origin.0 as f32, self.global_origin.1 as f32]
+    }
+
+    pub fn logical_origin_f32(self) -> [f32; 2] {
+        [self.logical_origin.0 as f32, self.logical_origin.1 as f32]
+    }
+
+    pub fn with_fallback_origin(mut self, origin: (u32, u32)) -> Self {
+        if self.global_origin == (0, 0) {
+            self.global_origin = origin;
+        }
+        self
+    }
+
+    pub fn with_fallback_logical_origin(mut self, logical_origin: (u32, u32)) -> Self {
+        if self.logical_origin == (0, 0) {
+            self.logical_origin = logical_origin;
+        }
+        self
+    }
+}
+
 pub(crate) struct RenderTargetBundle {
     pub texture_ref: TextureRef,
     pub view: wgpu::TextureView,
     pub msaa_view: Option<wgpu::TextureView>,
-    pub size: (u32, u32),
 }
 
 pub(crate) struct OffscreenRenderTargetPool {
@@ -130,11 +161,13 @@ impl OffscreenRenderTargetPool {
         msaa_sample_count: u32,
     ) -> Option<RenderTargetBundle> {
         if let Some(entry_id) = self.frame_bindings.get(&allocation_id.0).copied() {
-            return self.bundle_for_entry(entry_id);
+            return self.bundle_for_entry(entry_id, &desc);
         }
 
-        let width = desc.width().max(1);
-        let height = desc.height().max(1);
+        let logical_width = desc.width().max(1);
+        let logical_height = desc.height().max(1);
+        let physical_width = round_up_to_power_of_two(logical_width);
+        let physical_height = round_up_to_power_of_two(logical_height);
         let format = desc.format();
         let dimension = desc.dimension();
         let label = color_texture_label(&desc);
@@ -146,8 +179,8 @@ impl OffscreenRenderTargetPool {
                 || entry.format != format
                 || entry.dimension != dimension
                 || entry.msaa_sample_count != msaa_sample_count
-                || entry.width != width
-                || entry.height != height
+                || entry.width != physical_width
+                || entry.height != physical_height
                 || entry.label != label
             {
                 continue;
@@ -161,8 +194,11 @@ impl OffscreenRenderTargetPool {
         } else {
             let entry_id = self.next_entry_id;
             self.next_entry_id = self.next_entry_id.saturating_add(1);
-            self.entries
-                .insert(entry_id, Self::create_entry(device, &desc, msaa_sample_count));
+            let physical_desc = desc.clone().with_size(physical_width, physical_height);
+            self.entries.insert(
+                entry_id,
+                Self::create_entry(device, &physical_desc, msaa_sample_count),
+            );
             entry_id
         };
 
@@ -172,7 +208,7 @@ impl OffscreenRenderTargetPool {
         }
         self.frame_bindings.insert(allocation_id.0, entry_id);
         self.evict();
-        self.bundle_for_entry(entry_id)
+        self.bundle_for_entry(entry_id, &desc)
     }
 
     pub fn acquire_persistent(
@@ -228,10 +264,10 @@ impl OffscreenRenderTargetPool {
             entry.frame_busy_epoch = self.frame_epoch;
             entry.last_used_epoch = self.frame_epoch;
         }
-        self.bundle_for_entry(entry_id)
+        self.bundle_for_entry(entry_id, &desc)
     }
 
-    fn bundle_for_entry(&self, entry_id: u32) -> Option<RenderTargetBundle> {
+    fn bundle_for_entry(&self, entry_id: u32, logical_desc: &TextureDesc) -> Option<RenderTargetBundle> {
         let entry = self.entries.get(&entry_id)?;
         let _ = (&entry.texture, &entry.msaa_texture);
         Some(RenderTargetBundle {
@@ -239,14 +275,13 @@ impl OffscreenRenderTargetPool {
                 texture: TextureHandle(0),
                 logical_origin_x: 0,
                 logical_origin_y: 0,
-                logical_width: entry.width,
-                logical_height: entry.height,
+                logical_width: logical_desc.width().max(1),
+                logical_height: logical_desc.height().max(1),
                 physical_width: entry.width,
                 physical_height: entry.height,
             },
             view: entry.view.clone(),
             msaa_view: entry.msaa_view.clone(),
-            size: (entry.width, entry.height),
         })
     }
 
@@ -393,6 +428,10 @@ impl OffscreenRenderTargetPool {
     }
 }
 
+fn round_up_to_power_of_two(value: u32) -> u32 {
+    value.max(1).next_power_of_two()
+}
+
 fn texture_desc_for_handle(
     ctx: &impl FrameResourceContext,
     handle: TextureHandle,
@@ -421,6 +460,36 @@ pub(crate) fn render_target_attachment_view(
     render_target_msaa_view(ctx, handle).or_else(|| render_target_view(ctx, handle))
 }
 
+pub(crate) fn resolve_texture_ref(
+    handle: Option<TextureHandle>,
+    ctx: &mut impl FrameResourceContext,
+    fallback_size: (u32, u32),
+    sampled_size: Option<(u32, u32)>,
+) -> ResolvedTextureRef {
+    let texture_ref = handle.and_then(|texture_handle| render_target_ref(ctx, texture_handle));
+    let global_origin = handle
+        .and_then(|texture_handle| render_target_origin(ctx, texture_handle))
+        .unwrap_or((0, 0));
+    let logical_size = texture_ref
+        .map(|resolved| resolved.logical_size())
+        .or(sampled_size)
+        .unwrap_or(fallback_size);
+    let physical_size = texture_ref
+        .map(|resolved| resolved.physical_size())
+        .or(sampled_size)
+        .or_else(|| handle.and_then(|texture_handle| render_target_physical_size(ctx, texture_handle)))
+        .unwrap_or(fallback_size);
+    let logical_origin = texture_ref
+        .map(|resolved| (resolved.logical_origin_x, resolved.logical_origin_y))
+        .unwrap_or((0, 0));
+    ResolvedTextureRef {
+        global_origin,
+        logical_origin,
+        logical_size,
+        physical_size,
+    }
+}
+
 pub(crate) fn render_target_bundle(
     ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
@@ -433,8 +502,6 @@ pub(crate) fn render_target_bundle(
         bundle.texture_ref.texture = handle;
         bundle.texture_ref.logical_origin_x = 0;
         bundle.texture_ref.logical_origin_y = 0;
-        bundle.texture_ref.logical_width = desc.width();
-        bundle.texture_ref.logical_height = desc.height();
         return Some(bundle);
     }
     let stable_key = ctx.texture_stable_key(handle)?;
@@ -444,8 +511,6 @@ pub(crate) fn render_target_bundle(
     bundle.texture_ref.texture = handle;
     bundle.texture_ref.logical_origin_x = 0;
     bundle.texture_ref.logical_origin_y = 0;
-    bundle.texture_ref.logical_width = desc.width();
-    bundle.texture_ref.logical_height = desc.height();
     Some(bundle)
 }
 
@@ -455,13 +520,6 @@ pub(crate) fn render_target_ref(
     handle: TextureHandle,
 ) -> Option<TextureRef> {
     Some(render_target_bundle(ctx, handle)?.texture_ref)
-}
-
-pub(crate) fn render_target_size(
-    ctx: &mut impl FrameResourceContext,
-    handle: TextureHandle,
-) -> Option<(u32, u32)> {
-    Some(render_target_bundle(ctx, handle)?.size)
 }
 
 #[allow(dead_code)]
@@ -492,6 +550,13 @@ pub(crate) fn render_target_format(
     handle: TextureHandle,
 ) -> Option<wgpu::TextureFormat> {
     Some(texture_desc_for_handle(ctx, handle)?.format())
+}
+
+pub(crate) fn render_target_sample_count(
+    ctx: &impl FrameResourceContext,
+    handle: TextureHandle,
+) -> Option<u32> {
+    Some(texture_desc_for_handle(ctx, handle)?.sample_count().max(1))
 }
 
 pub(crate) fn logical_scissor_to_target_physical(

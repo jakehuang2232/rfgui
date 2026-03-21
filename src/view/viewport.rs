@@ -1914,7 +1914,12 @@ impl Viewport {
         };
         let parent_target = ctx
             .current_target()
-            .unwrap_or_else(|| ctx.allocate_target(graph));
+            .unwrap_or_else(|| {
+                let target = ctx.allocate_target(graph);
+                ctx.set_current_target(target);
+                target
+            });
+        ctx.set_current_target(parent_target);
         let pass = super::render_pass::composite_layer_pass::CompositeLayerPass::new(
             super::render_pass::composite_layer_pass::CompositeLayerParams {
                 rect_pos: [composite_bounds.x, composite_bounds.y],
@@ -2759,24 +2764,6 @@ impl Viewport {
         self.push_debug_reuse_overlay_geometry();
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
-            if self.debug_overlay_enabled() {
-                let debug_pass = super::render_pass::debug_overlay_pass::DebugOverlayPass::new(
-                    super::render_pass::debug_overlay_pass::DebugOverlayInput {
-                        pass_context: super::render_pass::render_target::GraphicsPassContext {
-                            depth_stencil_target: ctx.depth_stencil_target(),
-                            ..Default::default()
-                        },
-                    },
-                    super::render_pass::debug_overlay_pass::DebugOverlayOutput {
-                        render_target:
-                            super::render_pass::draw_rect_pass::RenderTargetOut::with_handle(
-                                dep_handle,
-                            ),
-                        ..Default::default()
-                    },
-                );
-                graph.add_graphics_pass(debug_pass);
-            }
             let present_pass = super::render_pass::present_surface_pass::PresentSurfacePass::new(
                 super::render_pass::present_surface_pass::PresentSurfaceParams,
                 super::render_pass::present_surface_pass::PresentSurfaceInput {
@@ -3038,11 +3025,12 @@ impl Viewport {
         desc: TextureDesc,
     ) -> Option<RenderTargetBundle> {
         let device = self.device.as_ref()?;
+        let sample_count = desc.sample_count().max(1);
         self.offscreen_render_target_pool.acquire(
             device,
             allocation_id,
             desc,
-            self.msaa_sample_count,
+            sample_count,
         )
     }
 
@@ -3052,11 +3040,12 @@ impl Viewport {
         desc: TextureDesc,
     ) -> Option<RenderTargetBundle> {
         let device = self.device.as_ref()?;
+        let sample_count = desc.sample_count().max(1);
         self.offscreen_render_target_pool.acquire_persistent(
             device,
             stable_key,
             desc,
-            self.msaa_sample_count,
+            sample_count,
         )
     }
 

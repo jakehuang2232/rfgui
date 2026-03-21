@@ -9,7 +9,10 @@ struct BlurParams {
     direction: vec2<f32>,
     radius: f32,
     sigma: f32,
-    _pad: vec2<f32>,
+    source_uv_offset: vec2<f32>,
+    source_uv_scale: vec2<f32>,
+    target_origin: vec2<f32>,
+    target_scale: vec2<f32>,
 }
 
 @group(0) @binding(2)
@@ -26,8 +29,14 @@ fn vs_main(
     @location(1) uv: vec2<f32>,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.position = vec4<f32>(position, 0.0, 1.0);
-    out.uv = uv;
+    let target_uv = blur.target_origin + uv * blur.target_scale;
+    out.position = vec4<f32>(
+        target_uv.x * 2.0 - 1.0,
+        1.0 - target_uv.y * 2.0,
+        0.0,
+        1.0,
+    );
+    out.uv = blur.source_uv_offset + uv * blur.source_uv_scale;
     return out;
 }
 

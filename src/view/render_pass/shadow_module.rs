@@ -1,6 +1,6 @@
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::{
-    FrameGraph, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, SampleCountPolicy,
+    FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, SampleCountPolicy,
     TextureDesc,
 };
 use crate::view::render_pass::blur_module::{
@@ -9,7 +9,7 @@ use crate::view::render_pass::blur_module::{
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
-use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_size};
+use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_ref};
 use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
     TextureCompositePass, TextureCompositeSourceIn,
@@ -220,10 +220,8 @@ impl GraphicsPass for ShadowFillPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_sample_count(SampleCountPolicy::Fixed(1));
         if let Some(target) = builder.texture_target(&self.render_target) {
-            builder.write_color(
-                &self.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.render_target, GraphicsColorAttachmentOps::load());
         }
     }
 
@@ -236,9 +234,9 @@ impl GraphicsPass for ShadowFillPass {
         };
         let surface_size = ctx.viewport().surface_size();
         let (target_w, target_h) = match self.render_target.handle() {
-            Some(handle) => {
-                render_target_size(ctx.frame_resources(), handle).unwrap_or(surface_size)
-            }
+            Some(handle) => render_target_ref(ctx.frame_resources(), handle)
+                .map(|texture_ref| texture_ref.physical_size())
+                .unwrap_or(surface_size),
             None => surface_size,
         };
         if target_w == 0 || target_h == 0 {
@@ -326,6 +324,8 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
             SHADOW_INTERMEDIATE_FORMAT,
             wgpu::TextureDimension::D2,
         )
+        .with_origin(bx as u32, by as u32)
+        .with_sample_count(1)
         .with_label("Shadow Layer"),
     );
     let shadow_mask_layer = if spec.params.clip_to_geometry {
@@ -336,6 +336,8 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
                 SHADOW_INTERMEDIATE_FORMAT,
                 wgpu::TextureDimension::D2,
             )
+            .with_origin(bx as u32, by as u32)
+            .with_sample_count(1)
             .with_label("Shadow Mask Layer"),
         )
     } else {
@@ -393,6 +395,8 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
                 SHADOW_INTERMEDIATE_FORMAT,
                 wgpu::TextureDimension::D2,
             )
+            .with_origin(bx as u32, by as u32)
+            .with_sample_count(1)
             .with_label("Shadow Layer / Blurred"),
         );
         let built = build_blur_module(
@@ -425,6 +429,18 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
                 layer_w as f32 / scale,
                 layer_h as f32 / scale,
             ],
+            uv_bounds: Some([
+                bx / scale,
+                by / scale,
+                layer_w as f32 / scale,
+                layer_h as f32 / scale,
+            ]),
+            mask_uv_bounds: spec.params.clip_to_geometry.then_some([
+                bx / scale,
+                by / scale,
+                layer_w as f32 / scale,
+                layer_h as f32 / scale,
+            ]),
             use_mask: spec.params.clip_to_geometry,
             opacity: 1.0,
             ..Default::default()

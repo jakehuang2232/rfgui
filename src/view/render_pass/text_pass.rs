@@ -1,13 +1,13 @@
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{
-    BufferReadUsage, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    BufferReadUsage, GraphicsColorAttachmentOps, GraphicsPassBuilder,
     GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_size,
+    render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use glyphon::cosmic_text::{Align, Weight};
@@ -134,14 +134,10 @@ impl GraphicsPass for TextPass {
         });
         builder.read_buffer(&self.staging_buffer, BufferReadUsage::Uniform);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.write_color(
-                &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::load());
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
-                builder.surface_target(),
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }
         self.params.scissor_rect = intersect_scissor_rects(
             self.input.pass_context.scissor_rect,
@@ -150,9 +146,9 @@ impl GraphicsPass for TextPass {
         if self.params.stencil_clip_id.is_none() {
             self.params.stencil_clip_id = self.input.pass_context.stencil_clip_id;
         }
-        if let Some(target) = self.input.pass_context.depth_stencil_target {
-            builder.read_depth(target);
-            builder.read_stencil(target);
+        if self.input.pass_context.uses_depth_stencil {
+            builder.read_output_depth();
+            builder.read_output_stencil();
         }
     }
 
@@ -177,13 +173,14 @@ impl GraphicsPass for TextPass {
 
         let output_handle = self.output.render_target.handle();
         let fallback_surface_size = ctx.viewport.surface_size();
-        let target_size = match output_handle {
-            Some(handle) => render_target_size(ctx, handle).unwrap_or(fallback_surface_size),
-            None => fallback_surface_size,
-        };
+        let target_meta = resolve_texture_ref(output_handle, ctx, fallback_surface_size, None);
+        let target_size = target_meta.physical_size;
         let target_origin = output_handle
             .and_then(|handle| render_target_origin(ctx, handle))
             .unwrap_or((0, 0));
+        let output_sample_count = output_handle
+            .and_then(|handle| render_target_sample_count(ctx, handle))
+            .unwrap_or_else(|| ctx.viewport.msaa_sample_count());
 
         let viewport = &mut ctx.viewport;
         let device = match viewport.device().cloned() {
@@ -206,8 +203,8 @@ impl GraphicsPass for TextPass {
         let glyphon_viewport = resources.take_viewport(&device, &queue, resolution);
 
         let bounds = match resolve_text_bounds(
-            self.params.x * scale - target_origin.0 as f32,
-            self.params.y * scale - target_origin.1 as f32,
+            self.params.x * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
+            self.params.y * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
             self.params.width * scale,
             self.params.height * scale,
             screen_w,
@@ -241,14 +238,14 @@ impl GraphicsPass for TextPass {
         );
         let text_area = build_text_area(
             &buffer,
-            self.params.x * scale - target_origin.0 as f32,
-            self.params.y * scale - target_origin.1 as f32,
+            self.params.x * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
+            self.params.y * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
             bounds,
             to_glyphon_color(self.params.color, self.params.opacity),
         );
         let renderer_key = TextRendererKey {
-            sample_count: viewport.msaa_sample_count(),
-            stencil_enabled: self.input.pass_context.depth_stencil_target.is_some(),
+            sample_count: output_sample_count,
+            stencil_enabled: self.input.pass_context.uses_depth_stencil,
         };
         if let Some(prepared) = self.prepared.as_mut() {
             if prepared.renderer_key == renderer_key
@@ -263,10 +260,13 @@ impl GraphicsPass for TextPass {
             let (overlay_w, overlay_h) = viewport.surface_size();
             let overlay = build_text_debug_overlay(
                 &buffer,
-                self.params.x * scale - target_origin.0 as f32,
-                self.params.y * scale - target_origin.1 as f32,
+                self.params.x * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
+                self.params.y * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
                 bounds,
-                [target_origin.0 as f32, target_origin.1 as f32],
+                [
+                    target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
+                    target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
+                ],
                 overlay_w as f32,
                 overlay_h as f32,
             );
@@ -344,11 +344,14 @@ impl GraphicsPass for TextPass {
         let Some(glyphon_viewport) = resources.viewport(prepared.resolution) else {
             return;
         };
-        let target_size = match self.output.render_target.handle() {
-            Some(handle) => render_target_size(ctx.frame_resources(), handle)
-                .unwrap_or(ctx.viewport().surface_size()),
-            None => ctx.viewport().surface_size(),
-        };
+        let fallback_surface_size = ctx.viewport().surface_size();
+        let target_meta = resolve_texture_ref(
+            self.output.render_target.handle(),
+            ctx.frame_resources(),
+            fallback_surface_size,
+            None,
+        );
+        let target_size = target_meta.physical_size;
         let target_origin = self
             .output
             .render_target
@@ -917,7 +920,8 @@ mod tests {
             bottom: 22,
         };
 
-        let overlay = build_text_debug_overlay(&buffer, 0.0, 0.0, bounds, screen_w, screen_h);
+        let overlay =
+            build_text_debug_overlay(&buffer, 0.0, 0.0, bounds, [0.0, 0.0], screen_w, screen_h);
         let rects = overlay_rects(&overlay, screen_w, screen_h);
 
         assert!(!rects.is_empty());

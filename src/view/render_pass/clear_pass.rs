@@ -1,6 +1,5 @@
 use crate::view::frame_graph::{
-    AttachmentLoadOp, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
-    GraphicsPassMergePolicy,
+    AttachmentLoadOp, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::GraphicsPassContext as RenderPassContext;
@@ -53,23 +52,16 @@ impl GraphicsPass for ClearPass {
             self.params.color[3] as f64,
         ];
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.write_color(
-                &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::clear(target, color),
-            );
+            let _ = target;
+            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::clear(color));
             if self.input.clear_depth_stencil {
-                if let Some(depth_stencil_target) = self.input.pass_context.depth_stencil_target {
-                    builder.write_depth(depth_stencil_target, AttachmentLoadOp::Clear, Some(1.0));
-                    builder.write_stencil(depth_stencil_target, AttachmentLoadOp::Clear, Some(0));
-                }
+                builder.write_output_depth(AttachmentLoadOp::Clear, Some(1.0));
+                builder.write_output_stencil(AttachmentLoadOp::Clear, Some(0));
             }
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
-                builder.surface_target(),
-                color,
-            ));
-            builder.write_depth(builder.surface_target(), AttachmentLoadOp::Clear, Some(1.0));
-            builder.write_stencil(builder.surface_target(), AttachmentLoadOp::Clear, Some(0));
+            builder.write_surface_color(GraphicsColorAttachmentOps::clear(color));
+            builder.write_output_depth(AttachmentLoadOp::Clear, Some(1.0));
+            builder.write_output_stencil(AttachmentLoadOp::Clear, Some(0));
         }
     }
 
