@@ -26,16 +26,24 @@ impl Element {
         }
     }
 
-    pub(crate) fn requires_inline_promotion_rendering(&self) -> bool {
-        self.inline_promotion_rendering_reason().is_some()
-    }
-
     fn build_base_descendants_only(
         &mut self,
         graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
+        trace_promoted_build(
+            "base",
+            self.id(),
+            self.box_model_snapshot().parent_id,
+            format!(
+                "promoted={} force_opaque={} children={} target={:?}",
+                ctx.is_node_promoted(self.id()),
+                force_self_opaque,
+                self.children.len(),
+                ctx.current_target().and_then(|target| target.handle())
+            ),
+        );
         if !self.core.should_render {
             if self.has_absolute_descendant_for_hit_test {
                 self.collect_root_viewport_deferred_descendants(&mut ctx);
@@ -668,6 +676,17 @@ impl Element {
         graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
     ) -> BuildState {
+        trace_promoted_build(
+            "compose-descendants",
+            self.id(),
+            self.box_model_snapshot().parent_id,
+            format!(
+                "promoted={} children={} target={:?}",
+                ctx.is_node_promoted(self.id()),
+                self.children.len(),
+                ctx.current_target().and_then(|target| target.handle())
+            ),
+        );
         let has_deferred_descendants = self.children.iter().any(|child| {
             child.as_any()
                 .downcast_ref::<Element>()
@@ -724,11 +743,7 @@ impl Element {
                     }
                     if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
                         let viewport = ctx.viewport();
-                        let next_state = if element.requires_inline_promotion_rendering() {
-                            element.build(graph, ctx)
-                        } else {
-                            element.compose_promoted_descendants_only(graph, ctx)
-                        };
+                        let next_state = element.compose_promoted_descendants_only(graph, ctx);
                         ctx = UiBuildContext::from_parts(viewport, next_state);
                     }
                 }
@@ -758,11 +773,7 @@ impl Element {
                     }
                     if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
                         let viewport = ctx.viewport();
-                        let next_state = if element.requires_inline_promotion_rendering() {
-                            element.build(graph, ctx)
-                        } else {
-                            element.compose_promoted_descendants_only(graph, ctx)
-                        };
+                        let next_state = element.compose_promoted_descendants_only(graph, ctx);
                         ctx = UiBuildContext::from_parts(viewport, next_state);
                     }
                 }
@@ -978,6 +989,16 @@ impl Element {
         can_reuse_base: bool,
         context: crate::view::viewport::DebugReusePathContext,
     ) -> BuildState {
+        trace_promoted_build(
+            "promoted-layer",
+            self.id(),
+            self.box_model_snapshot().parent_id,
+            format!(
+                "context={context:?} requested={requested_update_kind:?} can_reuse_base={} target={:?}",
+                can_reuse_base,
+                ctx.current_target().and_then(|target| target.handle())
+            ),
+        );
         let viewport = ctx.viewport();
         let mut ctx = ctx;
         if can_reuse_base {
@@ -1114,6 +1135,19 @@ impl Element {
         mask_target: Option<RenderTargetOut>,
     ) {
         let child_id = child.id();
+        trace_promoted_build(
+            "promoted-child",
+            child_id,
+            child.box_model_snapshot().parent_id,
+            format!(
+                "mask={} ancestor_scissor={} ancestor_stencil={} requested={:?}",
+                mask_target.is_some(),
+                ctx.scissor_rect().is_some(),
+                ctx.current_clip_id() != 0,
+                ctx.promoted_update_kind(child_id)
+                    .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster)
+            ),
+        );
         let requested_update = ctx
             .promoted_update_kind(child_id)
             .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);

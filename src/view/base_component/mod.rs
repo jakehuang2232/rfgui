@@ -133,6 +133,18 @@ pub(crate) fn build_node_by_id(
     ctx: &mut UiBuildContext,
 ) -> bool {
     if node.id() == node_id {
+        if let Some(element) = node.as_any().downcast_ref::<Element>() {
+            trace_promoted_build(
+                "deferred-build-node",
+                node_id,
+                element.box_model_snapshot().parent_id,
+                format!(
+                    "promoted={} target={:?}",
+                    ctx.is_node_promoted(node_id),
+                    ctx.current_target().and_then(|target| target.handle())
+                ),
+            );
+        }
         if ctx.is_node_promoted(node_id) {
             if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
                 if let Some(reason) = element.inline_promotion_rendering_reason() {

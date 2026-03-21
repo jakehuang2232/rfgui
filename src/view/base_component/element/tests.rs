@@ -8,6 +8,9 @@ mod tests {
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
     use crate::view::frame_graph::FrameGraph;
+    use crate::view::base_component::{
+        reset_test_promoted_build_counts, test_promoted_build_count,
+    };
     use crate::Layout;
     use crate::{
         Align, AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
@@ -2020,6 +2023,68 @@ mod tests {
         assert!(
             next_state.clip_id_stack.is_empty(),
             "scroll container build should not leak clip ids to sibling roots"
+        );
+    }
+
+    #[test]
+    fn non_promoted_container_with_promoted_child_is_not_built_twice_during_compose() {
+        let mut root = Element::new(0.0, 0.0, 200.0, 200.0);
+        let mut container = Element::new(0.0, 0.0, 120.0, 120.0);
+        let container_id = container.id();
+        let mut container_style = Style::new();
+        container_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+        );
+        container.apply_style(container_style);
+
+        let promoted_child = Element::new(0.0, 0.0, 120.0, 240.0);
+        let promoted_child_id = promoted_child.id();
+        container.add_child(Box::new(promoted_child));
+        root.add_child(Box::new(container));
+
+        root.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        ctx.set_promoted_runtime(
+            Arc::new(HashSet::from([promoted_child_id])),
+            Arc::new(HashMap::new()),
+            Arc::new(HashMap::new()),
+        );
+        reset_test_promoted_build_counts();
+
+        let next_state = root.build(
+            &mut graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(next_state);
+
+        assert_eq!(
+            test_promoted_build_count(container_id, "base"),
+            1,
+            "expected non-promoted container base path to run only once"
         );
     }
 
