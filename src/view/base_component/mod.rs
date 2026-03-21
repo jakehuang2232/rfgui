@@ -241,6 +241,7 @@ pub(crate) fn build_node_by_id(
                 ctx.set_current_target(target);
                 target
             });
+            ctx.set_current_target(parent_target);
             graph.add_graphics_pass(
                 crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
                     crate::view::render_pass::composite_layer_pass::CompositeLayerParams {

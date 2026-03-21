@@ -623,6 +623,7 @@ impl Element {
         let output = ctx
             .current_target()
             .unwrap_or_else(|| ctx.allocate_target(graph));
+        ctx.set_current_target(output);
         let built = build_shadow_module(
             graph,
             ShadowModuleSpec {
@@ -803,7 +804,6 @@ impl Element {
             layer_target,
             composite_bounds,
             opacity,
-            ctx.graphics_pass_context(),
             ctx.state.scissor_rect,
         );
     }
@@ -814,7 +814,6 @@ impl Element {
         layer_target: RenderTargetOut,
         composite_bounds: crate::view::base_component::PromotionCompositeBounds,
         opacity: f32,
-        pass_context: crate::view::render_pass::render_target::GraphicsPassContext,
         scissor_rect: Option<[u32; 4]>,
     ) {
         let parent_target = ctx.current_target().unwrap_or_else(|| {
@@ -822,6 +821,7 @@ impl Element {
             ctx.set_current_target(target);
             target
         });
+        ctx.set_current_target(parent_target);
         let pass = crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
             crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
                 rect_pos: [composite_bounds.x, composite_bounds.y],
@@ -835,7 +835,7 @@ impl Element {
                 layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
                     layer_target.handle().expect("promoted layer target should exist"),
                 ),
-                pass_context,
+                pass_context: ctx.graphics_pass_context(),
             },
             crate::view::render_pass::composite_layer_pass::CompositeLayerOutput {
                 render_target: parent_target,
@@ -893,6 +893,7 @@ impl Element {
             ctx.set_current_target(target);
             target
         });
+        ctx.set_current_target(parent_target);
         let composite_bounds = child.promotion_composite_bounds();
         let pass = crate::view::render_pass::TextureCompositePass::new(
             crate::view::render_pass::TextureCompositeParams {

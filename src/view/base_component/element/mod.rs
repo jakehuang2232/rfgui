@@ -292,7 +292,7 @@ impl BuildState {
     pub(crate) fn for_layer_subtree_with_ancestor_clip(ancestor_clip: AncestorClipContext) -> Self {
         Self {
             target: None,
-            depth_stencil_target: Some(AttachmentTarget::Surface),
+            depth_stencil_target: None,
             target_pairs: HashMap::new(),
             scissor_rect: ancestor_clip.scissor_rect,
             clip_id_stack: Vec::new(),
@@ -303,6 +303,9 @@ impl BuildState {
 
     pub(crate) fn merge_child_side_effects(&mut self, child: &BuildState) {
         self.dfs_opaque_rect_order = self.dfs_opaque_rect_order.max(child.dfs_opaque_rect_order);
+        for (&color_handle, &depth_target) in &child.target_pairs {
+            self.target_pairs.insert(color_handle, depth_target);
+        }
         for node_id in &child.deferred_node_ids {
             if !self.deferred_node_ids.contains(node_id) {
                 self.deferred_node_ids.push(*node_id);
@@ -355,6 +358,10 @@ fn label_for_persistent_target(stable_key: u64) -> String {
     } else {
         format!("Persistent Render Target [{stable_key:#x}]")
     }
+}
+
+fn persistent_depth_stencil_stable_key(stable_key: u64) -> u64 {
+    stable_key ^ 0xD3A7_0000_0000_0000
 }
 
 impl UiBuildContext {
@@ -448,10 +455,10 @@ impl UiBuildContext {
     }
 
     pub fn set_current_target(&mut self, target: RenderTargetOut) {
-        self.state.depth_stencil_target = target
-            .handle()
-            .and_then(|handle| self.state.target_pairs.get(&handle.0).copied())
-            .or(Some(AttachmentTarget::Surface));
+        self.state.depth_stencil_target = match target.handle() {
+            Some(handle) => self.state.target_pairs.get(&handle.0).copied(),
+            None => Some(AttachmentTarget::Surface),
+        };
         self.state.target = Some(target);
     }
 
@@ -490,12 +497,14 @@ impl UiBuildContext {
                 wgpu::TextureDimension::D2,
             )
             .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            .with_sample_count(desc.sample_count())
             .with_label(depth_label),
         );
         if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
             self.state
                 .target_pairs
                 .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
+            graph.pair_texture_attachment(color_handle, AttachmentTarget::Texture(depth_handle));
         }
         color
     }
@@ -518,7 +527,7 @@ impl UiBuildContext {
             ResourceLifetime::Persistent,
             Some(stable_key),
         );
-        let depth_stencil = graph.declare_texture::<RenderTargetTag>(
+        let depth_stencil = graph.declare_texture_internal::<RenderTargetTag>(
             TextureDesc::new(
                 desc.width(),
                 desc.height(),
@@ -526,20 +535,28 @@ impl UiBuildContext {
                 wgpu::TextureDimension::D2,
             )
             .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            .with_sample_count(desc.sample_count())
             .with_label(depth_label),
+            ResourceLifetime::Persistent,
+            Some(persistent_depth_stencil_stable_key(stable_key)),
         );
         if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
             self.state
                 .target_pairs
                 .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
+            graph.pair_texture_attachment(color_handle, AttachmentTarget::Texture(depth_handle));
         }
         color
     }
 
     pub(crate) fn depth_stencil_target(&self) -> Option<AttachmentTarget> {
-        self.state
-            .depth_stencil_target
-            .or(self.viewport.depth_stencil_target)
+        if self.state.target.is_some() {
+            self.state.depth_stencil_target
+        } else {
+            self.state
+                .depth_stencil_target
+                .or(self.viewport.depth_stencil_target)
+        }
     }
 
     pub(crate) fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
@@ -608,7 +625,7 @@ impl UiBuildContext {
         GraphicsPassContext {
             scissor_rect: self.scissor_rect(),
             stencil_clip_id: self.active_clip_id(),
-            depth_stencil_target: self.depth_stencil_target(),
+            uses_depth_stencil: self.depth_stencil_target().is_some(),
         }
     }
 

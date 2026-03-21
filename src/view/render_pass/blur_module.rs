@@ -3,7 +3,7 @@ use crate::view::frame_graph::{
     BufferDesc, BufferReadUsage, BufferResource, FrameGraph, FrameResourceContext,
 };
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentDescriptor, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
     PrepareContext, ResourceCache, SampleCountPolicy, TextureDesc,
 };
 use crate::view::render_pass::ClearPass;
@@ -11,7 +11,7 @@ use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams}
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_format, render_target_size,
+    GraphicsPassContext as RenderPassContext, render_target_format, render_target_ref,
     render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
@@ -86,7 +86,10 @@ struct BlurParamsUniform {
     direction: [f32; 2],
     radius: f32,
     sigma: f32,
-    _pad: [f32; 2],
+    source_uv_offset: [f32; 2],
+    source_uv_scale: [f32; 2],
+    target_origin: [f32; 2],
+    target_scale: [f32; 2],
 }
 
 struct BlurResources {
@@ -124,15 +127,13 @@ impl GraphicsPass for BlurStagePass {
         });
         builder.read_buffer(&self.upload_buffer, BufferReadUsage::Uniform);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
+            let _ = target;
             builder.write_color(
                 &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0]),
+                GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]),
             );
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::clear(
-                builder.surface_target(),
-                [0.0, 0.0, 0.0, 0.0],
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]));
         }
     }
 
@@ -141,7 +142,15 @@ impl GraphicsPass for BlurStagePass {
             return;
         };
         let surface_size = ctx.viewport.surface_size();
-        let (layer_w, layer_h) = render_target_size(ctx, layer_handle).unwrap_or(surface_size);
+        let layer_ref = render_target_ref(ctx, layer_handle);
+        let (layer_w, layer_h) = layer_ref
+            .map(|texture_ref| texture_ref.physical_size())
+            .unwrap_or(surface_size);
+        let output_ref = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_ref(ctx, handle));
         if layer_w == 0 || layer_h == 0 {
             return;
         }
@@ -150,7 +159,18 @@ impl GraphicsPass for BlurStagePass {
             direction: self.params.direction,
             radius: self.params.blur_radius,
             sigma: self.params.sigma,
-            _pad: [0.0, 0.0],
+            source_uv_offset: layer_ref
+                .map(|texture_ref| [texture_ref.uv_offset_x(), texture_ref.uv_offset_y()])
+                .unwrap_or([0.0, 0.0]),
+            source_uv_scale: layer_ref
+                .map(|texture_ref| [texture_ref.uv_scale_x(), texture_ref.uv_scale_y()])
+                .unwrap_or([1.0, 1.0]),
+            target_origin: output_ref
+                .map(|texture_ref| [texture_ref.uv_offset_x(), texture_ref.uv_offset_y()])
+                .unwrap_or([0.0, 0.0]),
+            target_scale: output_ref
+                .map(|texture_ref| [texture_ref.uv_scale_x(), texture_ref.uv_scale_y()])
+                .unwrap_or([1.0, 1.0]),
         };
         if let Some(handle) = self.upload_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&params));
@@ -179,7 +199,7 @@ impl GraphicsPass for BlurStagePass {
             None => ctx.viewport().surface_format(),
         };
         let cache = blur_resources_cache();
-        let mut cache = cache.lock().unwrap();
+        let mut cache = lock_blur_resources_cache(cache);
         let resources =
             cache.get_or_insert_with(BLUR_RESOURCES, || create_resources(&device, format));
         if resources.pipeline_format != format {
@@ -223,6 +243,7 @@ pub fn build_blur_module(
     let Some(source_desc) = graph.texture_desc(source_handle) else {
         return false;
     };
+    let (source_origin_x, source_origin_y) = source_desc.origin();
     let source_w = source_desc.width().max(1);
     let source_h = source_desc.height().max(1);
     let blur_radius = params.blur_radius.max(0.0);
@@ -263,6 +284,8 @@ pub fn build_blur_module(
         let ds_h = (source_h / downsample).max(1);
         let downsampled = graph.declare_texture(
             TextureDesc::new(ds_w, ds_h, params.intermediate_format, wgpu::TextureDimension::D2)
+                .with_origin(source_origin_x, source_origin_y)
+                .with_sample_count(1)
                 .with_label("Blur Intermediate / Downsample"),
         );
         graph.add_graphics_pass(ClearPass::new(
@@ -302,6 +325,8 @@ pub fn build_blur_module(
             params.intermediate_format,
             wgpu::TextureDimension::D2,
         )
+        .with_origin(source_origin_x, source_origin_y)
+        .with_sample_count(1)
         .with_label("Blur Intermediate / Horizontal"),
     );
     graph.add_graphics_pass(ClearPass::new(
@@ -372,7 +397,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -486,8 +511,21 @@ fn blur_resources_cache() -> &'static Mutex<ResourceCache<BlurResources>> {
     CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
 }
 
+fn lock_blur_resources_cache(
+    cache: &'static Mutex<ResourceCache<BlurResources>>,
+) -> std::sync::MutexGuard<'static, ResourceCache<BlurResources>> {
+    match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            guard.clear();
+            guard
+        }
+    }
+}
+
 pub fn clear_blur_resources_cache() {
     let cache = blur_resources_cache();
-    let mut cache = cache.lock().unwrap();
+    let mut cache = lock_blur_resources_cache(cache);
     cache.clear();
 }

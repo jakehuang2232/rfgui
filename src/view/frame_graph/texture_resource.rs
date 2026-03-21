@@ -57,6 +57,12 @@ impl TextureDesc {
         self
     }
 
+    pub fn with_size(mut self, width: u32, height: u32) -> Self {
+        self.width = width.max(1);
+        self.height = height.max(1);
+        self
+    }
+
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self

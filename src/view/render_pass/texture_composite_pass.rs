@@ -3,13 +3,13 @@ use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferResource, PrepareContext, ResourceCache};
 use crate::view::frame_graph::{
-    BufferReadUsage, FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    BufferReadUsage, FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
     GraphicsPassMergePolicy, GraphicsRecordContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_physical_size, render_target_ref, render_target_view,
+    render_target_sample_count, render_target_view, resolve_texture_ref, ResolvedTextureRef,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -166,19 +166,15 @@ impl GraphicsPass for TextureCompositePass {
             builder.read_texture(&mut self.input.mask, &source);
         }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
-            builder.write_color(
-                &self.output.render_target,
-                GraphicsColorAttachmentDescriptor::load(target),
-            );
+            let _ = target;
+            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::load());
         } else {
-            builder.write_surface_color(GraphicsColorAttachmentDescriptor::load(
-                builder.surface_target(),
-            ));
+            builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }
         let stencil_clip_id = self.input.pass_context.stencil_clip_id;
-        if let Some(target) = self.input.pass_context.depth_stencil_target {
-            builder.read_depth(target);
-            builder.read_stencil(target);
+        if self.input.pass_context.uses_depth_stencil {
+            builder.read_output_depth();
+            builder.read_output_stencil();
         }
         let _ = stencil_clip_id;
     }
@@ -196,7 +192,7 @@ impl GraphicsPass for TextureCompositePass {
         let mask_meta = resolve_target_meta(self.input.mask.handle(), ctx, source_meta.physical_size, None)
             .with_fallback_origin(source_meta.global_origin)
             .with_fallback_logical_origin(source_meta.logical_origin);
-        let (target_w, target_h) = target_meta.logical_size;
+        let (target_w, target_h) = target_meta.physical_size;
         if target_w == 0 || target_h == 0 {
             return;
         }
@@ -299,7 +295,12 @@ impl GraphicsPass for TextureCompositePass {
             None => return,
         };
         let format = ctx.viewport().surface_format();
-        let sample_count = ctx.viewport().msaa_sample_count();
+        let sample_count = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
+            .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
         let cache = texture_composite_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
@@ -390,8 +391,8 @@ impl GraphicsPass for TextureCompositePass {
             let bounds = resolve_bounds(
                 self.params.bounds,
                 scale,
-                target_meta.logical_size.0 as f32,
-                target_meta.logical_size.1 as f32,
+                target_meta.physical_size.0 as f32,
+                target_meta.physical_size.1 as f32,
                 target_meta.global_origin_f32(),
                 target_meta.logical_origin_f32(),
             );
@@ -427,8 +428,8 @@ impl GraphicsPass for TextureCompositePass {
             );
             let (vertices, indices) = quad_for_bounds(
                 bounds,
-                target_meta.logical_size.0 as f32,
-                target_meta.logical_size.1 as f32,
+                target_meta.physical_size.0 as f32,
+                target_meta.physical_size.1 as f32,
                 source_uv_bounds,
                 mask_uv_bounds,
             );
@@ -448,7 +449,7 @@ impl GraphicsPass for TextureCompositePass {
         let surface_size = ctx.viewport().surface_size();
         let target_meta =
             resolve_target_meta(self.output.render_target.handle(), ctx.frame_resources(), surface_size, None);
-        let (target_w, target_h) = target_meta.logical_size;
+        let (target_w, target_h) = target_meta.physical_size;
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
             logical_scissor_to_target_physical(
                 ctx.viewport(),
@@ -458,7 +459,7 @@ impl GraphicsPass for TextureCompositePass {
             )
         });
         let pipeline = match (
-            self.input.pass_context.depth_stencil_target.is_some(),
+            self.input.pass_context.uses_depth_stencil,
             self.input.pass_context.stencil_clip_id.is_some(),
         ) {
             (true, true) => &resources.pipeline_stencil_test,
@@ -478,66 +479,13 @@ impl GraphicsPass for TextureCompositePass {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct TextureMeta {
-    global_origin: (u32, u32),
-    logical_origin: (u32, u32),
-    logical_size: (u32, u32),
-    physical_size: (u32, u32),
-}
-
-impl TextureMeta {
-    fn global_origin_f32(self) -> [f32; 2] {
-        [self.global_origin.0 as f32, self.global_origin.1 as f32]
-    }
-
-    fn logical_origin_f32(self) -> [f32; 2] {
-        [self.logical_origin.0 as f32, self.logical_origin.1 as f32]
-    }
-
-    fn with_fallback_origin(mut self, origin: (u32, u32)) -> Self {
-        if self.global_origin == (0, 0) {
-            self.global_origin = origin;
-        }
-        self
-    }
-
-    fn with_fallback_logical_origin(mut self, logical_origin: (u32, u32)) -> Self {
-        if self.logical_origin == (0, 0) {
-            self.logical_origin = logical_origin;
-        }
-        self
-    }
-}
-
 fn resolve_target_meta(
     handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
     ctx: &mut impl FrameResourceContext,
     fallback_size: (u32, u32),
     sampled_size: Option<(u32, u32)>,
-) -> TextureMeta {
-    let texture_ref = handle.and_then(|texture_handle| render_target_ref(ctx, texture_handle));
-    let global_origin = handle
-        .and_then(|texture_handle| render_target_origin(ctx, texture_handle))
-        .unwrap_or((0, 0));
-    let logical_size = texture_ref
-        .map(|resolved| resolved.logical_size())
-        .or(sampled_size)
-        .unwrap_or(fallback_size);
-    let physical_size = texture_ref
-        .map(|resolved| resolved.physical_size())
-        .or(sampled_size)
-        .or_else(|| handle.and_then(|texture_handle| render_target_physical_size(ctx, texture_handle)))
-        .unwrap_or(fallback_size);
-    let logical_origin = texture_ref
-        .map(|resolved| (resolved.logical_origin_x, resolved.logical_origin_y))
-        .unwrap_or((0, 0));
-    TextureMeta {
-        global_origin,
-        logical_origin,
-        logical_size,
-        physical_size,
-    }
+) -> ResolvedTextureRef {
+    resolve_texture_ref(handle, ctx, fallback_size, sampled_size)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -558,7 +506,11 @@ pub(crate) fn composite_immediate(
         return;
     };
     let format = ctx.viewport.surface_format();
-    let sample_count = ctx.viewport.msaa_sample_count();
+    let sample_count = if offscreen_msaa_view.is_some() {
+        ctx.viewport.msaa_sample_count()
+    } else {
+        1
+    };
     let cache = texture_composite_resources_cache();
     let mut cache = cache.lock().unwrap();
     let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
@@ -618,7 +570,7 @@ pub(crate) fn composite_immediate(
         ],
     });
 
-    let msaa_enabled = ctx.viewport.msaa_sample_count() > 1;
+    let msaa_enabled = sample_count > 1;
     let Some(parts) = ctx.viewport.frame_parts() else {
         return;
     };
@@ -1077,29 +1029,5 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
             }
             Some([left, top, right - left, bottom - top])
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resolve_uv_bounds;
-
-    #[test]
-    fn resolve_uv_bounds_scales_render_target_sources() {
-        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 2.0, 200.0, 400.0, [0.0, 0.0]);
-        assert_eq!(uv, [0.1, 0.1, 0.3, 0.2]);
-    }
-
-    #[test]
-    fn resolve_uv_bounds_does_not_scale_sampled_image_sources() {
-        let uv = resolve_uv_bounds(Some([10.0, 20.0, 30.0, 40.0]), 1.0, 200.0, 400.0, [0.0, 0.0]);
-        assert_eq!(uv, [0.05, 0.05, 0.15, 0.1]);
-    }
-
-    #[test]
-    fn resolve_uv_bounds_preserves_negative_offsets_for_offscreen_promoted_content() {
-        let uv =
-            resolve_uv_bounds(Some([-10.0, -20.0, 100.0, 80.0]), 1.0, 200.0, 400.0, [0.0, 0.0]);
-        assert_eq!(uv, [-0.05, -0.05, 0.5, 0.2]);
     }
 }

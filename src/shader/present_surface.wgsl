@@ -4,6 +4,14 @@ var src_tex: texture_2d<f32>;
 @group(0) @binding(1)
 var src_sampler: sampler;
 
+struct PresentSurfaceUniform {
+    uv_offset: vec2<f32>,
+    uv_scale: vec2<f32>,
+}
+
+@group(0) @binding(2)
+var<uniform> params: PresentSurfaceUniform;
+
 struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -25,7 +33,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src_tex, src_sampler, in.uv);
+    let uv = params.uv_offset + in.uv * params.uv_scale;
+    let c = textureSample(src_tex, src_sampler, uv);
     if c.a <= 0.000001 {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }

@@ -3,13 +3,14 @@ use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentDescriptor, GraphicsPassBuilder,
+    FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
     GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_ref, render_target_view,
+    render_target_origin, render_target_sample_count, render_target_view,
+    resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
@@ -124,43 +125,39 @@ impl GraphicsPass for CompositeLayerPass {
             builder.read_texture(&mut self.input.layer, &source);
         }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
+            let _ = target;
             builder.write_color(
                 &self.output.render_target,
                 if self.params.clear_target {
-                    GraphicsColorAttachmentDescriptor::clear(target, [0.0, 0.0, 0.0, 0.0])
+                    GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0])
                 } else {
-                    GraphicsColorAttachmentDescriptor::load(target)
+                    GraphicsColorAttachmentOps::load()
                 },
             );
         } else {
             builder.write_surface_color(if self.params.clear_target {
-                GraphicsColorAttachmentDescriptor::clear(
-                    builder.surface_target(),
-                    [0.0, 0.0, 0.0, 0.0],
-                )
+                GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0])
             } else {
-                GraphicsColorAttachmentDescriptor::load(builder.surface_target())
+                GraphicsColorAttachmentOps::load()
             });
         }
         self.params.scissor_rect = intersect_scissor_rects(
             self.input.pass_context.scissor_rect,
             self.params.scissor_rect,
         );
-        if let Some(target) = self.input.pass_context.depth_stencil_target {
+        if self.input.pass_context.uses_depth_stencil {
             if self.params.clear_target {
-                builder.write_depth(
-                    target,
+                builder.write_output_depth(
                     crate::view::frame_graph::AttachmentLoadOp::Clear,
                     Some(1.0),
                 );
-                builder.write_stencil(
-                    target,
+                builder.write_output_stencil(
                     crate::view::frame_graph::AttachmentLoadOp::Clear,
                     Some(0),
                 );
             } else {
-                builder.read_depth(target);
-                builder.read_stencil(target);
+                builder.read_output_depth();
+                builder.read_output_stencil();
             }
         }
     }
@@ -170,9 +167,9 @@ impl GraphicsPass for CompositeLayerPass {
             return;
         };
         let surface_size = ctx.viewport.surface_size();
-        let target_meta = resolve_texture_meta(self.output.render_target.handle(), ctx, surface_size);
-        let layer_meta = resolve_texture_meta(Some(layer_handle), ctx, surface_size);
-        let (target_w, target_h) = target_meta.logical_size;
+        let target_meta = resolve_texture_ref(self.output.render_target.handle(), ctx, surface_size, None);
+        let layer_meta = resolve_texture_ref(Some(layer_handle), ctx, surface_size, None);
+        let (target_w, target_h) = target_meta.physical_size;
         let (layer_w, layer_h) = layer_meta.physical_size;
         let target_origin = self
             .output
@@ -228,8 +225,8 @@ impl GraphicsPass for CompositeLayerPass {
         };
         let surface_size = ctx.viewport().surface_size();
         let target_meta =
-            resolve_texture_meta(self.output.render_target.handle(), ctx.frame_resources(), surface_size);
-        let (target_w, target_h) = target_meta.logical_size;
+            resolve_texture_ref(self.output.render_target.handle(), ctx.frame_resources(), surface_size, None);
+        let (target_w, target_h) = target_meta.physical_size;
         let target_origin = self
             .output
             .render_target
@@ -241,7 +238,12 @@ impl GraphicsPass for CompositeLayerPass {
             None => return,
         };
         let format = ctx.viewport().surface_format();
-        let sample_count = ctx.viewport().msaa_sample_count();
+        let sample_count = self
+            .output
+            .render_target
+            .handle()
+            .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
+            .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
         let cache = composite_layer_resources_cache();
         let mut cache = cache.lock().unwrap();
         let resources = cache.get_or_insert_with(COMPOSITE_LAYER_RESOURCES, || {
@@ -349,32 +351,6 @@ impl GraphicsPass for CompositeLayerPass {
                 ctx.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
             }
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TextureMeta {
-    logical_origin: (u32, u32),
-    logical_size: (u32, u32),
-    physical_size: (u32, u32),
-}
-
-fn resolve_texture_meta(
-    handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
-    ctx: &mut impl FrameResourceContext,
-    fallback_size: (u32, u32),
-) -> TextureMeta {
-    let texture_ref = handle.and_then(|texture_handle| render_target_ref(ctx, texture_handle));
-    TextureMeta {
-        logical_origin: texture_ref
-            .map(|resolved| (resolved.logical_origin_x, resolved.logical_origin_y))
-            .unwrap_or((0, 0)),
-        logical_size: texture_ref
-            .map(|resolved| resolved.logical_size())
-            .unwrap_or(fallback_size),
-        physical_size: texture_ref
-            .map(|resolved| resolved.physical_size())
-            .unwrap_or(fallback_size),
     }
 }
 
