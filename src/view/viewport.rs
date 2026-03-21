@@ -30,6 +30,7 @@ use arboard::Clipboard;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::ops::Sub;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use wgpu::util::StagingBelt;
@@ -334,6 +335,16 @@ fn debug_style_promotion_store() -> &'static Mutex<Vec<String>> {
 fn debug_style_request_store() -> &'static Mutex<Vec<String>> {
     static STORE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn trace_promoted_build_frame_marker() {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_PROMOTED_BUILD").is_ok()) {
+        return;
+    }
+    static FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let frame = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+    eprintln!("\n========== [promoted-build frame {frame}] ==========");
 }
 
 pub(crate) fn begin_debug_reuse_path_frame() {
@@ -2487,6 +2498,7 @@ impl Viewport {
         now_seconds: f64,
     ) -> bool {
         let frame_start = Instant::now();
+        trace_promoted_build_frame_marker();
         begin_debug_reuse_path_frame();
         let begin_frame_profile = match self.begin_frame() {
             Some(profile) => profile,

@@ -221,6 +221,56 @@ fn trace_layout_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_LAYOUT").is_ok())
 }
 
+fn trace_promoted_build_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_PROMOTED_BUILD").is_ok())
+}
+
+pub(crate) fn trace_promoted_build(
+    phase: &str,
+    node_id: u64,
+    parent_id: Option<u64>,
+    extra: impl AsRef<str>,
+) {
+    #[cfg(test)]
+    {
+        TEST_PROMOTED_BUILD_COUNTS.with(|counts| {
+            let mut counts = counts.borrow_mut();
+            let key = (node_id, phase.to_string());
+            *counts.entry(key).or_insert(0) += 1;
+        });
+    }
+    if !trace_promoted_build_enabled() {
+        return;
+    }
+    eprintln!(
+        "[promoted-build] phase={phase} node={node_id} parent={parent_id:?} {}",
+        extra.as_ref()
+    );
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PROMOTED_BUILD_COUNTS: RefCell<HashMap<(u64, String), usize>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_promoted_build_counts() {
+    TEST_PROMOTED_BUILD_COUNTS.with(|counts| counts.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn test_promoted_build_count(node_id: u64, phase: &str) -> usize {
+    TEST_PROMOTED_BUILD_COUNTS.with(|counts| {
+        counts
+            .borrow()
+            .get(&(node_id, phase.to_string()))
+            .copied()
+            .unwrap_or(0)
+    })
+}
+
 fn resolve_px(length: Length, base: f32, viewport_width: f32, viewport_height: f32) -> f32 {
     length
         .resolve_with_base(Some(base), viewport_width, viewport_height)
