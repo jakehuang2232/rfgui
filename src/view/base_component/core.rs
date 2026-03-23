@@ -20,6 +20,7 @@ pub(crate) struct ElementCore {
     pub layout_position: Position,
     pub layout_size: Size,
     pub should_render: bool,
+    pub should_paint: bool,
 }
 
 impl ElementCore {
@@ -39,6 +40,7 @@ impl ElementCore {
                 height: height.max(0.0),
             },
             should_render: true,
+            should_paint: true,
         }
     }
 

@@ -19,11 +19,11 @@ impl Layoutable for Element {
 
         // We should always measure children because they might be Auto or use Percent units
         // that depend on our inner size.
-        let is_flex = matches!(
+        let is_axis_layout = matches!(
             self.computed_style.layout,
-            Layout::Flow { .. } | Layout::InlineFlex
+            Layout::Flex { .. } | Layout::Flow { .. } | Layout::InlineFlex
         );
-        if is_flex {
+        if is_axis_layout {
             self.measure_flex_children(proposal);
         } else {
             let bw_l = resolve_px_or_zero(
@@ -183,21 +183,44 @@ impl Layoutable for Element {
             height: (self.core.layout_size.height - inset_top - inset_bottom).max(0.0),
         };
 
+        let is_axis_layout = matches!(
+            self.computed_style.layout,
+            Layout::Flex { .. } | Layout::Flow { .. } | Layout::InlineFlex
+        );
+        let child_layout_inner_size = if is_axis_layout {
+            let (target_w, target_h) = self.current_layout_target_size();
+            Size {
+                width: (target_w - inset_left - inset_right).max(0.0),
+                height: (target_h - inset_top - inset_bottom).max(0.0),
+            }
+        } else {
+            self.layout_inner_size
+        };
+
         let child_percent_base_width = if self.width_is_known(proposal) {
-            Some(self.layout_inner_size.width.max(0.0))
+            Some(child_layout_inner_size.width.max(0.0))
         } else {
             None
         };
         let child_percent_base_height = if self.height_is_known(proposal) {
-            Some(self.layout_inner_size.height.max(0.0))
+            Some(child_layout_inner_size.height.max(0.0))
         } else {
             None
         };
+        let (child_available_width, child_available_height) = self
+            .child_layout_limits_for_inner_size(
+                child_layout_inner_size.width,
+                child_layout_inner_size.height,
+            );
         self.place_children(
             proposal.viewport_width,
             proposal.viewport_height,
             child_percent_base_width,
             child_percent_base_height,
+            child_available_width,
+            child_available_height,
+            child_layout_inner_size.width,
+            child_layout_inner_size.height,
         );
         self.end_place_scope();
     }
@@ -220,6 +243,18 @@ impl Layoutable for Element {
         } else {
             self.computed_style.width == SizeValue::Auto
         }
+    }
+
+    fn flex_grow(&self) -> f32 {
+        self.computed_style.flex_grow
+    }
+
+    fn flex_shrink(&self) -> f32 {
+        self.computed_style.flex_shrink
+    }
+
+    fn flex_basis(&self) -> SizeValue {
+        self.computed_style.flex_basis
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {

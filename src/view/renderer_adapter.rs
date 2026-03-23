@@ -1899,7 +1899,7 @@ mod tests {
         let mut row_style = Style::new();
         row_style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(Layout::flow().row().no_wrap()),
+            ParsedValue::Layout(Layout::flex().row().into()),
         );
         row_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
 
@@ -1981,11 +1981,19 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
         parent_style.set_cursor(Cursor::Pointer);
 
         let mut child_style = Style::new();
         child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(40.0)));
         child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
 
         let tree = RsxNode::element("Element")
             .with_prop("style", parent_style)
@@ -2024,6 +2032,10 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
+        parent_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
         parent_style.set_cursor(Cursor::Pointer);
 
         let tree = RsxNode::element("Element")

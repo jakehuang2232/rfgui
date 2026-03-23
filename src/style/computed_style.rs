@@ -31,6 +31,9 @@ pub struct ComputedStyle {
     pub layout: Layout,
     pub cross_size: CrossSize,
     pub align: Align,
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    pub flex_basis: SizeValue,
     pub position: Position,
     pub width: SizeValue,
     pub height: SizeValue,
@@ -66,6 +69,9 @@ impl Default for ComputedStyle {
             layout: Layout::Block,
             cross_size: CrossSize::Fit,
             align: Align::Start,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            flex_basis: SizeValue::Auto,
             position: Position::static_(),
             width: SizeValue::Auto,
             height: SizeValue::Auto,
@@ -123,6 +129,13 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    pub const fn layout_axis_direction(&self) -> crate::FlowDirection {
+        match self.layout {
+            Layout::Flex { direction, .. } | Layout::Flow { direction, .. } => direction,
+            _ => crate::FlowDirection::Row,
+        }
+    }
+
     pub const fn layout_flow_direction(&self) -> crate::FlowDirection {
         match self.layout {
             Layout::Flow { direction, .. } => direction,
@@ -137,6 +150,18 @@ impl ComputedStyle {
         }
     }
 
+    pub const fn layout_axis_justify_content(&self) -> crate::JustifyContent {
+        match self.layout {
+            Layout::Flex {
+                justify_content, ..
+            }
+            | Layout::Flow {
+                justify_content, ..
+            } => justify_content,
+            _ => crate::JustifyContent::Start,
+        }
+    }
+
     pub const fn layout_flow_justify_content(&self) -> crate::JustifyContent {
         match self.layout {
             Layout::Flow {
@@ -146,10 +171,24 @@ impl ComputedStyle {
         }
     }
 
+    pub const fn layout_axis_cross_size(&self) -> crate::CrossSize {
+        match self.layout {
+            Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.size,
+            _ => self.cross_size,
+        }
+    }
+
     pub const fn layout_flow_cross_size(&self) -> crate::CrossSize {
         match self.layout {
             Layout::Flow { cross_axis, .. } => cross_axis.size,
             _ => self.cross_size,
+        }
+    }
+
+    pub const fn layout_axis_align(&self) -> crate::Align {
+        match self.layout {
+            Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.align,
+            _ => self.align,
         }
     }
 
@@ -191,6 +230,16 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                 if let ParsedValue::Align(value) = &declaration.value {
                     computed.align = *value;
                     has_explicit_align = true;
+                }
+            }
+            PropertyId::Flex => {
+                if let ParsedValue::Flex(value) = &declaration.value {
+                    computed.flex_grow = value.grow_value().max(0.0);
+                    computed.flex_shrink = value.shrink_value().max(0.0);
+                    computed.flex_basis = value
+                        .basis_value()
+                        .map(SizeValue::Length)
+                        .unwrap_or(SizeValue::Auto);
                 }
             }
             PropertyId::Position => {
@@ -394,10 +443,10 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
     )
     .max(0.0);
     if !has_explicit_cross_size {
-        computed.cross_size = computed.layout_flow_cross_size();
+        computed.cross_size = computed.layout_axis_cross_size();
     }
     if !has_explicit_align {
-        computed.align = computed.layout_flow_align();
+        computed.align = computed.layout_axis_align();
     }
 
     computed
@@ -442,8 +491,10 @@ fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::compute_style;
-    use crate::style::{BoxShadow, Color, FontSize, ParsedValue, PropertyId, Style};
-    use crate::{Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout};
+    use crate::style::{BoxShadow, Color, FontSize, ParsedValue, PropertyId, SizeValue, Style};
+    use crate::{
+        Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
+    };
 
     #[test]
     fn compute_style_applies_box_shadow_list() {
@@ -497,7 +548,8 @@ mod tests {
                     .wrap()
                     .justify_content(JustifyContent::SpaceEvenly)
                     .align(Align::Center)
-                    .cross_size(CrossSize::Stretch),
+                    .cross_size(CrossSize::Stretch)
+                    .into(),
             ),
         );
 
@@ -520,7 +572,12 @@ mod tests {
         let mut style = Style::new();
         style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(Layout::flow().align(Align::End).cross_size(CrossSize::Fit)),
+            ParsedValue::Layout(
+                Layout::flow()
+                    .align(Align::End)
+                    .cross_size(CrossSize::Fit)
+                    .into(),
+            ),
         );
         style.insert(PropertyId::Align, ParsedValue::Align(Align::Center));
         style.insert(
@@ -531,5 +588,37 @@ mod tests {
         let computed = compute_style(&style, None);
         assert_eq!(computed.align, Align::Center);
         assert_eq!(computed.cross_size, CrossSize::Stretch);
+    }
+
+    #[test]
+    fn compute_style_reads_flex_container_and_item_fields() {
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(
+                Layout::flex()
+                    .column()
+                    .justify_content(JustifyContent::Center)
+                    .align(Align::End)
+                    .cross_size(CrossSize::Stretch)
+                    .into(),
+            ),
+        );
+        style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().grow(2.0).shrink(0.0).basis(Length::px(80.0))),
+        );
+
+        let computed = compute_style(&style, None);
+        assert_eq!(computed.layout_axis_direction(), FlowDirection::Column);
+        assert_eq!(
+            computed.layout_axis_justify_content(),
+            JustifyContent::Center
+        );
+        assert_eq!(computed.layout_axis_align(), Align::End);
+        assert_eq!(computed.layout_axis_cross_size(), CrossSize::Stretch);
+        assert_eq!(computed.flex_grow, 2.0);
+        assert_eq!(computed.flex_shrink, 0.0);
+        assert_eq!(computed.flex_basis, SizeValue::Length(Length::px(80.0)));
     }
 }

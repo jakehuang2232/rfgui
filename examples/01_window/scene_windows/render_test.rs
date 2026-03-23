@@ -59,7 +59,7 @@ pub fn build(
         }} anchor="root">
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap(),
+                layout: Layout::flow().row(),
                 gap: theme.spacing.md,
             }}>
                 Justify Content:
@@ -72,7 +72,7 @@ pub fn build(
             </Element>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap(),
+                layout: Layout::flow().row(),
                 gap: theme.spacing.md,
             }}>
                 Cross Align:
@@ -228,7 +228,7 @@ pub fn build(
                 color: theme.color.primary.on.clone(),
                 border: Border::uniform(theme.spacing.sm, theme.color.border.as_ref()),
                 border_radius: 50,
-                layout: Layout::flow().row().wrap(),
+                layout: Layout::flow().row(),
                 gap: theme.spacing.sm,
                 padding: Padding::uniform(theme.spacing.sm),
             }}>
@@ -249,7 +249,7 @@ pub fn build(
                 background: theme.color.layer.surface.clone(),
                 border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
                 border_radius: theme.radius.lg,
-                layout: Layout::flow().row().wrap(),
+                layout: Layout::flow().row(),
                 gap: theme.spacing.sm,
                 padding: Padding::uniform(theme.spacing.sm),
                 color: theme.color.text.primary.clone(),
@@ -436,7 +436,7 @@ pub fn build(
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         border_radius: theme.radius.md,
                         padding: Padding::uniform(theme.spacing.sm),
-                        layout: Layout::flow().column().no_wrap(),
+                        layout: Layout::flex().column(),
                         gap: theme.spacing.xs,
                         color: theme.color.text.primary.clone(),
                     }}>

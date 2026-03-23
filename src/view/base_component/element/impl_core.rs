@@ -1,6 +1,68 @@
 impl Element {
     const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
 
+    fn has_visible_background(&self) -> bool {
+        self.computed_style.background_color.to_rgba_f32()[3] > 0.0
+    }
+
+    fn has_visible_border(
+        &self,
+        width_base: f32,
+        height_base: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool {
+        resolve_px(
+            self.computed_style.border_widths.left,
+            width_base,
+            viewport_width,
+            viewport_height,
+        ) > 0.0
+            || resolve_px(
+                self.computed_style.border_widths.right,
+                width_base,
+                viewport_width,
+                viewport_height,
+            ) > 0.0
+            || resolve_px(
+                self.computed_style.border_widths.top,
+                height_base,
+                viewport_width,
+                viewport_height,
+            ) > 0.0
+            || resolve_px(
+                self.computed_style.border_widths.bottom,
+                height_base,
+                viewport_width,
+                viewport_height,
+            ) > 0.0
+    }
+
+    fn has_visible_self_paint(
+        &self,
+        width_base: f32,
+        height_base: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool {
+        self.has_visible_background()
+            || self.has_visible_border(width_base, height_base, viewport_width, viewport_height)
+            || !self.computed_style.box_shadow.is_empty()
+    }
+
+    fn has_inner_render_area(&self) -> bool {
+        self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0
+    }
+
+    fn frame_intersects_rect(frame: LayoutFrame, clip: Rect) -> bool {
+        frame.width > 0.0
+            && frame.height > 0.0
+            && frame.x + frame.width > clip.x
+            && frame.x < clip.x + clip.width
+            && frame.y + frame.height > clip.y
+            && frame.y < clip.y + clip.height
+    }
+
     pub(crate) fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         if self.computed_style.position.mode() != PositionMode::Absolute {
             return None;
@@ -278,6 +340,10 @@ impl Element {
                 .unwrap_or(self.core.size.height)
                 .max(0.0),
         )
+    }
+
+    fn current_layout_target_size(&self) -> (f32, f32) {
+        (self.core.size.width.max(0.0), self.core.size.height.max(0.0))
     }
 
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {

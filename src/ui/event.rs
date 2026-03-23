@@ -401,6 +401,16 @@ pub struct BlurHandlerProp {
     handler: Rc<RefCell<dyn FnMut(&mut BlurEvent)>>,
 }
 
+pub struct NoArgHandler<F>(F);
+
+pub fn no_arg_handler<F>(handler: F) -> NoArgHandler<F> {
+    NoArgHandler(handler)
+}
+
+pub trait IntoEventHandlerProp<T> {
+    fn into_event_handler_prop(self) -> T;
+}
+
 fn next_handler_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
@@ -411,7 +421,7 @@ macro_rules! impl_handler_prop {
         impl $ty {
             pub fn new<F>(handler: F) -> Self
             where
-                F: for<'a> FnMut(&'a mut $event_ty) + 'static,
+                F: FnMut(&mut $event_ty) + 'static,
             {
                 Self {
                     id: next_handler_id(),
@@ -444,11 +454,49 @@ macro_rules! impl_handler_prop {
 
         impl<F> From<F> for $ty
         where
-            F: for<'a> FnMut(&'a mut $event_ty) + 'static,
+            F: FnMut(&mut $event_ty) + 'static,
         {
             fn from(handler: F) -> Self {
                 $ty::new(handler)
             }
+        }
+    };
+}
+
+macro_rules! impl_into_event_handler_prop {
+    ($handler_ty:ty, $event_ty:ty, $into_fn:ident) => {
+        impl IntoEventHandlerProp<$handler_ty> for $handler_ty {
+            fn into_event_handler_prop(self) -> $handler_ty {
+                self
+            }
+        }
+
+        impl<F> IntoEventHandlerProp<$handler_ty> for F
+        where
+            F: FnMut(&mut $event_ty) + 'static,
+        {
+            fn into_event_handler_prop(self) -> $handler_ty {
+                <$handler_ty>::new(self)
+            }
+        }
+
+        impl<F> IntoEventHandlerProp<$handler_ty> for NoArgHandler<F>
+        where
+            F: FnMut() + 'static,
+        {
+            fn into_event_handler_prop(self) -> $handler_ty {
+                let mut handler = self.0;
+                <$handler_ty>::new(move |_event: &mut $event_ty| {
+                    handler();
+                })
+            }
+        }
+
+        pub fn $into_fn<H>(handler: H) -> $handler_ty
+        where
+            H: IntoEventHandlerProp<$handler_ty>,
+        {
+            handler.into_event_handler_prop()
         }
     };
 }
@@ -464,72 +512,99 @@ impl_handler_prop!(KeyUpHandlerProp, KeyUpEvent);
 impl_handler_prop!(FocusHandlerProp, FocusEvent);
 impl_handler_prop!(BlurHandlerProp, BlurEvent);
 
+impl_into_event_handler_prop!(
+    MouseDownHandlerProp,
+    MouseDownEvent,
+    into_mouse_down_handler
+);
+impl_into_event_handler_prop!(MouseUpHandlerProp, MouseUpEvent, into_mouse_up_handler);
+impl_into_event_handler_prop!(
+    MouseMoveHandlerProp,
+    MouseMoveEvent,
+    into_mouse_move_handler
+);
+impl_into_event_handler_prop!(
+    MouseEnterHandlerProp,
+    MouseEnterEvent,
+    into_mouse_enter_handler
+);
+impl_into_event_handler_prop!(
+    MouseLeaveHandlerProp,
+    MouseLeaveEvent,
+    into_mouse_leave_handler
+);
+impl_into_event_handler_prop!(ClickHandlerProp, ClickEvent, into_click_handler);
+impl_into_event_handler_prop!(KeyDownHandlerProp, KeyDownEvent, into_key_down_handler);
+impl_into_event_handler_prop!(KeyUpHandlerProp, KeyUpEvent, into_key_up_handler);
+impl_into_event_handler_prop!(FocusHandlerProp, FocusEvent, into_focus_handler);
+impl_into_event_handler_prop!(BlurHandlerProp, BlurEvent, into_blur_handler);
+
 pub fn on_mouse_down<F>(handler: F) -> MouseDownHandlerProp
 where
-    F: for<'a> FnMut(&'a mut MouseDownEvent) + 'static,
+    F: FnMut(&mut MouseDownEvent) + 'static,
 {
     MouseDownHandlerProp::new(handler)
 }
 
 pub fn on_mouse_up<F>(handler: F) -> MouseUpHandlerProp
 where
-    F: for<'a> FnMut(&'a mut MouseUpEvent) + 'static,
+    F: FnMut(&mut MouseUpEvent) + 'static,
 {
     MouseUpHandlerProp::new(handler)
 }
 
 pub fn on_mouse_move<F>(handler: F) -> MouseMoveHandlerProp
 where
-    F: for<'a> FnMut(&'a mut MouseMoveEvent) + 'static,
+    F: FnMut(&mut MouseMoveEvent) + 'static,
 {
     MouseMoveHandlerProp::new(handler)
 }
 
 pub fn on_mouse_enter<F>(handler: F) -> MouseEnterHandlerProp
 where
-    F: for<'a> FnMut(&'a mut MouseEnterEvent) + 'static,
+    F: FnMut(&mut MouseEnterEvent) + 'static,
 {
     MouseEnterHandlerProp::new(handler)
 }
 
 pub fn on_mouse_leave<F>(handler: F) -> MouseLeaveHandlerProp
 where
-    F: for<'a> FnMut(&'a mut MouseLeaveEvent) + 'static,
+    F: FnMut(&mut MouseLeaveEvent) + 'static,
 {
     MouseLeaveHandlerProp::new(handler)
 }
 
 pub fn on_click<F>(handler: F) -> ClickHandlerProp
 where
-    F: for<'a> FnMut(&'a mut ClickEvent) + 'static,
+    F: FnMut(&mut ClickEvent) + 'static,
 {
     ClickHandlerProp::new(handler)
 }
 
 pub fn on_key_down<F>(handler: F) -> KeyDownHandlerProp
 where
-    F: for<'a> FnMut(&'a mut KeyDownEvent) + 'static,
+    F: FnMut(&mut KeyDownEvent) + 'static,
 {
     KeyDownHandlerProp::new(handler)
 }
 
 pub fn on_key_up<F>(handler: F) -> KeyUpHandlerProp
 where
-    F: for<'a> FnMut(&'a mut KeyUpEvent) + 'static,
+    F: FnMut(&mut KeyUpEvent) + 'static,
 {
     KeyUpHandlerProp::new(handler)
 }
 
 pub fn on_focus<F>(handler: F) -> FocusHandlerProp
 where
-    F: for<'a> FnMut(&'a mut FocusEvent) + 'static,
+    F: FnMut(&mut FocusEvent) + 'static,
 {
     FocusHandlerProp::new(handler)
 }
 
 pub fn on_blur<F>(handler: F) -> BlurHandlerProp
 where
-    F: for<'a> FnMut(&'a mut BlurEvent) + 'static,
+    F: FnMut(&mut BlurEvent) + 'static,
 {
     BlurHandlerProp::new(handler)
 }

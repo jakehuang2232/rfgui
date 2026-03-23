@@ -91,7 +91,7 @@ fn NumberFieldView(
 
     let mut root = rsx! {
         <Element style={{
-            layout: Layout::flow().row().no_wrap().align(Align::Center),
+            layout: Layout::flex().row().align(Align::Center),
             width: Length::px(width),
             height: Length::px(height),
             border_radius: theme.component.input.radius,

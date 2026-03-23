@@ -1574,7 +1574,6 @@ mod tests {
         dispatch_click_from_hit_test, dispatch_hover_transition, dispatch_mouse_down_from_hit_test,
         hit_test,
     };
-    use crate::AnchorName;
     use crate::style::{
         ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
     };
@@ -1586,16 +1585,22 @@ mod tests {
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::{Viewport, ViewportControl};
+    use crate::{AnchorName, Color};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     #[test]
     fn hit_test_allows_absolute_viewport_clip_outside_parent() {
         let mut root = Element::new(0.0, 0.0, 400.0, 300.0);
+        root.set_background_color_value(Color::rgb(16, 16, 16));
         let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let child_id = child.id();
         let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
         child_style.insert(
             PropertyId::Position,
             ParsedValue::Position(
@@ -1637,6 +1642,7 @@ mod tests {
     fn hit_test_allows_absolute_viewport_clip_when_parent_not_rendered() {
         let mut root = Element::new(0.0, 0.0, 400.0, 300.0);
         root.set_anchor_name(Some(AnchorName::new("root_anchor")));
+        root.set_background_color_value(Color::rgb(16, 16, 16));
         let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut parent_style = Style::new();
         parent_style.insert(
@@ -1652,6 +1658,10 @@ mod tests {
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let child_id = child.id();
         let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
         child_style.insert(
             PropertyId::Position,
             ParsedValue::Position(
@@ -1739,11 +1749,17 @@ mod tests {
         let root_id = root.id();
         let mut root_style = Style::new();
         root_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
+        root_style.insert(
             PropertyId::ScrollDirection,
             ParsedValue::ScrollDirection(ScrollDirection::Vertical),
         );
         root.apply_style(root_style);
-        root.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 360.0)));
+        let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
+        child.set_background_color_value(Color::rgb(255, 0, 0));
+        root.add_child(Box::new(child));
 
         root.measure(LayoutConstraints {
             max_width: 120.0,
@@ -1773,7 +1789,9 @@ mod tests {
     #[test]
     fn overflow_child_hit_bubbles_but_parent_is_not_targetable_outside_clip() {
         let mut root = Element::new(0.0, 0.0, 200.0, 160.0);
+        root.set_background_color_value(Color::rgb(16, 16, 16));
         let mut clip_parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        clip_parent.set_background_color_value(Color::rgb(32, 32, 32));
         let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let parent_clicks = Rc::new(Cell::new(0));
         let parent_clicks_binding = parent_clicks.clone();
@@ -1800,6 +1818,10 @@ mod tests {
             child_clicks_binding.set(child_clicks_binding.get() + 1);
         });
         let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
         child_style.insert(
             PropertyId::Position,
             ParsedValue::Position(
@@ -1941,6 +1963,10 @@ mod tests {
         let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
         let mut root_style = Style::new();
         root_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
+        root_style.insert(
             PropertyId::ScrollDirection,
             ParsedValue::ScrollDirection(ScrollDirection::Vertical),
         );
@@ -1948,6 +1974,7 @@ mod tests {
 
         let child_clicked = Rc::new(Cell::new(false));
         let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
+        child.set_background_color_value(Color::rgb(255, 0, 0));
         let child_clicked_flag = child_clicked.clone();
         child.on_click(move |_, _| child_clicked_flag.set(true));
         root.add_child(Box::new(child));
@@ -2004,11 +2031,17 @@ mod tests {
         let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
         let mut root_style = Style::new();
         root_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
+        root_style.insert(
             PropertyId::ScrollDirection,
             ParsedValue::ScrollDirection(ScrollDirection::Vertical),
         );
         root.apply_style(root_style);
-        root.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 360.0)));
+        let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
+        child.set_background_color_value(Color::rgb(255, 0, 0));
+        root.add_child(Box::new(child));
 
         root.measure(LayoutConstraints {
             max_width: 120.0,

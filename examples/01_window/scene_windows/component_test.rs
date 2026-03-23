@@ -4,6 +4,8 @@ use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme,
 };
+use rfgui::ui::use_state;
+use rfgui_components::Accordion;
 
 pub struct ComponentTestBindings {
     pub count: Binding<i32>,
@@ -32,11 +34,16 @@ pub fn build(
     bindings: ComponentTestBindings,
     values: ComponentTestValues,
 ) -> RsxNode {
-    let count_increment = bindings.count.clone();
-    let count_reset = bindings.count.clone();
+    let _count_reset = bindings.count.clone();
     let options = (1..=1000)
         .map(|index| format!("Option {index}"))
         .collect::<Vec<String>>();
+
+    let count = use_state(|| 0);
+    let count_for_increment = count.clone();
+    let count_increment = move |_event: &mut crate::rfgui::ui::ClickEvent| {
+        count_for_increment.update(|value| *value += 1)
+    };
 
     rsx! {
         <Element style={{
@@ -45,29 +52,62 @@ pub fn build(
             layout: Layout::flow().column().no_wrap(),
             gap: theme.spacing.sm,
             padding: Padding::uniform(theme.spacing.md),
-            color: theme.color.text.secondary.clone(),
+            color: theme.color.text.primary.clone(),
             font_size: theme.typography.size.sm,
         }}>
-            <Element style={{
-                width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap(),
-                gap: theme.spacing.sm,
-            }}>
-                <Button
-                    label="Count +1"
-                    variant={Some(ButtonVariant::Contained)}
-                    on_click={move |_| { count_increment.update(|value| *value += 1); }}
-                />
-                <Button
-                    label="Count Reset"
-                    variant={Some(ButtonVariant::Outlined)}
-                    on_click={move |_| { count_reset.set(0); }}
-                />
-                <Button
-                    label="Nothing"
-                    variant={Some(ButtonVariant::Text)}
-                />
-            </Element>
+            <Accordion title="Button">
+                <Element style={{
+                    width: Length::percent(100.0),
+                    layout: Layout::flow().row(),
+                    gap: theme.spacing.sm,
+                }}>
+                    <Button
+                        label="Contained"
+                        variant={Some(ButtonVariant::Contained)}
+                    />
+                    <Button
+                        label="Outlined"
+                        variant={Some(ButtonVariant::Outlined)}
+                    />
+                    <Button
+                        label="Text"
+                        variant={Some(ButtonVariant::Text)}
+                    />
+                </Element>
+                <Element style={{
+                            width: Length::percent(100.0),
+                            layout: Layout::flow().row(),
+                            gap: theme.spacing.sm,
+                        }}>
+                    <Button
+                        label="Contained"
+                        variant={Some(ButtonVariant::Contained)}
+                        disabled
+                    />
+                    <Button
+                        label="Outlined"
+                        variant={Some(ButtonVariant::Outlined)}
+                        disabled
+                    />
+                    <Button
+                        label="Text"
+                        variant={Some(ButtonVariant::Text)}
+                        disabled
+                    />
+                </Element>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    layout: Layout::flow().row(),
+                    gap: theme.spacing.sm,
+                }}>
+                    <Button
+                        label="Click Me"
+                        variant={Some(ButtonVariant::Contained)}
+                        on_click={count_increment}
+                    />
+                    <Text>{format!("Count: {}", count.get())}</Text>
+                </Element>
+            </Accordion>
             <Checkbox
                 label="Enable flag"
                 binding={bindings.checked}
@@ -95,7 +135,7 @@ pub fn build(
             />
             <Text>
                 {format!(
-                    "count={} checked={} number={:.0} selected={} slider={:.0} switch={}",
+                    "Count: {} checked={} number={:.0} selected={} slider={:.0} switch={}",
                     values.count,
                     values.checked,
                     values.number,

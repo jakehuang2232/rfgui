@@ -1,8 +1,7 @@
 use crate::ui::{
-    GlobalKey, IntoRsxNode, RsxKey, RsxNode, RsxNodeIdentity, register_global_key,
-    render_component, with_component_key,
+    GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, register_global_key, render_component,
+    with_component_key,
 };
-use std::collections::HashSet;
 use std::marker::PhantomData;
 
 pub trait RsxChildrenPolicy {
@@ -32,6 +31,30 @@ impl<T> IntoOptionalProp<T> for T {
         Some(self)
     }
 }
+
+macro_rules! impl_event_into_optional_prop {
+    ($handler_ty:ty, $event_ty:ty) => {
+        impl<F> IntoOptionalProp<$handler_ty> for F
+        where
+            F: FnMut(&mut $event_ty) + 'static,
+        {
+            fn into_optional_prop(self) -> Option<$handler_ty> {
+                Some(<$handler_ty>::new(self))
+            }
+        }
+    };
+}
+
+impl_event_into_optional_prop!(crate::ui::MouseDownHandlerProp, crate::ui::MouseDownEvent);
+impl_event_into_optional_prop!(crate::ui::MouseUpHandlerProp, crate::ui::MouseUpEvent);
+impl_event_into_optional_prop!(crate::ui::MouseMoveHandlerProp, crate::ui::MouseMoveEvent);
+impl_event_into_optional_prop!(crate::ui::MouseEnterHandlerProp, crate::ui::MouseEnterEvent);
+impl_event_into_optional_prop!(crate::ui::MouseLeaveHandlerProp, crate::ui::MouseLeaveEvent);
+impl_event_into_optional_prop!(crate::ui::ClickHandlerProp, crate::ui::ClickEvent);
+impl_event_into_optional_prop!(crate::ui::KeyDownHandlerProp, crate::ui::KeyDownEvent);
+impl_event_into_optional_prop!(crate::ui::KeyUpHandlerProp, crate::ui::KeyUpEvent);
+impl_event_into_optional_prop!(crate::ui::FocusHandlerProp, crate::ui::FocusEvent);
+impl_event_into_optional_prop!(crate::ui::BlurHandlerProp, crate::ui::BlurEvent);
 
 impl<'a> IntoOptionalProp<crate::Color> for crate::HexColor<'a> {
     fn into_optional_prop(self) -> Option<crate::Color> {
@@ -176,31 +199,9 @@ impl IntoRsxChildren for Option<RsxNode> {
 
 pub fn append_rsx_child_node<T>(children: &mut Vec<RsxNode>, value: T)
 where
-    T: IntoRsxNode,
+    T: IntoRsxChildren,
 {
-    match value.into_rsx_node() {
-        RsxNode::Fragment(fragment) => {
-            validate_dynamic_rsx_children(&fragment.children);
-            children.extend(fragment.children);
-        }
-        node => children.push(node),
-    }
-}
-
-fn validate_dynamic_rsx_children(children: &[RsxNode]) {
-    if children.len() <= 1 {
-        return;
-    }
-
-    let mut seen_keys = HashSet::new();
-    for child in children {
-        let Some(key) = child.identity().key.clone() else {
-            panic!("dynamic RSX children require `key` on each child root");
-        };
-        if !seen_keys.insert(key) {
-            panic!("dynamic RSX children require unique sibling keys");
-        }
-    }
+    children.extend(value.into_rsx_children());
 }
 
 pub fn create_element<T, P, C>(element_type: PhantomData<T>, props: P, children: C) -> RsxNode
@@ -269,8 +270,13 @@ mod tests {
     use super::{GlobalKey, RsxChildrenPolicy, RsxComponent, create_element_with_key};
     use crate::style::{Color, FontSize, FontWeight, Length, ParsedValue, PropertyId};
     use crate::ui::host::{Element, Text};
-    use crate::ui::{Patch, RsxKey, RsxNode, component, reconcile, rsx};
+    use crate::ui::{
+        ClickEvent, EventMeta, KeyDownEvent, KeyEventData, MouseButton, MouseButtons,
+        MouseEventData, Patch, PropValue, RsxKey, RsxNode, component, reconcile, rsx,
+    };
+    use std::cell::Cell;
     use std::marker::PhantomData;
+    use std::rc::Rc;
 
     struct Button;
     struct ElementLike;
@@ -310,6 +316,15 @@ mod tests {
             RsxNode::element("OptionTrue")
         } else {
             RsxNode::element("OptionFalse")
+        }
+    }
+
+    #[component]
+    fn PassThrough(children: Vec<RsxNode>) -> RsxNode {
+        rsx! {
+            <Element>
+                {children}
+            </Element>
         }
     }
 
@@ -388,19 +403,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "dynamic RSX children require `key` on each child root")]
-    fn dynamic_iterable_children_require_keys() {
-        let _ = rsx! {
+    fn dynamic_iterable_children_without_keys_do_not_panic() {
+        let node = rsx! {
             <Element>
                 {vec![rsx! { <Text>A</Text> }, rsx! { <Text>B</Text> }]}
             </Element>
         };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.children.len(), 2);
+        assert!(
+            node.children
+                .iter()
+                .all(|child| child.identity().key.is_none())
+        );
     }
 
     #[test]
-    #[should_panic(expected = "dynamic RSX children require unique sibling keys")]
-    fn dynamic_iterable_children_require_unique_keys() {
-        let _ = rsx! {
+    fn dynamic_iterable_children_with_duplicate_keys_do_not_panic() {
+        let node = rsx! {
             <Element>
                 {vec![
                     rsx! { <Text key={1}>A</Text> },
@@ -408,6 +431,11 @@ mod tests {
                 ]}
             </Element>
         };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.children.len(), 2);
     }
 
     #[test]
@@ -430,6 +458,21 @@ mod tests {
                 .iter()
                 .all(|child| child.identity().key.is_some())
         );
+    }
+
+    #[test]
+    fn passthrough_children_do_not_require_keys() {
+        let node = rsx! {
+            <PassThrough>
+                <Text>A</Text>
+                <Text>B</Text>
+            </PassThrough>
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.children.len(), 2);
     }
 
     #[test]
@@ -567,5 +610,128 @@ mod tests {
             style.get(PropertyId::FontWeight),
             Some(&ParsedValue::FontWeight(FontWeight::new(700)))
         );
+    }
+
+    #[test]
+    fn event_props_accept_bare_closures_for_all_handler_types() {
+        let node = rsx! {
+            <Element
+                on_mouse_down={move |_event| {}}
+                on_mouse_up={move |_event| {}}
+                on_mouse_move={move |_event| {}}
+                on_mouse_enter={move |_event| {}}
+                on_mouse_leave={move |_event| {}}
+                on_click={move |_event| {}}
+                on_key_down={move |_event| {}}
+                on_key_up={move |_event| {}}
+                on_focus={move |_event| {}}
+                on_blur={move |_event| {}}
+            />
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.props.len(), 10);
+        assert!(node.props.iter().any(|(key, _)| key == "on_click"));
+        assert!(node.props.iter().any(|(key, _)| key == "on_key_down"));
+    }
+
+    #[test]
+    fn click_event_props_accept_zero_arg_closures() {
+        let called = Rc::new(Cell::new(false));
+        let called_for_handler = called.clone();
+        let node = rsx! {
+            <Element on_click={move || called_for_handler.set(true)} />
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let Some((_, PropValue::OnClick(handler))) =
+            node.props.iter().find(|(key, _)| key == "on_click")
+        else {
+            panic!("missing on_click prop");
+        };
+
+        let mut event = ClickEvent {
+            meta: EventMeta::new(0),
+            mouse: MouseEventData {
+                viewport_x: 0.0,
+                viewport_y: 0.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(MouseButton::Left),
+                buttons: MouseButtons::default(),
+                modifiers: crate::ui::KeyModifiers::default(),
+            },
+        };
+        handler.call(&mut event);
+        assert!(called.get());
+    }
+
+    #[test]
+    fn key_event_props_accept_bare_closures_with_event_argument() {
+        let node = rsx! {
+            <Element on_key_down={move |event| event.meta.stop_propagation()} />
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let Some((_, PropValue::OnKeyDown(handler))) =
+            node.props.iter().find(|(key, _)| key == "on_key_down")
+        else {
+            panic!("missing on_key_down prop");
+        };
+
+        let mut event = KeyDownEvent {
+            meta: EventMeta::new(0),
+            key: KeyEventData {
+                key: "Enter".to_string(),
+                code: "Enter".to_string(),
+                repeat: false,
+                modifiers: crate::ui::KeyModifiers::default(),
+            },
+        };
+        handler.call(&mut event);
+        assert!(event.meta.propagation_stopped());
+    }
+
+    #[test]
+    fn event_prop_variables_accept_typed_event_closures() {
+        let called = Rc::new(Cell::new(false));
+        let called_for_handler = called.clone();
+        let handler = move |_event: &mut ClickEvent| {
+            called_for_handler.set(true);
+        };
+
+        let node = rsx! {
+            <Element on_click={handler} />
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let Some((_, PropValue::OnClick(handler))) =
+            node.props.iter().find(|(key, _)| key == "on_click")
+        else {
+            panic!("missing on_click prop");
+        };
+
+        let mut event = ClickEvent {
+            meta: EventMeta::new(0),
+            mouse: MouseEventData {
+                viewport_x: 0.0,
+                viewport_y: 0.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(MouseButton::Left),
+                buttons: MouseButtons::default(),
+                modifiers: crate::ui::KeyModifiers::default(),
+            },
+        };
+        handler.call(&mut event);
+        assert!(called.get());
     }
 }

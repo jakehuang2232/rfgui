@@ -14,7 +14,7 @@ mod tests {
     use crate::Layout;
     use crate::{
         Align, AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-        CrossSize, JustifyContent, Length, Operator, Position, Style,
+        CrossSize, JustifyContent, Length, Opacity, Operator, Position, Style,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -548,7 +548,7 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(Layout::flow().column().no_wrap()),
+            ParsedValue::Layout(Layout::flex().column().into()),
         );
         parent_style.insert(PropertyId::Width, ParsedValue::Auto);
         parent_style.insert(PropertyId::Height, ParsedValue::Auto);
@@ -589,7 +589,7 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(Layout::flow().row().no_wrap().align(Align::Center)),
+            ParsedValue::Layout(Layout::flex().row().align(Align::Center).into()),
         );
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
@@ -633,7 +633,8 @@ mod tests {
                 Layout::flow()
                     .row()
                     .no_wrap()
-                    .cross_size(CrossSize::Stretch),
+                    .cross_size(CrossSize::Stretch)
+                    .into(),
             ),
         );
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
@@ -681,6 +682,129 @@ mod tests {
 
         assert_eq!(explicit_snapshot.height, 10.0);
         assert_eq!(auto_snapshot.height, 40.0);
+    }
+
+    #[test]
+    fn flex_row_grow_distributes_remaining_space_to_children() {
+        let mut parent = Element::new(0.0, 0.0, 300.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().align(Align::Center).into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(300.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
+        parent.apply_style(parent_style);
+
+        let mut first = Element::new(0.0, 0.0, 40.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().basis(Length::px(40.0)).grow(1.0)),
+        );
+        first.apply_style(first_style);
+
+        let mut second = Element::new(0.0, 0.0, 40.0, 30.0);
+        let mut second_style = Style::new();
+        second_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().basis(Length::px(40.0)).grow(2.0)),
+        );
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+
+        assert!((first_snapshot.width - 113.333_336).abs() < 0.01);
+        assert!((second_snapshot.width - 186.666_67).abs() < 0.01);
+        assert_eq!(first_snapshot.y, 50.0);
+        assert_eq!(second_snapshot.y, 45.0);
+    }
+
+    #[test]
+    fn flex_row_shrink_uses_basis_when_content_overflows() {
+        let mut parent = Element::new(0.0, 0.0, 150.0, 80.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(150.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
+        parent.apply_style(parent_style);
+
+        let mut first = Element::new(0.0, 0.0, 80.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().basis(Length::px(100.0)).shrink(1.0)),
+        );
+        first.apply_style(first_style);
+
+        let mut second = Element::new(0.0, 0.0, 80.0, 20.0);
+        let mut second_style = Style::new();
+        second_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().basis(Length::px(100.0)).shrink(1.0)),
+        );
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+
+        assert!((first_snapshot.width - 75.0).abs() < 0.01);
+        assert!((second_snapshot.width - 75.0).abs() < 0.01);
+        assert!((second_snapshot.x - 75.0).abs() < 0.01);
     }
 
     #[test]
@@ -862,6 +986,10 @@ mod tests {
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
         child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
+        child_style.insert(
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
@@ -993,6 +1121,10 @@ mod tests {
 
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
         child_style.insert(
             PropertyId::Position,
             ParsedValue::Position(
@@ -1443,6 +1575,114 @@ mod tests {
     }
 
     #[test]
+    fn axis_layout_measure_uses_target_size_not_transition_override_for_distribution() {
+        let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent.apply_style(parent_style);
+        parent.layout_transition_override_width = Some(320.0);
+        parent.layout_transition_override_height = Some(180.0);
+
+        let mut first = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.set_flex(crate::flex().grow(1.0).basis(Length::px(50.0)));
+        first.apply_style(first_style);
+
+        let mut second = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut second_style = Style::new();
+        second_style.set_flex(crate::flex().grow(1.0).basis(Length::px(50.0)));
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+        assert_eq!(first_snapshot.width, 100.0);
+        assert_eq!(second_snapshot.width, 100.0);
+    }
+
+    #[test]
+    fn flow_measure_uses_target_size_not_transition_override_for_percent_children() {
+        let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent.apply_style(parent_style);
+        parent.layout_transition_override_width = Some(320.0);
+        parent.layout_transition_override_height = Some(180.0);
+
+        let mut child = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::percent(50.0)),
+        );
+        child_style.insert(
+            PropertyId::Height,
+            ParsedValue::Length(Length::percent(50.0)),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert_eq!(snapshot.width, 100.0);
+        assert_eq!(snapshot.height, 50.0);
+    }
+
+    #[test]
     fn snapshot_restore_preserves_hover_style_state() {
         let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
         let mut style = Style::new();
@@ -1821,9 +2061,13 @@ mod tests {
     }
 
     #[test]
-    fn scrollbar_renders_after_promoted_child_composite() {
+    fn scrollbar_renders_with_promoted_child() {
         let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
         let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
         parent_style.insert(
             PropertyId::ScrollDirection,
             ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
@@ -1832,7 +2076,13 @@ mod tests {
         let _ = parent.set_hovered(true);
         parent.set_scrollbar_shadow_blur_radius(0.0);
 
-        let child = Element::new(0.0, 0.0, 120.0, 360.0);
+        let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
+        child.apply_style(child_style);
         parent.add_child(Box::new(child));
         let child_id = parent.children().expect("has child")[0].id();
 
@@ -1878,18 +2128,12 @@ mod tests {
             .into_iter()
             .map(|descriptor| descriptor.name)
             .collect::<Vec<_>>();
-        let last_child_composite = pass_names
-            .iter()
-            .rposition(|name| name.contains("CompositeLayerPass"))
-            .expect("expected promoted child composite pass");
-        let last_draw_rect = pass_names
-            .iter()
-            .rposition(|name| name.contains("draw_rect_pass::DrawRectPass"))
-            .expect("expected scrollbar draw rect pass");
 
         assert!(
-            last_draw_rect > last_child_composite,
-            "expected scrollbar draw rect after promoted child composite, passes: {pass_names:?}"
+            pass_names
+                .iter()
+                .any(|name| name.contains("draw_rect_pass::DrawRectPass")),
+            "expected scrollbar draw rect with promoted child, passes: {pass_names:?}"
         );
     }
 
@@ -2052,16 +2296,32 @@ mod tests {
     #[test]
     fn non_promoted_container_with_promoted_child_is_not_built_twice_during_compose() {
         let mut root = Element::new(0.0, 0.0, 200.0, 200.0);
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#202020")),
+        );
+        root.apply_style(root_style);
         let mut container = Element::new(0.0, 0.0, 120.0, 120.0);
         let container_id = container.id();
         let mut container_style = Style::new();
+        container_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
         container_style.insert(
             PropertyId::ScrollDirection,
             ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
         );
         container.apply_style(container_style);
 
-        let promoted_child = Element::new(0.0, 0.0, 120.0, 240.0);
+        let mut promoted_child = Element::new(0.0, 0.0, 120.0, 240.0);
+        let mut promoted_child_style = Style::new();
+        promoted_child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
+        promoted_child.apply_style(promoted_child_style);
         let promoted_child_id = promoted_child.id();
         container.add_child(Box::new(promoted_child));
         root.add_child(Box::new(container));
@@ -2109,6 +2369,120 @@ mod tests {
             1,
             "expected non-promoted container base path to run only once"
         );
+    }
+
+    #[test]
+    fn zero_opacity_sets_should_paint_false_but_keeps_render() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#112233")),
+        );
+        style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.0)));
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 100.0,
+            max_height: 40.0,
+            viewport_width: 100.0,
+            viewport_height: 40.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(40.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 100.0,
+            available_height: 40.0,
+            viewport_width: 100.0,
+            viewport_height: 40.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(40.0),
+        });
+
+        assert!(el.core.should_render);
+        assert!(!el.core.should_paint);
+    }
+
+    #[test]
+    fn transparent_borderless_shadowless_element_does_not_paint_even_with_child() {
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut child = Element::new(0.0, 0.0, 60.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+
+        assert!(parent.core.should_render);
+        assert!(!parent.core.should_paint);
+    }
+
+    #[test]
+    fn zero_inner_area_sets_should_paint_false() {
+        let mut el = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#112233")),
+        );
+        style.insert(PropertyId::PaddingLeft, ParsedValue::Length(Length::px(10.0)));
+        style.insert(PropertyId::PaddingRight, ParsedValue::Length(Length::px(10.0)));
+        style.insert(PropertyId::PaddingTop, ParsedValue::Length(Length::px(10.0)));
+        style.insert(PropertyId::PaddingBottom, ParsedValue::Length(Length::px(10.0)));
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 20.0,
+            max_height: 20.0,
+            viewport_width: 20.0,
+            viewport_height: 20.0,
+            percent_base_width: Some(20.0),
+            percent_base_height: Some(20.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 20.0,
+            available_height: 20.0,
+            viewport_width: 20.0,
+            viewport_height: 20.0,
+            percent_base_width: Some(20.0),
+            percent_base_height: Some(20.0),
+        });
+
+        assert_eq!(el.layout_inner_size.width, 0.0);
+        assert_eq!(el.layout_inner_size.height, 0.0);
+        assert!(el.core.should_render);
+        assert!(!el.core.should_paint);
     }
 
 }

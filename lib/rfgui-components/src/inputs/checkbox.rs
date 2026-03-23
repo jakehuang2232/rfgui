@@ -71,7 +71,7 @@ fn CheckboxView(
 
     rsx! {
         <Element style={{
-            layout: Layout::flow().row().no_wrap().align(Align::Center),
+            layout: Layout::flex().row().align(Align::Center),
             gap: theme.spacing.md,
         }}
         on_click={click}

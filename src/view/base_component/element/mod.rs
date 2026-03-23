@@ -732,6 +732,15 @@ pub trait Layoutable {
     fn set_layout_width(&mut self, width: f32);
     fn set_layout_height(&mut self, height: f32);
     fn allows_cross_stretch(&self, is_row: bool) -> bool;
+    fn flex_grow(&self) -> f32 {
+        0.0
+    }
+    fn flex_shrink(&self) -> f32 {
+        1.0
+    }
+    fn flex_basis(&self) -> SizeValue {
+        SizeValue::Auto
+    }
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
 }
 
@@ -1075,6 +1084,7 @@ impl ElementTrait for Element {
     fn promotion_self_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.core.should_render.hash(&mut hasher);
+        self.core.should_paint.hash(&mut hasher);
         hash_f32(&mut hasher, self.core.layout_position.x);
         hash_f32(&mut hasher, self.core.layout_position.y);
         hash_f32(&mut hasher, self.core.layout_size.width.max(0.0));

@@ -8,6 +8,7 @@ pub enum PropertyId {
     Layout,
     CrossSize,
     Align,
+    Flex,
     Position,
     Width,
     Height,
@@ -168,6 +169,11 @@ impl<const N: usize> From<[Transition; N]> for Transitions {
 pub enum Layout {
     Block,
     Inline,
+    Flex {
+        direction: FlowDirection,
+        justify_content: JustifyContent,
+        cross_axis: CrossAxis,
+    },
     Flow {
         direction: FlowDirection,
         wrap: FlowWrap,
@@ -179,67 +185,122 @@ pub enum Layout {
     None,
 }
 
-impl Layout {
-    pub const fn flow() -> Self {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlexLayout {
+    direction: FlowDirection,
+    justify_content: JustifyContent,
+    cross_axis: CrossAxis,
+}
+
+impl FlexLayout {
+    pub const fn row(mut self) -> Self {
+        self.direction = FlowDirection::Row;
+        self
+    }
+
+    pub const fn column(mut self) -> Self {
+        self.direction = FlowDirection::Column;
+        self
+    }
+
+    pub const fn justify_content(mut self, justify_content: JustifyContent) -> Self {
+        self.justify_content = justify_content;
+        self
+    }
+
+    pub const fn cross_size(mut self, cross_size: CrossSize) -> Self {
+        self.cross_axis.size = cross_size;
+        self
+    }
+
+    pub const fn align(mut self, align: Align) -> Self {
+        self.cross_axis.align = align;
+        self
+    }
+}
+
+impl From<FlexLayout> for Layout {
+    fn from(value: FlexLayout) -> Self {
+        Self::Flex {
+            direction: value.direction,
+            justify_content: value.justify_content,
+            cross_axis: value.cross_axis,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowLayout {
+    direction: FlowDirection,
+    wrap: FlowWrap,
+    justify_content: JustifyContent,
+    cross_axis: CrossAxis,
+}
+
+impl FlowLayout {
+    pub const fn row(mut self) -> Self {
+        self.direction = FlowDirection::Row;
+        self
+    }
+
+    pub const fn column(mut self) -> Self {
+        self.direction = FlowDirection::Column;
+        self
+    }
+
+    pub const fn wrap(mut self) -> Self {
+        self.wrap = FlowWrap::Wrap;
+        self
+    }
+
+    pub const fn no_wrap(mut self) -> Self {
+        self.wrap = FlowWrap::NoWrap;
+        self
+    }
+
+    pub const fn justify_content(mut self, justify_content: JustifyContent) -> Self {
+        self.justify_content = justify_content;
+        self
+    }
+
+    pub const fn cross_size(mut self, cross_size: CrossSize) -> Self {
+        self.cross_axis.size = cross_size;
+        self
+    }
+
+    pub const fn align(mut self, align: Align) -> Self {
+        self.cross_axis.align = align;
+        self
+    }
+}
+
+impl From<FlowLayout> for Layout {
+    fn from(value: FlowLayout) -> Self {
         Self::Flow {
+            direction: value.direction,
+            wrap: value.wrap,
+            justify_content: value.justify_content,
+            cross_axis: value.cross_axis,
+        }
+    }
+}
+
+impl Layout {
+    pub const fn flex() -> FlexLayout {
+        FlexLayout {
             direction: FlowDirection::Row,
-            wrap: FlowWrap::NoWrap,
             justify_content: JustifyContent::Start,
             cross_axis: CrossAxis::new(CrossSize::Fit, Align::Start),
         }
     }
 
-    pub const fn row(mut self) -> Self {
-        if let Self::Flow { direction, .. } = &mut self {
-            *direction = FlowDirection::Row;
+    pub const fn flow() -> FlowLayout {
+        FlowLayout {
+            direction: FlowDirection::Row,
+            wrap: FlowWrap::NoWrap,
+            justify_content: JustifyContent::Start,
+            cross_axis: CrossAxis::new(CrossSize::Fit, Align::Start),
         }
-        self
-    }
-
-    pub const fn column(mut self) -> Self {
-        if let Self::Flow { direction, .. } = &mut self {
-            *direction = FlowDirection::Column;
-        }
-        self
-    }
-
-    pub const fn wrap(mut self) -> Self {
-        if let Self::Flow { wrap, .. } = &mut self {
-            *wrap = FlowWrap::Wrap;
-        }
-        self
-    }
-
-    pub const fn no_wrap(mut self) -> Self {
-        if let Self::Flow { wrap, .. } = &mut self {
-            *wrap = FlowWrap::NoWrap;
-        }
-        self
-    }
-
-    pub const fn justify_content(mut self, justify_content: JustifyContent) -> Self {
-        if let Self::Flow {
-            justify_content: value,
-            ..
-        } = &mut self
-        {
-            *value = justify_content;
-        }
-        self
-    }
-
-    pub const fn cross_size(mut self, cross_size: CrossSize) -> Self {
-        if let Self::Flow { cross_axis, .. } = &mut self {
-            cross_axis.size = cross_size;
-        }
-        self
-    }
-
-    pub const fn align(mut self, align: Align) -> Self {
-        if let Self::Flow { cross_axis, .. } = &mut self {
-            cross_axis.align = align;
-        }
-        self
     }
 }
 
@@ -1549,11 +1610,68 @@ impl Opacity {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flex {
+    grow: f32,
+    shrink: f32,
+    basis: Option<Length>,
+}
+
+impl Flex {
+    pub const fn new() -> Self {
+        Self {
+            grow: 0.0,
+            shrink: 1.0,
+            basis: None,
+        }
+    }
+
+    pub const fn grow(mut self, value: f32) -> Self {
+        self.grow = value;
+        self
+    }
+
+    pub const fn shrink(mut self, value: f32) -> Self {
+        self.shrink = value;
+        self
+    }
+
+    pub fn basis<T>(mut self, value: T) -> Self
+    where
+        T: Into<Option<Length>>,
+    {
+        self.basis = value.into();
+        self
+    }
+
+    pub const fn basis_auto(mut self) -> Self {
+        self.basis = None;
+        self
+    }
+
+    pub const fn grow_value(self) -> f32 {
+        self.grow
+    }
+
+    pub const fn shrink_value(self) -> f32 {
+        self.shrink
+    }
+
+    pub const fn basis_value(self) -> Option<Length> {
+        self.basis
+    }
+}
+
+pub const fn flex() -> Flex {
+    Flex::new()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedValue {
     Layout(Layout),
     CrossSize(CrossSize),
     Align(Align),
+    Flex(Flex),
     ScrollDirection(ScrollDirection),
     Cursor(Cursor),
     Position(Position),
@@ -1722,6 +1840,12 @@ impl IntoStyleFieldValue<FontWeight> for i64 {
     }
 }
 
+impl IntoStyleFieldValue<Flex> for Flex {
+    fn into_style_field_value(self) -> Flex {
+        self
+    }
+}
+
 pub fn insert_style_length<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<Length>,
@@ -1757,6 +1881,13 @@ where
         property,
         ParsedValue::FontWeight(value.into_style_field_value()),
     );
+}
+
+pub fn insert_style_flex<V>(style: &mut Style, property: PropertyId, value: V)
+where
+    V: IntoStyleFieldValue<Flex>,
+{
+    style.insert(property, ParsedValue::Flex(value.into_style_field_value()));
 }
 
 impl Style {
@@ -1924,6 +2055,15 @@ impl Style {
 
     pub fn with_box_shadow(mut self, box_shadow: Vec<BoxShadow>) -> Self {
         self.set_box_shadow(box_shadow);
+        self
+    }
+
+    pub fn set_flex(&mut self, flex: Flex) {
+        self.insert(PropertyId::Flex, ParsedValue::Flex(flex));
+    }
+
+    pub fn with_flex(mut self, flex: Flex) -> Self {
+        self.set_flex(flex);
         self
     }
 }
