@@ -45,7 +45,10 @@ impl GraphicsPass for DebugOverlayPass {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             let _ = target;
-            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::load());
+            builder.write_color(
+                &self.output.render_target,
+                GraphicsColorAttachmentOps::load(),
+            );
         } else {
             builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }

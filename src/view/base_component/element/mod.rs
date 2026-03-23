@@ -328,7 +328,9 @@ fn texture_desc_for_logical_bounds(
     let origin_x = (bounds.x * scale).floor().max(0.0) as u32;
     let origin_y = (bounds.y * scale).floor().max(0.0) as u32;
     let max_x = ((bounds.x + bounds.width.max(0.0)) * scale).ceil().max(0.0) as u32;
-    let max_y = ((bounds.y + bounds.height.max(0.0)) * scale).ceil().max(0.0) as u32;
+    let max_y = ((bounds.y + bounds.height.max(0.0)) * scale)
+        .ceil()
+        .max(0.0) as u32;
     let width = max_x.saturating_sub(origin_x).max(1);
     let height = max_y.saturating_sub(origin_y).max(1);
     TextureDesc::new(width, height, target_format, wgpu::TextureDimension::D2)

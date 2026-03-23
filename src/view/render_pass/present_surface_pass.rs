@@ -2,9 +2,8 @@ use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
-    BufferDesc, BufferReadUsage, BufferResource, GraphicsColorAttachmentOps,
-    FrameResourceContext, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    SampleCountPolicy,
+    BufferDesc, BufferReadUsage, BufferResource, FrameResourceContext, GraphicsColorAttachmentOps,
+    GraphicsPassBuilder, GraphicsPassMergePolicy, SampleCountPolicy,
 };
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::{render_target_ref, render_target_view};
@@ -32,8 +31,7 @@ pub struct PresentSurfaceOutput;
 
 #[derive(Clone, Copy)]
 pub struct PresentSurfaceUniformBufferTag;
-pub type PresentSurfaceUniformBufferOut =
-    OutSlot<BufferResource, PresentSurfaceUniformBufferTag>;
+pub type PresentSurfaceUniformBufferOut = OutSlot<BufferResource, PresentSurfaceUniformBufferTag>;
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
@@ -185,7 +183,7 @@ impl PresentSurfaceResources {
                         has_dynamic_offset: false,
                         min_binding_size: Some(
                             std::num::NonZeroU64::new(
-                                std::mem::size_of::<PresentSurfaceUniform>() as u64,
+                                std::mem::size_of::<PresentSurfaceUniform>() as u64
                             )
                             .unwrap(),
                         ),

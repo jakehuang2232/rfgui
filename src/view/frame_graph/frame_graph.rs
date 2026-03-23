@@ -1749,7 +1749,8 @@ impl FrameGraph {
             let index = order[cursor];
             match descriptors[index].kind {
                 PassKind::Graphics => {
-                    let Some(current_key) = render_pass_compatibility_key(&descriptors[index]) else {
+                    let Some(current_key) = render_pass_compatibility_key(&descriptors[index])
+                    else {
                         steps.push(CompiledExecuteStep::GraphicsPass { pass_index: index });
                         cursor += 1;
                         continue;
@@ -1762,7 +1763,8 @@ impl FrameGraph {
                         if descriptors[next_index].kind != PassKind::Graphics {
                             break;
                         }
-                        let Some(next_key) = render_pass_compatibility_key(&descriptors[next_index])
+                        let Some(next_key) =
+                            render_pass_compatibility_key(&descriptors[next_index])
                         else {
                             break;
                         };
@@ -1829,7 +1831,9 @@ impl FrameGraph {
                 let AttachmentTarget::Texture(handle) = attachment.target else {
                     continue;
                 };
-                if self.resource_metadata(ResourceHandle::Texture(handle)).lifetime
+                if self
+                    .resource_metadata(ResourceHandle::Texture(handle))
+                    .lifetime
                     != ResourceLifetime::Transient
                 {
                     continue;
@@ -2456,10 +2460,7 @@ impl FrameGraph {
             if expected_sample_count != depth_sample_count {
                 eprintln!(
                     "[error] frame graph depth attachment sample-count mismatch before wgpu validation: passes=[{}], expected_sample_count={}, depth_target={:?}, depth_sample_count={}",
-                    pass_names,
-                    expected_sample_count,
-                    target,
-                    depth_sample_count,
+                    pass_names, expected_sample_count, target, depth_sample_count,
                 );
                 panic!(
                     "frame graph depth attachment sample-count mismatch: passes=[{}]",
@@ -2621,7 +2622,11 @@ fn color_attachment_sample_count(
 fn depth_attachment_sample_count(ctx: &mut RecordContext<'_, '_>, target: AttachmentTarget) -> u32 {
     match target {
         AttachmentTarget::Surface => {
-            if ctx.viewport.frame_parts().and_then(|parts| parts.depth_view).is_some()
+            if ctx
+                .viewport
+                .frame_parts()
+                .and_then(|parts| parts.depth_view)
+                .is_some()
                 && ctx.viewport.msaa_sample_count() > 1
             {
                 ctx.viewport.msaa_sample_count()
@@ -2755,10 +2760,9 @@ fn annotate_texture_usage_version(
             None,
         ),
         ResourceUsage::ColorAttachmentWrite => {
-            let should_preserve_existing = color_attachment_requires_input(
-                descriptor,
-                ResourceHandle::Texture(handle),
-            ) && !(current.is_none() && lifetime == ResourceLifetime::Transient);
+            let should_preserve_existing =
+                color_attachment_requires_input(descriptor, ResourceHandle::Texture(handle))
+                    && !(current.is_none() && lifetime == ResourceLifetime::Transient);
             let read = if should_preserve_existing {
                 current.or_else(|| {
                     Some(ResourceVersionId::Texture(allocate_texture_version(
@@ -5294,16 +5298,12 @@ mod tests {
         let large_resource = compiled
             .resources
             .iter()
-            .find(|resource| {
-                resource.handle == ResourceHandle::Texture(large.handle().unwrap())
-            })
+            .find(|resource| resource.handle == ResourceHandle::Texture(large.handle().unwrap()))
             .expect("large resource should exist");
         let small_resource = compiled
             .resources
             .iter()
-            .find(|resource| {
-                resource.handle == ResourceHandle::Texture(small.handle().unwrap())
-            })
+            .find(|resource| resource.handle == ResourceHandle::Texture(small.handle().unwrap()))
             .expect("small resource should exist");
         assert_eq!(large_resource.allocation_id, small_resource.allocation_id);
         assert_eq!(compiled.allocation_plan.texture_allocations.len(), 1);
@@ -5337,16 +5337,12 @@ mod tests {
         let small_resource = compiled
             .resources
             .iter()
-            .find(|resource| {
-                resource.handle == ResourceHandle::Texture(small.handle().unwrap())
-            })
+            .find(|resource| resource.handle == ResourceHandle::Texture(small.handle().unwrap()))
             .expect("small resource should exist");
         let large_resource = compiled
             .resources
             .iter()
-            .find(|resource| {
-                resource.handle == ResourceHandle::Texture(large.handle().unwrap())
-            })
+            .find(|resource| resource.handle == ResourceHandle::Texture(large.handle().unwrap()))
             .expect("large resource should exist");
         assert_ne!(small_resource.allocation_id, large_resource.allocation_id);
         assert_eq!(compiled.allocation_plan.texture_allocations.len(), 2);

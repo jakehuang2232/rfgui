@@ -267,7 +267,11 @@ impl OffscreenRenderTargetPool {
         self.bundle_for_entry(entry_id, &desc)
     }
 
-    fn bundle_for_entry(&self, entry_id: u32, logical_desc: &TextureDesc) -> Option<RenderTargetBundle> {
+    fn bundle_for_entry(
+        &self,
+        entry_id: u32,
+        logical_desc: &TextureDesc,
+    ) -> Option<RenderTargetBundle> {
         let entry = self.entries.get(&entry_id)?;
         let _ = (&entry.texture, &entry.msaa_texture);
         Some(RenderTargetBundle {
@@ -477,7 +481,9 @@ pub(crate) fn resolve_texture_ref(
     let physical_size = texture_ref
         .map(|resolved| resolved.physical_size())
         .or(sampled_size)
-        .or_else(|| handle.and_then(|texture_handle| render_target_physical_size(ctx, texture_handle)))
+        .or_else(|| {
+            handle.and_then(|texture_handle| render_target_physical_size(ctx, texture_handle))
+        })
         .unwrap_or(fallback_size);
     let logical_origin = texture_ref
         .map(|resolved| (resolved.logical_origin_x, resolved.logical_origin_y))
@@ -527,7 +533,11 @@ pub(crate) fn render_target_logical_size(
     ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<(u32, u32)> {
-    Some(render_target_bundle(ctx, handle)?.texture_ref.logical_size())
+    Some(
+        render_target_bundle(ctx, handle)?
+            .texture_ref
+            .logical_size(),
+    )
 }
 
 #[allow(dead_code)]
@@ -535,7 +545,11 @@ pub(crate) fn render_target_physical_size(
     ctx: &mut impl FrameResourceContext,
     handle: TextureHandle,
 ) -> Option<(u32, u32)> {
-    Some(render_target_bundle(ctx, handle)?.texture_ref.physical_size())
+    Some(
+        render_target_bundle(ctx, handle)?
+            .texture_ref
+            .physical_size(),
+    )
 }
 
 pub(crate) fn render_target_origin(
@@ -569,8 +583,7 @@ pub(crate) fn logical_scissor_to_target_physical(
     let [x, y, width, height] = scissor_rect;
     let left = (x as f32 * scale).floor().max(0.0) as i64 - target_origin.0 as i64;
     let top = (y as f32 * scale).floor().max(0.0) as i64 - target_origin.1 as i64;
-    let right =
-        ((x as f32 + width as f32) * scale).ceil().max(0.0) as i64 - target_origin.0 as i64;
+    let right = ((x as f32 + width as f32) * scale).ceil().max(0.0) as i64 - target_origin.0 as i64;
     let bottom =
         ((y as f32 + height as f32) * scale).ceil().max(0.0) as i64 - target_origin.1 as i64;
     let max_w = target_size.0 as i64;

@@ -927,6 +927,7 @@ impl Element {
                     composite_bounds.height,
                 ]),
                 use_mask: true,
+                source_is_premultiplied: true,
                 opacity: if child.as_any().downcast_ref::<Element>().is_some() {
                     1.0
                 } else {
@@ -1153,6 +1154,25 @@ impl Element {
             .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
         let has_ancestor_scissor = ctx.scissor_rect().is_some();
         let has_ancestor_stencil = ctx.current_clip_id() != 0;
+        if has_ancestor_stencil {
+            crate::view::viewport::record_debug_reuse_path(
+                crate::view::viewport::DebugReusePathRecord {
+                    node_id: child_id,
+                    context: crate::view::viewport::DebugReusePathContext::Child,
+                    requested: requested_update,
+                    can_reuse: false,
+                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                    reason: Some("ancestor-stencil-inline"),
+                    clip_rect: None,
+                },
+            );
+            let viewport = ctx.viewport();
+            let next_state =
+                child.build(graph, UiBuildContext::from_parts(viewport, ctx.state_clone()));
+            ctx.set_state(next_state);
+            let _ = mask_target;
+            return;
+        }
         if has_ancestor_scissor && !has_ancestor_stencil {
             crate::view::viewport::record_debug_reuse_path(
                 crate::view::viewport::DebugReusePathRecord {

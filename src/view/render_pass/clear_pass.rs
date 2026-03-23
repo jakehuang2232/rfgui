@@ -53,7 +53,10 @@ impl GraphicsPass for ClearPass {
         ];
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             let _ = target;
-            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::clear(color));
+            builder.write_color(
+                &self.output.render_target,
+                GraphicsColorAttachmentOps::clear(color),
+            );
             if self.input.clear_depth_stencil {
                 builder.write_output_depth(AttachmentLoadOp::Clear, Some(1.0));
                 builder.write_output_stencil(AttachmentLoadOp::Clear, Some(0));

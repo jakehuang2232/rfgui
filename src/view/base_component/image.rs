@@ -414,6 +414,7 @@ impl Renderable for Image {
                 uv_bounds: Some(uv_bounds),
                 mask_uv_bounds: None,
                 use_mask: false,
+                source_is_premultiplied: false,
                 opacity: if ctx.is_node_promoted(self.id()) {
                     1.0
                 } else {

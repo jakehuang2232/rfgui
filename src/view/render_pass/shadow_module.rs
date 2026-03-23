@@ -1,7 +1,6 @@
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::{
-    FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, SampleCountPolicy,
-    TextureDesc,
+    FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, SampleCountPolicy, TextureDesc,
 };
 use crate::view::render_pass::blur_module::{
     BlurModuleInput, BlurModuleOutput, BlurModuleParams, build_blur_module,
@@ -442,6 +441,7 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
                 layer_h as f32 / scale,
             ]),
             use_mask: spec.params.clip_to_geometry,
+            source_is_premultiplied: true,
             opacity: 1.0,
             ..Default::default()
         },
