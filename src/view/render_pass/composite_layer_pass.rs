@@ -3,14 +3,13 @@ use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, PrepareContext,
+    FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_sample_count, render_target_view,
-    resolve_texture_ref,
+    render_target_origin, render_target_sample_count, render_target_view, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::collections::HashSet;
@@ -167,7 +166,8 @@ impl GraphicsPass for CompositeLayerPass {
             return;
         };
         let surface_size = ctx.viewport.surface_size();
-        let target_meta = resolve_texture_ref(self.output.render_target.handle(), ctx, surface_size, None);
+        let target_meta =
+            resolve_texture_ref(self.output.render_target.handle(), ctx, surface_size, None);
         let layer_meta = resolve_texture_ref(Some(layer_handle), ctx, surface_size, None);
         let (target_w, target_h) = target_meta.physical_size;
         let (layer_w, layer_h) = layer_meta.physical_size;
@@ -200,10 +200,8 @@ impl GraphicsPass for CompositeLayerPass {
             layer_w as f32,
             layer_h as f32,
             [
-                target_origin.0 as f32 - layer_origin.0 as f32
-                    + layer_meta.logical_origin.0 as f32,
-                target_origin.1 as f32 - layer_origin.1 as f32
-                    + layer_meta.logical_origin.1 as f32,
+                target_origin.0 as f32 - layer_origin.0 as f32 + layer_meta.logical_origin.0 as f32,
+                target_origin.1 as f32 - layer_origin.1 as f32 + layer_meta.logical_origin.1 as f32,
             ],
         );
         self.prepared_vertices = vertices;
@@ -224,8 +222,12 @@ impl GraphicsPass for CompositeLayerPass {
             return;
         };
         let surface_size = ctx.viewport().surface_size();
-        let target_meta =
-            resolve_texture_ref(self.output.render_target.handle(), ctx.frame_resources(), surface_size, None);
+        let target_meta = resolve_texture_ref(
+            self.output.render_target.handle(),
+            ctx.frame_resources(),
+            surface_size,
+            None,
+        );
         let (target_w, target_h) = target_meta.physical_size;
         let target_origin = self
             .output

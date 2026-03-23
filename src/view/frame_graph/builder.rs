@@ -1,11 +1,11 @@
 use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
 use super::frame_graph::{
     AttachmentLoadOp, AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
-    GraphicsColorAttachmentOps,
-    GraphicsDepthAspectDescriptor, GraphicsDepthStencilAttachmentDescriptor,
-    GraphicsPassMergePolicy, GraphicsStencilAspectDescriptor, PassDescriptor, PassResourceUsage,
-    ResourceHandle, ResourceLifetime, ResourceMetadata, ResourceUsage, SampleCountPolicy,
-    ScissorPolicy, ViewportPolicy,
+    GraphicsColorAttachmentOps, GraphicsDepthAspectDescriptor,
+    GraphicsDepthStencilAttachmentDescriptor, GraphicsPassMergePolicy,
+    GraphicsStencilAspectDescriptor, PassDescriptor, PassResourceUsage, ResourceHandle,
+    ResourceLifetime, ResourceMetadata, ResourceUsage, SampleCountPolicy, ScissorPolicy,
+    ViewportPolicy,
 };
 use super::slot::{InSlot, OutSlot, ResourceType};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
@@ -523,14 +523,18 @@ impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
                     SampleCountPolicy::Fixed(desc.sample_count());
             }
         }
-        self.state
-            .write_color_attachment(output, GraphicsColorAttachmentDescriptor::from_ops(target, ops));
+        self.state.write_color_attachment(
+            output,
+            GraphicsColorAttachmentDescriptor::from_ops(target, ops),
+        );
     }
 
     pub fn write_surface_color(&mut self, ops: GraphicsColorAttachmentOps) {
-        self.state.write_surface_color_attachment(
-            GraphicsColorAttachmentDescriptor::from_ops(AttachmentTarget::Surface, ops),
-        );
+        self.state
+            .write_surface_color_attachment(GraphicsColorAttachmentDescriptor::from_ops(
+                AttachmentTarget::Surface,
+                ops,
+            ));
     }
 
     pub fn read_depth(&mut self, target: AttachmentTarget) {
@@ -552,11 +556,7 @@ impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
         self.state.write_depth(target, load_op, clear_depth);
     }
 
-    pub fn write_output_depth(
-        &mut self,
-        load_op: AttachmentLoadOp,
-        clear_depth: Option<f32>,
-    ) {
+    pub fn write_output_depth(&mut self, load_op: AttachmentLoadOp, clear_depth: Option<f32>) {
         if let Some(target) = self.state.inferred_depth_stencil_target() {
             self.state.write_depth(target, load_op, clear_depth);
         }
@@ -581,11 +581,7 @@ impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
         self.state.write_stencil(target, load_op, clear_stencil);
     }
 
-    pub fn write_output_stencil(
-        &mut self,
-        load_op: AttachmentLoadOp,
-        clear_stencil: Option<u32>,
-    ) {
+    pub fn write_output_stencil(&mut self, load_op: AttachmentLoadOp, clear_stencil: Option<u32>) {
         if let Some(target) = self.state.inferred_depth_stencil_target() {
             self.state.write_stencil(target, load_op, clear_stencil);
         }

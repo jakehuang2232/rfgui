@@ -8,8 +8,9 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_sample_count, render_target_view, resolve_texture_ref, ResolvedTextureRef,
+    GraphicsPassContext as RenderPassContext, ResolvedTextureRef,
+    logical_scissor_to_target_physical, render_target_sample_count, render_target_view,
+    resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,6 +33,7 @@ pub struct TextureCompositeParams {
     pub uv_bounds: Option<[f32; 4]>,
     pub mask_uv_bounds: Option<[f32; 4]>,
     pub use_mask: bool,
+    pub source_is_premultiplied: bool,
     pub opacity: f32,
     pub scissor_rect: Option<[u32; 4]>,
 }
@@ -43,6 +45,7 @@ impl Default for TextureCompositeParams {
             uv_bounds: None,
             mask_uv_bounds: None,
             use_mask: false,
+            source_is_premultiplied: false,
             opacity: 1.0,
             scissor_rect: None,
         }
@@ -89,8 +92,9 @@ pub struct TextureCompositeOutput {
 #[repr(C)]
 struct TextureCompositeUniform {
     use_mask: f32,
+    source_is_premultiplied: f32,
     opacity: f32,
-    _pad: [f32; 2],
+    _pad: f32,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -167,7 +171,10 @@ impl GraphicsPass for TextureCompositePass {
         }
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             let _ = target;
-            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::load());
+            builder.write_color(
+                &self.output.render_target,
+                GraphicsColorAttachmentOps::load(),
+            );
         } else {
             builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }
@@ -189,9 +196,14 @@ impl GraphicsPass for TextureCompositePass {
             surface_size,
             self.input.sampled_source_size,
         );
-        let mask_meta = resolve_target_meta(self.input.mask.handle(), ctx, source_meta.physical_size, None)
-            .with_fallback_origin(source_meta.global_origin)
-            .with_fallback_logical_origin(source_meta.logical_origin);
+        let mask_meta = resolve_target_meta(
+            self.input.mask.handle(),
+            ctx,
+            source_meta.physical_size,
+            None,
+        )
+        .with_fallback_origin(source_meta.global_origin)
+        .with_fallback_logical_origin(source_meta.logical_origin);
         let (target_w, target_h) = target_meta.physical_size;
         if target_w == 0 || target_h == 0 {
             return;
@@ -229,8 +241,13 @@ impl GraphicsPass for TextureCompositePass {
 
         let uniform = TextureCompositeUniform {
             use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
+            source_is_premultiplied: if self.params.source_is_premultiplied {
+                1.0
+            } else {
+                0.0
+            },
             opacity: self.params.opacity.clamp(0.0, 1.0),
-            _pad: [0.0, 0.0],
+            _pad: 0.0,
         };
         let (vertices, indices) = quad_for_bounds(
             bounds,
@@ -323,8 +340,13 @@ impl GraphicsPass for TextureCompositePass {
                     label: Some("TextureComposite Uniform (Fallback)"),
                     contents: bytemuck::bytes_of(&TextureCompositeUniform {
                         use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
+                        source_is_premultiplied: if self.params.source_is_premultiplied {
+                            1.0
+                        } else {
+                            0.0
+                        },
                         opacity: self.params.opacity.clamp(0.0, 1.0),
-                        _pad: [0.0, 0.0],
+                        _pad: 0.0,
                     }),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
@@ -447,8 +469,12 @@ impl GraphicsPass for TextureCompositePass {
         };
 
         let surface_size = ctx.viewport().surface_size();
-        let target_meta =
-            resolve_target_meta(self.output.render_target.handle(), ctx.frame_resources(), surface_size, None);
+        let target_meta = resolve_target_meta(
+            self.output.render_target.handle(),
+            ctx.frame_resources(),
+            surface_size,
+            None,
+        );
         let (target_w, target_h) = target_meta.physical_size;
         let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
             logical_scissor_to_target_physical(
@@ -522,8 +548,9 @@ pub(crate) fn composite_immediate(
 
     let uniform = TextureCompositeUniform {
         use_mask: if use_mask { 1.0 } else { 0.0 },
+        source_is_premultiplied: 0.0,
         opacity: opacity.clamp(0.0, 1.0),
-        _pad: [0.0, 0.0],
+        _pad: 0.0,
     };
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("TextureComposite Immediate Uniform"),
@@ -1029,5 +1056,42 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
             }
             Some([left, top, right - left, bottom - top])
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    fn composite_sample(color: [f32; 4], factor: f32, source_is_premultiplied: bool) -> [f32; 4] {
+        let alpha = color[3] * factor;
+        if source_is_premultiplied {
+            [
+                color[0] * factor,
+                color[1] * factor,
+                color[2] * factor,
+                alpha,
+            ]
+        } else {
+            [color[0] * alpha, color[1] * alpha, color[2] * alpha, alpha]
+        }
+    }
+
+    #[test]
+    fn premultiplied_sources_do_not_apply_alpha_twice() {
+        let premultiplied_color = [0.30, 0.12, 0.06, 0.60];
+        let out = composite_sample(premultiplied_color, 0.5, true);
+        assert_rgba_close(out, [0.15, 0.06, 0.03, 0.30]);
+    }
+
+    #[test]
+    fn straight_alpha_sources_still_convert_to_premultiplied_output() {
+        let straight_alpha_color = [1.0, 0.4, 0.2, 0.60];
+        let out = composite_sample(straight_alpha_color, 0.5, false);
+        assert_rgba_close(out, [0.30, 0.12, 0.06, 0.30]);
     }
 }

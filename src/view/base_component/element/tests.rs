@@ -2027,6 +2027,29 @@ mod tests {
     }
 
     #[test]
+    fn layer_subtree_does_not_inherit_ancestor_stencil_clip_id() {
+        let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        assert_eq!(
+            ctx.graphics_pass_context().stencil_clip_id,
+            None,
+            "fresh build context should not start with an active clip"
+        );
+
+        let pushed = ctx.push_clip_id();
+        assert_eq!(pushed, Some(1), "first pushed clip id should be 1");
+
+        let ancestor_clip = ctx.ancestor_clip_context();
+        let layer_state = super::BuildState::for_layer_subtree_with_ancestor_clip(ancestor_clip);
+        let layer_ctx = UiBuildContext::from_parts(ctx.viewport(), layer_state);
+
+        assert_eq!(
+            layer_ctx.graphics_pass_context().stencil_clip_id,
+            None,
+            "offscreen promoted layer subtree should not inherit ancestor stencil clip id"
+        );
+    }
+
+    #[test]
     fn non_promoted_container_with_promoted_child_is_not_built_twice_during_compose() {
         let mut root = Element::new(0.0, 0.0, 200.0, 200.0);
         let mut container = Element::new(0.0, 0.0, 120.0, 120.0);

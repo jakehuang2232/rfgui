@@ -3,8 +3,8 @@ use crate::view::frame_graph::{
     BufferDesc, BufferReadUsage, BufferResource, FrameGraph, FrameResourceContext,
 };
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    PrepareContext, ResourceCache, SampleCountPolicy, TextureDesc,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
+    ResourceCache, SampleCountPolicy, TextureDesc,
 };
 use crate::view::render_pass::ClearPass;
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
@@ -283,10 +283,15 @@ pub fn build_blur_module(
         let ds_w = (source_w / downsample).max(1);
         let ds_h = (source_h / downsample).max(1);
         let downsampled = graph.declare_texture(
-            TextureDesc::new(ds_w, ds_h, params.intermediate_format, wgpu::TextureDimension::D2)
-                .with_origin(source_origin_x, source_origin_y)
-                .with_sample_count(1)
-                .with_label("Blur Intermediate / Downsample"),
+            TextureDesc::new(
+                ds_w,
+                ds_h,
+                params.intermediate_format,
+                wgpu::TextureDimension::D2,
+            )
+            .with_origin(source_origin_x, source_origin_y)
+            .with_sample_count(1)
+            .with_label("Blur Intermediate / Downsample"),
         );
         graph.add_graphics_pass(ClearPass::new(
             ClearParams::new([0.0, 0.0, 0.0, 0.0]),

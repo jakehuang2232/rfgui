@@ -31,28 +31,22 @@ pub(crate) fn collect_promotion_candidates(
 
         let (visible_area_ratio, viewport_coverage, distance_to_viewport) =
             visibility_metrics(snapshot, viewport_size);
-        // Root windows with box shadows currently regress when promoted:
-        // redraw may reuse/composite the root layer incorrectly and drop the
-        // outer shadow / show a fringe. Keep only those top-level nodes on the
-        // inline path so nested promoted descendants still work.
-        if !(snapshot.parent_id.is_none() && info.has_box_shadow) {
-            out.push(PromotionCandidate {
-                node_id: snapshot.node_id,
-                parent_id: snapshot.parent_id,
-                width: snapshot.width.max(0.0),
-                height: snapshot.height.max(0.0),
-                subtree_node_count,
-                estimated_pass_count,
-                visible_area_ratio,
-                viewport_coverage,
-                distance_to_viewport,
-                info,
-                active_channels: active_channels
-                    .get(&snapshot.node_id)
-                    .cloned()
-                    .unwrap_or_default(),
-            });
-        }
+        out.push(PromotionCandidate {
+            node_id: snapshot.node_id,
+            parent_id: snapshot.parent_id,
+            width: snapshot.width.max(0.0),
+            height: snapshot.height.max(0.0),
+            subtree_node_count,
+            estimated_pass_count,
+            visible_area_ratio,
+            viewport_coverage,
+            distance_to_viewport,
+            info,
+            active_channels: active_channels
+                .get(&snapshot.node_id)
+                .cloned()
+                .unwrap_or_default(),
+        });
 
         (subtree_node_count, estimated_pass_count)
     }
@@ -466,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn root_nodes_with_box_shadow_are_not_promotion_candidates() {
+    fn root_nodes_with_box_shadow_remain_promotion_candidates() {
         let mut shadowed_root = Element::new(24.0, 16.0, 120.0, 80.0);
         let shadowed_root_id = shadowed_root.id();
         let mut root_style = Style::new();
@@ -507,8 +501,8 @@ mod tests {
         assert!(
             candidates
                 .iter()
-                .all(|candidate| candidate.node_id != shadowed_root_id),
-            "shadowed root should stay on inline render path: {candidates:#?}"
+                .any(|candidate| candidate.node_id == shadowed_root_id),
+            "shadowed root should remain eligible for promotion: {candidates:#?}"
         );
         assert!(
             candidates

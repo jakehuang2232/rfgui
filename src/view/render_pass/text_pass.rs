@@ -1,8 +1,8 @@
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{
-    BufferReadUsage, GraphicsColorAttachmentOps, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, PrepareContext,
+    BufferReadUsage, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -135,7 +135,10 @@ impl GraphicsPass for TextPass {
         builder.read_buffer(&self.staging_buffer, BufferReadUsage::Uniform);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             let _ = target;
-            builder.write_color(&self.output.render_target, GraphicsColorAttachmentOps::load());
+            builder.write_color(
+                &self.output.render_target,
+                GraphicsColorAttachmentOps::load(),
+            );
         } else {
             builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }
@@ -260,8 +263,10 @@ impl GraphicsPass for TextPass {
             let (overlay_w, overlay_h) = viewport.surface_size();
             let overlay = build_text_debug_overlay(
                 &buffer,
-                self.params.x * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
-                self.params.y * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
+                self.params.x * scale - target_origin.0 as f32
+                    + target_meta.logical_origin.0 as f32,
+                self.params.y * scale - target_origin.1 as f32
+                    + target_meta.logical_origin.1 as f32,
                 bounds,
                 [
                     target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
@@ -302,16 +307,15 @@ impl GraphicsPass for TextPass {
             }
             None => resources.take_renderer(&device, renderer_key),
         };
-        let prepare_result = renderer
-            .prepare(
-                &device,
-                &queue,
-                &mut resources.font_system,
-                &mut resources.atlas,
-                &glyphon_viewport,
-                vec![text_area],
-                &mut resources.swash_cache,
-            );
+        let prepare_result = renderer.prepare(
+            &device,
+            &queue,
+            &mut resources.font_system,
+            &mut resources.atlas,
+            &glyphon_viewport,
+            vec![text_area],
+            &mut resources.swash_cache,
+        );
         resources.put_viewport(resolution, glyphon_viewport);
         if prepare_result.is_err() {
             resources.put_renderer(renderer_key, renderer);

@@ -1923,13 +1923,11 @@ impl Viewport {
         } else {
             root.promotion_node_info().opacity.clamp(0.0, 1.0)
         };
-        let parent_target = ctx
-            .current_target()
-            .unwrap_or_else(|| {
-                let target = ctx.allocate_target(graph);
-                ctx.set_current_target(target);
-                target
-            });
+        let parent_target = ctx.current_target().unwrap_or_else(|| {
+            let target = ctx.allocate_target(graph);
+            ctx.set_current_target(target);
+            target
+        });
         ctx.set_current_target(parent_target);
         let pass = super::render_pass::composite_layer_pass::CompositeLayerPass::new(
             super::render_pass::composite_layer_pass::CompositeLayerParams {
@@ -3038,12 +3036,8 @@ impl Viewport {
     ) -> Option<RenderTargetBundle> {
         let device = self.device.as_ref()?;
         let sample_count = desc.sample_count().max(1);
-        self.offscreen_render_target_pool.acquire(
-            device,
-            allocation_id,
-            desc,
-            sample_count,
-        )
+        self.offscreen_render_target_pool
+            .acquire(device, allocation_id, desc, sample_count)
     }
 
     pub(crate) fn acquire_persistent_render_target(
@@ -3053,12 +3047,8 @@ impl Viewport {
     ) -> Option<RenderTargetBundle> {
         let device = self.device.as_ref()?;
         let sample_count = desc.sample_count().max(1);
-        self.offscreen_render_target_pool.acquire_persistent(
-            device,
-            stable_key,
-            desc,
-            sample_count,
-        )
+        self.offscreen_render_target_pool
+            .acquire_persistent(device, stable_key, desc, sample_count)
     }
 
     pub(crate) fn upload_sampled_texture_rgba(

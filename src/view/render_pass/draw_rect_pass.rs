@@ -312,7 +312,8 @@ impl DrawRectPass {
         variant: RectShaderVariant,
     ) {
         let surface_size = ctx.viewport.surface_size();
-        let target_meta = resolve_texture_ref(self.output.render_target.handle(), ctx, surface_size, None);
+        let target_meta =
+            resolve_texture_ref(self.output.render_target.handle(), ctx, surface_size, None);
         let (target_w, target_h) = target_meta.physical_size;
         let target_origin = self
             .output
@@ -719,7 +720,8 @@ fn encode_draw_rect_into_existing_pass(
 ) {
     let draw = pass_def.snapshot_draw();
     let surface_size = ctx.viewport().surface_size();
-    let target_meta = resolve_texture_ref(draw.color_target, ctx.frame_resources(), surface_size, None);
+    let target_meta =
+        resolve_texture_ref(draw.color_target, ctx.frame_resources(), surface_size, None);
     let (target_w, target_h) = target_meta.physical_size;
     let target_origin = draw
         .color_target

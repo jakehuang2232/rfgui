@@ -40,7 +40,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if composite.data.x > 0.5 {
         factor = factor * textureSample(mask_tex, tex_sampler, in.mask_uv).a;
     }
-    factor = factor * clamp(composite.data.y, 0.0, 1.0);
+    let source_is_premultiplied = composite.data.y > 0.5;
+    factor = factor * clamp(composite.data.z, 0.0, 1.0);
     let alpha = color.a * factor;
+    if source_is_premultiplied {
+        return vec4<f32>(color.rgb * factor, alpha);
+    }
     return vec4<f32>(color.rgb * alpha, alpha);
 }
