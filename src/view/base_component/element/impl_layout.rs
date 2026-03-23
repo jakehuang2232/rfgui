@@ -646,19 +646,37 @@ impl Element {
         } else {
             self.current_parent_child_clip_rect().unwrap_or(parent_rect)
         };
-        let parent_left = cull_rect.x;
-        let parent_top = cull_rect.y;
-        let parent_right = cull_rect.x + cull_rect.width;
-        let parent_bottom = cull_rect.y + cull_rect.height;
-        let self_right = frame.x + frame.width;
-        let self_bottom = frame.y + frame.height;
+        let intersects_parent_clip = Self::frame_intersects_rect(frame, cull_rect);
+        let intersects_absolute_clip = self
+            .absolute_clip_rect
+            .is_none_or(|clip| Self::frame_intersects_rect(frame, clip));
+        let max_bw = (frame.width.min(frame.height)) * 0.5;
+        let border_left = self.border_widths.left.clamp(0.0, max_bw);
+        let border_right = self.border_widths.right.clamp(0.0, max_bw);
+        let border_top = self.border_widths.top.clamp(0.0, max_bw);
+        let border_bottom = self.border_widths.bottom.clamp(0.0, max_bw);
+        let inset_left = border_left + self.padding.left.max(0.0);
+        let inset_right = border_right + self.padding.right.max(0.0);
+        let inset_top = border_top + self.padding.top.max(0.0);
+        let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
+        let inner_width = (frame.width - inset_left - inset_right).max(0.0);
+        let inner_height = (frame.height - inset_top - inset_bottom).max(0.0);
+        let has_nonzero_inner_area = inner_width > 0.0 && inner_height > 0.0;
+        let has_visible_self_paint = self.has_visible_self_paint(
+            frame.width.max(0.0),
+            frame.height.max(0.0),
+            proposal.viewport_width,
+            proposal.viewport_height,
+        );
 
         self.core.should_render = frame.width > 0.0
             && frame.height > 0.0
-            && self_right > parent_left
-            && frame.x < parent_right
-            && self_bottom > parent_top
-            && frame.y < parent_bottom;
+            && intersects_parent_clip
+            && intersects_absolute_clip;
+        self.core.should_paint = self.core.should_render
+            && self.computed_style.opacity > 0.0
+            && has_nonzero_inner_area
+            && has_visible_self_paint;
         self.last_parent_layout_x = parent_x;
         self.last_parent_layout_y = parent_y;
     }
@@ -829,12 +847,12 @@ impl Element {
         }
     }
 
-    fn child_layout_limits(&self) -> (f32, f32) {
+    fn child_layout_limits_for_inner_size(&self, inner_width: f32, inner_height: f32) -> (f32, f32) {
         const SCROLL_EXPANDED_LIMIT: f32 = 1_000_000.0;
         match self.scroll_direction {
-            ScrollDirection::None => (self.layout_inner_size.width, self.layout_inner_size.height),
-            ScrollDirection::Vertical => (self.layout_inner_size.width, SCROLL_EXPANDED_LIMIT),
-            ScrollDirection::Horizontal => (SCROLL_EXPANDED_LIMIT, self.layout_inner_size.height),
+            ScrollDirection::None => (inner_width, inner_height),
+            ScrollDirection::Vertical => (inner_width, SCROLL_EXPANDED_LIMIT),
+            ScrollDirection::Horizontal => (SCROLL_EXPANDED_LIMIT, inner_height),
             ScrollDirection::Both => (SCROLL_EXPANDED_LIMIT, SCROLL_EXPANDED_LIMIT),
         }
     }
@@ -996,6 +1014,10 @@ impl Element {
         viewport_height: f32,
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
+        child_available_width: f32,
+        child_available_height: f32,
+        child_inner_width: f32,
+        child_inner_height: f32,
     ) {
         let inherited_hit_test_clip = self.hit_test_clip_rect.unwrap_or(Rect {
             x: self.core.layout_position.x,
@@ -1014,13 +1036,14 @@ impl Element {
             width: (self.layout_inner_size.width + overscan * 2.0).max(0.0),
             height: (self.layout_inner_size.height + overscan * 2.0).max(0.0),
         });
-        let (child_available_width, child_available_height) = self.child_layout_limits();
-        let is_flex = matches!(
+        let is_axis_layout = matches!(
             self.computed_style.layout,
-            Layout::Flow { .. } | Layout::InlineFlex
+            Layout::Flex { .. } | Layout::Flow { .. } | Layout::InlineFlex
         );
-        if is_flex {
+        if is_axis_layout {
             self.place_flex_children(
+                child_inner_width,
+                child_inner_height,
                 child_available_width,
                 child_available_height,
                 viewport_width,
@@ -1079,6 +1102,8 @@ impl Element {
 
     fn place_flex_children(
         &mut self,
+        child_inner_width: f32,
+        child_inner_height: f32,
         child_available_width: f32,
         child_available_height: f32,
         viewport_width: f32,
@@ -1094,32 +1119,24 @@ impl Element {
             info
         } else {
             self.compute_flex_info(
-                self.layout_inner_size.width,
-                self.layout_inner_size.height,
+                child_inner_width,
+                child_inner_height,
+                child_available_width,
+                child_available_height,
                 viewport_width,
                 viewport_height,
+                child_percent_base_width,
+                child_percent_base_height,
             )
         };
 
         let is_row = matches!(
-            self.computed_style.layout_flow_direction(),
+            self.computed_style.layout_axis_direction(),
             FlowDirection::Row
         );
-        let main_limit = if is_row {
-            self.layout_inner_size.width
-        } else {
-            self.layout_inner_size.height
-        };
-        let cross_limit = if is_row {
-            self.layout_inner_size.height
-        } else {
-            self.layout_inner_size.width
-        };
-        let gap_base = if is_row {
-            self.layout_inner_size.width
-        } else {
-            self.layout_inner_size.height
-        };
+        let main_limit = if is_row { child_inner_width } else { child_inner_height };
+        let cross_limit = if is_row { child_inner_height } else { child_inner_width };
+        let gap_base = if is_row { child_inner_width } else { child_inner_height };
         let gap = resolve_px(
             self.computed_style.gap,
             gap_base,
@@ -1132,8 +1149,8 @@ impl Element {
         let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
 
         let total_cross = info.total_cross;
-        let cross_size = self.computed_style.layout_flow_cross_size();
-        let align = self.computed_style.layout_flow_align();
+        let cross_size = self.computed_style.layout_axis_cross_size();
+        let align = self.computed_style.layout_axis_align();
         let mut cross_cursor = cross_start_offset(cross_limit, total_cross, align);
 
         for (line_idx, line) in info.lines.iter().enumerate() {
@@ -1144,7 +1161,7 @@ impl Element {
                 line_main,
                 gap,
                 line.len(),
-                self.computed_style.layout_flow_justify_content(),
+                self.computed_style.layout_axis_justify_content(),
             );
 
             for &child_idx in line {

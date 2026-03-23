@@ -240,7 +240,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
                 <Element
                     key={item.key}
                     style={{
-                        layout: Layout::flow().row().no_wrap(),
+                        layout: Layout::flex().row(),
                         padding: theme.component.input.padding,
                         background: if item.disabled {
                             theme.component.select.option_disabled_background.clone()

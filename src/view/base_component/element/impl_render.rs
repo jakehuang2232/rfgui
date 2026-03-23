@@ -79,7 +79,7 @@ impl Element {
             None
         };
 
-        if self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0 {
+        if self.has_inner_render_area() {
             for (idx, child) in self.children.iter_mut().enumerate() {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                     continue;
@@ -99,30 +99,32 @@ impl Element {
             }
         }
 
-        for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
-            if !is_overflow {
-                continue;
-            }
-            if let Some(child) = self.children.get_mut(idx) {
-                if child
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .is_some_and(Element::should_append_to_root_viewport_render)
-                {
-                    ctx.append_to_defer(child.id());
+        if self.has_inner_render_area() {
+            for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
+                if !is_overflow {
                     continue;
                 }
-                if ctx.is_node_promoted(child.id()) {
-                    continue;
-                }
-                if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                    let viewport = ctx.viewport();
-                    let next_state = element.build_base_descendants_only(graph, ctx, false);
-                    ctx = UiBuildContext::from_parts(viewport, next_state);
-                } else {
-                    let viewport = ctx.viewport();
-                    let next_state = child.build(graph, ctx);
-                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                if let Some(child) = self.children.get_mut(idx) {
+                    if child
+                        .as_any()
+                        .downcast_ref::<Element>()
+                        .is_some_and(Element::should_append_to_root_viewport_render)
+                    {
+                        ctx.append_to_defer(child.id());
+                        continue;
+                    }
+                    if ctx.is_node_promoted(child.id()) {
+                        continue;
+                    }
+                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                        let viewport = ctx.viewport();
+                        let next_state = element.build_base_descendants_only(graph, ctx, false);
+                        ctx = UiBuildContext::from_parts(viewport, next_state);
+                    } else {
+                        let viewport = ctx.viewport();
+                        let next_state = child.build(graph, ctx);
+                        ctx = UiBuildContext::from_parts(viewport, next_state);
+                    }
                 }
             }
         }
@@ -185,7 +187,7 @@ impl Element {
             proposal.viewport_height,
         );
 
-        let (layout_w, layout_h) = self.current_layout_transition_size();
+        let (layout_w, layout_h) = self.current_layout_target_size();
         let measure_w = if self.computed_style.width == SizeValue::Auto
             && proposal.percent_base_width.is_some()
         {
@@ -234,11 +236,15 @@ impl Element {
         let info = self.compute_flex_info(
             inner_w,
             inner_h,
+            child_available_width,
+            child_available_height,
             proposal.viewport_width,
             proposal.viewport_height,
+            child_percent_base_width,
+            child_percent_base_height,
         );
         let is_row = matches!(
-            self.computed_style.layout_flow_direction(),
+            self.computed_style.layout_axis_direction(),
             FlowDirection::Row
         );
 
@@ -275,17 +281,22 @@ impl Element {
     }
 
     fn compute_flex_info(
-        &self,
+        &mut self,
         inner_w: f32,
         inner_h: f32,
+        child_available_width: f32,
+        child_available_height: f32,
         viewport_width: f32,
         viewport_height: f32,
+        child_percent_base_width: Option<f32>,
+        child_percent_base_height: Option<f32>,
     ) -> FlexLayoutInfo {
         let is_row = matches!(
-            self.computed_style.layout_flow_direction(),
+            self.computed_style.layout_axis_direction(),
             FlowDirection::Row
         );
-        let wrap = matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
+        let is_real_flex = matches!(self.computed_style.layout, Layout::Flex { .. });
+        let wrap = !is_real_flex && matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
         let gap_base = if is_row { inner_w } else { inner_h };
         let gap = resolve_px(
@@ -296,6 +307,106 @@ impl Element {
         );
 
         let mut child_sizes = vec![(0.0_f32, 0.0_f32); self.children.len()];
+        if is_real_flex {
+            let mut line: Vec<usize> = Vec::new();
+            let mut base_main_sizes = vec![0.0_f32; self.children.len()];
+            let mut total_grow = 0.0_f32;
+            let mut total_shrink_weight = 0.0_f32;
+            let mut base_main_sum = 0.0_f32;
+
+            for (idx, child) in self.children.iter().enumerate() {
+                if self.child_is_absolute(idx) {
+                    continue;
+                }
+                let (w, h) = child.measured_size();
+                let measured_main = if is_row { w } else { h };
+                let basis = match child.flex_basis() {
+                    SizeValue::Length(length) => {
+                        resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
+                            .unwrap_or(measured_main)
+                    }
+                    SizeValue::Auto => measured_main,
+                }
+                .max(0.0);
+
+                line.push(idx);
+                base_main_sizes[idx] = basis;
+                base_main_sum += basis;
+                total_grow += child.flex_grow().max(0.0);
+                total_shrink_weight += child.flex_shrink().max(0.0) * basis;
+            }
+
+            let gap_total = gap * (line.len().saturating_sub(1) as f32);
+            let free_space = main_limit - base_main_sum - gap_total;
+            let mut line_cross = 0.0_f32;
+            let mut final_main_sum = 0.0_f32;
+
+            for &idx in &line {
+                let child = &mut self.children[idx];
+                let base_main = base_main_sizes[idx];
+                let mut target_main = base_main;
+
+                if free_space > 0.0 && total_grow > 0.0 {
+                    target_main += free_space * (child.flex_grow().max(0.0) / total_grow);
+                } else if free_space < 0.0 && total_shrink_weight > 0.0 {
+                    let shrink_weight = child.flex_shrink().max(0.0) * base_main;
+                    target_main += free_space * (shrink_weight / total_shrink_weight);
+                }
+                target_main = target_main.max(0.0);
+
+                child.measure(LayoutConstraints {
+                    max_width: if is_row {
+                        target_main
+                    } else {
+                        child_available_width
+                    },
+                    max_height: if is_row {
+                        child_available_height
+                    } else {
+                        target_main
+                    },
+                    viewport_width,
+                    viewport_height,
+                    percent_base_width: child_percent_base_width,
+                    percent_base_height: child_percent_base_height,
+                });
+
+                if is_row {
+                    child.set_layout_width(target_main);
+                } else {
+                    child.set_layout_height(target_main);
+                }
+
+                let (measured_w, measured_h) = child.measured_size();
+                let item_cross = if is_row { measured_h } else { measured_w };
+                child_sizes[idx] = (target_main, item_cross);
+                final_main_sum += target_main;
+                line_cross = line_cross.max(item_cross);
+            }
+
+            let total_main = if line.is_empty() {
+                0.0
+            } else {
+                final_main_sum + gap_total
+            };
+            return FlexLayoutInfo {
+                lines: if line.is_empty() { Vec::new() } else { vec![line] },
+                line_main_sum: if total_main > 0.0 || line_cross > 0.0 {
+                    vec![total_main]
+                } else {
+                    Vec::new()
+                },
+                line_cross_max: if total_main > 0.0 || line_cross > 0.0 {
+                    vec![line_cross]
+                } else {
+                    Vec::new()
+                },
+                total_main,
+                total_cross: line_cross,
+                child_sizes,
+            };
+        }
+
         for (idx, child) in self.children.iter().enumerate() {
             if self.child_is_absolute(idx) {
                 continue;
@@ -365,6 +476,9 @@ impl Element {
         mut ctx: UiBuildContext,
         force_opaque: bool,
     ) -> BuildState {
+        if !self.core.should_paint {
+            return ctx.into_state();
+        }
         let fill_color = self.background_color.as_ref().to_rgba_f32();
         let opacity = if force_opaque { 1.0 } else { self.opacity };
         let shadow_state = self.render_box_shadows(
@@ -727,7 +841,7 @@ impl Element {
                 None
             };
 
-            if self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0 {
+            if self.has_inner_render_area() {
                 for (idx, child) in self.children.iter_mut().enumerate() {
                     if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                         continue;
@@ -749,32 +863,34 @@ impl Element {
                 }
             }
 
-            for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
-                if !is_overflow {
-                    continue;
-                }
-                if let Some(child) = self.children.get_mut(idx) {
-                    if child
-                        .as_any()
-                        .downcast_ref::<Element>()
-                        .is_some_and(Element::should_append_to_root_viewport_render)
-                    {
-                        ctx.append_to_defer(child.id());
+            if self.has_inner_render_area() {
+                for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
+                    if !is_overflow {
                         continue;
                     }
-                    if ctx.is_node_promoted(child.id()) {
-                        Self::build_promoted_child(
-                            graph,
-                            &mut ctx,
-                            child,
-                            mask_target,
-                        );
-                        continue;
-                    }
-                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                        let viewport = ctx.viewport();
-                        let next_state = element.compose_promoted_descendants_only(graph, ctx);
-                        ctx = UiBuildContext::from_parts(viewport, next_state);
+                    if let Some(child) = self.children.get_mut(idx) {
+                        if child
+                            .as_any()
+                            .downcast_ref::<Element>()
+                            .is_some_and(Element::should_append_to_root_viewport_render)
+                        {
+                            ctx.append_to_defer(child.id());
+                            continue;
+                        }
+                        if ctx.is_node_promoted(child.id()) {
+                            Self::build_promoted_child(
+                                graph,
+                                &mut ctx,
+                                child,
+                                mask_target,
+                            );
+                            continue;
+                        }
+                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                            let viewport = ctx.viewport();
+                            let next_state = element.compose_promoted_descendants_only(graph, ctx);
+                            ctx = UiBuildContext::from_parts(viewport, next_state);
+                        }
                     }
                 }
             }

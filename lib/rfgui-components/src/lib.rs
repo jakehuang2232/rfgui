@@ -1,24 +1,14 @@
-mod button;
-mod checkbox;
-mod number_field;
-mod select;
-mod slider;
-mod switch;
+mod inputs;
+mod layout;
 mod theme;
-mod window;
 
-pub use button::*;
-pub use checkbox::*;
-pub use number_field::*;
-pub use select::*;
-pub use slider::*;
-pub use switch::*;
+pub use inputs::*;
+pub use layout::*;
 pub use theme::*;
-pub use window::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::{Button, ButtonVariant, Checkbox, Select, Switch, Window};
+    use crate::{Accordion, Button, ButtonVariant, Checkbox, Select, Switch, Window};
     use rfgui::ui::host::{Element, ElementPropSchema, Text, TextPropSchema};
     use rfgui::ui::{
         EventMeta, MouseButton, MouseEventData, RsxNode, create_element, global_state, rsx,
@@ -409,5 +399,56 @@ mod tests {
         };
         assert_eq!(root.tag, "Element");
         assert!(!root.children.is_empty());
+    }
+
+    #[test]
+    fn accordion_default_expanded_renders_children() {
+        let tree = rsx! {
+            <Accordion
+                title="Section A"
+                default_expanded={Some(true)}
+            >
+                <Text>"Content A"</Text>
+            </Accordion>
+        };
+
+        let mut texts = Vec::new();
+        collect_text_nodes(&tree, &mut texts);
+        assert!(texts.iter().any(|text| text == "Section A"));
+        assert!(texts.iter().any(|text| text == "Content A"));
+    }
+
+    #[test]
+    fn accordion_collapsed_keeps_children_in_tree() {
+        let tree = rsx! {
+            <Accordion title="Section B">
+                <Text>"Content B"</Text>
+            </Accordion>
+        };
+
+        let mut texts = Vec::new();
+        collect_text_nodes(&tree, &mut texts);
+        assert!(texts.iter().any(|text| text == "Section B"));
+        assert!(texts.iter().any(|text| text == "Content B"));
+    }
+
+    #[test]
+    fn accordion_click_updates_expanded_binding() {
+        let expanded = global_state(|| false);
+
+        let tree = rsx! {
+            <Accordion
+                title="Section C"
+                expanded_binding={Some(expanded.binding())}
+            >
+                <Text>"Content C"</Text>
+            </Accordion>
+        };
+
+        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert accordion");
+        let mut viewport = rfgui::view::Viewport::new();
+        click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
+
+        assert!(expanded.get());
     }
 }

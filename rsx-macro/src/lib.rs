@@ -853,18 +853,29 @@ fn expand_builder_value_expr(
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let value = expand_prop_value_expr_for_builder(&prop.key, &prop.value, builder_ident);
-    let is_closure = matches!(&prop.value, PropValueExpr::Expr(Expr::Closure(_)));
-    if !is_closure {
-        return value;
-    }
-    let wrapper = event_closure_wrapper(&prop.key.to_string());
-    match wrapper {
-        Some(wrapper_fn) => quote! { #wrapper_fn(#value) },
-        None => value,
+    match &prop.value {
+        PropValueExpr::Expr(expr) => wrap_event_expr(&prop.key.to_string(), expr, value),
+        _ => value,
     }
 }
 
-fn event_closure_wrapper(prop_key: &str) -> Option<proc_macro2::TokenStream> {
+fn event_handler_converter(prop_key: &str) -> Option<proc_macro2::TokenStream> {
+    match prop_key {
+        "on_mouse_down" => Some(quote! { ::rfgui::ui::into_mouse_down_handler }),
+        "on_mouse_up" => Some(quote! { ::rfgui::ui::into_mouse_up_handler }),
+        "on_mouse_move" => Some(quote! { ::rfgui::ui::into_mouse_move_handler }),
+        "on_mouse_enter" => Some(quote! { ::rfgui::ui::into_mouse_enter_handler }),
+        "on_mouse_leave" => Some(quote! { ::rfgui::ui::into_mouse_leave_handler }),
+        "on_click" => Some(quote! { ::rfgui::ui::into_click_handler }),
+        "on_key_down" => Some(quote! { ::rfgui::ui::into_key_down_handler }),
+        "on_key_up" => Some(quote! { ::rfgui::ui::into_key_up_handler }),
+        "on_focus" => Some(quote! { ::rfgui::ui::into_focus_handler }),
+        "on_blur" => Some(quote! { ::rfgui::ui::into_blur_handler }),
+        _ => None,
+    }
+}
+
+fn event_handler_wrapper(prop_key: &str) -> Option<proc_macro2::TokenStream> {
     match prop_key {
         "on_mouse_down" => Some(quote! { ::rfgui::ui::on_mouse_down }),
         "on_mouse_up" => Some(quote! { ::rfgui::ui::on_mouse_up }),
@@ -877,6 +888,30 @@ fn event_closure_wrapper(prop_key: &str) -> Option<proc_macro2::TokenStream> {
         "on_focus" => Some(quote! { ::rfgui::ui::on_focus }),
         "on_blur" => Some(quote! { ::rfgui::ui::on_blur }),
         _ => None,
+    }
+}
+
+fn wrap_event_expr(
+    prop_key: &str,
+    expr: &Expr,
+    raw: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let Some(converter_fn) = event_handler_converter(prop_key) else {
+        return raw;
+    };
+
+    if let Expr::Closure(closure) = expr
+        && closure.inputs.is_empty()
+    {
+        return quote! { #converter_fn(::rfgui::ui::no_arg_handler(#raw)) };
+    }
+
+    if matches!(expr, Expr::Closure(_))
+        && let Some(wrapper_fn) = event_handler_wrapper(prop_key)
+    {
+        quote! { #wrapper_fn(#raw) }
+    } else {
+        raw
     }
 }
 
@@ -953,15 +988,7 @@ fn expand_object_value_expr(
     match value {
         ObjectValueExpr::Expr(value) => {
             let raw = quote! { #value };
-            if matches!(value, Expr::Closure(_)) {
-                if let Some(wrapper_fn) = event_closure_wrapper(&key.to_string()) {
-                    quote! { #wrapper_fn(#raw) }
-                } else {
-                    raw
-                }
-            } else {
-                raw
-            }
+            wrap_event_expr(&key.to_string(), value, raw)
         }
         ObjectValueExpr::StyleObject(entries) => {
             let style_inserts = entries.iter().map(expand_style_entry);
@@ -1195,7 +1222,7 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 quote! {
                     __rsx_style.insert(
                         ::rfgui::PropertyId::Layout,
-                        ::rfgui::ParsedValue::Layout(#inner),
+                        ::rfgui::ParsedValue::Layout((#inner).into()),
                     );
                 }
             })
@@ -1218,6 +1245,17 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                     __rsx_style.insert(
                         ::rfgui::PropertyId::Align,
                         ::rfgui::ParsedValue::Align(#inner),
+                    );
+                }
+            })
+        }),
+        "flex" => expr_style_tokens("style.flex requires an expression value", |value| {
+            expand_maybe_none_style_expr(value, |inner| {
+                quote! {
+                    ::rfgui::insert_style_flex(
+                        &mut __rsx_style,
+                        ::rfgui::PropertyId::Flex,
+                        #inner,
                     );
                 }
             })

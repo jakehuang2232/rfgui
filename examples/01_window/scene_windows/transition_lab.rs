@@ -61,7 +61,7 @@ pub fn build(
                 {"How to verify: click Start Animation first, then click Remove Transition during playback. Expected: jump to the end value immediately."}
             </Text>
             <Element style={{
-                layout: Layout::flow().row().wrap(),
+                layout: Layout::flow().row(),
                 gap: theme.spacing.md,
                 width: Length::percent(100.0),
             }}>
@@ -89,7 +89,7 @@ pub fn build(
                             Vec::<Transition>::new()
                         },
                     }} />
-                    <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
+                    <Element style={{ layout: Layout::flow().row(), gap: theme.spacing.xs }}>
                         <Button label="Start Animation" on_click={move |_| { style_start.set(true); style_toggle_target.update(|value| *value = !*value); }} />
                         <Button label="Remove Transition" on_click={move |_| { style_remove.set(false); }} />
                         <Button label="Reset" on_click={move |_| { style_reset_enable.set(true); style_reset_target.set(false); }} />
@@ -122,7 +122,7 @@ pub fn build(
                             Vec::<Transition>::new()
                         },
                     }} />
-                    <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
+                    <Element style={{ layout: Layout::flow().row(), gap: theme.spacing.xs }}>
                         <Button label="Start Animation" on_click={move |_| { layout_start_enable.set(true); layout_toggle_size.update(|value| *value = !*value); }} />
                         <Button label="Remove Transition" on_click={move |_| { layout_remove.set(false); }} />
                         <Button label="Reset" on_click={move |_| { layout_reset_enable.set(true); layout_reset_size.set(false); }} />
@@ -161,7 +161,7 @@ pub fn build(
                             },
                         }} />
                     </Element>
-                    <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
+                    <Element style={{ layout: Layout::flow().row(), gap: theme.spacing.xs }}>
                         <Button label="Start Animation" on_click={move |_| { visual_start_enable.set(true); visual_toggle_pos.update(|value| *value = !*value); }} />
                         <Button label="Remove Transition" on_click={move |_| { visual_remove.set(false); }} />
                         <Button label="Reset" on_click={move |_| { visual_reset_enable.set(true); visual_reset_pos.set(false); }} />

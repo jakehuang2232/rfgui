@@ -5,8 +5,9 @@ use crate::ui::{
     MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, props,
 };
 use crate::{
-    Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, FontFamily, FontSize, FontWeight,
-    Layout, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign, Transitions,
+    Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize,
+    FontWeight, Layout, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign,
+    Transitions,
 };
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -67,6 +68,7 @@ pub struct ElementStylePropSchema {
     pub layout: Layout,
     pub cross_size: CrossSize,
     pub align: Align,
+    pub flex: Flex,
     pub gap: Length,
     pub scroll_direction: ScrollDirection,
     pub cursor: Cursor,

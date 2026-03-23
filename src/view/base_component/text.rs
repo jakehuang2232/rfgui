@@ -494,6 +494,18 @@ impl Layoutable for Text {
         }
     }
 
+    fn flex_grow(&self) -> f32 {
+        self.element.flex_grow()
+    }
+
+    fn flex_shrink(&self) -> f32 {
+        self.element.flex_shrink()
+    }
+
+    fn flex_basis(&self) -> crate::SizeValue {
+        self.element.flex_basis()
+    }
+
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
