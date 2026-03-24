@@ -1,10 +1,10 @@
-use crate::use_theme;
-use rfgui::ui::host::{Element, Text};
+use crate::{Button, use_theme};
+use rfgui::ui::host::{Element, TextArea};
 use rfgui::ui::{
-    Binding, ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,
-    use_state,
+    Binding, ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, TextChangeHandlerProp,
+    component, props, rsx, use_state,
 };
-use rfgui::{Align, Border, JustifyContent, Layout, Length};
+use rfgui::{Align, Layout, Length, TextWrap, flex};
 
 pub struct NumberField;
 
@@ -16,6 +16,7 @@ pub struct NumberFieldProps {
     pub max: Option<f64>,
     pub step: Option<f64>,
     pub disabled: Option<bool>,
+    pub label: Option<String>,
 }
 
 impl RsxComponent<NumberFieldProps> for NumberField {
@@ -35,6 +36,7 @@ impl RsxComponent<NumberFieldProps> for NumberField {
                 max_value={props.max.unwrap_or(0.0)}
                 step={props.step.unwrap_or(1.0)}
                 disabled={props.disabled.unwrap_or(false)}
+                label={props.label}
             />
         }
     }
@@ -55,10 +57,10 @@ fn NumberFieldView(
     max_value: f64,
     step: f64,
     disabled: bool,
+    label: Option<String>,
 ) -> RsxNode {
     let theme = use_theme().get();
-    let width = 120.0_f32;
-    let height = 18.0_f32;
+    let _ = label;
 
     let fallback_value = use_state(|| value);
     let value_binding = if has_binding {
@@ -69,143 +71,110 @@ fn NumberFieldView(
     let min = if has_min { Some(min_value) } else { None };
     let max = if has_max { Some(max_value) } else { None };
     let current = value_binding.get();
-
-    let button_size = (height - 2.0).max(0.0);
-    let value_width = (width - button_size * 2.0).max(0.0);
-    let left_border = Border::uniform(Length::px(1.0), theme.color.border.as_ref())
-        .right(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
-    let right_border = Border::uniform(Length::px(1.0), theme.color.border.as_ref())
-        .left(Some(Length::px(1.0)), Some(theme.color.border.as_ref()));
+    let number_string = use_state(|| format_number(current));
 
     let minus_click = if disabled {
         None
     } else {
-        Some(step_handler(value_binding.clone(), -step, min, max))
+        Some(step_handler(
+            value_binding.clone(),
+            number_string.binding(),
+            -step,
+            min,
+            max,
+        ))
     };
 
     let plus_click = if disabled {
         None
     } else {
-        Some(step_handler(value_binding.clone(), step, min, max))
+        Some(step_handler(
+            value_binding.clone(),
+            number_string.binding(),
+            step,
+            min,
+            max,
+        ))
     };
 
-    let mut root = rsx! {
+    let text_change = if disabled {
+        None
+    } else {
+        let value_binding = value_binding.clone();
+        let number_string = number_string.binding();
+        Some(TextChangeHandlerProp::new(
+            move |event: &mut rfgui::ui::TextChangeEvent| {
+                let raw = event.value.trim();
+                if raw.is_empty() {
+                    return;
+                }
+                let Ok(parsed) = raw.parse::<f64>() else {
+                    return;
+                };
+
+                let next = clamp_number(parsed, min, max);
+                if value_binding.get() != next {
+                    value_binding.set(next);
+                }
+
+                if next != parsed {
+                    number_string.set(format_number(next));
+                }
+            },
+        ))
+    };
+
+    let root = rsx! {
         <Element style={{
             layout: Layout::flex().row().align(Align::Center),
-            width: Length::px(width),
-            height: Length::px(height),
-            border_radius: theme.component.input.radius,
-            border: theme.component.input.border.clone(),
-            background: if disabled {
-                theme.color.state.disabled.clone()
-            } else {
-                theme.color.layer.surface.clone()
-            },
+            width: Length::percent(100.0),
+            gap: Length::px(2.0),
         }}>
             <Element style={{
-                layout: Layout::flow()
-                    .row()
-                    .no_wrap()
-                    .justify_content(JustifyContent::Center)
-                    .align(Align::Center),
-                width: Length::px(button_size),
-                height: Length::px(button_size),
+                border_radius: theme.component.input.radius,
+                border: theme.component.input.border.clone(),
+                flex: flex().grow(3.0).shrink(1.0),
+                padding: theme.component.input.padding.clone(),
+                min_width: Length::Zero,
                 background: if disabled {
                     theme.color.state.disabled.clone()
                 } else {
-                    theme.color.layer.raised.clone()
+                    theme.color.layer.surface.clone()
                 },
-                border: left_border,
             }}>
-                <Text
-                    font_size={theme.typography.size.lg}
-                    line_height=1.0
-                    font={theme.typography.font_family.clone()}
-                    style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.secondary.clone() } }}
-                >
-                    {"−"}
-                </Text>
+                <TextArea
+                    style={{width: Length::percent(100.0)}}
+                    multiline={false}
+                    read_only={disabled}
+                    binding={number_string.binding()}
+                    on_change={text_change}
+                    on_focus={|event| event.target.select_all()}
+                />
             </Element>
+            <Button label="-" repeat on_click={minus_click} disabled={disabled} />
+            <Button label="+" repeat on_click={plus_click} disabled={disabled} />
             <Element style={{
-                layout: Layout::flow()
-                    .row()
-                    .no_wrap()
-                    .justify_content(JustifyContent::Center)
-                    .align(Align::Center),
-                width: Length::px(value_width),
-                height: Length::px(button_size),
-            }}>
-                <Text
-                    font_size={theme.typography.size.sm}
-                    line_height=1.0
-                    font={theme.typography.font_family.clone()}
-                    style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.primary.clone() } }}
-                >
-                    {format_number(current)}
-                </Text>
-            </Element>
-            <Element style={{
-                layout: Layout::flow()
-                    .row()
-                    .no_wrap()
-                    .justify_content(JustifyContent::Center)
-                    .align(Align::Center),
-                width: Length::px(button_size),
-                height: Length::px(button_size),
-                background: if disabled {
-                    theme.color.state.disabled.clone()
-                } else {
-                    theme.color.layer.raised.clone()
-                },
-                border: right_border,
-            }}>
-                <Text
-                    font_size={theme.typography.size.md}
-                    line_height=1.0
-                    font={theme.typography.font_family.clone()}
-                    style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.secondary.clone() } }}
-                >
-                    {"+"}
-                </Text>
-            </Element>
+                flex: flex().grow(1.0).shrink(1.0).basis(theme.component.input.label_width_basis.clone()),
+                max_width: theme.component.input.label_max_width.clone(),
+                text_wrap: TextWrap::NoWrap,
+            }}>{label.unwrap_or_default()}</Element>
         </Element>
     };
-
-    if let RsxNode::Element(root_node) = &mut root {
-        if let Some(handler) = minus_click
-            && let Some(RsxNode::Element(minus_node)) = root_node.children.get_mut(0)
-        {
-            minus_node
-                .props
-                .push(("on_click".to_string(), handler.into()));
-        }
-        if let Some(handler) = plus_click
-            && let Some(RsxNode::Element(plus_node)) = root_node.children.get_mut(2)
-        {
-            plus_node
-                .props
-                .push(("on_click".to_string(), handler.into()));
-        }
-    }
 
     root
 }
 
 fn step_handler(
     binding: Binding<f64>,
+    text_binding: Binding<String>,
     delta: f64,
     min: Option<f64>,
     max: Option<f64>,
 ) -> ClickHandlerProp {
     ClickHandlerProp::new(move |_event| {
-        let mut next = binding.get() + delta;
-        if let Some(min) = min {
-            next = next.max(min);
-        }
-        if let Some(max) = max {
-            next = next.min(max);
-        }
+        let next = clamp_number(binding.get() + delta, min, max);
         binding.set(next);
+        text_binding.set(format_number(next));
     })
 }
 
@@ -219,4 +188,15 @@ fn format_number(value: f64) -> String {
             .trim_end_matches('.')
             .to_string()
     }
+}
+
+fn clamp_number(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+    let mut next = value;
+    if let Some(min) = min {
+        next = next.max(min);
+    }
+    if let Some(max) = max {
+        next = next.min(max);
+    }
+    next
 }

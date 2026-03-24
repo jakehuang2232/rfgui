@@ -633,6 +633,10 @@ impl Element {
         )
     }
 
+    pub(crate) fn layout_flow_origin(&self) -> (f32, f32) {
+        (self.layout_flow_position.x, self.layout_flow_position.y)
+    }
+
     pub fn add_child(&mut self, child: Box<dyn ElementTrait>) {
         let mut child = child;
         if child.parent_id() != Some(self.core.id) {

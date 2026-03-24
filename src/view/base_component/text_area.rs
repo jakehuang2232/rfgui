@@ -3,7 +3,7 @@ use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, RectPassParams};
 use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPassParams};
 use crate::view::render_pass::{DrawRectPass, TextPass};
-use crate::{ColorLike, Cursor as UiCursor, HexColor, Style};
+use crate::{ColorLike, Cursor as UiCursor, HexColor, Length, Style};
 use glyphon::cosmic_text::{Affinity, Align, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::cell::RefCell;
@@ -25,6 +25,8 @@ pub struct TextArea {
     size: Size,
     layout_position: Position,
     layout_size: Size,
+    layout_override_width: Option<f32>,
+    layout_override_height: Option<f32>,
     should_render: bool,
     content: String,
     color: Box<dyn ColorLike>,
@@ -33,6 +35,8 @@ pub struct TextArea {
     font_size: f32,
     line_height: f32,
     opacity: f32,
+    style_width: Option<Length>,
+    style_height: Option<Length>,
     auto_width: bool,
     auto_height: bool,
     multiline: bool,
@@ -40,6 +44,8 @@ pub struct TextArea {
     read_only: bool,
     text_binding: Option<Binding<String>>,
     max_length: Option<usize>,
+    on_focus_handlers: Vec<crate::ui::TextAreaFocusHandlerProp>,
+    on_change_handlers: Vec<crate::ui::TextChangeHandlerProp>,
     cursor_char: usize,
     selection_anchor_char: Option<usize>,
     selection_focus_char: Option<usize>,
@@ -135,6 +141,8 @@ impl TextArea {
                 width: width.max(0.0),
                 height: height.max(0.0),
             },
+            layout_override_width: None,
+            layout_override_height: None,
             should_render: true,
             content: String::new(),
             color: Box::new(HexColor::new("#111111")),
@@ -143,6 +151,8 @@ impl TextArea {
             font_size: 16.0,
             line_height: 1.25,
             opacity: 1.0,
+            style_width: None,
+            style_height: None,
             auto_width: false,
             auto_height: false,
             multiline: true,
@@ -150,6 +160,8 @@ impl TextArea {
             read_only: false,
             text_binding: None,
             max_length: None,
+            on_focus_handlers: Vec::new(),
+            on_change_handlers: Vec::new(),
             cursor_char: 0,
             selection_anchor_char: None,
             selection_focus_char: None,
@@ -241,6 +253,8 @@ impl TextArea {
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.size = Size { width, height };
         self.element.set_size(width, height);
+        self.layout_override_width = None;
+        self.layout_override_height = None;
         self.auto_width = false;
         self.auto_height = false;
         self.invalidate_glyph_layout();
@@ -249,6 +263,7 @@ impl TextArea {
     pub fn set_width(&mut self, width: f32) {
         self.size.width = width;
         self.element.set_width(width);
+        self.layout_override_width = None;
         self.auto_width = false;
         self.invalidate_glyph_layout();
     }
@@ -256,6 +271,7 @@ impl TextArea {
     pub fn set_height(&mut self, height: f32) {
         self.size.height = height;
         self.element.set_height(height);
+        self.layout_override_height = None;
         self.auto_height = false;
         self.cached_ime_cursor_rect = None;
     }
@@ -330,6 +346,54 @@ impl TextArea {
         }
     }
 
+    pub fn on_change<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::TextChangeEvent) + 'static,
+    {
+        self.on_change_handlers.push(crate::ui::TextChangeHandlerProp::new(handler));
+    }
+
+    pub fn on_focus<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::TextAreaFocusEvent) + 'static,
+    {
+        self.on_focus_handlers
+            .push(crate::ui::TextAreaFocusHandlerProp::new(handler));
+    }
+
+    fn notify_change_handlers(&mut self) {
+        if self.on_change_handlers.is_empty() {
+            return;
+        }
+        let mut event = crate::ui::TextChangeEvent {
+            meta: crate::ui::EventMeta::new(self.id()),
+            value: self.content.clone(),
+        };
+        for handler in &self.on_change_handlers {
+            handler.call(&mut event);
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        self.select_range(0, self.content.chars().count());
+    }
+
+    pub fn select_range(&mut self, start: usize, end: usize) {
+        let len = self.content.chars().count();
+        let start = start.min(len);
+        let end = end.min(len);
+        self.selection_anchor_char = Some(start);
+        self.selection_focus_char = Some(end);
+        self.cursor_char = end;
+        if start == end {
+            self.clear_selection();
+        }
+        self.reset_caret_blink();
+        self.cached_ime_cursor_rect = None;
+        self.clear_vertical_goal();
+        self.ensure_cursor_visible();
+    }
+
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
     }
@@ -380,6 +444,14 @@ impl TextArea {
         self.opacity = opacity;
     }
 
+    pub fn set_style_width(&mut self, width: Option<Length>) {
+        self.style_width = width;
+    }
+
+    pub fn set_style_height(&mut self, height: Option<Length>) {
+        self.style_height = height;
+    }
+
     pub fn set_auto_width(&mut self, auto: bool) {
         self.auto_width = auto;
     }
@@ -392,6 +464,42 @@ impl TextArea {
         let mut style = Style::new();
         style.set_cursor(cursor);
         self.element.apply_style(style);
+    }
+
+    fn sync_size_from_style(
+        &mut self,
+        percent_base_width: Option<f32>,
+        percent_base_height: Option<f32>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) {
+        if let Some(width) = self.style_width {
+            if let Some(resolved) =
+                width.resolve_with_base(percent_base_width, viewport_width, viewport_height)
+            {
+                self.size.width = resolved.max(0.0);
+                self.element.set_width(self.size.width);
+                self.auto_width = false;
+            } else {
+                self.auto_width = true;
+            }
+        } else {
+            self.auto_width = true;
+        }
+
+        if let Some(height) = self.style_height {
+            if let Some(resolved) =
+                height.resolve_with_base(percent_base_height, viewport_width, viewport_height)
+            {
+                self.size.height = resolved.max(0.0);
+                self.element.set_height(self.size.height);
+                self.auto_height = false;
+            } else {
+                self.auto_height = true;
+            }
+        } else {
+            self.auto_height = true;
+        }
     }
 
     pub fn set_multiline(&mut self, multiline: bool) {
@@ -1643,8 +1751,12 @@ impl EventTarget for TextArea {
             self.element.dispatch_key_down(event, control);
             return;
         }
+        let previous_content = self.content.clone();
         let handled = self.handle_key_down(event, control);
         if handled {
+            if self.content != previous_content {
+                self.notify_change_handlers();
+            }
             self.ensure_cursor_visible();
             event.meta.stop_propagation();
             control.request_redraw();
@@ -1669,7 +1781,11 @@ impl EventTarget for TextArea {
             return;
         }
         self.clear_preedit();
+        let previous_content = self.content.clone();
         if self.insert_text(event.text.as_str()) {
+            if self.content != previous_content {
+                self.notify_change_handlers();
+            }
             self.ensure_cursor_visible();
             event.meta.stop_propagation();
             control.request_redraw();
@@ -1697,6 +1813,15 @@ impl EventTarget for TextArea {
     ) {
         self.is_focused = true;
         self.reset_caret_blink();
+        if !self.on_focus_handlers.is_empty() {
+            let mut focus_event = crate::ui::TextAreaFocusEvent {
+                meta: event.meta.clone(),
+                target: event.meta.text_selection_target(self.id()),
+            };
+            for handler in &self.on_focus_handlers {
+                handler.call(&mut focus_event);
+            }
+        }
         self.element.dispatch_focus(event, control);
     }
 
@@ -1772,14 +1897,11 @@ impl Layoutable for TextArea {
     }
 
     fn set_layout_width(&mut self, width: f32) {
-        self.size.width = width;
-        self.element.set_width(width);
-        self.invalidate_glyph_layout();
+        self.layout_override_width = Some(width.max(0.0));
     }
 
     fn set_layout_height(&mut self, height: f32) {
-        self.size.height = height;
-        self.element.set_height(height);
+        self.layout_override_height = Some(height.max(0.0));
         self.cached_ime_cursor_rect = None;
     }
 
@@ -1803,12 +1925,41 @@ impl Layoutable for TextArea {
         self.element.flex_basis()
     }
 
+    fn flex_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_main_size(&self.element, is_row)
+    }
+
+    fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {
+        <Element as Layoutable>::flex_has_explicit_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
+        <Element as Layoutable>::flex_auto_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_min_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_max_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_max_main_size(&self.element, is_row)
+    }
+
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
     }
 
     fn measure(&mut self, constraints: LayoutConstraints) {
+        self.layout_override_width = None;
+        self.layout_override_height = None;
+        self.sync_size_from_style(
+            constraints.percent_base_width,
+            constraints.percent_base_height,
+            constraints.viewport_width,
+            constraints.viewport_height,
+        );
+
         if !self.auto_width && !self.auto_height {
             return;
         }
@@ -1853,14 +2004,23 @@ impl Layoutable for TextArea {
     }
 
     fn place(&mut self, placement: LayoutPlacement) {
+        self.sync_size_from_style(
+            placement.percent_base_width,
+            placement.percent_base_height,
+            placement.viewport_width,
+            placement.viewport_height,
+        );
+
         let prev_layout_width = self.layout_size.width;
         let available_width = placement.available_width.max(0.0);
         let available_height = placement.available_height.max(0.0);
         let max_width = (available_width - self.position.x.max(0.0)).max(0.0);
         let max_height = (available_height - self.position.y.max(0.0)).max(0.0);
+        let layout_width = self.layout_override_width.unwrap_or(self.size.width);
+        let layout_height = self.layout_override_height.unwrap_or(self.size.height);
         self.layout_size = Size {
-            width: self.size.width.max(0.0).min(max_width),
-            height: self.size.height.max(0.0).min(max_height),
+            width: layout_width.max(0.0).min(max_width),
+            height: layout_height.max(0.0).min(max_height),
         };
         self.layout_position = Position {
             x: placement.parent_x + self.position.x + placement.visual_offset_x,
@@ -2040,9 +2200,15 @@ fn push_text_pass_explicit(
 #[cfg(test)]
 mod tests {
     use super::TextArea;
-    use crate::ui::{BlurEvent, EventMeta};
-    use crate::view::base_component::{EventTarget, LayoutPlacement, Layoutable};
+    use crate::ui::{BlurEvent, EventMeta, FocusEvent, TextInputEvent, ViewportListenerAction};
+    use crate::view::base_component::{
+        ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+        select_all_text_by_id, select_text_range_by_id,
+    };
     use crate::view::{Viewport, ViewportControl};
+    use crate::Length;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn multiline_false_normalizes_newline() {
@@ -2129,4 +2295,103 @@ mod tests {
         assert!(area.selection_range_chars().is_none());
         assert!(!area.is_focused);
     }
+
+    #[test]
+    fn text_input_dispatch_emits_on_change_with_latest_value() {
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let changes_for_handler = changes.clone();
+        let mut area = TextArea::from_content("he");
+        area.cursor_char = 2;
+        area.on_change(move |event| {
+            changes_for_handler.borrow_mut().push(event.value.clone());
+        });
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut event = TextInputEvent {
+            meta: EventMeta::new(area.id()),
+            text: "llo".to_string(),
+        };
+        EventTarget::dispatch_text_input(&mut area, &mut event, &mut control);
+
+        assert_eq!(area.content, "hello");
+        assert_eq!(*changes.borrow(), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn focus_event_target_can_request_select_all() {
+        let mut area = TextArea::from_content("hello");
+        area.on_focus(|event| {
+            event.target.select_all();
+        });
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut event = FocusEvent {
+            meta: EventMeta::new(area.id()),
+        };
+        EventTarget::dispatch_focus(&mut area, &mut event, &mut control);
+
+        let actions = event.meta.take_viewport_listener_actions();
+        assert!(matches!(
+            actions.as_slice(),
+            [ViewportListenerAction::SelectTextRangeAll(target_id)] if *target_id == area.id()
+        ));
+
+        let area_id = area.id();
+        assert!(select_all_text_by_id(&mut area, area_id));
+        assert_eq!(area.selection_range_chars(), Some((0, 5)));
+    }
+
+    #[test]
+    fn select_range_clamps_to_character_bounds() {
+        let mut area = TextArea::from_content("hello");
+        let area_id = area.id();
+        assert!(select_text_range_by_id(&mut area, area_id, 1, 99));
+        assert_eq!(area.selection_range_chars(), Some((1, 5)));
+        assert_eq!(area.cursor_char, 5);
+    }
+
+    #[test]
+    fn percent_width_uses_layout_override_without_mutating_measured_width() {
+        let mut area = TextArea::from_content("123");
+        area.set_style_width(Some(Length::percent(100.0)));
+        area.set_multiline(false);
+
+        area.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 40.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+        assert_eq!(area.measured_size().0, 200.0);
+
+        area.set_layout_width(80.0);
+        area.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 40.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+        assert_eq!(area.box_model_snapshot().width, 80.0);
+
+        area.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 40.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+        assert_eq!(area.measured_size().0, 200.0);
+    }
+
 }

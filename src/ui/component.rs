@@ -55,6 +55,11 @@ impl_event_into_optional_prop!(crate::ui::KeyDownHandlerProp, crate::ui::KeyDown
 impl_event_into_optional_prop!(crate::ui::KeyUpHandlerProp, crate::ui::KeyUpEvent);
 impl_event_into_optional_prop!(crate::ui::FocusHandlerProp, crate::ui::FocusEvent);
 impl_event_into_optional_prop!(crate::ui::BlurHandlerProp, crate::ui::BlurEvent);
+impl_event_into_optional_prop!(
+    crate::ui::TextAreaFocusHandlerProp,
+    crate::ui::TextAreaFocusEvent
+);
+impl_event_into_optional_prop!(crate::ui::TextChangeHandlerProp, crate::ui::TextChangeEvent);
 
 impl<'a> IntoOptionalProp<crate::Color> for crate::HexColor<'a> {
     fn into_optional_prop(self) -> Option<crate::Color> {
@@ -613,6 +618,32 @@ mod tests {
     }
 
     #[test]
+    fn text_wrap_style_values_use_typed_helper() {
+        let node = rsx! {
+            <crate::ui::host::Element
+                style={{
+                    text_wrap: crate::TextWrap::NoWrap,
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = node
+            .props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Style(style)) => Some(style),
+                _ => None,
+            })
+            .expect("missing style prop");
+        assert_eq!(
+            style.get(PropertyId::TextWrap),
+            Some(&ParsedValue::TextWrap(crate::TextWrap::NoWrap))
+        );
+    }
+
+    #[test]
     fn event_props_accept_bare_closures_for_all_handler_types() {
         let node = rsx! {
             <Element
@@ -635,6 +666,34 @@ mod tests {
         assert_eq!(node.props.len(), 10);
         assert!(node.props.iter().any(|(key, _)| key == "on_click"));
         assert!(node.props.iter().any(|(key, _)| key == "on_key_down"));
+    }
+
+    #[test]
+    fn text_area_on_change_accepts_typed_event_closure() {
+        let node = rsx! {
+            <crate::ui::host::TextArea
+                on_change={move |event: &mut crate::ui::TextChangeEvent| event.meta.stop_propagation()}
+            />
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert!(node.props.iter().any(|(key, _)| key == "on_change"));
+    }
+
+    #[test]
+    fn text_area_on_focus_accepts_target_selection_methods() {
+        let node = rsx! {
+            <crate::ui::host::TextArea
+                on_focus={move |event| event.target.select_all()}
+            />
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert!(node.props.iter().any(|(key, _)| key == "on_focus"));
     }
 
     #[test]

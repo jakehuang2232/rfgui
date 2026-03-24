@@ -127,6 +127,10 @@ impl LayoutTransitionPlugin {
         if let Some(existing) = self.tracks.get(&key) {
             let same_to = (existing.to - to).abs() <= 0.0001;
             if same_to {
+                if (existing.current - existing.to).abs() <= 0.0001 {
+                    self.tracks.remove(&key);
+                    host.release_track_claim(self.plugin_id, key);
+                }
                 return Ok(());
             }
             next_from = existing.current;
@@ -152,6 +156,19 @@ impl LayoutTransitionPlugin {
 
     pub fn take_samples(&mut self) -> Vec<LayoutSample> {
         std::mem::take(&mut self.frame_samples)
+    }
+
+    pub(crate) fn active_track_keys(&self) -> Vec<TrackKey<TrackTarget>> {
+        self.tracks.keys().copied().collect()
+    }
+
+    pub(crate) fn debug_track_state(
+        &self,
+        key: TrackKey<TrackTarget>,
+    ) -> Option<(f32, f32, f32, Option<f64>)> {
+        self.tracks
+            .get(&key)
+            .map(|state| (state.from, state.to, state.current, state.started_at_seconds))
     }
 }
 

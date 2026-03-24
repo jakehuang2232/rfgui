@@ -1,7 +1,7 @@
 use crate::style::color::Color;
 use crate::style::parsed_style::{
     Align, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
-    PropertyId, ScrollDirection, Style, Transitions,
+    PropertyId, ScrollDirection, Style, TextWrap, Transitions,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -52,6 +52,7 @@ pub struct ComputedStyle {
     pub font_size: f32,
     pub font_weight: u16,
     pub line_height: f32,
+    pub text_wrap: TextWrap,
     pub border_radius: f32,
     pub border_radii: CornerRadii<Length>,
     pub border_width: f32,
@@ -100,6 +101,7 @@ impl Default for ComputedStyle {
             font_size: 16.0,
             font_weight: 400,
             line_height: 1.2,
+            text_wrap: TextWrap::Wrap,
             border_radius: 0.0,
             border_radii: CornerRadii {
                 top_left: Length::Px(0.0),
@@ -339,6 +341,11 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
                     computed.line_height = value.value().max(0.0);
                 }
             }
+            PropertyId::TextWrap => {
+                if let ParsedValue::TextWrap(value) = &declaration.value {
+                    computed.text_wrap = *value;
+                }
+            }
             PropertyId::BorderRadius => {
                 let length = parse_length(&declaration.value, Length::Px(computed.border_radius));
                 computed.border_radii.top_left = length;
@@ -491,7 +498,9 @@ fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::compute_style;
-    use crate::style::{BoxShadow, Color, FontSize, ParsedValue, PropertyId, SizeValue, Style};
+    use crate::style::{
+        BoxShadow, Color, FontSize, ParsedValue, PropertyId, SizeValue, Style, TextWrap,
+    };
     use crate::{
         Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
     };
@@ -588,6 +597,15 @@ mod tests {
         let computed = compute_style(&style, None);
         assert_eq!(computed.align, Align::Center);
         assert_eq!(computed.cross_size, CrossSize::Stretch);
+    }
+
+    #[test]
+    fn compute_style_reads_text_wrap() {
+        let mut style = Style::new();
+        style.insert(PropertyId::TextWrap, ParsedValue::TextWrap(TextWrap::NoWrap));
+
+        let computed = compute_style(&style, None);
+        assert_eq!(computed.text_wrap, TextWrap::NoWrap);
     }
 
     #[test]

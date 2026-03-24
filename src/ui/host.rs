@@ -2,12 +2,13 @@ use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
-    MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, props,
+    MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, TextAreaFocusHandlerProp,
+    TextChangeHandlerProp, props,
 };
 use crate::{
     Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize,
     FontWeight, Layout, Length, Opacity, Padding, Position, ScrollDirection, Style, TextAlign,
-    Transitions,
+    TextWrap, Transitions,
 };
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -79,6 +80,7 @@ pub struct ElementStylePropSchema {
     pub font: FontFamily,
     pub font_size: FontSize,
     pub font_weight: FontWeight,
+    pub text_wrap: TextWrap,
     pub border_radius: BorderRadius,
     pub hover: Style,
     pub opacity: Opacity,
@@ -106,12 +108,13 @@ pub struct TextPropSchema {
 pub struct TextAreaPropSchema {
     pub content: Option<String>,
     pub binding: Option<crate::ui::Binding<String>>,
+    pub style: Option<Style>,
+    pub on_focus: Option<TextAreaFocusHandlerProp>,
+    pub on_change: Option<TextChangeHandlerProp>,
     pub placeholder: Option<String>,
     pub color: Option<String>,
     pub x: Option<f64>,
     pub y: Option<f64>,
-    pub width: Option<f64>,
-    pub height: Option<f64>,
     pub font_size: Option<FontSize>,
     pub font: Option<String>,
     pub opacity: Option<f64>,
@@ -226,6 +229,15 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
                 crate::ui::IntoPropValue::into_prop_value(binding),
             );
         }
+        if let Some(style) = props.style {
+            node = node.with_prop("style", style);
+        }
+        if let Some(handler) = props.on_focus {
+            node = node.with_prop("on_focus", handler);
+        }
+        if let Some(handler) = props.on_change {
+            node = node.with_prop("on_change", handler);
+        }
         if let Some(placeholder) = props.placeholder
             && !placeholder.is_empty()
         {
@@ -245,16 +257,6 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
             && y != 0.0
         {
             node = node.with_prop("y", y);
-        }
-        if let Some(width) = props.width
-            && width != 0.0
-        {
-            node = node.with_prop("width", width);
-        }
-        if let Some(height) = props.height
-            && height != 0.0
-        {
-            node = node.with_prop("height", height);
         }
         if let Some(font_size) = props.font_size
             && !is_unset_font_size(font_size)

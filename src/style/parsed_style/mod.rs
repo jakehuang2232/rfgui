@@ -33,6 +33,7 @@ pub enum PropertyId {
     FontSize,
     FontWeight,
     LineHeight,
+    TextWrap,
     BorderRadius,
     BorderTopLeftRadius,
     BorderTopRightRadius,
@@ -1597,6 +1598,12 @@ impl LineHeight {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextWrap {
+    Wrap,
+    NoWrap,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Opacity(f32);
 
@@ -1681,6 +1688,7 @@ pub enum ParsedValue {
     FontFamily(FontFamily),
     FontWeight(FontWeight),
     LineHeight(LineHeight),
+    TextWrap(TextWrap),
     Opacity(Opacity),
     BoxShadow(Vec<BoxShadow>),
     Transition(Transitions),
@@ -1846,6 +1854,12 @@ impl IntoStyleFieldValue<Flex> for Flex {
     }
 }
 
+impl IntoStyleFieldValue<TextWrap> for TextWrap {
+    fn into_style_field_value(self) -> TextWrap {
+        self
+    }
+}
+
 pub fn insert_style_length<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<Length>,
@@ -1888,6 +1902,16 @@ where
     V: IntoStyleFieldValue<Flex>,
 {
     style.insert(property, ParsedValue::Flex(value.into_style_field_value()));
+}
+
+pub fn insert_style_text_wrap<V>(style: &mut Style, property: PropertyId, value: V)
+where
+    V: IntoStyleFieldValue<TextWrap>,
+{
+    style.insert(
+        property,
+        ParsedValue::TextWrap(value.into_style_field_value()),
+    );
 }
 
 impl Style {
@@ -1978,6 +2002,15 @@ impl Style {
 
     pub fn with_cursor(mut self, cursor: Cursor) -> Self {
         self.set_cursor(cursor);
+        self
+    }
+
+    pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
+        self.insert(PropertyId::TextWrap, ParsedValue::TextWrap(text_wrap));
+    }
+
+    pub fn with_text_wrap(mut self, text_wrap: TextWrap) -> Self {
+        self.set_text_wrap(text_wrap);
         self
     }
 

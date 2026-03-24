@@ -228,7 +228,7 @@ pub fn build(
                 color: theme.color.primary.on.clone(),
                 border: Border::uniform(theme.spacing.sm, theme.color.border.as_ref()),
                 border_radius: 50,
-                layout: Layout::flow().row(),
+                layout: Layout::flow().row().wrap(),
                 gap: theme.spacing.sm,
                 padding: Padding::uniform(theme.spacing.sm),
             }}>
@@ -345,8 +345,8 @@ pub fn build(
                 <Text>
                     {format!("Bound chars: {}", values.message.chars().count())}
                 </Text>
-                <TextArea x=12 y=34 width=296 height=78 font_size=13 color="#c8d0e0" multiline=true placeholder="Please enter multiline content..." binding={bindings.message} />
-                <TextArea x=12 y=98 width=296 height=26 font_size=13 color="#c8d0e0" multiline=false read_only=true>
+                <TextArea x=12 y=34 style={{ width: Length::px(296.0), height: Length::px(78.0) }} font_size=13 color="#c8d0e0" multiline=true placeholder="Please enter multiline content..." binding={bindings.message} />
+                <TextArea x=12 y=98 style={{ width: Length::px(296.0), height: Length::px(26.0) }} font_size=13 color="#c8d0e0" multiline=false read_only=true>
                     multiline=false
                     Line breaks should become spaces
                 </TextArea>
@@ -436,7 +436,7 @@ pub fn build(
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         border_radius: theme.radius.md,
                         padding: Padding::uniform(theme.spacing.sm),
-                        layout: Layout::flex().column(),
+                        layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                         color: theme.color.text.primary.clone(),
                     }}>

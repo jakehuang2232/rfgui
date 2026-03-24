@@ -5,7 +5,7 @@ use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
 use crate::view::render_pass::text_pass::TextPassParams;
 use crate::view::render_pass::text_pass::{TextInput, TextOutput};
-use crate::{ColorLike, Cursor, HexColor, Style, TextAlign};
+use crate::{ColorLike, Cursor, HexColor, Style, TextAlign, TextWrap};
 use glyphon::cosmic_text::{Align, Weight};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::collections::hash_map::DefaultHasher;
@@ -23,6 +23,8 @@ pub struct Text {
     size: Size,
     layout_position: Position,
     layout_size: Size,
+    layout_override_width: Option<f32>,
+    layout_override_height: Option<f32>,
     should_render: bool,
     content: String,
     color: Box<dyn ColorLike>,
@@ -34,6 +36,7 @@ pub struct Text {
     opacity: f32,
     auto_width: bool,
     auto_height: bool,
+    text_wrap: TextWrap,
     allow_wrap: bool,
     measure_revision: u64,
     cached_intrinsic_width: Option<(u64, f32)>,
@@ -114,6 +117,8 @@ impl Text {
                 width: width.max(0.0),
                 height: height.max(0.0),
             },
+            layout_override_width: None,
+            layout_override_height: None,
             should_render: true,
             content: content.into(),
             color: Box::new(HexColor::new("#111111")),
@@ -125,6 +130,7 @@ impl Text {
             opacity: 1.0,
             auto_width: false,
             auto_height: false,
+            text_wrap: TextWrap::Wrap,
             allow_wrap: true,
             measure_revision: 0,
             cached_intrinsic_width: None,
@@ -146,6 +152,8 @@ impl Text {
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.size = Size { width, height };
         self.element.set_size(width, height);
+        self.layout_override_width = None;
+        self.layout_override_height = None;
         self.auto_width = false;
         self.auto_height = false;
     }
@@ -153,12 +161,14 @@ impl Text {
     pub fn set_width(&mut self, width: f32) {
         self.size.width = width;
         self.element.set_width(width);
+        self.layout_override_width = None;
         self.auto_width = false;
     }
 
     pub fn set_height(&mut self, height: f32) {
         self.size.height = height;
         self.element.set_height(height);
+        self.layout_override_height = None;
         self.auto_height = false;
     }
 
@@ -242,6 +252,10 @@ impl Text {
 
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
+    }
+
+    pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
+        self.text_wrap = text_wrap;
     }
 
     pub fn set_auto_width(&mut self, auto: bool) {
@@ -477,13 +491,11 @@ impl Layoutable for Text {
     }
 
     fn set_layout_width(&mut self, width: f32) {
-        self.size.width = width;
-        self.element.set_width(width);
+        self.layout_override_width = Some(width.max(0.0));
     }
 
     fn set_layout_height(&mut self, height: f32) {
-        self.size.height = height;
-        self.element.set_height(height);
+        self.layout_override_height = Some(height.max(0.0));
     }
 
     fn allows_cross_stretch(&self, is_row: bool) -> bool {
@@ -506,14 +518,37 @@ impl Layoutable for Text {
         self.element.flex_basis()
     }
 
+    fn flex_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_main_size(&self.element, is_row)
+    }
+
+    fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {
+        <Element as Layoutable>::flex_has_explicit_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
+        <Element as Layoutable>::flex_auto_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_min_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_max_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_max_main_size(&self.element, is_row)
+    }
+
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
     }
 
     fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
+        self.layout_override_width = None;
+        self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();
-        self.allow_wrap = parent_width_is_constrained;
+        self.allow_wrap =
+            self.text_wrap == TextWrap::Wrap && parent_width_is_constrained;
 
         if !self.auto_width && !self.auto_height {
             return;
@@ -607,9 +642,11 @@ impl Layoutable for Text {
         let available_height = placement.available_height.max(0.0);
         let max_width = (available_width - self.position.x.max(0.0)).max(0.0);
         let max_height = (available_height - self.position.y.max(0.0)).max(0.0);
+        let layout_width = self.layout_override_width.unwrap_or(self.size.width);
+        let layout_height = self.layout_override_height.unwrap_or(self.size.height);
         self.layout_size = Size {
-            width: self.size.width.max(0.0).min(max_width),
-            height: self.size.height.max(0.0).min(max_height),
+            width: layout_width.max(0.0).min(max_width),
+            height: layout_height.max(0.0).min(max_height),
         };
         self.layout_position = Position {
             x: placement.parent_x + self.position.x + placement.visual_offset_x,
@@ -686,6 +723,7 @@ impl Renderable for Text {
 #[cfg(test)]
 mod tests {
     use super::{ElementTrait, Layoutable, Text};
+    use crate::{Length, TextWrap};
     use crate::view::base_component::{LayoutConstraints, LayoutPlacement};
 
     #[test]
@@ -750,6 +788,89 @@ mod tests {
         assert_eq!(snapshot.width, 60.0);
         assert!(snapshot.height > 20.0);
     }
+
+    #[test]
+    fn text_wrap_can_be_disabled_via_text_wrap_style() {
+        let mut text = Text::from_content("123456789012345678901234567890");
+        text.set_width(60.0);
+        text.set_auto_height(true);
+        text.set_text_wrap(TextWrap::NoWrap);
+        text.measure(LayoutConstraints {
+            max_width: 60.0,
+            max_height: 200.0,
+            viewport_width: 60.0,
+            percent_base_width: Some(60.0),
+            percent_base_height: Some(200.0),
+            viewport_height: 200.0,
+        });
+        text.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 60.0,
+            available_height: 200.0,
+            viewport_width: 60.0,
+            percent_base_width: Some(60.0),
+            percent_base_height: Some(200.0),
+            viewport_height: 200.0,
+        });
+
+        let snapshot = text.box_model_snapshot();
+        assert_eq!(snapshot.width, 60.0);
+        assert!(snapshot.height <= 20.0);
+    }
+
+    #[test]
+    fn percent_width_uses_layout_override_without_mutating_measured_width() {
+        let mut text = Text::from_content("123");
+        text.element.set_width(10.0);
+        text.set_width(10.0);
+        text.element.apply_style({
+            let mut style = crate::Style::new();
+            style.insert(
+                crate::style::PropertyId::Width,
+                crate::style::ParsedValue::Length(Length::percent(100.0)),
+            );
+            style
+        });
+
+        text.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 40.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+        assert_eq!(text.measured_size().0, 10.0);
+
+        text.set_layout_width(80.0);
+        text.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 40.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+        assert_eq!(text.box_model_snapshot().width, 80.0);
+
+        text.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 40.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+        assert_eq!(text.measured_size().0, 10.0);
+    }
+
 
     #[test]
     fn auto_width_for_cjk_text_is_not_underestimated() {

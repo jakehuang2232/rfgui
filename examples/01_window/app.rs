@@ -1,6 +1,9 @@
 use crate::platform::{key_to_string, map_cursor_icon, map_device_button, map_mouse_button};
 use crate::rfgui::promotion::ViewportPromotionConfig;
-use crate::rfgui::ui::{RsxNode, rsx, take_state_dirty};
+use crate::rfgui::ui::{
+    RsxNode, clear_redraw_callback, next_timer_deadline, rsx, run_due_timers,
+    set_redraw_callback, take_state_dirty,
+};
 use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::{Theme, init_theme};
 use crate::scene::MainScene;
@@ -155,6 +158,12 @@ impl ApplicationHandler for App {
 
         self.window = Some(window);
         self.viewport = Some(viewport);
+        if let Some(window) = &self.window {
+            let redraw_window = window.clone();
+            set_redraw_callback(move || {
+                redraw_window.request_redraw();
+            });
+        }
         self.ime_composing = false;
         self.ime_dirty = true;
         self.last_ime_focus_id = None;
@@ -176,6 +185,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
+                clear_redraw_callback();
                 self.window = None;
             }
             WindowEvent::Resized(size) => {
@@ -195,6 +205,9 @@ impl ApplicationHandler for App {
                 self.mark_ime_dirty();
             }
             WindowEvent::RedrawRequested => {
+                if take_state_dirty() {
+                    self.rebuild_app();
+                }
                 self.sync_theme_visuals();
                 if let (Some(viewport), Some(app)) = (&mut self.viewport, &self.app) {
                     viewport
@@ -369,6 +382,16 @@ impl ApplicationHandler for App {
                 viewport.dispatch_mouse_up_event(mapped_button);
             }
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        run_due_timers(std::time::Instant::now());
+
+        if let Some(deadline) = next_timer_deadline() {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }

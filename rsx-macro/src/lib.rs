@@ -531,7 +531,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         .props
         .iter()
         .filter(|p| p.key != "key")
-        .map(expand_builder_assignment);
+        .map(|prop| expand_builder_assignment(&element.tag, prop));
     let component_key = component_key_tokens(element);
     let children_schema_check = if has_children {
         quote! {
@@ -832,7 +832,7 @@ fn is_fn_pointer_type(ty: &Type) -> bool {
     matches!(ty, Type::BareFn(_))
 }
 
-fn expand_builder_assignment(prop: &Prop) -> proc_macro2::TokenStream {
+fn expand_builder_assignment(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
     let key_ident = &prop.key;
     if matches!(prop.value, PropValueExpr::Missing) {
         let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
@@ -842,24 +842,29 @@ fn expand_builder_assignment(prop: &Prop) -> proc_macro2::TokenStream {
             );
         };
     }
-    let value = expand_builder_value_expr(prop, quote!(__rsx_props_builder));
+    let value = expand_builder_value_expr(tag, prop, quote!(__rsx_props_builder));
     quote! {
         __rsx_props_builder.#key_ident(#value);
     }
 }
 
 fn expand_builder_value_expr(
+    tag: &Path,
     prop: &Prop,
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let value = expand_prop_value_expr_for_builder(&prop.key, &prop.value, builder_ident);
+    let value = expand_prop_value_expr_for_builder(tag, &prop.key, &prop.value, builder_ident);
     match &prop.value {
-        PropValueExpr::Expr(expr) => wrap_event_expr(&prop.key.to_string(), expr, value),
+        PropValueExpr::Expr(expr) => wrap_event_expr(tag, &prop.key.to_string(), expr, value),
         _ => value,
     }
 }
 
-fn event_handler_converter(prop_key: &str) -> Option<proc_macro2::TokenStream> {
+fn is_text_area_tag(tag: &Path) -> bool {
+    path_key(tag).ends_with("TextArea")
+}
+
+fn event_handler_converter(tag: &Path, prop_key: &str) -> Option<proc_macro2::TokenStream> {
     match prop_key {
         "on_mouse_down" => Some(quote! { ::rfgui::ui::into_mouse_down_handler }),
         "on_mouse_up" => Some(quote! { ::rfgui::ui::into_mouse_up_handler }),
@@ -869,13 +874,16 @@ fn event_handler_converter(prop_key: &str) -> Option<proc_macro2::TokenStream> {
         "on_click" => Some(quote! { ::rfgui::ui::into_click_handler }),
         "on_key_down" => Some(quote! { ::rfgui::ui::into_key_down_handler }),
         "on_key_up" => Some(quote! { ::rfgui::ui::into_key_up_handler }),
+        "on_focus" if is_text_area_tag(tag) => {
+            Some(quote! { ::rfgui::ui::into_text_area_focus_handler })
+        }
         "on_focus" => Some(quote! { ::rfgui::ui::into_focus_handler }),
         "on_blur" => Some(quote! { ::rfgui::ui::into_blur_handler }),
         _ => None,
     }
 }
 
-fn event_handler_wrapper(prop_key: &str) -> Option<proc_macro2::TokenStream> {
+fn event_handler_wrapper(tag: &Path, prop_key: &str) -> Option<proc_macro2::TokenStream> {
     match prop_key {
         "on_mouse_down" => Some(quote! { ::rfgui::ui::on_mouse_down }),
         "on_mouse_up" => Some(quote! { ::rfgui::ui::on_mouse_up }),
@@ -885,18 +893,20 @@ fn event_handler_wrapper(prop_key: &str) -> Option<proc_macro2::TokenStream> {
         "on_click" => Some(quote! { ::rfgui::ui::on_click }),
         "on_key_down" => Some(quote! { ::rfgui::ui::on_key_down }),
         "on_key_up" => Some(quote! { ::rfgui::ui::on_key_up }),
-        "on_focus" => Some(quote! { ::rfgui::ui::on_focus }),
+        "on_focus" if is_text_area_tag(tag) => Some(quote! { ::rfgui::ui::on_text_area_focus }),
         "on_blur" => Some(quote! { ::rfgui::ui::on_blur }),
+        "on_focus" => Some(quote! { ::rfgui::ui::on_focus }),
         _ => None,
     }
 }
 
 fn wrap_event_expr(
+    tag: &Path,
     prop_key: &str,
     expr: &Expr,
     raw: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let Some(converter_fn) = event_handler_converter(prop_key) else {
+    let Some(converter_fn) = event_handler_converter(tag, prop_key) else {
         return raw;
     };
 
@@ -907,9 +917,11 @@ fn wrap_event_expr(
     }
 
     if matches!(expr, Expr::Closure(_))
-        && let Some(wrapper_fn) = event_handler_wrapper(prop_key)
+        && let Some(wrapper_fn) = event_handler_wrapper(tag, prop_key)
     {
         quote! { #wrapper_fn(#raw) }
+    } else if matches!(expr, Expr::Closure(_)) {
+        quote! { #converter_fn(#raw) }
     } else {
         raw
     }
@@ -923,6 +935,7 @@ fn expand_builder_prop_schema_check(prop: &Prop) -> proc_macro2::TokenStream {
 }
 
 fn expand_prop_value_expr_for_builder(
+    tag: &Path,
     key: &Ident,
     value: &PropValueExpr,
     builder_ident: proc_macro2::TokenStream,
@@ -938,7 +951,7 @@ fn expand_prop_value_expr_for_builder(
             }}
         }
         PropValueExpr::Object(entries) => {
-            expand_object_value_for_builder(key, entries, builder_ident)
+            expand_object_value_for_builder(tag, key, entries, builder_ident)
         }
         PropValueExpr::Missing => quote_spanned! {key.span()=>
             compile_error!("internal rsx error: missing prop value reached value expansion");
@@ -953,6 +966,7 @@ fn expand_prop_value_expr_for_builder(
 }
 
 fn expand_object_value_for_builder(
+    tag: &Path,
     key: &Ident,
     entries: &[ObjectEntry],
     builder_ident: proc_macro2::TokenStream,
@@ -960,7 +974,7 @@ fn expand_object_value_for_builder(
     let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
     let assignments = entries
         .iter()
-        .map(|entry| expand_object_assignment(entry, quote!(__rsx_object_builder)));
+        .map(|entry| expand_object_assignment(tag, entry, quote!(__rsx_object_builder)));
     quote! {{
         ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_object_builder| {
             #(#assignments)*
@@ -969,11 +983,12 @@ fn expand_object_value_for_builder(
 }
 
 fn expand_object_assignment(
+    tag: &Path,
     entry: &ObjectEntry,
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let key_ident = &entry.key;
-    let value = expand_object_value_expr(key_ident, &entry.value, builder_ident.clone());
+    let value = expand_object_value_expr(tag, key_ident, &entry.value, builder_ident.clone());
     quote! {
         let _ = &#builder_ident.#key_ident;
         #builder_ident.#key_ident(#value);
@@ -981,6 +996,7 @@ fn expand_object_assignment(
 }
 
 fn expand_object_value_expr(
+    tag: &Path,
     key: &Ident,
     value: &ObjectValueExpr,
     builder_ident: proc_macro2::TokenStream,
@@ -988,7 +1004,7 @@ fn expand_object_value_expr(
     match value {
         ObjectValueExpr::Expr(value) => {
             let raw = quote! { #value };
-            wrap_event_expr(&key.to_string(), value, raw)
+            wrap_event_expr(tag, &key.to_string(), value, raw)
         }
         ObjectValueExpr::StyleObject(entries) => {
             let style_inserts = entries.iter().map(expand_style_entry);
@@ -1002,7 +1018,7 @@ fn expand_object_value_expr(
             let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
             let assignments = entries
                 .iter()
-                .map(|entry| expand_object_assignment(entry, quote!(__rsx_nested_builder)));
+                .map(|entry| expand_object_assignment(tag, entry, quote!(__rsx_nested_builder)));
             quote! {{
                 ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_nested_builder| {
                     #(#assignments)*
@@ -1090,6 +1106,17 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 })
             })
         }
+        "text_wrap" => expr_style_tokens("style.text_wrap requires an expression value", |value| {
+            expand_maybe_none_style_expr(value, |inner| {
+                quote! {
+                    ::rfgui::insert_style_text_wrap(
+                        &mut __rsx_style,
+                        ::rfgui::PropertyId::TextWrap,
+                        #inner,
+                    );
+                }
+            })
+        }),
         "border_radius" => expr_style_tokens(
             "style.border_radius requires an expression value",
             |value| {

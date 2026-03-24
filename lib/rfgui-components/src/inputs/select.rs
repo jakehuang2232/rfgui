@@ -8,10 +8,7 @@ use rfgui::ui::{
     MouseDownHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,
     use_state,
 };
-use rfgui::{
-    Align, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, JustifyContent,
-    Layout, Length, Operator, Position, ScrollDirection,
-};
+use rfgui::{flex, Align, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout, Length, Operator, Position, ScrollDirection};
 
 pub struct Select;
 
@@ -179,10 +176,8 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                 style={{
                     color: theme.color.background.on,
                     max_width: Length::percent(100.0),
-                    layout: Layout::flow()
+                    layout: Layout::flex()
                         .row()
-                        .no_wrap()
-                        .justify_content(JustifyContent::SpaceBetween)
                         .align(Align::Center),
                     border_radius: theme.component.input.radius,
                     border: theme.component.input.border.clone(),
@@ -196,11 +191,14 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                 on_click={trigger_click}
             >
                 <Element style={{
+                    flex: flex().grow(1.0),
                     width: Length::calc(Length::percent(100.0), Operator::subtract, Length::px(24.0)),
                 }}>
                     {selected_label}
                 </Element>
-                <Element>
+                <Element style={{
+                    flex: flex().grow(0.0).shrink(0.0),
+                }}>
                     {if is_open { "▴" } else { "▾" }}
                 </Element>
             </Element>
@@ -241,6 +239,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
                     key={item.key}
                     style={{
                         layout: Layout::flex().row(),
+                        width: Length::percent(100.0),
                         padding: theme.component.input.padding,
                         background: if item.disabled {
                             theme.component.select.option_disabled_background.clone()
@@ -284,6 +283,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
                     .collision(Collision::FlipFit, CollisionBoundary::Viewport)
                     .clip(ClipMode::Viewport),
                 max_height: Length::vh(50.0),
+                width: Length::percent(100.0),
                 layout: Layout::flow()
                     .column()
                     .no_wrap()

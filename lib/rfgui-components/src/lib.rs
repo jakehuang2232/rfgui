@@ -8,11 +8,11 @@ pub use theme::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::{Accordion, Button, ButtonVariant, Checkbox, Select, Switch, Window};
+    use crate::{Accordion, Button, ButtonVariant, Checkbox, NumberField, Select, Switch, Window};
     use rfgui::ui::host::{Element, ElementPropSchema, Text, TextPropSchema};
     use rfgui::ui::{
-        EventMeta, MouseButton, MouseEventData, RsxNode, create_element, global_state, rsx,
-        take_state_dirty,
+        EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
+        RsxNode, TextChangeEvent, create_element, global_state, rsx, take_state_dirty,
     };
     use std::marker::PhantomData;
 
@@ -63,7 +63,7 @@ mod tests {
                 viewport_y: 8.0,
                 local_x: 0.0,
                 local_y: 0.0,
-                button: Some(MouseButton::Left),
+                button: Some(UiMouseButton::Left),
                 buttons: rfgui::ui::MouseButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
             },
@@ -170,7 +170,7 @@ mod tests {
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
-                button: Some(MouseButton::Left),
+                button: Some(UiMouseButton::Left),
                 buttons: rfgui::ui::MouseButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
             },
@@ -217,6 +217,25 @@ mod tests {
                     collect_text_nodes(child, out);
                 }
             }
+        }
+    }
+
+    fn find_first_element_by_tag<'a>(node: &'a RsxNode, tag: &str) -> Option<&'a RsxElementNode> {
+        match node {
+            RsxNode::Element(element) => {
+                if element.tag == tag {
+                    return Some(element);
+                }
+                element
+                    .children
+                    .iter()
+                    .find_map(|child| find_first_element_by_tag(child, tag))
+            }
+            RsxNode::Fragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|child| find_first_element_by_tag(child, tag)),
+            RsxNode::Text(_) => None,
         }
     }
 
@@ -302,6 +321,29 @@ mod tests {
             .map(|(width, _)| *width)
             .fold(0.0_f32, f32::max);
         assert!(max_width > 20.0, "text boxes: {boxes:?}");
+    }
+
+    #[test]
+    fn number_field_textarea_on_change_updates_numeric_binding() {
+        let value = global_state(|| 1.0);
+        let tree = rsx! {
+            <NumberField binding={value.binding()} />
+        };
+
+        let textarea = find_first_element_by_tag(&tree, "TextArea").expect("textarea node");
+        let Some((_, PropValue::OnChange(handler))) =
+            textarea.props.iter().find(|(key, _)| key == "on_change")
+        else {
+            panic!("missing on_change prop");
+        };
+
+        let mut event = TextChangeEvent {
+            meta: EventMeta::new(0),
+            value: "12.5".to_string(),
+        };
+        handler.call(&mut event);
+
+        assert_eq!(value.get(), 12.5);
     }
 
     #[test]

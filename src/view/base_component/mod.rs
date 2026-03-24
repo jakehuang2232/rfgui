@@ -304,6 +304,8 @@ pub(crate) fn build_node_by_id(
 pub struct LayoutTransitionSnapshotSeed {
     pub layout_x: f32,
     pub layout_y: f32,
+    pub flow_x: f32,
+    pub flow_y: f32,
     pub layout_width: f32,
     pub layout_height: f32,
     pub parent_layout_x: f32,
@@ -322,11 +324,18 @@ pub fn collect_layout_transition_snapshots(
         out: &mut HashMap<u64, LayoutTransitionSnapshotSeed>,
     ) {
         let snapshot = node.box_model_snapshot();
+        let (flow_x, flow_y) = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::layout_flow_origin)
+            .unwrap_or((snapshot.x, snapshot.y));
         out.insert(
             node.id(),
             LayoutTransitionSnapshotSeed {
                 layout_x: snapshot.x,
                 layout_y: snapshot.y,
+                flow_x,
+                flow_y,
                 layout_width: snapshot.width,
                 layout_height: snapshot.height,
                 parent_layout_x,
@@ -364,6 +373,8 @@ pub fn seed_layout_transition_snapshots(
                 element.seed_layout_transition_snapshot(
                     seed.layout_x,
                     seed.layout_y,
+                    seed.flow_x,
+                    seed.flow_y,
                     seed.layout_width,
                     seed.layout_height,
                     seed.parent_layout_x,
@@ -1520,6 +1531,47 @@ pub fn get_cursor_by_id(root: &dyn ElementTrait, node_id: u64) -> Option<crate::
         }
     }
     None
+}
+
+pub fn select_all_text_by_id(root: &mut dyn ElementTrait, node_id: u64) -> bool {
+    if root.id() == node_id {
+        if let Some(text_area) = root.as_any_mut().downcast_mut::<TextArea>() {
+            text_area.select_all();
+            return true;
+        }
+        return false;
+    }
+    if let Some(children) = root.children_mut() {
+        for child in children {
+            if select_all_text_by_id(child.as_mut(), node_id) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn select_text_range_by_id(
+    root: &mut dyn ElementTrait,
+    node_id: u64,
+    start: usize,
+    end: usize,
+) -> bool {
+    if root.id() == node_id {
+        if let Some(text_area) = root.as_any_mut().downcast_mut::<TextArea>() {
+            text_area.select_range(start, end);
+            return true;
+        }
+        return false;
+    }
+    if let Some(children) = root.children_mut() {
+        for child in children {
+            if select_text_range_by_id(child.as_mut(), node_id, start, end) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn subtree_contains_node(root: &dyn ElementTrait, ancestor_id: u64, node_id: u64) -> bool {

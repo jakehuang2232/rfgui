@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::ui::{FromPropValue, GlobalKey, IntoPropValue, PropValue, RsxKey, SharedPropValue};
 
@@ -133,6 +134,39 @@ struct StateStore {
     components_rendered_in_build: bool,
 }
 
+#[derive(Clone, Eq)]
+struct TimerHookKey {
+    component: ComponentKey,
+    hook_index: usize,
+}
+
+impl PartialEq for TimerHookKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.component == other.component && self.hook_index == other.hook_index
+    }
+}
+
+impl Hash for TimerHookKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.component.hash(state);
+        self.hook_index.hash(state);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimerMode {
+    Timeout,
+    Interval,
+}
+
+struct TimerEntry {
+    mode: TimerMode,
+    enabled: bool,
+    duration: Duration,
+    next_fire_at: Instant,
+    callback: Rc<RefCell<dyn FnMut()>>,
+}
+
 thread_local! {
     static STORE: RefCell<StateStore> = RefCell::new(StateStore::default());
     static GLOBAL_STORE: RefCell<HashMap<TypeId, Box<dyn Any>>> = RefCell::new(HashMap::new());
@@ -140,6 +174,8 @@ thread_local! {
     static COMPONENT_KEY_STACK: RefCell<Vec<Option<RsxKey>>> = const { RefCell::new(Vec::new()) };
     static REDRAW_CALLBACK: RefCell<Option<Rc<dyn Fn()>>> = RefCell::new(None);
     static STATE_DIRTY: Cell<bool> = const { Cell::new(false) };
+    static TIMER_STORE: RefCell<HashMap<TimerHookKey, TimerEntry>> = RefCell::new(HashMap::new());
+    static LIVE_TIMER_HOOKS: RefCell<HashSet<TimerHookKey>> = RefCell::new(HashSet::new());
 }
 
 #[derive(Clone)]
@@ -188,6 +224,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
             store.live_global_keys.clear();
             store.active_build_global_keys.clear();
             store.components_rendered_in_build = false;
+            LIVE_TIMER_HOOKS.with(|hooks| hooks.borrow_mut().clear());
         }
         store.build_depth += 1;
     });
@@ -204,6 +241,12 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
             store
                 .global_component_keys
                 .retain(|key, _| live_global.contains(key));
+            LIVE_TIMER_HOOKS.with(|hooks| {
+                let live_hooks = hooks.borrow().clone();
+                TIMER_STORE.with(|timers| {
+                    timers.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                });
+            });
         }
     });
 
@@ -354,6 +397,112 @@ pub fn use_state<T: Clone + 'static>(init: impl FnOnce() -> T) -> State<T> {
     })
 }
 
+fn use_timer<F>(mode: TimerMode, enabled: bool, duration: Duration, callback: F)
+where
+    F: FnMut() + 'static,
+{
+    let (component, hook_index) = CONTEXT.with(|context| {
+        let mut context = context.borrow_mut();
+        let frame = context
+            .frames
+            .last_mut()
+            .expect("timer hooks must be called inside #[component] render");
+        let index = frame.hook_cursor;
+        frame.hook_cursor += 1;
+        (frame.key.clone(), index)
+    });
+
+    let key = TimerHookKey {
+        component,
+        hook_index,
+    };
+    LIVE_TIMER_HOOKS.with(|hooks| {
+        hooks.borrow_mut().insert(key.clone());
+    });
+
+    TIMER_STORE.with(|timers| {
+        let mut timers = timers.borrow_mut();
+        let now = Instant::now();
+        let callback: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(callback));
+        match timers.get_mut(&key) {
+            Some(entry) => {
+                let should_reset = entry.mode != mode
+                    || entry.duration != duration
+                    || (!entry.enabled && enabled);
+                entry.mode = mode;
+                entry.duration = duration;
+                entry.enabled = enabled;
+                entry.callback = callback;
+                if should_reset {
+                    entry.next_fire_at = now + duration;
+                }
+            }
+            None => {
+                timers.insert(
+                    key,
+                    TimerEntry {
+                        mode,
+                        enabled,
+                        duration,
+                        next_fire_at: now + duration,
+                        callback,
+                    },
+                );
+            }
+        }
+    });
+}
+
+pub fn use_timeout<F>(enabled: bool, delay: Duration, callback: F)
+where
+    F: FnMut() + 'static,
+{
+    use_timer(TimerMode::Timeout, enabled, delay, callback);
+}
+
+pub fn use_interval<F>(enabled: bool, interval: Duration, callback: F)
+where
+    F: FnMut() + 'static,
+{
+    use_timer(TimerMode::Interval, enabled, interval, callback);
+}
+
+pub fn next_timer_deadline() -> Option<Instant> {
+    TIMER_STORE.with(|timers| {
+        timers
+            .borrow()
+            .values()
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.next_fire_at)
+            .min()
+    })
+}
+
+pub fn run_due_timers(now: Instant) {
+    let mut due_callbacks: Vec<Rc<RefCell<dyn FnMut()>>> = Vec::new();
+    TIMER_STORE.with(|timers| {
+        let mut timers = timers.borrow_mut();
+        for entry in timers.values_mut() {
+            if !entry.enabled || entry.next_fire_at > now {
+                continue;
+            }
+            due_callbacks.push(entry.callback.clone());
+            match entry.mode {
+                TimerMode::Timeout => {
+                    entry.enabled = false;
+                }
+                TimerMode::Interval => {
+                    entry.next_fire_at = now + entry.duration;
+                }
+            }
+        }
+    });
+
+    for callback in due_callbacks {
+        (callback.borrow_mut())();
+    }
+}
+
 fn global_cell_with_init<T: Clone + 'static>(init: impl FnOnce() -> T) -> Rc<RefCell<T>> {
     let mut init_opt = Some(init);
     GLOBAL_STORE.with(|store| {
@@ -409,8 +558,20 @@ pub fn use_global_state<T: Clone + 'static>() -> GlobalState<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_scope, take_state_dirty, use_state, with_component_key};
+    use super::{
+        build_scope, next_timer_deadline, run_due_timers, take_state_dirty, use_interval,
+        use_state, use_timeout, with_component_key,
+    };
     use crate::ui::{GlobalKey, RsxKey, RsxNode};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    fn clear_test_timers() {
+        build_scope(|| {
+            crate::ui::render_component::<u8, _>(|| {});
+        });
+    }
 
     #[test]
     fn non_component_scope_does_not_reset_use_state_slots() {
@@ -503,6 +664,61 @@ mod tests {
             })
         });
         assert_eq!(second, 42);
+    }
+
+    #[test]
+    fn use_timeout_fires_once_and_disables_itself() {
+        clear_test_timers();
+        let fired = Rc::new(Cell::new(0));
+        let fired_for_hook = fired.clone();
+
+        build_scope(|| {
+            crate::ui::render_component::<u32, _>(|| {
+                use_timeout(true, Duration::from_millis(10), move || {
+                    fired_for_hook.set(fired_for_hook.get() + 1);
+                });
+            })
+        });
+
+        let deadline = next_timer_deadline().expect("timeout should schedule a deadline");
+        run_due_timers(deadline);
+        assert_eq!(fired.get(), 1);
+        assert!(next_timer_deadline().is_none());
+
+        run_due_timers(deadline + Duration::from_millis(10));
+        assert_eq!(fired.get(), 1);
+        clear_test_timers();
+    }
+
+    #[test]
+    fn use_interval_resets_when_reenabled_or_duration_changes() {
+        clear_test_timers();
+        let fired = Rc::new(Cell::new(0));
+        let build = |enabled: bool, duration_ms: u64, fired: Rc<Cell<i32>>| {
+            build_scope(|| {
+                crate::ui::render_component::<u64, _>(|| {
+                    use_interval(enabled, Duration::from_millis(duration_ms), move || {
+                        fired.set(fired.get() + 1);
+                    });
+                })
+            });
+        };
+
+        build(true, 20, fired.clone());
+        let first_deadline = next_timer_deadline().expect("interval should schedule");
+        run_due_timers(first_deadline);
+        assert_eq!(fired.get(), 1);
+
+        build(false, 20, fired.clone());
+        assert!(next_timer_deadline().is_none());
+        run_due_timers(Instant::now() + Duration::from_secs(1));
+        assert_eq!(fired.get(), 1);
+
+        build(true, 40, fired.clone());
+        let reset_deadline = next_timer_deadline().expect("reenabled interval should reschedule");
+        run_due_timers(reset_deadline);
+        assert_eq!(fired.get(), 2);
+        clear_test_timers();
     }
 }
 

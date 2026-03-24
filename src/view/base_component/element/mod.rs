@@ -741,6 +741,21 @@ pub trait Layoutable {
     fn flex_basis(&self) -> SizeValue {
         SizeValue::Auto
     }
+    fn flex_main_size(&self, _is_row: bool) -> SizeValue {
+        SizeValue::Auto
+    }
+    fn flex_has_explicit_min_main_size(&self, _is_row: bool) -> bool {
+        false
+    }
+    fn flex_auto_min_main_size(&self, _is_row: bool) -> Option<f32> {
+        None
+    }
+    fn flex_min_main_size(&self, _is_row: bool) -> SizeValue {
+        SizeValue::Length(Length::Px(0.0))
+    }
+    fn flex_max_main_size(&self, _is_row: bool) -> SizeValue {
+        SizeValue::Auto
+    }
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
 }
 
@@ -921,6 +936,18 @@ struct FlexLayoutInfo {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct FlexItemPlan {
+    index: usize,
+    flex_base_main: f32,
+    hypothetical_main: f32,
+    used_main: f32,
+    min_main: f32,
+    max_main: Option<f32>,
+    frozen: bool,
+    cross: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
@@ -947,6 +974,8 @@ struct TransitionSnapshot {
     layout_transition_target_height: Option<f32>,
     last_parent_layout_x: f32,
     last_parent_layout_y: f32,
+    layout_assigned_width: Option<f32>,
+    layout_assigned_height: Option<f32>,
 }
 
 pub struct Element {
@@ -988,6 +1017,8 @@ pub struct Element {
     layout_transition_target_height: Option<f32>,
     last_parent_layout_x: f32,
     last_parent_layout_y: f32,
+    layout_assigned_width: Option<f32>,
+    layout_assigned_height: Option<f32>,
     is_hovered: bool,
     mouse_down_handlers: Vec<MouseDownHandler>,
     mouse_up_handlers: Vec<MouseUpHandler>,
@@ -1200,10 +1231,7 @@ impl ElementTrait for Element {
             hash_f32(&mut hasher, intersection.width);
             hash_f32(&mut hasher, intersection.height);
         }
-        if !self.children.is_empty()
-            && self.layout_inner_size.width > 0.0
-            && self.layout_inner_size.height > 0.0
-        {
+        if !self.children.is_empty() && self.has_inner_render_area() {
             let overflow_child_indices: Vec<bool> = (0..self.children.len())
                 .map(|idx| self.child_renders_outside_inner_clip(idx))
                 .collect();
@@ -1286,6 +1314,8 @@ impl ElementTrait for Element {
                 layout_transition_target_height: self.layout_transition_target_height,
                 last_parent_layout_x: self.last_parent_layout_x,
                 last_parent_layout_y: self.last_parent_layout_y,
+                layout_assigned_width: self.layout_assigned_width,
+                layout_assigned_height: self.layout_assigned_height,
             }),
         }))
     }
@@ -1323,6 +1353,8 @@ impl ElementTrait for Element {
                 transition_snapshot.layout_transition_target_height;
             self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
             self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
+            self.layout_assigned_width = transition_snapshot.layout_assigned_width;
+            self.layout_assigned_height = transition_snapshot.layout_assigned_height;
         }
 
         // Recompute against current parsed_style so transitions can bridge from old -> new style.

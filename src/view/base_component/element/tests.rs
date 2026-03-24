@@ -5,6 +5,7 @@ mod tests {
         resolve_px_with_base, resolve_signed_px_with_base, Element, ElementTrait, EventTarget,
         LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
     };
+    use super::super::core::Position as LayoutPosition;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
     use crate::view::frame_graph::FrameGraph;
@@ -1401,6 +1402,66 @@ mod tests {
     }
 
     #[test]
+    fn transition_start_frame_keeps_previous_visual_geometry() {
+        let mut el = Element::new(50.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(
+                [
+                    Transition::new(TransitionProperty::Position, 200),
+                    Transition::new(TransitionProperty::Width, 200),
+                ]
+                .into(),
+            ),
+        );
+        el.apply_style(style);
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+        let placement = LayoutPlacement {
+            parent_x: 100.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+
+        el.measure(constraints);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+        let _ = el.take_visual_transition_requests();
+
+        el.set_position(120.0, 0.0);
+        let mut next_style = Style::new();
+        next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
+        el.apply_style(next_style);
+        el.measure(constraints);
+        el.place(placement);
+
+        let snapshot = el.box_model_snapshot();
+        let layout_reqs = el.take_layout_transition_requests();
+        let visual_reqs = el.take_visual_transition_requests();
+        assert!((snapshot.x - 150.0).abs() < 0.01);
+        assert!((snapshot.width - 100.0).abs() < 0.01);
+        assert!((el.layout_transition_visual_offset_x + 70.0).abs() < 0.01);
+        assert_eq!(el.layout_transition_override_width, Some(100.0));
+        assert!(visual_reqs.iter().any(|req| req.field == VisualField::X));
+        assert!(layout_reqs.iter().any(|req| req.field == LayoutField::Width));
+    }
+
+    #[test]
     fn reflow_uses_current_rendered_width_as_layout_transition_start() {
         let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
         let mut style = Style::new();
@@ -1575,6 +1636,50 @@ mod tests {
     }
 
     #[test]
+    fn seed_layout_snapshot_keeps_flow_and_visual_positions_separate() {
+        let mut old = Element::new_with_id(42, 50.0, 0.0, 100.0, 40.0);
+        old.has_layout_snapshot = true;
+        old.last_parent_layout_x = 100.0;
+        old.last_parent_layout_y = 0.0;
+        old.layout_flow_position = LayoutPosition { x: 170.0, y: 0.0 };
+        old.core.layout_position = LayoutPosition { x: 150.0, y: 0.0 };
+        old.layout_transition_visual_offset_x = -20.0;
+        old.layout_transition_target_x = Some(70.0);
+
+        let layout_snapshots =
+            crate::view::base_component::collect_layout_transition_snapshots(&[Box::new(old)]);
+
+        let mut rebuilt = Element::new_with_id(42, 50.0, 0.0, 100.0, 40.0);
+        rebuilt.has_layout_snapshot = true;
+        rebuilt.layout_transition_visual_offset_x = -20.0;
+        rebuilt.layout_transition_target_x = Some(70.0);
+        let mut roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(rebuilt)];
+        crate::view::base_component::seed_layout_transition_snapshots(&mut roots, &layout_snapshots);
+
+        let rebuilt = roots[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("downcast rebuilt element");
+        assert_eq!(rebuilt.core.layout_position.x, 150.0);
+        assert_eq!(rebuilt.layout_flow_position.x, 170.0);
+
+        rebuilt.place(LayoutPlacement {
+            parent_x: 100.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        assert!((rebuilt.core.layout_position.x - 150.0).abs() < 0.01);
+    }
+
+    #[test]
     fn axis_layout_measure_uses_target_size_not_transition_override_for_distribution() {
         let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
         let mut parent_style = Style::new();
@@ -1680,6 +1785,402 @@ mod tests {
         let snapshot = parent.children().expect("child")[0].box_model_snapshot();
         assert_eq!(snapshot.width, 100.0);
         assert_eq!(snapshot.height, 50.0);
+    }
+
+    #[test]
+    fn flex_measure_does_not_feed_distributed_main_size_back_into_auto_basis() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent.apply_style(parent_style);
+
+        let mut first = Element::new(0.0, 0.0, 10.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.insert(PropertyId::Width, ParsedValue::Auto);
+        first_style.insert(PropertyId::Height, ParsedValue::Auto);
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        first.apply_style(first_style);
+        first.add_child(Box::new(Element::new(0.0, 0.0, 20.0, 20.0)));
+
+        let mut second = Element::new(0.0, 0.0, 120.0, 20.0);
+        let mut second_style = Style::new();
+        second_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
+        second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+        let placement = LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+
+        parent.measure(constraints);
+        parent.place(placement);
+        let children = parent.children().expect("children after first layout");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+        assert!((first_snapshot.width - 20.0).abs() < 0.01);
+        assert!((second_snapshot.width - 80.0).abs() < 0.01);
+
+        parent.mark_layout_dirty();
+        parent.measure(constraints);
+        parent.place(placement);
+        let children = parent.children().expect("children after second layout");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+        assert!((first_snapshot.width - 20.0).abs() < 0.01);
+        assert!((second_snapshot.width - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_grow_redistributes_remaining_space_after_max_width_clamp() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        parent.apply_style(parent_style);
+
+        let mut first = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().grow(1.0)));
+        first_style.insert(PropertyId::MaxWidth, ParsedValue::Length(Length::px(30.0)));
+        first.apply_style(first_style);
+
+        let mut second = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut second_style = Style::new();
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().grow(1.0)));
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+        assert!((first_snapshot.width - 30.0).abs() < 0.01);
+        assert!((second_snapshot.width - 70.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_shrink_redistributes_remaining_space_after_min_width_clamp() {
+        let mut parent = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        parent.apply_style(parent_style);
+
+        let mut first = Element::new(0.0, 0.0, 60.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        first_style.insert(PropertyId::MinWidth, ParsedValue::Length(Length::px(50.0)));
+        first.apply_style(first_style);
+
+        let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
+        let mut second_style = Style::new();
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+        assert!((first_snapshot.width - 50.0).abs() < 0.01);
+        assert!((second_snapshot.width - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_auto_min_main_size_uses_measured_size_for_auto_main_axis_items() {
+        let mut parent = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        parent.apply_style(parent_style);
+
+        let mut first = Element::new(0.0, 0.0, 10.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.insert(PropertyId::Width, ParsedValue::Auto);
+        first_style.insert(PropertyId::Height, ParsedValue::Auto);
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        first.apply_style(first_style);
+        first.add_child(Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
+
+        let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
+        let mut second_style = Style::new();
+        second_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(60.0)));
+        second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+        assert!((first_snapshot.width - 60.0).abs() < 0.01);
+        assert!((second_snapshot.width - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_basis_auto_uses_zero_when_child_main_size_is_indefinite() {
+        let mut parent = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        parent.apply_style(parent_style);
+
+        let mut first = Element::new(0.0, 0.0, 10.0, 20.0);
+        let mut first_style = Style::new();
+        first_style.insert(PropertyId::Width, ParsedValue::Auto);
+        first_style.insert(PropertyId::Height, ParsedValue::Auto);
+        first_style.insert(
+            PropertyId::MinWidth,
+            ParsedValue::Length(Length::Zero),
+        );
+        first_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().shrink(1.0)),
+        );
+        first.apply_style(first_style);
+        first.add_child(Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
+
+        let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
+        let mut second_style = Style::new();
+        second_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(60.0)));
+        second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        second_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().shrink(1.0)),
+        );
+        second.apply_style(second_style);
+
+        parent.add_child(Box::new(first));
+        parent.add_child(Box::new(second));
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let children = parent.children().expect("children");
+        let first_snapshot = children[0].box_model_snapshot();
+        let second_snapshot = children[1].box_model_snapshot();
+        assert!((first_snapshot.width - 0.0).abs() < 0.01);
+        assert!((second_snapshot.width - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn width_transition_on_flow_child_repositions_following_sibling() {
+        let mut parent = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        parent.apply_style(parent_style);
+
+        let mut spacer = Element::new_with_id(1, 0.0, 0.0, 0.0, 20.0);
+        let mut spacer_style = Style::new();
+        spacer_style.insert(PropertyId::Width, ParsedValue::Length(Length::Zero));
+        spacer_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        spacer_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(
+                Transitions::single(Transition::new(TransitionProperty::Width, 180)),
+            ),
+        );
+        spacer.apply_style(spacer_style);
+
+        let mut thumb = Element::new_with_id(2, 0.0, 0.0, 20.0, 20.0);
+        let mut thumb_style = Style::new();
+        thumb_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
+        thumb_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        thumb.apply_style(thumb_style);
+
+        parent.add_child(Box::new(spacer));
+        parent.add_child(Box::new(thumb));
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+        let placement = LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+
+        parent.measure(constraints);
+        parent.place(placement);
+        let _ = parent.take_layout_transition_requests();
+
+        let mut next_spacer_style = Style::new();
+        next_spacer_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
+        parent
+            .children_mut()
+            .expect("children")[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("spacer")
+            .apply_style(next_spacer_style);
+
+        parent.mark_layout_dirty();
+        parent.measure(constraints);
+        parent.place(placement);
+
+        let reqs = parent
+            .children_mut()
+            .expect("children")[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("spacer")
+            .take_layout_transition_requests();
+        assert!(reqs.iter().any(|req| req.field == LayoutField::Width));
+
+        parent
+            .children_mut()
+            .expect("children")[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("spacer")
+            .set_layout_transition_width(10.0);
+        parent.mark_layout_dirty();
+        parent.measure(constraints);
+        parent.place(placement);
+
+        let children = parent.children().expect("children");
+        let thumb_snapshot = children[1].box_model_snapshot();
+        assert!((thumb_snapshot.x - 10.0).abs() < 0.01);
     }
 
     #[test]
@@ -2483,6 +2984,24 @@ mod tests {
         assert_eq!(el.layout_inner_size.height, 0.0);
         assert!(el.core.should_render);
         assert!(!el.core.should_paint);
+    }
+
+    #[test]
+    fn transition_override_keeps_inner_render_area_available() {
+        let mut el = Element::new(0.0, 0.0, 20.0, 20.0);
+        el.core.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
+        el.core.layout_size.width = 0.0;
+        el.core.layout_size.height = 0.0;
+        el.layout_inner_position = LayoutPosition { x: 0.0, y: 0.0 };
+        el.layout_inner_size.width = 0.0;
+        el.layout_inner_size.height = 0.0;
+        el.layout_transition_override_width = Some(40.0);
+        el.layout_transition_override_height = Some(30.0);
+
+        assert!(el.has_inner_render_area());
+        let inner = el.inner_clip_rect();
+        assert_eq!(inner.width, 40.0);
+        assert_eq!(inner.height, 30.0);
     }
 
 }
