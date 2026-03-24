@@ -158,6 +158,8 @@ pub struct InputTheme {
     pub padding: Padding,
     pub radius: BorderRadius,
     pub border: Border,
+    pub label_width_basis: Length,
+    pub label_max_width: Length,
 }
 
 #[derive(Clone)]
@@ -329,6 +331,8 @@ impl Theme {
                     padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
                     radius: BorderRadius::uniform(Length::px(4.0)),
                     border: Border::uniform(Length::px(1.0), &border_color),
+                    label_width_basis: Length::px(80.0),
+                    label_max_width: Length::px(250.0),
                 },
                 card: CardTheme {
                     padding: Padding::uniform(Length::px(4.0)),
@@ -492,6 +496,8 @@ impl Theme {
                     padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
                     radius: BorderRadius::uniform(Length::px(4.0)),
                     border: Border::uniform(Length::px(1.0), &border_color),
+                    label_width_basis: Length::px(80.0),
+                    label_max_width: Length::px(250.0),
                 },
                 card: CardTheme {
                     padding: Padding::uniform(Length::px(4.0)),

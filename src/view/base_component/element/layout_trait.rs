@@ -1,5 +1,7 @@
 impl Layoutable for Element {
     fn measure(&mut self, constraints: LayoutConstraints) {
+        self.layout_assigned_width = None;
+        self.layout_assigned_height = None;
         let context = constraints.context();
         let proposal = LayoutProposal {
             width: context.width,
@@ -230,11 +232,11 @@ impl Layoutable for Element {
     }
 
     fn set_layout_width(&mut self, width: f32) {
-        self.core.set_width(width);
+        self.layout_assigned_width = Some(width.max(0.0));
     }
 
     fn set_layout_height(&mut self, height: f32) {
-        self.core.set_height(height);
+        self.layout_assigned_height = Some(height.max(0.0));
     }
 
     fn allows_cross_stretch(&self, is_row: bool) -> bool {
@@ -255,6 +257,49 @@ impl Layoutable for Element {
 
     fn flex_basis(&self) -> SizeValue {
         self.computed_style.flex_basis
+    }
+
+    fn flex_main_size(&self, is_row: bool) -> SizeValue {
+        if is_row {
+            self.computed_style.width
+        } else {
+            self.computed_style.height
+        }
+    }
+
+    fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {
+        let property = if is_row {
+            crate::style::PropertyId::MinWidth
+        } else {
+            crate::style::PropertyId::MinHeight
+        };
+        self.parsed_style.get(property).is_some()
+    }
+
+    fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
+        if self.flex_has_explicit_min_main_size(is_row)
+            || self.flex_main_size(is_row) != SizeValue::Auto
+        {
+            return None;
+        }
+        let (measured_w, measured_h) = self.measured_size();
+        Some(if is_row { measured_w } else { measured_h }.max(0.0))
+    }
+
+    fn flex_min_main_size(&self, is_row: bool) -> SizeValue {
+        if is_row {
+            self.computed_style.min_width
+        } else {
+            self.computed_style.min_height
+        }
+    }
+
+    fn flex_max_main_size(&self, is_row: bool) -> SizeValue {
+        if is_row {
+            self.computed_style.max_width
+        } else {
+            self.computed_style.max_height
+        }
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {

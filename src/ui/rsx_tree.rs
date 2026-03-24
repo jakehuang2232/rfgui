@@ -4,7 +4,7 @@ use crate::TextAlign;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
-    MouseUpHandlerProp,
+    MouseUpHandlerProp, TextAreaFocusHandlerProp, TextChangeHandlerProp,
 };
 use std::any::Any;
 use std::fmt;
@@ -330,6 +330,8 @@ pub enum PropValue {
     OnKeyUp(KeyUpHandlerProp),
     OnFocus(FocusHandlerProp),
     OnBlur(BlurHandlerProp),
+    OnTextAreaFocus(TextAreaFocusHandlerProp),
+    OnChange(TextChangeHandlerProp),
     TextAlign(TextAlign),
     Shared(SharedPropValue),
 }
@@ -462,6 +464,18 @@ impl From<BlurHandlerProp> for PropValue {
     }
 }
 
+impl From<TextAreaFocusHandlerProp> for PropValue {
+    fn from(value: TextAreaFocusHandlerProp) -> Self {
+        PropValue::OnTextAreaFocus(value)
+    }
+}
+
+impl From<TextChangeHandlerProp> for PropValue {
+    fn from(value: TextChangeHandlerProp) -> Self {
+        PropValue::OnChange(value)
+    }
+}
+
 impl From<TextAlign> for PropValue {
     fn from(value: TextAlign) -> Self {
         PropValue::TextAlign(value)
@@ -591,6 +605,18 @@ impl IntoPropValue for FocusHandlerProp {
 impl IntoPropValue for BlurHandlerProp {
     fn into_prop_value(self) -> PropValue {
         PropValue::OnBlur(self)
+    }
+}
+
+impl IntoPropValue for TextAreaFocusHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnTextAreaFocus(self)
+    }
+}
+
+impl IntoPropValue for TextChangeHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnChange(self)
     }
 }
 
@@ -738,6 +764,24 @@ impl FromPropValue for BlurHandlerProp {
         match value {
             PropValue::OnBlur(v) => Ok(v),
             _ => Err("expected blur handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for TextAreaFocusHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnTextAreaFocus(v) => Ok(v),
+            _ => Err("expected text area focus handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for TextChangeHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnChange(v) => Ok(v),
+            _ => Err("expected change handler value".to_string()),
         }
     }
 }

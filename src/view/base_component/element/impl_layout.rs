@@ -1,4 +1,6 @@
 impl Element {
+    const LAYOUT_TRANSITION_FINISH_EPSILON: f32 = 0.05;
+
     fn measure_self(&mut self, proposal: LayoutProposal) {
         if let SizeValue::Length(width) = self.computed_style.width {
             if let Some(resolved) = resolve_px_with_base(
@@ -356,8 +358,16 @@ impl Element {
             height: proposal.height.max(0.0),
         };
         self.anchor_parent_clip_rect = Some(parent_rect);
-        let mut target_width = self.core.size.width.max(0.0);
-        let mut target_height = self.core.size.height.max(0.0);
+        let mut target_width = self
+            .layout_transition_target_width
+            .or(self.layout_assigned_width)
+            .unwrap_or(self.core.size.width)
+            .max(0.0);
+        let mut target_height = self
+            .layout_transition_target_height
+            .or(self.layout_assigned_height)
+            .unwrap_or(self.core.size.height)
+            .max(0.0);
         let mut target_rel_x = self.core.position.x;
         let mut target_rel_y = self.core.position.y;
         let is_absolute = self.computed_style.position.mode() == PositionMode::Absolute;
@@ -516,8 +526,22 @@ impl Element {
         if !has_width_transition {
             self.layout_transition_override_width = None;
             self.layout_transition_target_width = None;
+        } else if self
+            .layout_transition_override_width
+            .zip(self.layout_transition_target_width)
+            .is_some_and(|(current, target)| approx_eq(current, target))
+        {
+            self.layout_transition_override_width = None;
+            self.layout_transition_target_width = None;
         }
         if !has_height_transition {
+            self.layout_transition_override_height = None;
+            self.layout_transition_target_height = None;
+        } else if self
+            .layout_transition_override_height
+            .zip(self.layout_transition_target_height)
+            .is_some_and(|(current, target)| approx_eq(current, target))
+        {
             self.layout_transition_override_height = None;
             self.layout_transition_target_height = None;
         }
@@ -531,20 +555,6 @@ impl Element {
         let current_offset_y = current_visual_rel_y - target_rel_y;
         let prev_width = self.core.layout_size.width.max(0.0);
         let prev_height = self.core.layout_size.height.max(0.0);
-        if self
-            .layout_transition_target_x
-            .is_some_and(|_| approx_eq(current_offset_x, 0.0))
-        {
-            self.layout_transition_target_x = None;
-            self.layout_transition_visual_offset_x = 0.0;
-        }
-        if self
-            .layout_transition_target_y
-            .is_some_and(|_| approx_eq(current_offset_y, 0.0))
-        {
-            self.layout_transition_target_y = None;
-            self.layout_transition_visual_offset_y = 0.0;
-        }
         // If visual target changes while track is active, always rebase from current rendered
         // position and restart. This keeps the visual track start anchored to "where it is now".
         if self
@@ -561,21 +571,6 @@ impl Element {
             self.layout_transition_visual_offset_y = current_offset_y;
             self.layout_transition_target_y = None;
         }
-        if self
-            .layout_transition_target_width
-            .is_some_and(|target| approx_eq(prev_width, target))
-        {
-            self.layout_transition_target_width = None;
-            self.layout_transition_override_width = None;
-        }
-        if self
-            .layout_transition_target_height
-            .is_some_and(|target| approx_eq(prev_height, target))
-        {
-            self.layout_transition_target_height = None;
-            self.layout_transition_override_height = None;
-        }
-
         if self.has_layout_snapshot {
             self.collect_layout_transition_requests(
                 current_offset_x,
@@ -694,6 +689,17 @@ impl Element {
         target_width: f32,
         target_height: f32,
     ) {
+        let width_is_close_enough = (prev_width - target_width).abs() < Self::LAYOUT_TRANSITION_FINISH_EPSILON;
+        let height_is_close_enough =
+            (prev_height - target_height).abs() < Self::LAYOUT_TRANSITION_FINISH_EPSILON;
+        if width_is_close_enough {
+            self.layout_transition_override_width = None;
+            self.layout_transition_target_width = None;
+        }
+        if height_is_close_enough {
+            self.layout_transition_override_height = None;
+            self.layout_transition_target_height = None;
+        }
         for transition in self.computed_style.transition.as_slice() {
             let runtime_layout = RuntimeLayoutTransition {
                 duration_ms: transition.duration_ms,
@@ -710,7 +716,7 @@ impl Element {
                     let should_start_width = self
                         .layout_transition_target_width
                         .is_none_or(|active| !approx_eq(active, target_width));
-                    if should_start_width && !approx_eq(prev_width, target_width) {
+                    if should_start_width && !width_is_close_enough {
                         self.pending_layout_transition_requests
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -725,7 +731,7 @@ impl Element {
                     let should_start_height = self
                         .layout_transition_target_height
                         .is_none_or(|active| !approx_eq(active, target_height));
-                    if should_start_height && !approx_eq(prev_height, target_height) {
+                    if should_start_height && !height_is_close_enough {
                         self.pending_layout_transition_requests
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -776,7 +782,7 @@ impl Element {
                     let should_start_width = self
                         .layout_transition_target_width
                         .is_none_or(|active| !approx_eq(active, target_width));
-                    if should_start_width && !approx_eq(prev_width, target_width) {
+                    if should_start_width && !width_is_close_enough {
                         self.pending_layout_transition_requests
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -793,7 +799,7 @@ impl Element {
                     let should_start_height = self
                         .layout_transition_target_height
                         .is_none_or(|active| !approx_eq(active, target_height));
-                    if should_start_height && !approx_eq(prev_height, target_height) {
+                    if should_start_height && !height_is_close_enough {
                         self.pending_layout_transition_requests
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -1172,6 +1178,12 @@ impl Element {
                 } else {
                     (cross_cursor + cross_offset, main_cursor)
                 };
+
+                if is_row {
+                    self.children[child_idx].set_layout_width(item_main);
+                } else {
+                    self.children[child_idx].set_layout_height(item_main);
+                }
 
                 // Implement Stretch
                 if cross_size == CrossSize::Stretch

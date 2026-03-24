@@ -1011,6 +1011,7 @@ pub struct Viewport {
     transition_epoch: Option<Instant>,
     cursor_handler: Option<CursorHandler>,
     cursor_override: Option<Cursor>,
+    last_notified_cursor: Option<Cursor>,
     frame_presented: bool,
     last_frame_graph: Option<FrameGraph>,
     debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
@@ -1128,6 +1129,24 @@ impl Viewport {
             canceled |= self.cancel_track_by_owner(key);
         }
         canceled
+    }
+
+    fn sync_layout_transition_claims(&mut self) {
+        let active_keys = self
+            .layout_transition_plugin
+            .active_track_keys()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        self.transition_claims.retain(|key, owner| {
+            if !matches!(
+                key.channel,
+                CHANNEL_LAYOUT_X | CHANNEL_LAYOUT_Y | CHANNEL_LAYOUT_WIDTH | CHANNEL_LAYOUT_HEIGHT
+            ) {
+                return true;
+            }
+            let _ = owner;
+            active_keys.contains(key)
+        });
     }
 
     fn present_mode_from_env() -> wgpu::PresentMode {
@@ -1478,6 +1497,7 @@ impl Viewport {
                 &mut host,
             )
         };
+        self.sync_layout_transition_claims();
         let mut changed = false;
         let layout_samples = self.layout_transition_plugin.take_samples();
         for sample in layout_samples {
@@ -1625,6 +1645,20 @@ impl Viewport {
                 &mut host,
             )
         };
+        let layout_result = {
+            let mut host = TransitionHostAdapter {
+                registered_channels: &self.transition_channels,
+                claims: &mut self.transition_claims,
+            };
+            self.layout_transition_plugin.run_tracks(
+                TransitionFrame {
+                    dt_seconds: dt,
+                    now_seconds,
+                },
+                &mut host,
+            )
+        };
+        self.sync_layout_transition_claims();
         let samples = self.scroll_transition_plugin.take_samples();
         let mut changed = false;
         for sample in samples {
@@ -1674,13 +1708,32 @@ impl Viewport {
                 }
             }
         }
-        if scroll_result.keep_running || style_result.keep_running || visual_result.keep_running {
+        let layout_samples = self.layout_transition_plugin.take_samples();
+        for sample in layout_samples {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_layout_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value,
+                ) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if scroll_result.keep_running
+            || style_result.keep_running
+            || visual_result.keep_running
+            || layout_result.keep_running
+        {
             self.request_redraw();
         }
         changed
             || scroll_result.keep_running
             || style_result.keep_running
             || visual_result.keep_running
+            || layout_result.keep_running
     }
 
     fn sync_inflight_transition_state(
@@ -1721,6 +1774,7 @@ impl Viewport {
             };
             self.layout_transition_plugin.run_tracks(frame, &mut host)
         };
+        self.sync_layout_transition_claims();
 
         let mut changed = false;
         for sample in self.scroll_transition_plugin.take_samples() {
@@ -2041,6 +2095,7 @@ impl Viewport {
             transition_epoch: None,
             cursor_handler: None,
             cursor_override: None,
+            last_notified_cursor: None,
             frame_presented: false,
             last_frame_graph: None,
             debug_overlay_vertices: Vec::new(),
@@ -2250,6 +2305,7 @@ impl Viewport {
         F: FnMut(Cursor) + 'static,
     {
         self.cursor_handler = Some(Box::new(handler));
+        self.last_notified_cursor = None;
     }
 
     pub fn set_cursor(&mut self, cursor: Option<Cursor>) {
@@ -2560,10 +2616,24 @@ impl Viewport {
         let post_layout_transition_elapsed_ms =
             post_layout_transition_started_at.elapsed().as_secs_f64() * 1000.0;
         let relayout_after_transition_started_at = Instant::now();
+        let mut relayout_measure_elapsed_ms = 0.0_f64;
         let mut relayout_place_elapsed_ms = 0.0_f64;
         let mut relayout_collect_box_models_elapsed_ms = 0.0_f64;
         if transition_changed_after_layout {
             self.frame_box_models.clear();
+            let relayout_measure_started_at = Instant::now();
+            for root in roots.iter_mut() {
+                root.measure(super::base_component::LayoutConstraints {
+                    max_width: self.logical_width,
+                    max_height: self.logical_height,
+                    viewport_width: self.logical_width,
+                    viewport_height: self.logical_height,
+                    percent_base_width: Some(self.logical_width),
+                    percent_base_height: Some(self.logical_height),
+                });
+            }
+            relayout_measure_elapsed_ms =
+                relayout_measure_started_at.elapsed().as_secs_f64() * 1000.0;
             let relayout_place_started_at = Instant::now();
             for root in roots.iter_mut() {
                 root.place(super::base_component::LayoutPlacement {
@@ -2881,6 +2951,7 @@ impl Viewport {
                                 "relayout_after_transition",
                                 relayout_after_transition_elapsed_ms,
                                 vec![
+                                    TraceRenderNode::new("measure", relayout_measure_elapsed_ms),
                                     TraceRenderNode::new("place", relayout_place_elapsed_ms),
                                     TraceRenderNode::new(
                                         "collect_box_models",
@@ -2976,6 +3047,14 @@ impl Viewport {
         }
         self.sync_focus_dispatch();
         let mut roots = std::mem::take(&mut self.ui_roots);
+        let canceled_tracks = self.cancel_disallowed_transition_tracks(&roots);
+        let (dt, now_seconds) = self.transition_timing();
+        let transition_changed_before_render =
+            canceled_tracks || self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
+        let mut transition_changed_after_layout = false;
+        if !roots.is_empty() {
+            transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);
+        }
         let next_hover_target = self.mouse_position_viewport().and_then(|(x, y)| {
             roots
                 .iter()
@@ -2987,14 +3066,6 @@ impl Viewport {
             &mut self.input_state.hovered_node_id,
             next_hover_target,
         );
-        let canceled_tracks = self.cancel_disallowed_transition_tracks(&roots);
-        let (dt, now_seconds) = self.transition_timing();
-        let transition_changed_before_render =
-            canceled_tracks || self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
-        let mut transition_changed_after_layout = false;
-        if !roots.is_empty() {
-            transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);
-        }
         if hover_changed || transition_changed_before_render || transition_changed_after_layout {
             self.request_redraw();
         }
@@ -3401,6 +3472,7 @@ impl Viewport {
     }
 
     fn apply_viewport_listener_actions(&mut self, actions: Vec<ViewportListenerAction>) {
+        let mut selection_changed = false;
         for action in actions {
             match action {
                 ViewportListenerAction::AddMouseMoveListener(handler) => {
@@ -3420,10 +3492,38 @@ impl Viewport {
                 ViewportListenerAction::SetCursor(cursor) => {
                     self.set_cursor(cursor);
                 }
+                ViewportListenerAction::SelectTextRangeAll(target_id) => {
+                    for root in self.ui_roots.iter_mut().rev() {
+                        if super::base_component::select_all_text_by_id(root.as_mut(), target_id) {
+                            selection_changed = true;
+                            break;
+                        }
+                    }
+                }
+                ViewportListenerAction::SelectTextRange {
+                    target_id,
+                    start,
+                    end,
+                } => {
+                    for root in self.ui_roots.iter_mut().rev() {
+                        if super::base_component::select_text_range_by_id(
+                            root.as_mut(),
+                            target_id,
+                            start,
+                            end,
+                        ) {
+                            selection_changed = true;
+                            break;
+                        }
+                    }
+                }
                 ViewportListenerAction::RemoveListener(handle) => {
                     self.remove_viewport_listener(handle);
                 }
             }
+        }
+        if selection_changed {
+            self.request_redraw();
         }
     }
 
@@ -3850,7 +3950,6 @@ impl Viewport {
         let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
-        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -3961,7 +4060,6 @@ impl Viewport {
         let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
-        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -4103,7 +4201,10 @@ impl Viewport {
                 }
             }
         }
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -4130,7 +4231,10 @@ impl Viewport {
                 }
             }
         }
+        let pending_actions = event.meta.take_viewport_listener_actions();
         self.ui_roots = roots;
+        self.apply_viewport_listener_actions(pending_actions);
+        self.sync_focus_dispatch();
         if handled {
             self.request_redraw();
         }
@@ -4185,20 +4289,24 @@ impl Viewport {
             return;
         }
 
-        let desired = self.input_state.focused_node_id;
-        let dispatched = self.dispatched_focus_node_id;
-        if desired == dispatched {
-            return;
-        }
+        loop {
+            let desired = self.input_state.focused_node_id;
+            let dispatched = self.dispatched_focus_node_id;
+            if desired == dispatched {
+                break;
+            }
 
-        if let Some(prev_id) = dispatched {
-            let _ = self.dispatch_blur_event(prev_id);
-        }
-        if let Some(next_id) = desired {
-            let _ = self.dispatch_focus_event(next_id);
-        }
+            // Mark the in-flight target first so reentrant redraws triggered
+            // by focus/blur handlers do not redispatch the same focus change.
+            self.dispatched_focus_node_id = desired;
 
-        self.dispatched_focus_node_id = desired;
+            if let Some(prev_id) = dispatched {
+                let _ = self.dispatch_blur_event(prev_id);
+            }
+            if let Some(next_id) = desired {
+                let _ = self.dispatch_focus_event(next_id);
+            }
+        }
     }
 
     fn resolve_cursor(&self) -> Cursor {
@@ -4219,6 +4327,10 @@ impl Viewport {
 
     fn notify_cursor_handler(&mut self) {
         let cursor = self.resolve_cursor();
+        if self.last_notified_cursor == Some(cursor) {
+            return;
+        }
+        self.last_notified_cursor = Some(cursor);
         if let Some(handler) = self.cursor_handler.as_mut() {
             handler(cursor);
         }
@@ -4467,10 +4579,14 @@ impl<'a> FrameParts<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MouseButton, PendingClick, append_overlay_label_geometry, build_reuse_overlay_geometry,
-        is_valid_click_candidate,
+        MouseButton, PendingClick, Viewport, append_overlay_label_geometry,
+        build_reuse_overlay_geometry, is_valid_click_candidate,
     };
+    use crate::TransitionProperty;
+    use crate::ui::host::Element;
+    use crate::ui::rsx;
     use crate::view::base_component::BoxModelSnapshot;
+    use crate::{Align, Layout, Length, Operator, Transition};
 
     #[test]
     fn click_requires_same_button_and_target() {
@@ -4578,5 +4694,187 @@ mod tests {
 
         assert!(!vertices.is_empty());
         assert!(!indices.is_empty());
+    }
+
+    #[test]
+    fn rsx_rebuild_preserves_width_transition_that_pushes_following_sibling() {
+        fn build_tree(checked: bool) -> crate::ui::RsxNode {
+            let thumb_travel = Length::calc(
+                Length::calc(Length::px(36.0), Operator::subtract, Length::px(2.0)),
+                Operator::subtract,
+                Length::px(16.0),
+            );
+
+            rsx! {
+                <Element style={{
+                    layout: Layout::flex().row().align(Align::Center),
+                }}>
+                    <Element style={{
+                        layout: Layout::flow().row().align(Align::Center).no_wrap(),
+                        width: Length::px(36.0),
+                        height: Length::px(20.0),
+                        padding: crate::Padding::uniform(Length::px(2.0)),
+                    }}>
+                        <Element style={{
+                            width: if checked { thumb_travel } else { Length::Zero },
+                            height: Length::px(16.0),
+                            transition: [
+                                Transition::new(TransitionProperty::Width, 180).ease_in_out(),
+                            ],
+                        }} />
+                        <Element style={{
+                            width: Length::px(16.0),
+                            height: Length::px(16.0),
+                        }} />
+                    </Element>
+                </Element>
+            }
+        }
+
+        fn place_roots(viewport: &mut Viewport) {
+            for root in viewport.ui_roots.iter_mut() {
+                root.measure(crate::view::base_component::LayoutConstraints {
+                    max_width: viewport.logical_width,
+                    max_height: viewport.logical_height,
+                    viewport_width: viewport.logical_width,
+                    viewport_height: viewport.logical_height,
+                    percent_base_width: Some(viewport.logical_width),
+                    percent_base_height: Some(viewport.logical_height),
+                });
+                root.place(crate::view::base_component::LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: viewport.logical_width,
+                    available_height: viewport.logical_height,
+                    viewport_width: viewport.logical_width,
+                    viewport_height: viewport.logical_height,
+                    percent_base_width: Some(viewport.logical_width),
+                    percent_base_height: Some(viewport.logical_height),
+                });
+            }
+        }
+
+        fn switch_track_children(
+            viewport: &mut Viewport,
+        ) -> (&mut Box<dyn crate::view::base_component::ElementTrait>, &mut Box<dyn crate::view::base_component::ElementTrait>) {
+            let root = viewport.ui_roots.first_mut().expect("root");
+            let track = root
+                .children_mut()
+                .expect("root children")
+                .first_mut()
+                .expect("track");
+            let children = track.children_mut().expect("track children");
+            let (first, rest) = children.split_at_mut(1);
+            (&mut first[0], &mut rest[0])
+        }
+
+        let mut viewport = Viewport::new();
+        viewport.logical_width = 320.0;
+        viewport.logical_height = 120.0;
+        viewport.ui_roots = crate::rsx_to_elements(&build_tree(false)).expect("initial rsx tree");
+        place_roots(&mut viewport);
+        let initial_spacer_id = {
+            let (spacer, thumb) = switch_track_children(&mut viewport);
+            assert!((spacer.box_model_snapshot().width - 0.0).abs() < 0.01);
+            assert!((thumb.box_model_snapshot().x - 2.0).abs() < 0.01);
+            spacer.id()
+        };
+
+        let snapshots =
+            crate::view::base_component::collect_layout_transition_snapshots(&viewport.ui_roots);
+        viewport.ui_roots = crate::rsx_to_elements(&build_tree(true)).expect("checked rsx tree");
+        crate::view::base_component::seed_layout_transition_snapshots(
+            &mut viewport.ui_roots,
+            &snapshots,
+        );
+        place_roots(&mut viewport);
+
+        let _spacer_id = {
+            let (spacer, _) = switch_track_children(&mut viewport);
+            assert_eq!(spacer.id(), initial_spacer_id, "spacer id should stay stable");
+            spacer.id()
+        };
+
+        let mut roots = std::mem::take(&mut viewport.ui_roots);
+        let changed = viewport.run_post_layout_transitions(&mut roots, 0.016, 1.0);
+        viewport.ui_roots = roots;
+        assert!(changed, "checked tree should produce an inflight width transition");
+        place_roots(&mut viewport);
+
+        for frame in 0..20 {
+            let mut roots = std::mem::take(&mut viewport.ui_roots);
+            let changed = viewport.run_pre_layout_transitions(
+                &mut roots,
+                0.016,
+                1.016 + (frame as f64 * 0.016),
+            );
+            viewport.ui_roots = roots;
+            if !changed {
+                break;
+            }
+            place_roots(&mut viewport);
+        }
+
+        let active_layout_keys = viewport.layout_transition_plugin.active_track_keys();
+        let width_key = crate::transition::TrackKey {
+            target: initial_spacer_id,
+            channel: crate::transition::LayoutField::Width.channel_id(),
+        };
+        let width_track_state = viewport.layout_transition_plugin.debug_track_state(width_key);
+        let (_, thumb) = switch_track_children(&mut viewport);
+        assert!(
+            (thumb.box_model_snapshot().x - 20.0).abs() < 0.75,
+            "thumb should converge near final x=20, got {}",
+            thumb.box_model_snapshot().x
+        );
+        assert!(
+            !viewport.transition_claims.contains_key(&width_key),
+            "completed forward width transition should release its claimed track (active_layout_keys={active_layout_keys:?}, width_track_state={width_track_state:?})"
+        );
+
+        let snapshots =
+            crate::view::base_component::collect_layout_transition_snapshots(&viewport.ui_roots);
+        viewport.ui_roots = crate::rsx_to_elements(&build_tree(false)).expect("unchecked rsx tree");
+        crate::view::base_component::seed_layout_transition_snapshots(
+            &mut viewport.ui_roots,
+            &snapshots,
+        );
+        place_roots(&mut viewport);
+
+        let mut roots = std::mem::take(&mut viewport.ui_roots);
+        let changed = viewport.run_post_layout_transitions(&mut roots, 0.016, 2.0);
+        viewport.ui_roots = roots;
+        assert!(changed, "unchecked tree should also produce an inflight width transition");
+        place_roots(&mut viewport);
+
+        for frame in 0..20 {
+            let mut roots = std::mem::take(&mut viewport.ui_roots);
+            let changed = viewport.run_pre_layout_transitions(
+                &mut roots,
+                0.016,
+                2.016 + (frame as f64 * 0.016),
+            );
+            viewport.ui_roots = roots;
+            if !changed {
+                break;
+            }
+            place_roots(&mut viewport);
+        }
+
+        let (_, thumb) = switch_track_children(&mut viewport);
+        assert!(
+            (thumb.box_model_snapshot().x - 2.0).abs() < 0.75,
+            "thumb should converge back near final x=2, got {}",
+            thumb.box_model_snapshot().x
+        );
+        assert!(
+            !viewport.transition_claims.contains_key(&crate::transition::TrackKey {
+                target: initial_spacer_id,
+                channel: crate::transition::LayoutField::Width.channel_id(),
+            }),
+            "completed reverse width transition should release its claimed track"
+        );
     }
 }

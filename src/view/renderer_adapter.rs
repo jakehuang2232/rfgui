@@ -7,7 +7,7 @@ use crate::ui::{
 };
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Image, Text, TextArea};
-use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId};
+use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -99,6 +99,7 @@ struct InheritedTextStyle {
     font_weight: Option<u16>,
     color: Option<Color>,
     cursor: Option<Cursor>,
+    text_wrap: Option<TextWrap>,
 }
 
 impl InheritedTextStyle {
@@ -121,6 +122,7 @@ impl InheritedTextStyle {
             font_weight: None,
             color: None,
             cursor: None,
+            text_wrap: None,
         };
         if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
             inherited.font_families = font_family.as_slice().to_vec();
@@ -133,6 +135,9 @@ impl InheritedTextStyle {
         }
         if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
             inherited.cursor = Some(*cursor);
+        }
+        if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
+            inherited.text_wrap = Some(*text_wrap);
         }
         inherited
     }
@@ -571,6 +576,9 @@ fn convert_container_element(
             if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
                 child_inherited_text_style.cursor = Some(*cursor);
             }
+            if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
+                child_inherited_text_style.text_wrap = Some(*text_wrap);
+            }
             user_style = user_style + style;
             has_user_style = true;
         }
@@ -724,6 +732,7 @@ fn convert_text_element(
     let mut has_explicit_font_weight = false;
     let mut has_explicit_color = false;
     let mut has_explicit_cursor = false;
+    let mut has_explicit_text_wrap = false;
 
     for (key, value) in &node.props {
         if key.as_str() == "key" {
@@ -790,6 +799,10 @@ fn convert_text_element(
             text.set_cursor(*cursor);
             has_explicit_cursor = true;
         }
+        if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
+            text.set_text_wrap(*text_wrap);
+            has_explicit_text_wrap = true;
+        }
     }
 
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
@@ -806,6 +819,9 @@ fn convert_text_element(
     }
     if !has_explicit_cursor && let Some(cursor) = inherited_text_style.cursor {
         text.set_cursor(cursor);
+    }
+    if !has_explicit_text_wrap && let Some(text_wrap) = inherited_text_style.text_wrap {
+        text.set_text_wrap(text_wrap);
     }
     if let Some(width) = width {
         text.set_width(width);
@@ -840,6 +856,14 @@ fn length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option
         ParsedValue::Length(Length::Percent(_) | Length::Vh(_) | Length::Vw(_)) => {
             Err(format!("{context} does not support relative length"))
         }
+        _ => Err(format!("{context} expects Length value")),
+    }
+}
+
+fn size_length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option<Length>, String> {
+    match value {
+        ParsedValue::Length(length) => Ok(Some(*length)),
+        ParsedValue::Auto => Ok(None),
         _ => Err(format!("{context} expects Length value")),
     }
 }
@@ -909,10 +933,11 @@ fn convert_text_area_element(
         stable_node_id_from_parts("TextArea", path, global_path.as_ref()),
         "",
     );
+    let mut style: Option<Style> = None;
     let mut x: Option<f32> = None;
     let mut y: Option<f32> = None;
-    let mut width: Option<f32> = None;
-    let mut height: Option<f32> = None;
+    let mut width: Option<Length> = None;
+    let mut height: Option<Length> = None;
     let mut has_explicit_font = false;
     let mut has_explicit_font_size = false;
 
@@ -921,6 +946,15 @@ fn convert_text_area_element(
             continue;
         }
         match key.as_str() {
+            "style" => style = Some(as_style(value, key)?),
+            "on_focus" => {
+                let handler = as_text_area_focus_handler(value, key)?;
+                text_area.on_focus(move |event| handler.call(event));
+            }
+            "on_change" => {
+                let handler = as_text_change_handler(value, key)?;
+                text_area.on_change(move |event| handler.call(event));
+            }
             "content" => {
                 text_content = as_owned_string(value, key)?;
             }
@@ -935,12 +969,6 @@ fn convert_text_area_element(
             }
             "y" => {
                 y = Some(as_f32(value, key)?);
-            }
-            "width" => {
-                width = Some(as_f32(value, key)?);
-            }
-            "height" => {
-                height = Some(as_f32(value, key)?);
             }
             "font_size" => {
                 text_area.set_font_size(as_font_size_px(
@@ -968,6 +996,15 @@ fn convert_text_area_element(
         }
     }
 
+    if let Some(style) = &style {
+        if let Some(value) = style.get(PropertyId::Width) {
+            width = size_length_from_parsed_value(value, "TextArea style.width")?;
+        }
+        if let Some(value) = style.get(PropertyId::Height) {
+            height = size_length_from_parsed_value(value, "TextArea style.height")?;
+        }
+    }
+
     text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
     if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
         text_area.set_fonts(inherited_text_style.font_families.clone());
@@ -978,16 +1015,8 @@ fn convert_text_area_element(
     if let Some(cursor) = inherited_text_style.cursor {
         text_area.set_cursor(cursor);
     }
-    if let Some(width) = width {
-        text_area.set_width(width);
-    } else {
-        text_area.set_auto_width(true);
-    }
-    if let Some(height) = height {
-        text_area.set_height(height);
-    } else {
-        text_area.set_auto_height(true);
-    }
+    text_area.set_style_width(width);
+    text_area.set_style_height(height);
 
     if binding.is_none() {
         if text_content.is_empty() {
@@ -1463,6 +1492,26 @@ fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandle
     match value {
         PropValue::OnBlur(v) => Ok(v.clone()),
         _ => Err(format!("prop `{key}` expects blur handler value")),
+    }
+}
+
+fn as_text_area_focus_handler(
+    value: &PropValue,
+    key: &str,
+) -> Result<crate::ui::TextAreaFocusHandlerProp, String> {
+    match value {
+        PropValue::OnTextAreaFocus(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects text area focus handler value")),
+    }
+}
+
+fn as_text_change_handler(
+    value: &PropValue,
+    key: &str,
+) -> Result<crate::ui::TextChangeHandlerProp, String> {
+    match value {
+        PropValue::OnChange(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects change handler value")),
     }
 }
 
@@ -2252,5 +2301,96 @@ mod tests {
             .find(|(_, h)| *h > 0.0)
             .expect("textarea box should exist");
         assert!(height >= 24.0);
+    }
+
+    #[test]
+    fn textarea_uses_style_width_and_height() {
+        let mut textarea_style = Style::new();
+        textarea_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(296.0)));
+        textarea_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(78.0)));
+
+        let tree = RsxNode::element("TextArea")
+            .with_prop("style", textarea_style)
+            .with_prop("content", "hello")
+            .with_prop("multiline", true);
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let root = roots.first_mut().expect("single root");
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let snapshot = root.box_model_snapshot();
+        assert_eq!(snapshot.width, 296.0);
+        assert_eq!(snapshot.height, 78.0);
+    }
+
+    #[test]
+    fn textarea_uses_percent_size_from_parent_inner() {
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(400.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(200.0)));
+
+        let mut textarea_style = Style::new();
+        textarea_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(50.0)));
+        textarea_style.insert(PropertyId::Height, ParsedValue::Length(Length::percent(25.0)));
+
+        let tree = RsxNode::element("Element")
+            .with_prop("style", parent_style)
+            .with_child(
+                RsxNode::element("TextArea")
+                    .with_prop("style", textarea_style)
+                    .with_prop("content", "hello")
+                    .with_prop("multiline", true),
+            );
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let root = roots.first_mut().expect("single root");
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let textarea = root
+            .children()
+            .expect("parent children")
+            .first()
+            .expect("textarea child");
+        let snapshot = textarea.box_model_snapshot();
+        assert_eq!(snapshot.width, 200.0);
+        assert_eq!(snapshot.height, 50.0);
     }
 }

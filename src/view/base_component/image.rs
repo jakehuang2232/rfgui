@@ -375,6 +375,26 @@ impl Layoutable for Image {
         self.element.flex_basis()
     }
 
+    fn flex_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_main_size(&self.element, is_row)
+    }
+
+    fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {
+        <Element as Layoutable>::flex_has_explicit_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
+        <Element as Layoutable>::flex_auto_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_min_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_min_main_size(&self.element, is_row)
+    }
+
+    fn flex_max_main_size(&self, is_row: bool) -> crate::SizeValue {
+        <Element as Layoutable>::flex_max_main_size(&self.element, is_row)
+    }
+
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.element.set_layout_offset(x, y);
     }
@@ -517,9 +537,10 @@ fn compute_image_mapping(
 #[cfg(test)]
 mod tests {
     use super::Image;
-    use crate::Style;
+    use crate::{Length, ParsedValue, PropertyId, Style};
     use crate::ui::host::ImageSource;
-    use crate::view::base_component::{LayoutConstraints, Layoutable};
+    use crate::view::base_component::{Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable};
+    use crate::Layout;
 
     fn rgba_source(width: u32, height: u32) -> ImageSource {
         ImageSource::Rgba {
@@ -542,5 +563,71 @@ mod tests {
             percent_base_height: None,
         });
         assert_eq!(image.measured_size(), (80.0, 40.0));
+    }
+
+    #[test]
+    fn flex_distribution_does_not_feed_back_into_image_basis() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent.apply_style(parent_style);
+
+        let mut image = Image::new_with_id(2, rgba_source(20, 20));
+        let mut image_style = Style::new();
+        image_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        image.apply_style(image_style);
+
+        let mut sibling = Element::new(0.0, 0.0, 120.0, 20.0);
+        let mut sibling_style = Style::new();
+        sibling_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
+        sibling_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        sibling_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        sibling.apply_style(sibling_style);
+
+        parent.add_child(Box::new(image));
+        parent.add_child(Box::new(sibling));
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+        let placement = LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+
+        parent.measure(constraints);
+        parent.place(placement);
+        let children = parent.children().expect("children after first layout");
+        let image_snapshot = children[0].box_model_snapshot();
+        let sibling_snapshot = children[1].box_model_snapshot();
+        assert!((image_snapshot.width - 14.285_714).abs() < 0.01);
+        assert!((sibling_snapshot.width - 85.714_29).abs() < 0.01);
+
+        parent.mark_layout_dirty();
+        parent.measure(constraints);
+        parent.place(placement);
+        let children = parent.children().expect("children after second layout");
+        let image_snapshot = children[0].box_model_snapshot();
+        let sibling_snapshot = children[1].box_model_snapshot();
+        assert!((image_snapshot.width - 14.285_714).abs() < 0.01);
+        assert!((sibling_snapshot.width - 85.714_29).abs() < 0.01);
     }
 }

@@ -1,3 +1,4 @@
+use rfgui::ScrollDirection;
 use crate::rfgui::ui::host::{Element, Text};
 use crate::rfgui::ui::{Binding, RsxNode, rsx};
 use crate::rfgui::{Layout, Length, Padding};
@@ -54,11 +55,12 @@ pub fn build(
             padding: Padding::uniform(theme.spacing.md),
             color: theme.color.text.primary.clone(),
             font_size: theme.typography.size.sm,
+            scroll_direction: ScrollDirection::Vertical,
         }}>
             <Accordion title="Button">
                 <Element style={{
                     width: Length::percent(100.0),
-                    layout: Layout::flow().row(),
+                    layout: Layout::flow().row().wrap(),
                     gap: theme.spacing.sm,
                 }}>
                     <Button
@@ -76,7 +78,7 @@ pub fn build(
                 </Element>
                 <Element style={{
                             width: Length::percent(100.0),
-                            layout: Layout::flow().row(),
+                            layout: Layout::flow().row().wrap(),
                             gap: theme.spacing.sm,
                         }}>
                     <Button
@@ -103,7 +105,13 @@ pub fn build(
                     <Button
                         label="Click Me"
                         variant={Some(ButtonVariant::Contained)}
-                        on_click={count_increment}
+                        on_click={count_increment.clone()}
+                    />
+                    <Button
+                        label="Hold to Repeat"
+                        variant={Some(ButtonVariant::Contained)}
+                        repeat
+                        on_click={count_increment.clone()}
                     />
                     <Text>{format!("Count: {}", count.get())}</Text>
                 </Element>
@@ -121,6 +129,7 @@ pub fn build(
                 min=0.0
                 max=100.0
                 step=1.0
+                label="Number"
             />
             <Select
                 data={options}

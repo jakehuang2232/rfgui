@@ -280,6 +280,177 @@ impl Element {
         self.flex_info = Some(info);
     }
 
+    fn resolve_flex_base_main_size(
+        child: &dyn ElementTrait,
+        is_row: bool,
+        main_limit: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> f32 {
+        let (measured_w, measured_h) = child.measured_size();
+        let measured_main = if is_row { measured_w } else { measured_h };
+        match child.flex_basis() {
+            SizeValue::Length(length) => {
+                resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
+                    .unwrap_or(measured_main)
+            }
+            SizeValue::Auto => match child.flex_main_size(is_row) {
+                SizeValue::Length(length) => {
+                    resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
+                        .unwrap_or(0.0)
+                }
+                SizeValue::Auto => 0.0,
+            },
+        }
+        .max(0.0)
+    }
+
+    fn resolve_flex_main_constraint(
+        _child: &dyn ElementTrait,
+        value: SizeValue,
+        main_limit: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Option<f32> {
+        let SizeValue::Length(length) = value else {
+            return None;
+        };
+        resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
+            .map(|value| value.max(0.0))
+    }
+
+    fn clamp_flex_main(main: f32, min_main: f32, max_main: Option<f32>) -> f32 {
+        let clamped = main.max(min_main);
+        if let Some(max_main) = max_main {
+            clamped.min(max_main.max(min_main))
+        } else {
+            clamped
+        }
+    }
+
+    fn build_flex_item_plans(
+        &self,
+        is_row: bool,
+        main_limit: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Vec<FlexItemPlan> {
+        let mut items = Vec::new();
+        for (idx, child) in self.children.iter().enumerate() {
+            if self.child_is_absolute(idx) {
+                continue;
+            }
+            let flex_base_main = Self::resolve_flex_base_main_size(
+                child.as_ref(),
+                is_row,
+                main_limit,
+                viewport_width,
+                viewport_height,
+            );
+            let min_main = if child.flex_has_explicit_min_main_size(is_row) {
+                Self::resolve_flex_main_constraint(
+                    child.as_ref(),
+                    child.flex_min_main_size(is_row),
+                    main_limit,
+                    viewport_width,
+                    viewport_height,
+                )
+                .unwrap_or(0.0)
+            } else {
+                child.flex_auto_min_main_size(is_row).unwrap_or(0.0)
+            };
+            items.push(FlexItemPlan {
+                index: idx,
+                flex_base_main,
+                hypothetical_main: flex_base_main,
+                used_main: flex_base_main,
+                min_main,
+                max_main: Self::resolve_flex_main_constraint(
+                    child.as_ref(),
+                    child.flex_max_main_size(is_row),
+                    main_limit,
+                    viewport_width,
+                    viewport_height,
+                ),
+                frozen: false,
+                cross: 0.0,
+            });
+            let item = items.last_mut().expect("just pushed");
+            item.hypothetical_main =
+                Self::clamp_flex_main(item.flex_base_main, item.min_main, item.max_main);
+            item.used_main = item.hypothetical_main;
+        }
+        items
+    }
+
+    fn distribute_flex_line(&self, items: &mut [FlexItemPlan], gap: f32, main_limit: f32) {
+        for item in items.iter_mut() {
+            item.used_main = item.hypothetical_main;
+            item.frozen = false;
+        }
+
+        let gap_total = gap * (items.len().saturating_sub(1) as f32);
+        loop {
+            let free_space =
+                main_limit - gap_total - items.iter().map(|item| item.used_main).sum::<f32>();
+            if free_space.abs() <= 0.01 {
+                break;
+            }
+
+            if free_space > 0.0 {
+                let total_grow = items
+                    .iter()
+                    .filter(|item| !item.frozen)
+                    .map(|item| self.children[item.index].flex_grow().max(0.0))
+                    .sum::<f32>();
+                if total_grow <= 0.0 {
+                    break;
+                }
+
+                let mut froze_any = false;
+                for item in items.iter_mut().filter(|item| !item.frozen) {
+                    let grow = self.children[item.index].flex_grow().max(0.0);
+                    let candidate = item.used_main + free_space * (grow / total_grow);
+                    let clamped = Self::clamp_flex_main(candidate, item.min_main, item.max_main);
+                    item.used_main = clamped;
+                    if (clamped - candidate).abs() > 0.01 {
+                        item.frozen = true;
+                        froze_any = true;
+                    }
+                }
+                if !froze_any {
+                    break;
+                }
+                continue;
+            }
+
+            let total_shrink_weight = items
+                .iter()
+                .filter(|item| !item.frozen)
+                .map(|item| self.children[item.index].flex_shrink().max(0.0) * item.flex_base_main)
+                .sum::<f32>();
+            if total_shrink_weight <= 0.0 {
+                break;
+            }
+
+            let mut froze_any = false;
+            for item in items.iter_mut().filter(|item| !item.frozen) {
+                let shrink_weight =
+                    self.children[item.index].flex_shrink().max(0.0) * item.flex_base_main;
+                let candidate = item.used_main + free_space * (shrink_weight / total_shrink_weight);
+                let clamped = Self::clamp_flex_main(candidate, item.min_main, item.max_main);
+                item.used_main = clamped;
+                if (clamped - candidate).abs() > 0.01 {
+                    item.frozen = true;
+                    froze_any = true;
+                }
+            }
+            if !froze_any {
+                break;
+            }
+        }
+    }
+
     fn compute_flex_info(
         &mut self,
         inner_w: f32,
@@ -308,62 +479,30 @@ impl Element {
 
         let mut child_sizes = vec![(0.0_f32, 0.0_f32); self.children.len()];
         if is_real_flex {
-            let mut line: Vec<usize> = Vec::new();
-            let mut base_main_sizes = vec![0.0_f32; self.children.len()];
-            let mut total_grow = 0.0_f32;
-            let mut total_shrink_weight = 0.0_f32;
-            let mut base_main_sum = 0.0_f32;
-
-            for (idx, child) in self.children.iter().enumerate() {
-                if self.child_is_absolute(idx) {
-                    continue;
-                }
-                let (w, h) = child.measured_size();
-                let measured_main = if is_row { w } else { h };
-                let basis = match child.flex_basis() {
-                    SizeValue::Length(length) => {
-                        resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
-                            .unwrap_or(measured_main)
-                    }
-                    SizeValue::Auto => measured_main,
-                }
-                .max(0.0);
-
-                line.push(idx);
-                base_main_sizes[idx] = basis;
-                base_main_sum += basis;
-                total_grow += child.flex_grow().max(0.0);
-                total_shrink_weight += child.flex_shrink().max(0.0) * basis;
-            }
-
-            let gap_total = gap * (line.len().saturating_sub(1) as f32);
-            let free_space = main_limit - base_main_sum - gap_total;
+            let mut items = self.build_flex_item_plans(
+                is_row,
+                main_limit,
+                viewport_width,
+                viewport_height,
+            );
+            let line = items.iter().map(|item| item.index).collect::<Vec<_>>();
+            self.distribute_flex_line(&mut items, gap, main_limit);
+            let gap_total = gap * (items.len().saturating_sub(1) as f32);
             let mut line_cross = 0.0_f32;
             let mut final_main_sum = 0.0_f32;
 
-            for &idx in &line {
-                let child = &mut self.children[idx];
-                let base_main = base_main_sizes[idx];
-                let mut target_main = base_main;
-
-                if free_space > 0.0 && total_grow > 0.0 {
-                    target_main += free_space * (child.flex_grow().max(0.0) / total_grow);
-                } else if free_space < 0.0 && total_shrink_weight > 0.0 {
-                    let shrink_weight = child.flex_shrink().max(0.0) * base_main;
-                    target_main += free_space * (shrink_weight / total_shrink_weight);
-                }
-                target_main = target_main.max(0.0);
-
+            for item in &mut items {
+                let child = &mut self.children[item.index];
                 child.measure(LayoutConstraints {
                     max_width: if is_row {
-                        target_main
+                        item.used_main
                     } else {
                         child_available_width
                     },
                     max_height: if is_row {
                         child_available_height
                     } else {
-                        target_main
+                        item.used_main
                     },
                     viewport_width,
                     viewport_height,
@@ -371,17 +510,11 @@ impl Element {
                     percent_base_height: child_percent_base_height,
                 });
 
-                if is_row {
-                    child.set_layout_width(target_main);
-                } else {
-                    child.set_layout_height(target_main);
-                }
-
                 let (measured_w, measured_h) = child.measured_size();
-                let item_cross = if is_row { measured_h } else { measured_w };
-                child_sizes[idx] = (target_main, item_cross);
-                final_main_sum += target_main;
-                line_cross = line_cross.max(item_cross);
+                item.cross = if is_row { measured_h } else { measured_w };
+                child_sizes[item.index] = (item.used_main, item.cross);
+                final_main_sum += item.used_main;
+                line_cross = line_cross.max(item.cross);
             }
 
             let total_main = if line.is_empty() {
@@ -978,6 +1111,7 @@ impl Element {
         ctx: &UiBuildContext,
         inner_radii: CornerRadii,
     ) -> RenderTargetOut {
+        let inner = self.inner_clip_rect();
         let mut mask_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
             BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
@@ -990,8 +1124,8 @@ impl Element {
         mask_ctx.set_current_target(mask_target);
         let mut pass = DrawRectPass::new(
             RectPassParams {
-                position: [self.layout_inner_position.x, self.layout_inner_position.y],
-                size: [self.layout_inner_size.width, self.layout_inner_size.height],
+                position: [inner.x, inner.y],
+                size: [inner.width, inner.height],
                 fill_color: [1.0, 1.0, 1.0, 1.0],
                 opacity: 1.0,
                 ..Default::default()

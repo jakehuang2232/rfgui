@@ -50,8 +50,28 @@ impl Element {
             || !self.computed_style.box_shadow.is_empty()
     }
 
+    fn transition_inner_rect(&self) -> Rect {
+        let (frame_width, frame_height) = self.current_layout_transition_size();
+        let max_bw = (frame_width.min(frame_height)) * 0.5;
+        let border_left = self.border_widths.left.clamp(0.0, max_bw);
+        let border_right = self.border_widths.right.clamp(0.0, max_bw);
+        let border_top = self.border_widths.top.clamp(0.0, max_bw);
+        let border_bottom = self.border_widths.bottom.clamp(0.0, max_bw);
+        let inset_left = border_left + self.padding.left.max(0.0);
+        let inset_right = border_right + self.padding.right.max(0.0);
+        let inset_top = border_top + self.padding.top.max(0.0);
+        let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
+        Rect {
+            x: self.core.layout_position.x + inset_left,
+            y: self.core.layout_position.y + inset_top,
+            width: (frame_width - inset_left - inset_right).max(0.0),
+            height: (frame_height - inset_top - inset_bottom).max(0.0),
+        }
+    }
+
     fn has_inner_render_area(&self) -> bool {
-        self.layout_inner_size.width > 0.0 && self.layout_inner_size.height > 0.0
+        let inner = self.transition_inner_rect();
+        inner.width > 0.0 && inner.height > 0.0
     }
 
     fn frame_intersects_rect(frame: LayoutFrame, clip: Rect) -> bool {
@@ -90,12 +110,7 @@ impl Element {
     }
 
     fn inner_clip_rect(&self) -> Rect {
-        Rect {
-            x: self.layout_inner_position.x,
-            y: self.layout_inner_position.y,
-            width: self.layout_inner_size.width.max(0.0),
-            height: self.layout_inner_size.height.max(0.0),
-        }
+        self.transition_inner_rect()
     }
 
     fn inner_clip_scissor_rect(&self) -> Option<[u32; 4]> {
@@ -199,8 +214,7 @@ impl Element {
         inner_radii: CornerRadii,
     ) -> bool {
         if self.children.is_empty()
-            || self.layout_inner_size.width <= 0.0
-            || self.layout_inner_size.height <= 0.0
+            || !self.has_inner_render_area()
         {
             return false;
         }
@@ -262,9 +276,10 @@ impl Element {
         };
         let previous_scissor = ctx.push_scissor_rect(self.inner_clip_scissor_rect());
 
+        let inner = self.inner_clip_rect();
         let mut pass_params = RectPassParams {
-            position: [self.layout_inner_position.x, self.layout_inner_position.y],
-            size: [self.layout_inner_size.width, self.layout_inner_size.height],
+            position: [inner.x, inner.y],
+            size: [inner.width, inner.height],
             fill_color: [0.0, 0.0, 0.0, 0.0],
             opacity: 1.0,
             ..Default::default()
@@ -308,11 +323,12 @@ impl Element {
             self.core.layout_size.width.max(0.0),
             self.core.layout_size.height.max(0.0),
         ));
+        let inner = self.inner_clip_rect();
 
         let mut decrement = DrawRectPass::new(
             RectPassParams {
-                position: [self.layout_inner_position.x, self.layout_inner_position.y],
-                size: [self.layout_inner_size.width, self.layout_inner_size.height],
+                position: [inner.x, inner.y],
+                size: [inner.width, inner.height],
                 fill_color: [0.0, 0.0, 0.0, 0.0],
                 opacity: 1.0,
                 ..Default::default()
@@ -343,7 +359,14 @@ impl Element {
     }
 
     fn current_layout_target_size(&self) -> (f32, f32) {
-        (self.core.size.width.max(0.0), self.core.size.height.max(0.0))
+        (
+            self.layout_assigned_width
+                .unwrap_or(self.core.size.width)
+                .max(0.0),
+            self.layout_assigned_height
+                .unwrap_or(self.core.size.height)
+                .max(0.0),
+        )
     }
 
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
@@ -425,6 +448,8 @@ impl Element {
             layout_transition_target_height: None,
             last_parent_layout_x: x,
             last_parent_layout_y: y,
+            layout_assigned_width: None,
+            layout_assigned_height: None,
             is_hovered: false,
             mouse_down_handlers: Vec::new(),
             mouse_up_handlers: Vec::new(),
@@ -534,6 +559,8 @@ impl Element {
         &mut self,
         layout_x: f32,
         layout_y: f32,
+        flow_x: f32,
+        flow_y: f32,
         layout_width: f32,
         layout_height: f32,
         parent_layout_x: f32,
@@ -544,8 +571,8 @@ impl Element {
             y: layout_y,
         };
         self.layout_flow_position = Position {
-            x: layout_x,
-            y: layout_y,
+            x: flow_x,
+            y: flow_y,
         };
         self.core.layout_size = Size {
             width: layout_width.max(0.0),

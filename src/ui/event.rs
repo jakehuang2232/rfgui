@@ -81,6 +81,8 @@ pub enum ViewportListenerAction {
     AddMouseUpListenerUntil(MouseUpUntilHandler),
     SetFocus(Option<u64>),
     SetCursor(Option<Cursor>),
+    SelectTextRangeAll(u64),
+    SelectTextRange { target_id: u64, start: usize, end: usize },
     RemoveListener(ViewportListenerHandle),
 }
 
@@ -172,6 +174,13 @@ impl EventMeta {
 
     pub fn take_viewport_listener_actions(&mut self) -> Vec<ViewportListenerAction> {
         std::mem::take(&mut self.state.borrow_mut().viewport_listener_actions)
+    }
+
+    pub(crate) fn text_selection_target(&self, target_id: u64) -> TextSelectionTarget {
+        TextSelectionTarget {
+            state: self.state.clone(),
+            target_id,
+        }
     }
 }
 
@@ -325,6 +334,12 @@ pub struct TextInputEvent {
 }
 
 #[derive(Debug, Clone)]
+pub struct TextChangeEvent {
+    pub meta: EventMeta,
+    pub value: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ImePreeditEvent {
     pub meta: EventMeta,
     pub text: String,
@@ -334,6 +349,46 @@ pub struct ImePreeditEvent {
 #[derive(Debug, Clone)]
 pub struct FocusEvent {
     pub meta: EventMeta,
+}
+
+#[derive(Clone)]
+pub struct TextSelectionTarget {
+    state: Rc<RefCell<EventMetaState>>,
+    target_id: u64,
+}
+
+impl fmt::Debug for TextSelectionTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextSelectionTarget")
+            .field("target_id", &self.target_id)
+            .finish()
+    }
+}
+
+impl TextSelectionTarget {
+    pub fn select_all(&mut self) {
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(ViewportListenerAction::SelectTextRangeAll(self.target_id));
+    }
+
+    pub fn select_range(&mut self, start: usize, end: usize) {
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(ViewportListenerAction::SelectTextRange {
+                target_id: self.target_id,
+                start,
+                end,
+            });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TextAreaFocusEvent {
+    pub meta: EventMeta,
+    pub target: TextSelectionTarget,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +454,18 @@ pub struct FocusHandlerProp {
 pub struct BlurHandlerProp {
     id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut BlurEvent)>>,
+}
+
+#[derive(Clone)]
+pub struct TextAreaFocusHandlerProp {
+    id: u64,
+    handler: Rc<RefCell<dyn FnMut(&mut TextAreaFocusEvent)>>,
+}
+
+#[derive(Clone)]
+pub struct TextChangeHandlerProp {
+    id: u64,
+    handler: Rc<RefCell<dyn FnMut(&mut TextChangeEvent)>>,
 }
 
 pub struct NoArgHandler<F>(F);
@@ -511,6 +578,8 @@ impl_handler_prop!(KeyDownHandlerProp, KeyDownEvent);
 impl_handler_prop!(KeyUpHandlerProp, KeyUpEvent);
 impl_handler_prop!(FocusHandlerProp, FocusEvent);
 impl_handler_prop!(BlurHandlerProp, BlurEvent);
+impl_handler_prop!(TextAreaFocusHandlerProp, TextAreaFocusEvent);
+impl_handler_prop!(TextChangeHandlerProp, TextChangeEvent);
 
 impl_into_event_handler_prop!(
     MouseDownHandlerProp,
@@ -538,6 +607,16 @@ impl_into_event_handler_prop!(KeyDownHandlerProp, KeyDownEvent, into_key_down_ha
 impl_into_event_handler_prop!(KeyUpHandlerProp, KeyUpEvent, into_key_up_handler);
 impl_into_event_handler_prop!(FocusHandlerProp, FocusEvent, into_focus_handler);
 impl_into_event_handler_prop!(BlurHandlerProp, BlurEvent, into_blur_handler);
+impl_into_event_handler_prop!(
+    TextAreaFocusHandlerProp,
+    TextAreaFocusEvent,
+    into_text_area_focus_handler
+);
+impl_into_event_handler_prop!(
+    TextChangeHandlerProp,
+    TextChangeEvent,
+    into_text_change_handler
+);
 
 pub fn on_mouse_down<F>(handler: F) -> MouseDownHandlerProp
 where
@@ -602,9 +681,23 @@ where
     FocusHandlerProp::new(handler)
 }
 
+pub fn on_text_area_focus<F>(handler: F) -> TextAreaFocusHandlerProp
+where
+    F: FnMut(&mut TextAreaFocusEvent) + 'static,
+{
+    TextAreaFocusHandlerProp::new(handler)
+}
+
 pub fn on_blur<F>(handler: F) -> BlurHandlerProp
 where
     F: FnMut(&mut BlurEvent) + 'static,
 {
     BlurHandlerProp::new(handler)
+}
+
+pub fn on_change<F>(handler: F) -> TextChangeHandlerProp
+where
+    F: FnMut(&mut TextChangeEvent) + 'static,
+{
+    TextChangeHandlerProp::new(handler)
 }
