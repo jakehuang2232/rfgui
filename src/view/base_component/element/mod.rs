@@ -227,6 +227,39 @@ thread_local! {
     static PLACEMENT_RUNTIME: RefCell<PlacementRuntime> = RefCell::new(PlacementRuntime::default());
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LayoutPlaceProfile {
+    pub node_count: usize,
+    pub place_self_ms: f64,
+    pub place_children_ms: f64,
+    pub place_flex_children_ms: f64,
+    pub place_layout_flex_ms: f64,
+    pub place_layout_flow_ms: f64,
+    pub place_layout_inline_flex_ms: f64,
+    pub non_axis_child_place_ms: f64,
+    pub absolute_child_place_ms: f64,
+    pub child_place_calls: usize,
+    pub absolute_child_place_calls: usize,
+    pub update_content_size_ms: f64,
+    pub clamp_scroll_ms: f64,
+    pub recompute_hit_test_ms: f64,
+}
+
+thread_local! {
+    static LAYOUT_PLACE_PROFILE: RefCell<LayoutPlaceProfile> =
+        RefCell::new(LayoutPlaceProfile::default());
+}
+
+pub(crate) fn reset_layout_place_profile() {
+    LAYOUT_PLACE_PROFILE.with(|profile| {
+        *profile.borrow_mut() = LayoutPlaceProfile::default();
+    });
+}
+
+pub(crate) fn take_layout_place_profile() -> LayoutPlaceProfile {
+    LAYOUT_PLACE_PROFILE.with(|profile| std::mem::take(&mut *profile.borrow_mut()))
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ScrollbarAxis {
     Horizontal,
