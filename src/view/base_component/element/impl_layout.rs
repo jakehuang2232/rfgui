@@ -1047,6 +1047,7 @@ impl Element {
             Layout::Flex { .. } | Layout::Flow { .. } | Layout::InlineFlex
         );
         if is_axis_layout {
+            let place_flex_started_at = Instant::now();
             self.place_flex_children(
                 child_inner_width,
                 child_inner_height,
@@ -1057,16 +1058,34 @@ impl Element {
                 child_percent_base_width,
                 child_percent_base_height,
             );
+            let place_flex_elapsed_ms =
+                place_flex_started_at.elapsed().as_secs_f64() * 1000.0;
+            LAYOUT_PLACE_PROFILE.with(|profile| {
+                let mut profile = profile.borrow_mut();
+                profile.place_flex_children_ms += place_flex_elapsed_ms;
+                match self.computed_style.layout {
+                    Layout::Flex { .. } => profile.place_layout_flex_ms += place_flex_elapsed_ms,
+                    Layout::Flow { .. } => profile.place_layout_flow_ms += place_flex_elapsed_ms,
+                    Layout::InlineFlex => {
+                        profile.place_layout_inline_flex_ms += place_flex_elapsed_ms
+                    }
+                    Layout::Block | Layout::Inline | Layout::Grid | Layout::None => {}
+                }
+            });
         } else {
             let origin_x = self.layout_flow_inner_position.x - self.scroll_offset.x;
             let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
             let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
             let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
+            let non_axis_children_started_at = Instant::now();
             for idx in 0..self.children.len() {
                 if self.child_is_absolute(idx) {
                     continue;
                 }
                 let child = &mut self.children[idx];
+                LAYOUT_PLACE_PROFILE.with(|profile| {
+                    profile.borrow_mut().child_place_calls += 1;
+                });
                 child.place(LayoutPlacement {
                     parent_x: origin_x,
                     parent_y: origin_y,
@@ -1080,11 +1099,22 @@ impl Element {
                     percent_base_height: child_percent_base_height,
                 });
             }
+            let non_axis_children_elapsed_ms =
+                non_axis_children_started_at.elapsed().as_secs_f64() * 1000.0;
+            LAYOUT_PLACE_PROFILE.with(|profile| {
+                profile.borrow_mut().non_axis_child_place_ms += non_axis_children_elapsed_ms;
+            });
+            let absolute_children_started_at = Instant::now();
             for idx in 0..self.children.len() {
                 if !self.child_is_absolute(idx) {
                     continue;
                 }
                 let child = &mut self.children[idx];
+                LAYOUT_PLACE_PROFILE.with(|profile| {
+                    let mut profile = profile.borrow_mut();
+                    profile.child_place_calls += 1;
+                    profile.absolute_child_place_calls += 1;
+                });
                 child.place(LayoutPlacement {
                     parent_x: origin_x,
                     parent_y: origin_y,
@@ -1098,10 +1128,32 @@ impl Element {
                     percent_base_height: child_percent_base_height,
                 });
             }
+            let absolute_children_elapsed_ms =
+                absolute_children_started_at.elapsed().as_secs_f64() * 1000.0;
+            LAYOUT_PLACE_PROFILE.with(|profile| {
+                profile.borrow_mut().absolute_child_place_ms += absolute_children_elapsed_ms;
+            });
         }
+        let update_content_size_started_at = Instant::now();
         self.update_content_size_from_children();
+        let update_content_size_elapsed_ms =
+            update_content_size_started_at.elapsed().as_secs_f64() * 1000.0;
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().update_content_size_ms += update_content_size_elapsed_ms;
+        });
+        let clamp_scroll_started_at = Instant::now();
         self.clamp_scroll_offset();
+        let clamp_scroll_elapsed_ms = clamp_scroll_started_at.elapsed().as_secs_f64() * 1000.0;
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().clamp_scroll_ms += clamp_scroll_elapsed_ms;
+        });
+        let recompute_hit_test_started_at = Instant::now();
         self.recompute_absolute_descendant_for_hit_test();
+        let recompute_hit_test_elapsed_ms =
+            recompute_hit_test_started_at.elapsed().as_secs_f64() * 1000.0;
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().recompute_hit_test_ms += recompute_hit_test_elapsed_ms;
+        });
         self.pop_child_clip_scope();
         self.pop_hit_test_clip_scope();
     }
@@ -1158,6 +1210,7 @@ impl Element {
         let cross_size = self.computed_style.layout_axis_cross_size();
         let align = self.computed_style.layout_axis_align();
         let mut cross_cursor = cross_start_offset(cross_limit, total_cross, align);
+        let flex_children_started_at = Instant::now();
 
         for (line_idx, line) in info.lines.iter().enumerate() {
             let line_main = info.line_main_sum[line_idx];
@@ -1197,6 +1250,9 @@ impl Element {
                 }
 
                 self.children[child_idx].set_layout_offset(offset_x, offset_y);
+                LAYOUT_PLACE_PROFILE.with(|profile| {
+                    profile.borrow_mut().child_place_calls += 1;
+                });
                 self.children[child_idx].place(LayoutPlacement {
                     parent_x: origin_x,
                     parent_y: origin_y,
@@ -1214,11 +1270,22 @@ impl Element {
 
             cross_cursor += line_cross + gap;
         }
+        let flex_children_elapsed_ms =
+            flex_children_started_at.elapsed().as_secs_f64() * 1000.0;
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().non_axis_child_place_ms += flex_children_elapsed_ms;
+        });
 
+        let absolute_children_started_at = Instant::now();
         for idx in 0..self.children.len() {
             if !self.child_is_absolute(idx) {
                 continue;
             }
+            LAYOUT_PLACE_PROFILE.with(|profile| {
+                let mut profile = profile.borrow_mut();
+                profile.child_place_calls += 1;
+                profile.absolute_child_place_calls += 1;
+            });
             self.children[idx].place(LayoutPlacement {
                 parent_x: origin_x,
                 parent_y: origin_y,
@@ -1232,5 +1299,10 @@ impl Element {
                 percent_base_height: child_percent_base_height,
             });
         }
+        let absolute_children_elapsed_ms =
+            absolute_children_started_at.elapsed().as_secs_f64() * 1000.0;
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().absolute_child_place_ms += absolute_children_elapsed_ms;
+        });
     }
 }

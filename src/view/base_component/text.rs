@@ -239,15 +239,17 @@ impl Text {
     }
 
     pub fn set_align(&mut self, align: Align) {
-        self.align = align;
+        if std::mem::discriminant(&self.align) != std::mem::discriminant(&align) {
+            self.align = align;
+        }
     }
 
     pub fn set_text_align(&mut self, align: TextAlign) {
-        self.align = match align {
+        self.set_align(match align {
             TextAlign::Left => Align::Left,
             TextAlign::Center => Align::Center,
             TextAlign::Right => Align::Right,
-        };
+        });
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
@@ -255,7 +257,9 @@ impl Text {
     }
 
     pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
-        self.text_wrap = text_wrap;
+        if self.text_wrap != text_wrap {
+            self.text_wrap = text_wrap;
+        }
     }
 
     pub fn set_auto_width(&mut self, auto: bool) {
@@ -551,8 +555,10 @@ impl Layoutable for Text {
         self.layout_override_width = None;
         self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();
-        self.allow_wrap =
-            self.text_wrap == TextWrap::Wrap && parent_width_is_constrained;
+        let next_allow_wrap = self.text_wrap == TextWrap::Wrap && parent_width_is_constrained;
+        if self.allow_wrap != next_allow_wrap {
+            self.allow_wrap = next_allow_wrap;
+        }
 
         if !self.auto_width && !self.auto_height {
             return;
@@ -707,6 +713,7 @@ impl Renderable for Text {
                 font_families: self.font_families.clone(),
                 align: self.align,
                 allow_wrap: self.allow_wrap,
+                layout_buffer: None,
                 scissor_rect: None,
                 stencil_clip_id: None,
             },

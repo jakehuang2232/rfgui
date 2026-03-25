@@ -2089,6 +2089,7 @@ impl Renderable for TextArea {
         ]);
 
         if !content.is_empty() {
+            self.ensure_glyph_layout(content.as_str());
             for (position, size) in self.selection_screen_rects(content.as_str()) {
                 let fill_color = self.selection_background_color.to_rgba_f32();
                 let mut selection_pass = DrawRectPass::new(
@@ -2124,6 +2125,7 @@ impl Renderable for TextArea {
                     font_families: self.font_families.clone(),
                     align: Align::Left,
                     allow_wrap: self.multiline,
+                    layout_buffer: Some(self.glyph_buffer.clone()),
                     scissor_rect: clip,
                     stencil_clip_id: None,
                 },

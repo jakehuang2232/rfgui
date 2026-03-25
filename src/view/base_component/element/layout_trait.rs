@@ -139,6 +139,9 @@ impl Layoutable for Element {
 
     fn place(&mut self, placement: LayoutPlacement) {
         self.begin_place_scope(placement);
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().node_count += 1;
+        });
         let context = placement.context();
         let proposal = LayoutProposal {
             width: context.width,
@@ -149,6 +152,7 @@ impl Layoutable for Element {
             percent_base_height: context.percent_base_height,
         };
         self.resolve_lengths_from_parent_inner(proposal);
+        let place_self_started_at = Instant::now();
         self.place_self(
             proposal,
             placement.parent_x,
@@ -156,6 +160,10 @@ impl Layoutable for Element {
             placement.visual_offset_x,
             placement.visual_offset_y,
         );
+        let place_self_elapsed_ms = place_self_started_at.elapsed().as_secs_f64() * 1000.0;
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().place_self_ms += place_self_elapsed_ms;
+        });
         self.register_anchor_snapshot();
         self.resolve_corner_radii_from_self_box(proposal);
         let max_bw = (self
@@ -214,6 +222,7 @@ impl Layoutable for Element {
                 child_layout_inner_size.width,
                 child_layout_inner_size.height,
             );
+        let place_children_started_at = Instant::now();
         self.place_children(
             proposal.viewport_width,
             proposal.viewport_height,
@@ -224,6 +233,11 @@ impl Layoutable for Element {
             child_layout_inner_size.width,
             child_layout_inner_size.height,
         );
+        let place_children_elapsed_ms =
+            place_children_started_at.elapsed().as_secs_f64() * 1000.0;
+        LAYOUT_PLACE_PROFILE.with(|profile| {
+            profile.borrow_mut().place_children_ms += place_children_elapsed_ms;
+        });
         self.end_place_scope();
     }
 

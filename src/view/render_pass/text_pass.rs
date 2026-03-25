@@ -1,8 +1,5 @@
-use crate::view::frame_graph::slot::OutSlot;
-use crate::view::frame_graph::{BufferDesc, BufferResource};
 use crate::view::frame_graph::{
-    BufferReadUsage, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    PrepareContext,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -19,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 pub struct TextPass {
     params: TextPassParams,
-    staging_buffer: TextStagingBufferOut,
     prepared: Option<TextPreparedState>,
     input: TextInput,
     output: TextOutput,
@@ -39,6 +35,7 @@ pub struct TextPassParams {
     pub font_families: Vec<String>,
     pub align: Align,
     pub allow_wrap: bool,
+    pub layout_buffer: Option<Buffer>,
     pub scissor_rect: Option<[u32; 4]>,
     pub stencil_clip_id: Option<u8>,
 }
@@ -69,10 +66,6 @@ struct TextDebugVertex {
     color: [f32; 4],
 }
 
-#[derive(Clone, Copy)]
-pub struct TextStagingBufferTag;
-pub type TextStagingBufferOut = OutSlot<BufferResource, TextStagingBufferTag>;
-
 #[derive(Default)]
 pub struct TextInput {
     pub pass_context: RenderPassContext,
@@ -87,7 +80,6 @@ impl TextPass {
     pub fn new(params: TextPassParams, input: TextInput, output: TextOutput) -> Self {
         Self {
             params,
-            staging_buffer: TextStagingBufferOut::default(),
             prepared: None,
             input,
             output,
@@ -122,17 +114,26 @@ impl TextPass {
         }
         hasher.finish()
     }
+
+    fn layout_signature(&self, scale: f32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.params.content.hash(&mut hasher);
+        (self.params.width * scale).to_bits().hash(&mut hasher);
+        (self.params.height * scale).to_bits().hash(&mut hasher);
+        (self.params.font_size * scale).to_bits().hash(&mut hasher);
+        self.params.line_height.to_bits().hash(&mut hasher);
+        self.params.font_weight.hash(&mut hasher);
+        self.params.font_families.hash(&mut hasher);
+        std::mem::discriminant(&self.params.align).hash(&mut hasher);
+        self.params.allow_wrap.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 impl GraphicsPass for TextPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        self.staging_buffer = builder.create_buffer(BufferDesc {
-            size: (self.params.content.len().max(1) as u64).next_power_of_two(),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-            label: Some("TextPass Staging Buffer"),
-        });
-        builder.read_buffer(&self.staging_buffer, BufferReadUsage::Uniform);
         if let Some(target) = builder.texture_target(&self.output.render_target) {
             let _ = target;
             builder.write_color(
@@ -156,13 +157,6 @@ impl GraphicsPass for TextPass {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        let Some(handle) = self.staging_buffer.handle() else {
-            return;
-        };
-        let mut packed = self.params.content.as_bytes().to_vec();
-        packed.push(0);
-        let _ = ctx.upload_buffer(handle, 0, &packed);
-
         if self.params.content.is_empty()
             || self.params.width <= 0.0
             || self.params.height <= 0.0
@@ -228,19 +222,27 @@ impl GraphicsPass for TextPass {
             }
         };
         let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
-        let buffer = resources.prepare_buffer(
-            self.params.content.as_str(),
-            self.params.width * scale,
-            self.params.height * scale,
-            self.params.font_size * scale,
-            self.params.line_height,
-            self.params.font_weight,
-            self.params.font_families.as_slice(),
-            self.params.align,
-            self.params.allow_wrap,
-        );
+        let layout_signature = self.layout_signature(scale);
+        let owned_buffer;
+        let buffer = if let Some(buffer) = self.params.layout_buffer.as_ref() {
+            buffer
+        } else {
+            owned_buffer = resources.prepare_buffer_cached(
+                layout_signature,
+                self.params.content.as_str(),
+                self.params.width * scale,
+                self.params.height * scale,
+                self.params.font_size * scale,
+                self.params.line_height,
+                self.params.font_weight,
+                self.params.font_families.as_slice(),
+                self.params.align,
+                self.params.allow_wrap,
+            );
+            &owned_buffer
+        };
         let text_area = build_text_area(
-            &buffer,
+            buffer,
             self.params.x * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
             self.params.y * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
             bounds,
@@ -250,6 +252,17 @@ impl GraphicsPass for TextPass {
             sample_count: output_sample_count,
             stencil_enabled: self.input.pass_context.uses_depth_stencil,
         };
+        if let Some(renderer) = resources.take_prepared_renderer(renderer_key, prepare_signature) {
+            self.prepared = Some(TextPreparedState {
+                renderer_key,
+                renderer: Some(renderer),
+                prepare_signature,
+                stencil_clip_id: self.params.stencil_clip_id,
+                resolution,
+            });
+            resources.put_viewport(resolution, glyphon_viewport);
+            return;
+        }
         if let Some(prepared) = self.prepared.as_mut() {
             if prepared.renderer_key == renderer_key
                 && prepared.prepare_signature == prepare_signature
@@ -371,7 +384,7 @@ impl GraphicsPass for TextPass {
             )
         });
         let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
-        let Some(renderer) = prepared.renderer.as_mut() else {
+        let Some(renderer) = prepared.renderer.take() else {
             return;
         };
         if let Some([x, y, width, height]) = scissor_rect {
@@ -381,6 +394,7 @@ impl GraphicsPass for TextPass {
         }
         ctx.set_stencil_reference(stencil_reference);
         let _ = renderer.render(&resources.atlas, glyphon_viewport, ctx.raw_render_pass());
+        resources.put_prepared_renderer(prepared.renderer_key, prepared.prepare_signature, renderer);
     }
 }
 
@@ -513,6 +527,8 @@ struct TextResources {
     atlas: TextAtlas,
     format: wgpu::TextureFormat,
     renderers: HashMap<TextRendererKey, TextRenderer>,
+    prepared_renderers: HashMap<(TextRendererKey, u64), TextRenderer>,
+    layout_buffers: HashMap<u64, Buffer>,
     viewports: HashMap<(u32, u32), GlyphonViewport>,
 }
 
@@ -530,6 +546,8 @@ impl TextResources {
             atlas,
             format,
             renderers: HashMap::new(),
+            prepared_renderers: HashMap::new(),
+            layout_buffers: HashMap::new(),
             viewports: HashMap::new(),
         }
     }
@@ -578,8 +596,29 @@ impl TextResources {
         self.renderers.insert(key, renderer);
     }
 
-    fn prepare_buffer(
+    fn take_prepared_renderer(
         &mut self,
+        key: TextRendererKey,
+        signature: u64,
+    ) -> Option<TextRenderer> {
+        self.prepared_renderers.remove(&(key, signature))
+    }
+
+    fn put_prepared_renderer(
+        &mut self,
+        key: TextRendererKey,
+        signature: u64,
+        renderer: TextRenderer,
+    ) {
+        self.prepared_renderers.insert((key, signature), renderer);
+        if self.prepared_renderers.len() > 512 {
+            self.prepared_renderers.clear();
+        }
+    }
+
+    fn prepare_buffer_cached(
+        &mut self,
+        signature: u64,
         content: &str,
         width: f32,
         height: f32,
@@ -590,6 +629,9 @@ impl TextResources {
         align: Align,
         allow_wrap: bool,
     ) -> Buffer {
+        if let Some(buffer) = self.layout_buffers.get(&signature) {
+            return buffer.clone();
+        }
         let mut buffer = Buffer::new(
             &mut self.font_system,
             Metrics::new(
@@ -627,6 +669,10 @@ impl TextResources {
             Some(align),
         );
         buffer.shape_until_scroll(&mut self.font_system, false);
+        self.layout_buffers.insert(signature, buffer.clone());
+        if self.layout_buffers.len() > 4096 {
+            self.layout_buffers.clear();
+        }
         buffer
     }
 }

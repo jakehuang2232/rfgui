@@ -109,6 +109,16 @@ fn trace_render_percentage(parent_ms: f64, child_ms: f64) -> String {
     format!("{pct:.1}%")
 }
 
+const TRACE_RENDER_FIRST_LEVEL_ONLY_THRESHOLD_MS: f64 = 8.3;
+
+fn trace_render_visible_depth(root: &TraceRenderNode) -> usize {
+    if root.elapsed_ms < TRACE_RENDER_FIRST_LEVEL_ONLY_THRESHOLD_MS {
+        1
+    } else {
+        usize::MAX
+    }
+}
+
 fn format_trace_render_tree(root: &TraceRenderNode) -> String {
     fn append_node(
         out: &mut String,
@@ -116,6 +126,8 @@ fn format_trace_render_tree(root: &TraceRenderNode) -> String {
         parent_ms: Option<f64>,
         prefix: &str,
         is_last: bool,
+        depth: usize,
+        max_depth: usize,
     ) {
         if parent_ms.is_none() {
             out.push_str(&format!(
@@ -141,6 +153,9 @@ fn format_trace_render_tree(root: &TraceRenderNode) -> String {
         } else {
             format!("{prefix}│  ")
         };
+        if depth >= max_depth {
+            return;
+        }
         let child_count = node.children.len();
         for (idx, child) in node.children.iter().enumerate() {
             append_node(
@@ -149,12 +164,22 @@ fn format_trace_render_tree(root: &TraceRenderNode) -> String {
                 Some(node.elapsed_ms),
                 &next_prefix,
                 idx + 1 == child_count,
+                depth + 1,
+                max_depth,
             );
         }
     }
 
     let mut output = String::new();
-    append_node(&mut output, root, None, "", true);
+    append_node(
+        &mut output,
+        root,
+        None,
+        "",
+        true,
+        0,
+        trace_render_visible_depth(root),
+    );
     output.trim_end().to_string()
 }
 
@@ -248,6 +273,39 @@ fn build_compile_trace_nodes(
             format!("prepare_upload (passes={})", profile.prepare_pass_count),
             profile.prepare_upload_ms,
         ),
+    ]
+}
+
+fn build_layout_place_trace_nodes(
+    profile: &crate::view::base_component::LayoutPlaceProfile,
+) -> Vec<TraceRenderNode> {
+    vec![
+        TraceRenderNode::new(
+            format!("place_self (nodes={})", profile.node_count),
+            profile.place_self_ms,
+        ),
+        TraceRenderNode::new("place_children", profile.place_children_ms),
+        TraceRenderNode::new("place_flex_children", profile.place_flex_children_ms),
+        TraceRenderNode::new("place_layout_flex", profile.place_layout_flex_ms),
+        TraceRenderNode::new("place_layout_flow", profile.place_layout_flow_ms),
+        TraceRenderNode::new(
+            "place_layout_inline_flex",
+            profile.place_layout_inline_flex_ms,
+        ),
+        TraceRenderNode::new(
+            format!("child_place (calls={})", profile.child_place_calls),
+            profile.non_axis_child_place_ms,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "absolute_child_place (calls={})",
+                profile.absolute_child_place_calls
+            ),
+            profile.absolute_child_place_ms,
+        ),
+        TraceRenderNode::new("update_content_size", profile.update_content_size_ms),
+        TraceRenderNode::new("clamp_scroll", profile.clamp_scroll_ms),
+        TraceRenderNode::new("recompute_hit_test", profile.recompute_hit_test_ms),
     ]
 }
 
@@ -2584,6 +2642,7 @@ impl Viewport {
         }
         let layout_measure_elapsed_ms = measure_started_at.elapsed().as_secs_f64() * 1000.0;
         let place_started_at = Instant::now();
+        super::base_component::reset_layout_place_profile();
         for root in roots.iter_mut() {
             root.place(super::base_component::LayoutPlacement {
                 parent_x: 0.0,
@@ -2599,6 +2658,7 @@ impl Viewport {
             });
         }
         let layout_place_elapsed_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;
+        let layout_place_profile = super::base_component::take_layout_place_profile();
         let collect_box_models_started_at = Instant::now();
         for root in roots.iter_mut() {
             self.frame_box_models
@@ -2619,6 +2679,7 @@ impl Viewport {
         let mut relayout_measure_elapsed_ms = 0.0_f64;
         let mut relayout_place_elapsed_ms = 0.0_f64;
         let mut relayout_collect_box_models_elapsed_ms = 0.0_f64;
+        let mut relayout_place_profile = super::base_component::LayoutPlaceProfile::default();
         if transition_changed_after_layout {
             self.frame_box_models.clear();
             let relayout_measure_started_at = Instant::now();
@@ -2635,6 +2696,7 @@ impl Viewport {
             relayout_measure_elapsed_ms =
                 relayout_measure_started_at.elapsed().as_secs_f64() * 1000.0;
             let relayout_place_started_at = Instant::now();
+            super::base_component::reset_layout_place_profile();
             for root in roots.iter_mut() {
                 root.place(super::base_component::LayoutPlacement {
                     parent_x: 0.0,
@@ -2650,6 +2712,7 @@ impl Viewport {
                 });
             }
             relayout_place_elapsed_ms = relayout_place_started_at.elapsed().as_secs_f64() * 1000.0;
+            relayout_place_profile = super::base_component::take_layout_place_profile();
             let relayout_collect_started_at = Instant::now();
             for root in roots.iter_mut() {
                 self.frame_box_models
@@ -2938,7 +3001,11 @@ impl Viewport {
                         layout_with_transition_elapsed_ms,
                         vec![
                             TraceRenderNode::new("measure", layout_measure_elapsed_ms),
-                            TraceRenderNode::new("place", layout_place_elapsed_ms),
+                            TraceRenderNode::with_children(
+                                "place",
+                                layout_place_elapsed_ms,
+                                build_layout_place_trace_nodes(&layout_place_profile),
+                            ),
                             TraceRenderNode::new(
                                 "collect_box_models",
                                 layout_collect_box_models_elapsed_ms,
@@ -2952,7 +3019,11 @@ impl Viewport {
                                 relayout_after_transition_elapsed_ms,
                                 vec![
                                     TraceRenderNode::new("measure", relayout_measure_elapsed_ms),
-                                    TraceRenderNode::new("place", relayout_place_elapsed_ms),
+                                    TraceRenderNode::with_children(
+                                        "place",
+                                        relayout_place_elapsed_ms,
+                                        build_layout_place_trace_nodes(&relayout_place_profile),
+                                    ),
                                     TraceRenderNode::new(
                                         "collect_box_models",
                                         relayout_collect_box_models_elapsed_ms,
