@@ -644,6 +644,35 @@ mod tests {
     }
 
     #[test]
+    fn selection_style_object_uses_typed_background() {
+        let node = rsx! {
+            <crate::ui::host::Element
+                style={{
+                    selection: {
+                        background: Color::hex("#ffffff"),
+                    },
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = node
+            .props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Style(style)) => Some(style),
+                _ => None,
+            })
+            .expect("missing style prop");
+        let selection = style.selection().expect("missing selection style");
+        assert_eq!(
+            selection.background_color(),
+            Some(Color::rgba(255, 255, 255, 255))
+        );
+    }
+
+    #[test]
     fn event_props_accept_bare_closures_for_all_handler_types() {
         let node = rsx! {
             <Element

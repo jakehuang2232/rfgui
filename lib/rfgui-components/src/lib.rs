@@ -284,6 +284,32 @@ mod tests {
         }
     }
 
+    fn collect_layout_boxes(
+        node: &dyn rfgui::view::base_component::ElementTrait,
+        depth: usize,
+        out: &mut Vec<(usize, String, f32, f32, f32, f32)>,
+    ) {
+        let snapshot = node.box_model_snapshot();
+        let kind = if node.as_any().is::<rfgui::view::base_component::Text>() {
+            "Text".to_string()
+        } else {
+            "Element".to_string()
+        };
+        out.push((
+            depth,
+            kind,
+            snapshot.x,
+            snapshot.y,
+            snapshot.width,
+            snapshot.height,
+        ));
+        if let Some(children) = node.children() {
+            for child in children {
+                collect_layout_boxes(child.as_ref(), depth + 1, out);
+            }
+        }
+    }
+
     #[test]
     fn checkbox_label_has_non_zero_text_layout() {
         let tree = rsx! {
@@ -492,5 +518,48 @@ mod tests {
         click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
 
         assert!(expanded.get());
+    }
+
+    #[test]
+    fn accordion_header_title_grows_and_icon_stays_intrinsic() {
+        let tree = rsx! {
+            <Accordion title="Button">
+                <Text>"Content"</Text>
+            </Accordion>
+        };
+
+        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert accordion");
+        let root = roots.get_mut(0).expect("root");
+        root.measure(rfgui::view::base_component::LayoutConstraints {
+            max_width: 420.0,
+            max_height: 200.0,
+            viewport_width: 420.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(420.0),
+            percent_base_height: Some(200.0),
+        });
+        root.place(rfgui::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 420.0,
+            available_height: 200.0,
+            viewport_width: 420.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(420.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let mut boxes = Vec::new();
+        collect_layout_boxes(root.as_ref(), 0, &mut boxes);
+        let header = &boxes[1];
+        let title = &boxes[2];
+        let icon = &boxes[4];
+
+        assert!(header.4 > 400.0, "header should use full width: {boxes:#?}");
+        assert!(title.4 > 300.0, "title should grow to fill remaining width: {boxes:#?}");
+        assert!(icon.4 < 40.0, "icon text should stay intrinsic: {boxes:#?}");
+        assert!(icon.2 > title.2 + title.4 - 1.0, "icon should be pushed after title: {boxes:#?}");
     }
 }

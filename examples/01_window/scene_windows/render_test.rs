@@ -345,8 +345,8 @@ pub fn build(
                 <Text>
                     {format!("Bound chars: {}", values.message.chars().count())}
                 </Text>
-                <TextArea x=12 y=34 style={{ width: Length::px(296.0), height: Length::px(78.0) }} font_size=13 color="#c8d0e0" multiline=true placeholder="Please enter multiline content..." binding={bindings.message} />
-                <TextArea x=12 y=98 style={{ width: Length::px(296.0), height: Length::px(26.0) }} font_size=13 color="#c8d0e0" multiline=false read_only=true>
+                <TextArea x=12 y=34 style={{ width: Length::px(296.0), height: Length::px(78.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=true placeholder="Please enter multiline content..." binding={bindings.message} />
+                <TextArea x=12 y=98 style={{ width: Length::px(296.0), height: Length::px(26.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=false read_only=true>
                     multiline=false
                     Line breaks should become spaces
                 </TextArea>

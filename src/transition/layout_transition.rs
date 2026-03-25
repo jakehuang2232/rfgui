@@ -161,15 +161,6 @@ impl LayoutTransitionPlugin {
     pub(crate) fn active_track_keys(&self) -> Vec<TrackKey<TrackTarget>> {
         self.tracks.keys().copied().collect()
     }
-
-    pub(crate) fn debug_track_state(
-        &self,
-        key: TrackKey<TrackTarget>,
-    ) -> Option<(f32, f32, f32, Option<f64>)> {
-        self.tracks
-            .get(&key)
-            .map(|state| (state.from, state.to, state.current, state.started_at_seconds))
-    }
 }
 
 impl Transition<TrackTarget> for LayoutTransitionPlugin {

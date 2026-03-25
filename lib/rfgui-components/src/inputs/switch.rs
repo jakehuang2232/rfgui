@@ -3,7 +3,7 @@ use rfgui::ui::host::{Element, Text};
 use rfgui::ui::{
     Binding, RsxChildrenPolicy, RsxComponent, RsxNode, component, on_click, props, rsx, use_state,
 };
-use rfgui::{flex, Align, Layout, Length, Operator, Transition, TransitionProperty};
+use rfgui::{Align, Layout, Length, Operator, Transition, TransitionProperty};
 
 pub struct Switch;
 
@@ -77,12 +77,11 @@ fn SwitchView(
 
     rsx! {
         <Element style={{
-            layout: Layout::flex().row().align(Align::Center),
+            layout: Layout::flow().row().align(Align::Center).no_wrap(),
             gap: theme.spacing.md,
         }} on_click={click}>
             <Element style={{
                 layout: Layout::flow().row().align(Align::Center).no_wrap(),
-                flex: flex().grow(0.0).shrink(0.0),
                 width: switch_theme.track_width,
                 height: switch_theme.track_height,
                 padding: switch_theme.track_padding,

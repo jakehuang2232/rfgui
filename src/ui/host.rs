@@ -83,10 +83,27 @@ pub struct ElementStylePropSchema {
     pub text_wrap: TextWrap,
     pub border_radius: BorderRadius,
     pub hover: Style,
+    pub selection: SelectionStylePropSchema,
     pub opacity: Opacity,
     pub box_shadow: Vec<BoxShadow>,
     pub padding: Padding,
     pub transition: Transitions,
+}
+
+pub struct TextStylePropSchema {
+    pub color: Box<dyn ColorLike>,
+    pub font: FontFamily,
+    pub font_size: FontSize,
+    pub font_weight: FontWeight,
+    pub text_wrap: TextWrap,
+    pub cursor: Cursor,
+    pub hover: Style,
+    pub opacity: Opacity,
+    pub transition: Transitions,
+}
+
+pub struct SelectionStylePropSchema {
+    pub background: Box<dyn ColorLike>,
 }
 
 pub struct BorderStylePropSchema {
@@ -112,7 +129,6 @@ pub struct TextAreaPropSchema {
     pub on_focus: Option<TextAreaFocusHandlerProp>,
     pub on_change: Option<TextChangeHandlerProp>,
     pub placeholder: Option<String>,
-    pub color: Option<String>,
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub font_size: Option<FontSize>,
@@ -242,11 +258,6 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
             && !placeholder.is_empty()
         {
             node = node.with_prop("placeholder", placeholder);
-        }
-        if let Some(color) = props.color
-            && !color.is_empty()
-        {
-            node = node.with_prop("color", color);
         }
         if let Some(x) = props.x
             && x != 0.0

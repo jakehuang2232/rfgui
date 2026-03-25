@@ -519,7 +519,11 @@ impl Layoutable for Text {
     }
 
     fn flex_main_size(&self, is_row: bool) -> crate::SizeValue {
-        <Element as Layoutable>::flex_main_size(&self.element, is_row)
+        if (is_row && self.auto_width) || (!is_row && self.auto_height) {
+            crate::SizeValue::Auto
+        } else {
+            <Element as Layoutable>::flex_main_size(&self.element, is_row)
+        }
     }
 
     fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {

@@ -470,7 +470,10 @@ fn parse_style_entries(input: ParseStream) -> Result<Vec<StyleEntry>> {
             ));
         }
         input.parse::<Token![:]>()?;
-        let style_value = if style_key == "hover" && input.peek(syn::token::Brace) {
+        let style_value =
+            if matches!(style_key.to_string().as_str(), "hover" | "selection")
+                && input.peek(syn::token::Brace)
+            {
             let nested;
             braced!(nested in input);
             StyleValueExpr::StyleObject(parse_style_entries(&nested)?)
@@ -864,6 +867,11 @@ fn is_text_area_tag(tag: &Path) -> bool {
     path_key(tag).ends_with("TextArea")
 }
 
+fn is_text_tag(tag: &Path) -> bool {
+    let key = path_key(tag);
+    key.ends_with("Text") && !key.ends_with("TextArea")
+}
+
 fn event_handler_converter(tag: &Path, prop_key: &str) -> Option<proc_macro2::TokenStream> {
     match prop_key {
         "on_mouse_down" => Some(quote! { ::rfgui::ui::into_mouse_down_handler }),
@@ -943,7 +951,7 @@ fn expand_prop_value_expr_for_builder(
     match value {
         PropValueExpr::Expr(value) => quote! { #value },
         PropValueExpr::StyleObject(entries) => {
-            let style_inserts = entries.iter().map(expand_style_entry);
+            let style_inserts = entries.iter().map(|entry| expand_style_entry_for_tag(tag, entry));
             quote! {{
                 let mut __rsx_style = ::rfgui::Style::new();
                 #(#style_inserts)*
@@ -1029,11 +1037,27 @@ fn expand_object_value_expr(
 }
 
 fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
+    expand_style_entry_for_schema(entry, false)
+}
+
+fn expand_style_entry_for_tag(tag: &Path, entry: &StyleEntry) -> proc_macro2::TokenStream {
+    expand_style_entry_for_schema(entry, is_text_tag(tag))
+}
+
+fn expand_style_entry_for_schema(
+    entry: &StyleEntry,
+    use_text_style_schema: bool,
+) -> proc_macro2::TokenStream {
     let key_ident = &entry.key;
     let key = entry.key.to_string();
+    let style_schema_ty = if use_text_style_schema {
+        quote!(::rfgui::ui::host::TextStylePropSchema)
+    } else {
+        quote!(::rfgui::ui::host::ElementStylePropSchema)
+    };
     if matches!(&entry.value, StyleValueExpr::Missing) {
         return quote! {
-            let _ = |__style_schema: &::rfgui::ui::host::ElementStylePropSchema| {
+            let _ = |__style_schema: &#style_schema_ty| {
                 let _ = &__style_schema.#key_ident;
             };
             compile_error!(concat!(
@@ -1323,7 +1347,9 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
         }),
         "hover" => match &entry.value {
             StyleValueExpr::StyleObject(entries) => {
-                let hover_inserts = entries.iter().map(expand_style_entry);
+                let hover_inserts = entries
+                    .iter()
+                    .map(|nested| expand_style_entry_for_schema(nested, use_text_style_schema));
                 quote! {
                     let mut __rsx_hover_style = ::rfgui::Style::new();
                     {
@@ -1340,14 +1366,64 @@ fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
                 compile_error!("style.hover is incomplete; expected `:` and a value");
             },
         },
+        "selection" => match &entry.value {
+            StyleValueExpr::StyleObject(entries) => {
+                let selection_inserts = entries.iter().map(expand_selection_style_entry);
+                quote! {
+                    let mut __rsx_selection_style = ::rfgui::SelectionStyle::new();
+                    {
+                        let __rsx_selection_style = &mut __rsx_selection_style;
+                        #(#selection_inserts)*
+                    }
+                    __rsx_style.set_selection(__rsx_selection_style);
+                }
+            }
+            StyleValueExpr::Expr(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.selection requires object syntax, e.g. selection: { background: Color::hex(\"#fff\") }");
+            },
+            StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
+                compile_error!("style.selection is incomplete; expected `:` and a value");
+            },
+        },
         _ => quote_spanned! {entry.key.span()=>
             compile_error!("unsupported style key");
         },
     };
 
     quote! {
-        let _ = |__style_schema: &::rfgui::ui::host::ElementStylePropSchema| {
+        let _ = |__style_schema: &#style_schema_ty| {
             let _ = &__style_schema.#key_ident;
+        };
+        #style_value_tokens
+    }
+}
+
+fn expand_selection_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
+    let key_ident = &entry.key;
+    let key = key_ident.to_string();
+
+    let style_value_tokens = match key.as_str() {
+        "background" => match &entry.value {
+            StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
+                quote! {
+                    __rsx_selection_style.set_background(#inner);
+                }
+            }),
+            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+                compile_error!("style.selection.background requires an expression value");
+            },
+            StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
+                compile_error!("style.selection.background is incomplete; expected `:` and a value");
+            },
+        },
+        _ => quote_spanned! {entry.key.span()=>
+            compile_error!("unsupported selection style key");
+        },
+    };
+
+    quote! {
+        let _ = |__selection_schema: &::rfgui::ui::host::SelectionStylePropSchema| {
+            let _ = &__selection_schema.#key_ident;
         };
         #style_value_tokens
     }
@@ -1892,5 +1968,16 @@ mod tests {
             }
             _ => panic!("expected second node to be element"),
         }
+    }
+
+    #[test]
+    fn text_style_expansion_uses_text_style_schema() {
+        let parsed = syn::parse_str::<MultipleNodes>(
+            r##"<Text style={{ color: Color::hex("#fff") }}>{"A"}</Text>"##,
+        )
+        .expect("rsx should parse text style");
+
+        let expanded = expand_node(&parsed.nodes[0]).to_string();
+        assert!(expanded.contains("TextStylePropSchema"));
     }
 }
