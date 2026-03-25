@@ -44,7 +44,9 @@ pub struct ColorSet {
 #[derive(Clone)]
 pub struct TextColorSet {
     pub primary: Box<dyn ColorLike>,
+    pub primary_selection_background: Box<dyn ColorLike>,
     pub secondary: Box<dyn ColorLike>,
+    pub secondary_selection_background: Box<dyn ColorLike>,
     pub disabled: Box<dyn ColorLike>,
 }
 
@@ -246,7 +248,9 @@ impl Theme {
                 },
                 text: TextColorSet {
                     primary: rgb(56, 58, 66),
+                    primary_selection_background: rgba(64, 120, 242, 89),
                     secondary: rgb(105, 108, 119),
+                    secondary_selection_background: rgba(166, 38, 164, 64),
                     disabled: rgb(160, 161, 167),
                 },
                 border: Box::new(border_color),
@@ -335,7 +339,7 @@ impl Theme {
                     label_max_width: Length::px(250.0),
                 },
                 card: CardTheme {
-                    padding: Padding::uniform(Length::px(4.0)),
+                    padding: Padding::uniform(Length::px(8.0)),
                     radius: BorderRadius::uniform(Length::px(12.0)),
                     border: Border::uniform(Length::px(1.0), &border_color),
                 },
@@ -411,7 +415,9 @@ impl Theme {
                 },
                 text: TextColorSet {
                     primary: hex("#b1b9c9"),
+                    primary_selection_background: rgba(97, 175, 239, 102),
                     secondary: rgb(127, 132, 142),
+                    secondary_selection_background: rgba(198, 120, 221, 77),
                     disabled: hex("#7c8189"),
                 },
                 border: Box::new(border_color),
@@ -500,7 +506,7 @@ impl Theme {
                     label_max_width: Length::px(250.0),
                 },
                 card: CardTheme {
-                    padding: Padding::uniform(Length::px(4.0)),
+                    padding: Padding::uniform(Length::px(8.0)),
                     radius: BorderRadius::uniform(Length::px(12.0)),
                     border: Border::uniform(Length::px(1.0), &border_color),
                 },

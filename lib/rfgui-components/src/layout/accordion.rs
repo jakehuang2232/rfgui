@@ -79,8 +79,7 @@ fn AccordionView(
             <Element
                 style={{
                     width: Length::percent(100.0),
-                    layout: Layout::flex()
-                        .align(Align::Center)
+                    layout: Layout::flex().align(Align::Center),
                     padding: theme.component.input.padding,
                     cursor: if disabled { Cursor::Default } else { Cursor::Pointer },
                     background: if disabled {
@@ -116,9 +115,9 @@ fn AccordionView(
                 >
                     {title}
                 </Element>
-                <Text
-                    font_size={theme.typography.size.sm}
+                <Element
                     style={{
+                        font_size: theme.typography.size.sm,
                         flex: flex().grow(0.0).shrink(0.0),
                         color: if disabled {
                             theme.color.text.disabled.clone()
@@ -127,12 +126,14 @@ fn AccordionView(
                         },
                     }}
                 >
-                    {if is_expanded {
-                        String::from("v")
-                    } else {
-                        String::from(">")
-                    }}
-                </Text>
+                    <Text style={{}}>
+                        {if is_expanded {
+                            String::from("v")
+                        } else {
+                            String::from(">")
+                        }}
+                    </Text>
+                </Element>
             </Element>
             <Element
                 style={{

@@ -4,7 +4,7 @@ use rfgui::ui::{
     Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxChildrenPolicy,
     RsxComponent, RsxNode, component, props, rsx, use_state,
 };
-use rfgui::{flex, Align, Border, Color, Layout, Transition, TransitionProperty};
+use rfgui::{Align, Border, Color, Layout, Transition, TransitionProperty};
 
 pub struct Checkbox;
 
@@ -71,7 +71,7 @@ fn CheckboxView(
 
     rsx! {
         <Element style={{
-            layout: Layout::flex().row().align(Align::Center),
+            layout: Layout::flow().row().align(Align::Center).no_wrap(),
             gap: theme.spacing.md,
         }}
         on_click={click}
@@ -79,7 +79,6 @@ fn CheckboxView(
         on_mouse_leave={on_mouse_leave}
         >
             <Element style={{
-                flex: flex().grow(0.0).shrink(0.0),
                 width: checkbox_theme.size,
                 height: checkbox_theme.size,
                 border_radius: checkbox_theme.radius,
@@ -117,7 +116,9 @@ fn CheckboxView(
             </Element>
             <Text
                 font_size={theme.typography.size.sm}
-                style={{ color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.primary.clone() } }}
+                style={{
+                    color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.primary.clone() }
+                }}
             >
                 {label}
             </Text>

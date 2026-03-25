@@ -30,6 +30,7 @@ pub struct TextArea {
     should_render: bool,
     content: String,
     color: Box<dyn ColorLike>,
+    selection_background_color: Box<dyn ColorLike>,
     placeholder_color: Box<dyn ColorLike>,
     font_families: Vec<String>,
     font_size: f32,
@@ -146,6 +147,7 @@ impl TextArea {
             should_render: true,
             content: String::new(),
             color: Box::new(HexColor::new("#111111")),
+            selection_background_color: Box::new(crate::Color::rgba(71, 133, 240, 89)),
             placeholder_color: Box::new(HexColor::new("#7d8596")),
             font_families: Vec::new(),
             font_size: 16.0,
@@ -396,6 +398,18 @@ impl TextArea {
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
+    }
+
+    pub fn color_rgba_f32(&self) -> [f32; 4] {
+        self.color.to_rgba_f32()
+    }
+
+    pub fn set_selection_background_color<T: ColorLike + 'static>(&mut self, color: T) {
+        self.selection_background_color = Box::new(color);
+    }
+
+    pub fn selection_background_rgba_f32(&self) -> [f32; 4] {
+        self.selection_background_color.to_rgba_f32()
     }
 
     pub fn set_font(&mut self, font_family: impl Into<String>) {
@@ -1652,6 +1666,7 @@ impl ElementTrait for TextArea {
         self.content.hash(&mut hasher);
         self.placeholder.hash(&mut hasher);
         self.color.to_rgba_u8().hash(&mut hasher);
+        self.selection_background_color.to_rgba_u8().hash(&mut hasher);
         self.placeholder_color.to_rgba_u8().hash(&mut hasher);
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
@@ -2075,11 +2090,12 @@ impl Renderable for TextArea {
 
         if !content.is_empty() {
             for (position, size) in self.selection_screen_rects(content.as_str()) {
+                let fill_color = self.selection_background_color.to_rgba_f32();
                 let mut selection_pass = DrawRectPass::new(
                     RectPassParams {
                         position,
                         size,
-                        fill_color: [0.28, 0.52, 0.94, 0.35],
+                        fill_color,
                         opacity,
                         ..Default::default()
                     },

@@ -47,6 +47,7 @@ pub struct ComputedStyle {
     pub scroll_direction: ScrollDirection,
     pub cursor: Cursor,
     pub color: Color,
+    pub selection_background_color: Color,
     pub background_color: Color,
     pub font_families: Vec<String>,
     pub font_size: f32,
@@ -96,6 +97,7 @@ impl Default for ComputedStyle {
             scroll_direction: ScrollDirection::None,
             cursor: Cursor::Default,
             color: Color::rgb(0, 0, 0),
+            selection_background_color: Color::rgba(0, 0, 0, 0),
             background_color: Color::rgba(0, 0, 0, 0),
             font_families: Vec::new(),
             font_size: 16.0,
@@ -213,6 +215,12 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
         computed.font_size = parent.font_size;
         computed.font_weight = parent.font_weight;
         computed.line_height = parent.line_height;
+    }
+
+    if let Some(selection) = parsed.selection()
+        && let Some(background) = selection.background_color()
+    {
+        computed.selection_background_color = background;
     }
 
     for declaration in parsed.declarations() {

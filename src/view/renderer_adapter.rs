@@ -1,4 +1,3 @@
-use crate::HexColor;
 use crate::Style;
 use crate::ui::host::{ImageFit, ImageSampling, ImageSource};
 use crate::ui::{
@@ -940,6 +939,7 @@ fn convert_text_area_element(
     let mut height: Option<Length> = None;
     let mut has_explicit_font = false;
     let mut has_explicit_font_size = false;
+    let mut has_explicit_color = false;
 
     for (key, value) in &node.props {
         if key.as_str() == "key" {
@@ -987,7 +987,6 @@ fn convert_text_area_element(
                 text_area.set_font(as_string(value, key)?);
                 has_explicit_font = true;
             }
-            "color" => text_area.set_color(HexColor::new(as_owned_string(value, key)?)),
             "opacity" => text_area.set_opacity(as_f32(value, key)?),
             "multiline" => text_area.set_multiline(as_bool(value, key)?),
             "read_only" => text_area.set_read_only(as_bool(value, key)?),
@@ -1003,6 +1002,15 @@ fn convert_text_area_element(
         if let Some(value) = style.get(PropertyId::Height) {
             height = size_length_from_parsed_value(value, "TextArea style.height")?;
         }
+        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+            text_area.set_color(*color);
+            has_explicit_color = true;
+        }
+        if let Some(selection) = style.selection()
+            && let Some(background) = selection.background_color()
+        {
+            text_area.set_selection_background_color(background);
+        }
     }
 
     text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
@@ -1011,6 +1019,9 @@ fn convert_text_area_element(
     }
     if !has_explicit_font_size && let Some(font_size) = inherited_text_style.font_size {
         text_area.set_font_size(font_size);
+    }
+    if !has_explicit_color && let Some(color) = inherited_text_style.color {
+        text_area.set_color(color);
     }
     if let Some(cursor) = inherited_text_style.cursor {
         text_area.set_cursor(cursor);
@@ -1521,11 +1532,11 @@ mod tests {
         RenderedGlobalKeyEntry, ViewportRenderBackend, identity_token_from_node_identity,
         rendered_node_id, rsx_to_elements, rsx_to_elements_lossy, rsx_to_elements_with_context,
     };
-    use crate::ui::{GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity};
+    use crate::ui::{GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, rsx};
     use crate::view::Viewport;
     use crate::view::base_component::{ElementTrait, Text, TextArea, get_cursor_by_id, hit_test};
     use crate::{
-        Border, BorderRadius, Color, Cursor, FontSize, IntoColor, Layout, Length, ParsedValue,
+        Align, Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length, ParsedValue,
         PropertyId, Style, Unit,
     };
     fn style_bg(hex: &str) -> Style {
@@ -2304,6 +2315,90 @@ mod tests {
     }
 
     #[test]
+    fn textarea_uses_style_color_and_inherits_parent_color() {
+        let parent_color = IntoColor::<Color>::into_color(Color::hex("#336699"));
+        let local_color = IntoColor::<Color>::into_color(Color::hex("#aa5500"));
+
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Color, ParsedValue::Color(parent_color));
+
+        let mut textarea_style = Style::new();
+        textarea_style.insert(PropertyId::Color, ParsedValue::Color(local_color));
+
+        let inherited_tree = RsxNode::element("Element")
+            .with_prop("style", parent_style.clone())
+            .with_child(
+                RsxNode::element("TextArea")
+                    .with_prop("content", "hello")
+                    .with_prop("multiline", false),
+            );
+        let explicit_tree = RsxNode::element("Element")
+            .with_prop("style", parent_style)
+            .with_child(
+                RsxNode::element("TextArea")
+                    .with_prop("style", textarea_style)
+                    .with_prop("content", "hello")
+                    .with_prop("multiline", false),
+            );
+
+        let inherited = rsx_to_elements(&inherited_tree).expect("convert inherited tree");
+        let explicit = rsx_to_elements(&explicit_tree).expect("convert explicit tree");
+
+        let inherited_textarea = inherited
+            .first()
+            .and_then(|root| root.children())
+            .and_then(|children| children.first())
+            .and_then(|node| node.as_any().downcast_ref::<TextArea>())
+            .expect("inherited textarea");
+        let explicit_textarea = explicit
+            .first()
+            .and_then(|root| root.children())
+            .and_then(|children| children.first())
+            .and_then(|node| node.as_any().downcast_ref::<TextArea>())
+            .expect("explicit textarea");
+
+        assert_eq!(inherited_textarea.color_rgba_f32(), parent_color.to_rgba_f32());
+        assert_eq!(explicit_textarea.color_rgba_f32(), local_color.to_rgba_f32());
+    }
+
+    #[test]
+    fn textarea_rejects_legacy_color_prop() {
+        let tree = RsxNode::element("TextArea")
+            .with_prop("color", "#ff0000")
+            .with_prop("content", "hello")
+            .with_prop("multiline", false);
+
+        let error = rsx_to_elements(&tree).err().expect("legacy color prop should fail");
+        assert!(error.contains("unknown prop `color` on <TextArea>"));
+    }
+
+    #[test]
+    fn textarea_uses_selection_background_from_style() {
+        let tree = rsx! {
+            <TextArea
+                style={{
+                    selection: {
+                        background: Color::hex("#ffffff"),
+                    },
+                }}
+                content="hello"
+                multiline={false}
+            />
+        };
+
+        let roots = rsx_to_elements(&tree).expect("convert rsx");
+        let textarea = roots
+            .first()
+            .and_then(|node| node.as_any().downcast_ref::<TextArea>())
+            .expect("textarea root");
+
+        assert_eq!(
+            textarea.selection_background_rgba_f32(),
+            Color::rgba(255, 255, 255, 255).to_rgba_f32()
+        );
+    }
+
+    #[test]
     fn textarea_uses_style_width_and_height() {
         let mut textarea_style = Style::new();
         textarea_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(296.0)));
@@ -2393,4 +2488,5 @@ mod tests {
         assert_eq!(snapshot.width, 200.0);
         assert_eq!(snapshot.height, 50.0);
     }
+
 }

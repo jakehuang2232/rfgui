@@ -4,7 +4,7 @@ use rfgui::ui::{
     Binding, ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, TextChangeHandlerProp,
     component, props, rsx, use_state,
 };
-use rfgui::{Align, Layout, Length, TextWrap, flex};
+use rfgui::{Align, Layout, Length, TextWrap, flex, Padding};
 
 pub struct NumberField;
 
@@ -133,14 +133,17 @@ fn NumberFieldView(
             <Element style={{
                 border_radius: theme.component.input.radius,
                 border: theme.component.input.border.clone(),
+                padding: Padding::new().x(Length::px(2.0)),
                 flex: flex().grow(3.0).shrink(1.0),
-                padding: theme.component.input.padding.clone(),
                 min_width: Length::Zero,
                 background: if disabled {
                     theme.color.state.disabled.clone()
                 } else {
                     theme.color.layer.surface.clone()
                 },
+                selection: {
+                    background: theme.color.text.primary_selection_background.clone(),
+                }
             }}>
                 <TextArea
                     style={{width: Length::percent(100.0)}}

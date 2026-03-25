@@ -1708,11 +1708,44 @@ pub struct Declaration {
     pub value: ParsedValue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SelectionStyle {
+    background: Option<Color>,
+}
+
+impl SelectionStyle {
+    pub const fn new() -> Self {
+        Self { background: None }
+    }
+
+    pub fn background<T: ColorLike>(mut self, color: T) -> Self {
+        let [r, g, b, a] = color.to_rgba_u8();
+        self.background = Some(Color::rgba(r, g, b, a));
+        self
+    }
+
+    pub const fn background_color(&self) -> Option<Color> {
+        self.background
+    }
+
+    pub fn set_background<T: ColorLike>(&mut self, color: T) {
+        let [r, g, b, a] = color.to_rgba_u8();
+        self.background = Some(Color::rgba(r, g, b, a));
+    }
+
+    pub fn merge(self, rhs: Self) -> Self {
+        Self {
+            background: rhs.background.or(self.background),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Style {
     declarations: Vec<Declaration>,
     index: HashMap<PropertyId, usize>,
     hover: Option<Box<Style>>,
+    selection: Option<Box<SelectionStyle>>,
 }
 
 pub trait IntoStyleFieldValue<T> {
@@ -1958,12 +1991,25 @@ impl Style {
         self.hover.as_deref()
     }
 
+    pub fn selection(&self) -> Option<&SelectionStyle> {
+        self.selection.as_deref()
+    }
+
     pub fn set_hover(&mut self, hover: Style) {
         self.hover = Some(Box::new(hover));
     }
 
+    pub fn set_selection(&mut self, selection: SelectionStyle) {
+        self.selection = Some(Box::new(selection));
+    }
+
     pub fn with_hover(mut self, hover: Style) -> Self {
         self.set_hover(hover);
+        self
+    }
+
+    pub fn with_selection(mut self, selection: SelectionStyle) -> Self {
+        self.set_selection(selection);
         self
     }
 
@@ -1973,6 +2019,12 @@ impl Style {
             merged.insert(declaration.property, declaration.value);
         }
         merged.hover = match (merged.hover.take(), rhs.hover) {
+            (Some(lhs), Some(rhs)) => Some(Box::new((*lhs).merge(*rhs))),
+            (Some(lhs), None) => Some(lhs),
+            (None, Some(rhs)) => Some(rhs),
+            (None, None) => None,
+        };
+        merged.selection = match (merged.selection.take(), rhs.selection) {
             (Some(lhs), Some(rhs)) => Some(Box::new((*lhs).merge(*rhs))),
             (Some(lhs), None) => Some(lhs),
             (None, Some(rhs)) => Some(rhs),
