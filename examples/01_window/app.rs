@@ -30,6 +30,7 @@ pub struct App {
     window: Option<Arc<WinitWindow>>,
     viewport: Option<Viewport>,
     app: Option<RsxNode>,
+    app_dirty: bool,
     ime_composing: bool,
     ime_dirty: bool,
     last_ime_focus_id: Option<u64>,
@@ -205,8 +206,9 @@ impl ApplicationHandler for App {
                 self.mark_ime_dirty();
             }
             WindowEvent::RedrawRequested => {
-                if take_state_dirty() {
+                if self.app_dirty || take_state_dirty() {
                     self.rebuild_app();
+                    self.app_dirty = false;
                 }
                 self.sync_theme_visuals();
                 if let (Some(viewport), Some(app)) = (&mut self.viewport, &self.app) {
@@ -324,7 +326,7 @@ impl ApplicationHandler for App {
         }
 
         if take_state_dirty() {
-            self.rebuild_app();
+            self.app_dirty = true;
             if let Some(viewport) = &mut self.viewport {
                 viewport.request_redraw();
             }
