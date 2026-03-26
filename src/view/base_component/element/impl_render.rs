@@ -196,7 +196,7 @@ impl Element {
             layout_w
         };
         let measure_h = if self.computed_style.height == SizeValue::Auto
-            && proposal.percent_base_height.is_some()
+            && self.height_is_known(proposal)
         {
             proposal.height.max(0.0)
         } else {

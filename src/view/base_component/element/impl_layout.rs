@@ -110,7 +110,7 @@ impl Element {
             SizeValue::Length(Length::Vw(_)) => true,
             SizeValue::Length(Length::Vh(_)) => true,
             SizeValue::Length(_) => true,
-            SizeValue::Auto => proposal.percent_base_height.is_some(),
+            SizeValue::Auto => self.layout_assigned_height.is_some(),
         }
     }
 
