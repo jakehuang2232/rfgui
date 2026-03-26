@@ -1941,7 +1941,11 @@ impl Layoutable for TextArea {
     }
 
     fn flex_main_size(&self, is_row: bool) -> crate::SizeValue {
-        <Element as Layoutable>::flex_main_size(&self.element, is_row)
+        if (is_row && self.auto_width) || (!is_row && self.auto_height) {
+            crate::SizeValue::Auto
+        } else {
+            <Element as Layoutable>::flex_main_size(&self.element, is_row)
+        }
     }
 
     fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {
@@ -1949,7 +1953,11 @@ impl Layoutable for TextArea {
     }
 
     fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
-        <Element as Layoutable>::flex_auto_min_main_size(&self.element, is_row)
+        if self.flex_has_explicit_min_main_size(is_row) || self.flex_main_size(is_row) != crate::SizeValue::Auto {
+            return None;
+        }
+        let (measured_w, measured_h) = self.measured_size();
+        Some(if is_row { measured_w } else { measured_h }.max(0.0))
     }
 
     fn flex_min_main_size(&self, is_row: bool) -> crate::SizeValue {

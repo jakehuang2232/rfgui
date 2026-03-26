@@ -2772,6 +2772,65 @@ mod tests {
     }
 
     #[test]
+    fn vertical_scroll_container_does_not_expand_auto_height_flex_row_child() {
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(
+                Layout::flow()
+                    .column()
+                    .no_wrap()
+                    .cross_size(CrossSize::Stretch)
+                    .into(),
+            ),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
+        parent_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+        );
+        parent.apply_style(parent_style);
+
+        let mut row_child = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut row_style = Style::new();
+        row_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        row_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(100.0)));
+        row_child.apply_style(row_style);
+        row_child.add_child(Box::new(Element::new(0.0, 0.0, 40.0, 24.0)));
+        parent.add_child(Box::new(row_child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let row_snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        assert!((row_snapshot.height - 24.0).abs() < 0.01);
+        assert!((parent.content_size.height - 24.0).abs() < 0.01);
+    }
+
+    #[test]
     fn layer_subtree_does_not_inherit_ancestor_stencil_clip_id() {
         let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         assert_eq!(

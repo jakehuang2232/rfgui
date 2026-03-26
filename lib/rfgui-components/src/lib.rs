@@ -135,6 +135,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn select_menu_option_row_keeps_content_height() {
+        let selected = global_state(|| String::from("Option A"));
+
+        let build_tree = || {
+            rsx! {
+                <Select
+                    data={vec![
+                        String::from("Option A"),
+                        String::from("Option B"),
+                        String::from("Option C"),
+                    ]}
+                    to_label={select_label}
+                    value={selected.binding()}
+                />
+            }
+        };
+
+        let first_tree = build_tree();
+        let mut roots = rfgui::rsx_to_elements(&first_tree).expect("convert select");
+        let mut viewport = rfgui::view::Viewport::new();
+        click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
+        assert!(take_state_dirty());
+
+        let second_tree = build_tree();
+        let mut roots = rfgui::rsx_to_elements(&second_tree).expect("convert open select");
+        let root = roots.get_mut(0).expect("has root");
+        root.measure(rfgui::view::base_component::LayoutConstraints {
+            max_width: 320.0,
+            max_height: 240.0,
+            viewport_width: 320.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(320.0),
+            percent_base_height: Some(240.0),
+        });
+        root.place(rfgui::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 320.0,
+            available_height: 240.0,
+            viewport_width: 320.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(320.0),
+            percent_base_height: Some(240.0),
+        });
+
+        let root_children = root.children().expect("root children");
+        let menu = root_children.get(1).expect("menu child");
+        let menu_children = menu.children().expect("menu options");
+        let first_option = menu_children.first().expect("first option");
+        let option_snapshot = first_option.box_model_snapshot();
+
+        assert!(
+            option_snapshot.height < 80.0,
+            "expected option row to keep content height, got {}",
+            option_snapshot.height
+        );
+    }
+
     fn click_once(
         root: &mut dyn rfgui::view::base_component::ElementTrait,
         viewport: &mut rfgui::view::Viewport,
