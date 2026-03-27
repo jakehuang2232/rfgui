@@ -25,6 +25,23 @@ use winit::window::{Window as WinitWindow, WindowId};
 #[cfg(target_os = "macos")]
 use crate::platform::with_shadow;
 
+#[derive(Clone, Copy)]
+struct WheelNormalization {
+    mouse_line_step: f32,
+    touchpad_pixel_scale: f32,
+    min_touchpad_delta: f32,
+}
+
+impl Default for WheelNormalization {
+    fn default() -> Self {
+        Self {
+            mouse_line_step: 28.0,
+            touchpad_pixel_scale: 1.0,
+            min_touchpad_delta: 0.5,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct App {
     window: Option<Arc<WinitWindow>>,
@@ -40,6 +57,7 @@ pub struct App {
     last_mouse_position_viewport: Option<(f32, f32)>,
     background_color: Box<dyn ColorLike>,
     applied_theme_dark: Option<bool>,
+    wheel_normalization: WheelNormalization,
 }
 
 impl App {
@@ -127,6 +145,30 @@ impl App {
             return;
         }
         println!("[info] frame graph DOT dumped to {}", path.display());
+    }
+
+    fn normalize_wheel_delta(
+        config: WheelNormalization,
+        viewport: &Viewport,
+        delta: MouseScrollDelta,
+    ) -> Option<(f32, f32)> {
+        let normalized = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x * config.mouse_line_step, y * config.mouse_line_step),
+            MouseScrollDelta::PixelDelta(position) => {
+                let (dx, dy) =
+                    viewport.physical_to_logical_point(position.x as f32, position.y as f32);
+                let dx = dx * config.touchpad_pixel_scale;
+                let dy = dy * config.touchpad_pixel_scale;
+                let dx = if dx.abs() < config.min_touchpad_delta { 0.0 } else { dx };
+                let dy = if dy.abs() < config.min_touchpad_delta { 0.0 } else { dy };
+                (dx, dy)
+            }
+        };
+
+        if normalized.0.abs() <= f32::EPSILON && normalized.1.abs() <= f32::EPSILON {
+            return None;
+        }
+        Some((-normalized.0, -normalized.1))
     }
 }
 
@@ -249,14 +291,13 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                let wheel_normalization = self.wheel_normalization;
                 if let Some(viewport) = &mut self.viewport {
-                    let (dx, dy) = match delta {
-                        MouseScrollDelta::LineDelta(x, y) => (x * 24.0, y * 24.0),
-                        MouseScrollDelta::PixelDelta(position) => {
-                            viewport.physical_to_logical_point(position.x as f32, position.y as f32)
-                        }
-                    };
-                    viewport.dispatch_mouse_wheel_event(-dx, -dy);
+                    if let Some((dx, dy)) =
+                        Self::normalize_wheel_delta(wheel_normalization, viewport, delta)
+                    {
+                        viewport.dispatch_mouse_wheel_event(dx, dy);
+                    }
                 }
                 self.mark_ime_dirty();
             }
