@@ -63,6 +63,7 @@ pub struct TextArea {
     glyph_cache_width: f32,
     glyph_cache_font_size: f32,
     glyph_cache_line_height_px: f32,
+    glyph_cache_scale_factor: f32,
     glyph_cache_font_families: Vec<String>,
     measure_revision: u64,
     cached_measure_line_widths: Option<(u64, Vec<f32>)>,
@@ -180,6 +181,7 @@ impl TextArea {
             glyph_cache_width: width.max(1.0),
             glyph_cache_font_size: initial_font_size,
             glyph_cache_line_height_px: initial_line_height_px,
+            glyph_cache_scale_factor: 1.0,
             glyph_cache_font_families: Vec::new(),
             measure_revision: 0,
             cached_measure_line_widths: None,
@@ -361,6 +363,14 @@ impl TextArea {
     {
         self.on_focus_handlers
             .push(crate::ui::TextAreaFocusHandlerProp::new(handler));
+    }
+
+    pub fn on_blur<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::BlurEvent, &mut crate::view::viewport::ViewportControl<'_>)
+            + 'static,
+    {
+        self.element.on_blur(handler);
     }
 
     fn notify_change_handlers(&mut self) {
@@ -828,9 +838,10 @@ impl TextArea {
 
     fn set_cursor_from_local_position(&mut self, local_x: f32, local_y: f32) {
         let composed = self.composed_text();
-        self.ensure_glyph_layout(composed.as_str());
-        let hit_x = local_x.max(0.0);
-        let hit_y = (local_y + self.scroll_y).max(0.0);
+        let scale = self.glyph_cache_scale_factor.max(0.0001);
+        self.ensure_glyph_layout(composed.as_str(), scale);
+        let hit_x = local_x.max(0.0) * scale;
+        let hit_y = (local_y + self.scroll_y).max(0.0) * scale;
         if let Some(cursor) = self.glyph_buffer.hit(hit_x, hit_y) {
             let composed_char = self.cursor_char_from_line_index_for_text(
                 composed.as_str(),
@@ -926,7 +937,8 @@ impl TextArea {
         }
         let composed = self.composed_text();
         let caret_byte = self.caret_byte_in_composed(composed.as_str())?;
-        self.ensure_glyph_layout(composed.as_str());
+        let scale = self.glyph_cache_scale_factor.max(0.0001);
+        self.ensure_glyph_layout(composed.as_str(), scale);
         let (cursor_line, cursor_index) = line_and_index_from_byte(composed.as_str(), caret_byte);
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
@@ -945,8 +957,8 @@ impl TextArea {
             ) {
                 if let Some(x) = caret_x_in_layout_run(cursor_index, &run) {
                     return Some((
-                        self.layout_position.x + x,
-                        self.layout_position.y + run.line_top - self.scroll_y,
+                        self.layout_position.x + x / scale,
+                        self.layout_position.y + run.line_top / scale - self.scroll_y,
                     ));
                 }
             }
@@ -956,7 +968,7 @@ impl TextArea {
             fallback_line_top_for_cursor_line(&self.glyph_buffer, cursor_line).unwrap_or(0.0);
         Some((
             self.layout_position.x,
-            self.layout_position.y + fallback_y - self.scroll_y,
+            self.layout_position.y + fallback_y / scale - self.scroll_y,
         ))
     }
 
@@ -979,7 +991,8 @@ impl TextArea {
         let (start_line, start_index) = line_and_index_from_byte(composed, start_byte);
         let (end_line, end_index) = line_and_index_from_byte(composed, end_byte);
         let line_lengths = line_lengths_bytes(composed);
-        self.ensure_glyph_layout(composed);
+        let scale = self.glyph_cache_scale_factor.max(0.0001);
+        self.ensure_glyph_layout(composed, scale);
 
         let mut rects = Vec::new();
         for run in self.glyph_buffer.layout_runs() {
@@ -1013,10 +1026,10 @@ impl TextArea {
             }
             rects.push((
                 [
-                    self.layout_position.x + left,
-                    self.layout_position.y + run.line_top - self.scroll_y,
+                    self.layout_position.x + left / scale,
+                    self.layout_position.y + run.line_top / scale - self.scroll_y,
                 ],
-                [width, run.line_height.max(1.0)],
+                [width / scale, (run.line_height / scale).max(1.0)],
             ));
         }
         rects
@@ -1054,15 +1067,17 @@ impl TextArea {
             .collect()
     }
 
-    fn ensure_glyph_layout(&mut self, text: &str) {
-        let width = self.effective_width();
-        let font_size = self.font_size.max(1.0);
-        let line_height_px = (self.font_size * self.line_height.max(0.8)).max(1.0);
+    fn ensure_glyph_layout(&mut self, text: &str, scale_factor: f32) {
+        let scale = scale_factor.max(0.0001);
+        let width = self.effective_width() * scale;
+        let font_size = self.font_size.max(1.0) * scale;
+        let line_height_px = (self.font_size * self.line_height.max(0.8)).max(1.0) * scale;
         let needs_rebuild = !self.glyph_layout_valid
             || self.glyph_cache_text != text
             || (self.glyph_cache_width - width).abs() > 0.01
             || (self.glyph_cache_font_size - font_size).abs() > 0.01
             || (self.glyph_cache_line_height_px - line_height_px).abs() > 0.01
+            || (self.glyph_cache_scale_factor - scale).abs() > 0.0001
             || self.glyph_cache_font_families != self.font_families;
         if !needs_rebuild {
             return;
@@ -1093,6 +1108,7 @@ impl TextArea {
         self.glyph_cache_width = width;
         self.glyph_cache_font_size = font_size;
         self.glyph_cache_line_height_px = line_height_px;
+        self.glyph_cache_scale_factor = scale;
         self.glyph_cache_font_families = self.font_families.clone();
     }
 
@@ -1304,7 +1320,8 @@ impl TextArea {
         let text = self.content.clone();
         let caret_byte = byte_index_at_char(text.as_str(), self.cursor_char);
         let (line, index) = line_and_index_from_byte(text.as_str(), caret_byte);
-        self.ensure_glyph_layout(text.as_str());
+        let scale = self.glyph_cache_scale_factor.max(0.0001);
+        self.ensure_glyph_layout(text.as_str(), scale);
         let mut layout_cursor_opt = None;
         for affinity in [Affinity::Before, Affinity::After] {
             let cursor = Cursor::new_with_affinity(line, index, affinity);
@@ -2107,7 +2124,8 @@ impl Renderable for TextArea {
         ]);
 
         if !content.is_empty() {
-            self.ensure_glyph_layout(content.as_str());
+            let scale = ctx.viewport().scale_factor();
+            self.ensure_glyph_layout(content.as_str(), scale);
             for (position, size) in self.selection_screen_rects(content.as_str()) {
                 let fill_color = self.selection_background_color.to_rgba_f32();
                 let mut selection_pass = DrawRectPass::new(
@@ -2511,6 +2529,37 @@ mod tests {
             viewport_height: 40.0,
         });
         assert_eq!(area.measured_size().0, 200.0);
+    }
+
+    #[test]
+    fn glyph_layout_scales_with_hidpi_factor() {
+        let mut area = TextArea::from_content("abc");
+        area.set_font_size(16.0);
+        area.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 100.0,
+            available_height: 40.0,
+            viewport_width: 100.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+
+        area.ensure_glyph_layout("abc", 1.0);
+        let metrics_1x = area.glyph_buffer.metrics();
+        let width_1x = area.glyph_cache_width;
+
+        area.ensure_glyph_layout("abc", 2.0);
+        let metrics_2x = area.glyph_buffer.metrics();
+        let width_2x = area.glyph_cache_width;
+
+        assert!((metrics_1x.font_size - 16.0).abs() < 0.01);
+        assert!((metrics_2x.font_size - 32.0).abs() < 0.01);
+        assert!((width_1x - 100.0).abs() < 0.01);
+        assert!((width_2x - 200.0).abs() < 0.01);
     }
 
 }
