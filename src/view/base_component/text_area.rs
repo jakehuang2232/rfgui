@@ -1707,6 +1707,9 @@ impl EventTarget for TextArea {
             self.selection_focus_char = Some(self.cursor_char);
         }
         self.mouse_selecting = event.mouse.button == Some(UiMouseButton::Left);
+        if self.mouse_selecting {
+            control.set_pointer_capture(self.id());
+        }
         self.element.dispatch_mouse_down(event, control);
         event.meta.stop_propagation();
         control.request_redraw();
@@ -1719,6 +1722,7 @@ impl EventTarget for TextArea {
     ) {
         if event.mouse.button == Some(UiMouseButton::Left) {
             self.mouse_selecting = false;
+            control.release_pointer_capture(self.id());
             if self.selection_anchor_char == self.selection_focus_char {
                 self.clear_selection();
             }
@@ -1750,6 +1754,12 @@ impl EventTarget for TextArea {
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         self.element.dispatch_click(event, control);
+    }
+
+    fn cancel_pointer_interaction(&mut self) -> bool {
+        let was_selecting = self.mouse_selecting;
+        self.mouse_selecting = false;
+        was_selecting || self.element.cancel_pointer_interaction()
     }
 
     fn cursor(&self) -> crate::Cursor {
@@ -2376,6 +2386,89 @@ mod tests {
         assert!(select_text_range_by_id(&mut area, area_id, 1, 99));
         assert_eq!(area.selection_range_chars(), Some((1, 5)));
         assert_eq!(area.cursor_char, 5);
+    }
+
+    #[test]
+    fn mouse_selection_requests_pointer_capture_until_mouse_up() {
+        let mut area = TextArea::from_content("hello world");
+        area.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 80.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(80.0),
+            viewport_height: 80.0,
+        });
+
+        let mut viewport = Viewport::new();
+        {
+            let mut control = ViewportControl::new(&mut viewport);
+            let down_meta = EventMeta::new(area.id());
+            let mut down = crate::ui::MouseDownEvent {
+                viewport: down_meta.viewport(),
+                meta: down_meta,
+                mouse: crate::ui::MouseEventData {
+                    viewport_x: 4.0,
+                    viewport_y: 4.0,
+                    local_x: 4.0,
+                    local_y: 4.0,
+                    button: Some(crate::ui::MouseButton::Left),
+                    buttons: crate::ui::MouseButtons {
+                        left: true,
+                        right: false,
+                        middle: false,
+                        back: false,
+                        forward: false,
+                    },
+                    modifiers: crate::ui::KeyModifiers::default(),
+                },
+            };
+
+            EventTarget::dispatch_mouse_down(&mut area, &mut down, &mut control);
+        }
+        assert_eq!(viewport.pointer_capture_node_id(), Some(area.id()));
+        assert!(area.mouse_selecting);
+
+        {
+            let mut control = ViewportControl::new(&mut viewport);
+            let up_meta = EventMeta::new(area.id());
+            let mut up = crate::ui::MouseUpEvent {
+                viewport: up_meta.viewport(),
+                meta: up_meta,
+                mouse: crate::ui::MouseEventData {
+                    viewport_x: 4.0,
+                    viewport_y: 4.0,
+                    local_x: 4.0,
+                    local_y: 4.0,
+                    button: Some(crate::ui::MouseButton::Left),
+                    buttons: crate::ui::MouseButtons {
+                        left: false,
+                        right: false,
+                        middle: false,
+                        back: false,
+                        forward: false,
+                    },
+                    modifiers: crate::ui::KeyModifiers::default(),
+                },
+            };
+
+            EventTarget::dispatch_mouse_up(&mut area, &mut up, &mut control);
+        }
+        assert_eq!(viewport.pointer_capture_node_id(), None);
+        assert!(!area.mouse_selecting);
+    }
+
+    #[test]
+    fn cancel_pointer_interaction_stops_mouse_selection() {
+        let mut area = TextArea::from_content("hello");
+        area.mouse_selecting = true;
+
+        assert!(EventTarget::cancel_pointer_interaction(&mut area));
+        assert!(!area.mouse_selecting);
     }
 
     #[test]
