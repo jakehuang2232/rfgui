@@ -59,7 +59,7 @@ pub fn build(
         }} anchor="root">
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row(),
+                layout: Layout::flow().row().wrap(),
                 gap: theme.spacing.md,
             }}>
                 Justify Content:
@@ -72,7 +72,7 @@ pub fn build(
             </Element>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row(),
+                layout: Layout::flow().row().wrap(),
                 gap: theme.spacing.md,
             }}>
                 Cross Align:
