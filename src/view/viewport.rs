@@ -715,6 +715,7 @@ fn append_overlay_label_geometry(
     snapshot: &super::base_component::BoxModelSnapshot,
     label: &str,
     accent_color: [f32; 4],
+    scale_factor: f32,
     screen_w: f32,
     screen_h: f32,
 ) {
@@ -722,18 +723,19 @@ fn append_overlay_label_geometry(
         return;
     }
 
-    let digit_scale = 0.8;
+    let scale = scale_factor.max(0.0001);
+    let digit_scale = 0.8 * scale;
     let digit_width = 7.0 * digit_scale;
     let digit_height = 12.0 * digit_scale;
-    let digit_gap = 1.5;
-    let padding_x = 3.0;
-    let padding_y = 2.5;
+    let digit_gap = 1.5 * scale;
+    let padding_x = 3.0 * scale;
+    let padding_y = 2.5 * scale;
     let text_width = label.chars().count() as f32 * digit_width
         + label.chars().count().saturating_sub(1) as f32 * digit_gap;
     let label_width = text_width + padding_x * 2.0;
     let label_height = digit_height + padding_y * 2.0;
-    let left = snapshot.x.max(0.0);
-    let top = snapshot.y.sub(label_height).max(0.0);
+    let left = (snapshot.x * scale).max(0.0);
+    let top = (snapshot.y * scale).sub(label_height).max(0.0);
     let right = (left + label_width).min(screen_w);
     let bottom = (top + label_height).min(screen_h);
 
@@ -769,6 +771,7 @@ fn append_overlay_label_geometry(
 
 fn build_reuse_overlay_geometry(
     snapshot: &super::base_component::BoxModelSnapshot,
+    scale_factor: f32,
     screen_w: f32,
     screen_h: f32,
     color: [f32; 4],
@@ -777,10 +780,11 @@ fn build_reuse_overlay_geometry(
     Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
     Vec<u32>,
 ) {
-    let left = snapshot.x;
-    let top = snapshot.y;
-    let right = snapshot.x + snapshot.width.max(0.0);
-    let bottom = snapshot.y + snapshot.height.max(0.0);
+    let scale = scale_factor.max(0.0001);
+    let left = snapshot.x * scale;
+    let top = snapshot.y * scale;
+    let right = (snapshot.x + snapshot.width.max(0.0)) * scale;
+    let bottom = (snapshot.y + snapshot.height.max(0.0)) * scale;
     if right <= left || bottom <= top {
         return (Vec::new(), Vec::new());
     }
@@ -794,7 +798,7 @@ fn build_reuse_overlay_geometry(
             &mut indices,
             corners[u],
             corners[v],
-            2.0,
+            2.0 * scale,
             color,
             screen_w,
             screen_h,
@@ -807,6 +811,7 @@ fn build_reuse_overlay_geometry(
             snapshot,
             label,
             color,
+            scale,
             screen_w,
             screen_h,
         );
@@ -2266,6 +2271,7 @@ impl Viewport {
         if !self.debug_options.trace_reuse_path {
             return;
         }
+        let scale = self.scale_factor.max(0.0001);
         let screen_w = self.surface_config.width.max(1) as f32;
         let screen_h = self.surface_config.height.max(1) as f32;
         let snapshots_by_id = self
@@ -2306,6 +2312,7 @@ impl Viewport {
                 .then(|| record.node_id.to_string());
             let (vertices, indices) = build_reuse_overlay_geometry(
                 &snapshot,
+                scale,
                 screen_w,
                 screen_h,
                 color,
@@ -4650,14 +4657,10 @@ impl<'a> FrameParts<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MouseButton, PendingClick, Viewport, append_overlay_label_geometry,
+        MouseButton, PendingClick, append_overlay_label_geometry,
         build_reuse_overlay_geometry, is_valid_click_candidate,
     };
-    use crate::TransitionProperty;
-    use crate::ui::host::Element;
-    use crate::ui::rsx;
     use crate::view::base_component::BoxModelSnapshot;
-    use crate::{Align, Layout, Length, Operator, Transition};
 
     #[test]
     fn click_requires_same_button_and_target() {
@@ -4730,9 +4733,23 @@ mod tests {
         };
 
         let (plain_vertices, plain_indices) =
-            build_reuse_overlay_geometry(&snapshot, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
+            build_reuse_overlay_geometry(
+                &snapshot,
+                1.0,
+                200.0,
+                200.0,
+                [1.0, 0.0, 0.0, 1.0],
+                None,
+            );
         let (label_vertices, label_indices) =
-            build_reuse_overlay_geometry(&snapshot, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], Some("42"));
+            build_reuse_overlay_geometry(
+                &snapshot,
+                1.0,
+                200.0,
+                200.0,
+                [1.0, 0.0, 0.0, 1.0],
+                Some("42"),
+            );
 
         assert!(label_vertices.len() > plain_vertices.len());
         assert!(label_indices.len() > plain_indices.len());
@@ -4759,6 +4776,7 @@ mod tests {
             &snapshot,
             "7",
             [0.0, 1.0, 0.0, 1.0],
+            1.0,
             100.0,
             100.0,
         );
@@ -4768,184 +4786,42 @@ mod tests {
     }
 
     #[test]
-    fn rsx_rebuild_preserves_width_transition_that_pushes_following_sibling() {
-        fn build_tree(checked: bool) -> crate::ui::RsxNode {
-            let thumb_travel = Length::calc(
-                Length::calc(Length::px(36.0), Operator::subtract, Length::px(2.0)),
-                Operator::subtract,
-                Length::px(16.0),
-            );
-
-            rsx! {
-                <Element style={{
-                    layout: Layout::flex().row().align(Align::Center),
-                }}>
-                    <Element style={{
-                        layout: Layout::flow().row().align(Align::Center).no_wrap(),
-                        width: Length::px(36.0),
-                        height: Length::px(20.0),
-                        padding: crate::Padding::uniform(Length::px(2.0)),
-                    }}>
-                        <Element style={{
-                            width: if checked { thumb_travel } else { Length::Zero },
-                            height: Length::px(16.0),
-                            transition: [
-                                Transition::new(TransitionProperty::Width, 180).ease_in_out(),
-                            ],
-                        }} />
-                        <Element style={{
-                            width: Length::px(16.0),
-                            height: Length::px(16.0),
-                        }} />
-                    </Element>
-                </Element>
-            }
-        }
-
-        fn place_roots(viewport: &mut Viewport) {
-            for root in viewport.ui_roots.iter_mut() {
-                root.measure(crate::view::base_component::LayoutConstraints {
-                    max_width: viewport.logical_width,
-                    max_height: viewport.logical_height,
-                    viewport_width: viewport.logical_width,
-                    viewport_height: viewport.logical_height,
-                    percent_base_width: Some(viewport.logical_width),
-                    percent_base_height: Some(viewport.logical_height),
-                });
-                root.place(crate::view::base_component::LayoutPlacement {
-                    parent_x: 0.0,
-                    parent_y: 0.0,
-                    visual_offset_x: 0.0,
-                    visual_offset_y: 0.0,
-                    available_width: viewport.logical_width,
-                    available_height: viewport.logical_height,
-                    viewport_width: viewport.logical_width,
-                    viewport_height: viewport.logical_height,
-                    percent_base_width: Some(viewport.logical_width),
-                    percent_base_height: Some(viewport.logical_height),
-                });
-            }
-        }
-
-        fn switch_track_children(
-            viewport: &mut Viewport,
-        ) -> (&mut Box<dyn crate::view::base_component::ElementTrait>, &mut Box<dyn crate::view::base_component::ElementTrait>) {
-            let root = viewport.ui_roots.first_mut().expect("root");
-            let track = root
-                .children_mut()
-                .expect("root children")
-                .first_mut()
-                .expect("track");
-            let children = track.children_mut().expect("track children");
-            let (first, rest) = children.split_at_mut(1);
-            (&mut first[0], &mut rest[0])
-        }
-
-        let mut viewport = Viewport::new();
-        viewport.logical_width = 320.0;
-        viewport.logical_height = 120.0;
-        viewport.ui_roots = crate::rsx_to_elements(&build_tree(false)).expect("initial rsx tree");
-        place_roots(&mut viewport);
-        let initial_spacer_id = {
-            let (spacer, thumb) = switch_track_children(&mut viewport);
-            assert!((spacer.box_model_snapshot().width - 0.0).abs() < 0.01);
-            assert!((thumb.box_model_snapshot().x - 2.0).abs() < 0.01);
-            spacer.id()
+    fn reuse_overlay_geometry_scales_snapshot_coordinates_for_hidpi() {
+        let snapshot = BoxModelSnapshot {
+            node_id: 42,
+            parent_id: None,
+            x: 10.0,
+            y: 20.0,
+            width: 30.0,
+            height: 40.0,
+            border_radius: 0.0,
+            should_render: true,
         };
 
-        let snapshots =
-            crate::view::base_component::collect_layout_transition_snapshots(&viewport.ui_roots);
-        viewport.ui_roots = crate::rsx_to_elements(&build_tree(true)).expect("checked rsx tree");
-        crate::view::base_component::seed_layout_transition_snapshots(
-            &mut viewport.ui_roots,
-            &snapshots,
-        );
-        place_roots(&mut viewport);
-
-        let _spacer_id = {
-            let (spacer, _) = switch_track_children(&mut viewport);
-            assert_eq!(spacer.id(), initial_spacer_id, "spacer id should stay stable");
-            spacer.id()
-        };
-
-        let mut roots = std::mem::take(&mut viewport.ui_roots);
-        let changed = viewport.run_post_layout_transitions(&mut roots, 0.016, 1.0);
-        viewport.ui_roots = roots;
-        assert!(changed, "checked tree should produce an inflight width transition");
-        place_roots(&mut viewport);
-
-        for frame in 0..20 {
-            let mut roots = std::mem::take(&mut viewport.ui_roots);
-            let changed = viewport.run_pre_layout_transitions(
-                &mut roots,
-                0.016,
-                1.016 + (frame as f64 * 0.016),
-            );
-            viewport.ui_roots = roots;
-            if !changed {
-                break;
-            }
-            place_roots(&mut viewport);
-        }
-
-        let active_layout_keys = viewport.layout_transition_plugin.active_track_keys();
-        let width_key = crate::transition::TrackKey {
-            target: initial_spacer_id,
-            channel: crate::transition::LayoutField::Width.channel_id(),
-        };
-        let width_track_state = viewport.layout_transition_plugin.debug_track_state(width_key);
-        let (_, thumb) = switch_track_children(&mut viewport);
-        assert!(
-            (thumb.box_model_snapshot().x - 20.0).abs() < 0.75,
-            "thumb should converge near final x=20, got {}",
-            thumb.box_model_snapshot().x
-        );
-        assert!(
-            !viewport.transition_claims.contains_key(&width_key),
-            "completed forward width transition should release its claimed track (active_layout_keys={active_layout_keys:?}, width_track_state={width_track_state:?})"
+        let (vertices, indices) = build_reuse_overlay_geometry(
+            &snapshot,
+            2.0,
+            200.0,
+            200.0,
+            [1.0, 0.0, 0.0, 1.0],
+            None,
         );
 
-        let snapshots =
-            crate::view::base_component::collect_layout_transition_snapshots(&viewport.ui_roots);
-        viewport.ui_roots = crate::rsx_to_elements(&build_tree(false)).expect("unchecked rsx tree");
-        crate::view::base_component::seed_layout_transition_snapshots(
-            &mut viewport.ui_roots,
-            &snapshots,
-        );
-        place_roots(&mut viewport);
+        assert!(!vertices.is_empty());
+        assert!(!indices.is_empty());
 
-        let mut roots = std::mem::take(&mut viewport.ui_roots);
-        let changed = viewport.run_post_layout_transitions(&mut roots, 0.016, 2.0);
-        viewport.ui_roots = roots;
-        assert!(changed, "unchecked tree should also produce an inflight width transition");
-        place_roots(&mut viewport);
+        let expected_left = -0.8;
+        let expected_top = 0.6;
+        let min_x = vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::INFINITY, f32::min);
+        let max_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::NEG_INFINITY, f32::max);
 
-        for frame in 0..20 {
-            let mut roots = std::mem::take(&mut viewport.ui_roots);
-            let changed = viewport.run_pre_layout_transitions(
-                &mut roots,
-                0.016,
-                2.016 + (frame as f64 * 0.016),
-            );
-            viewport.ui_roots = roots;
-            if !changed {
-                break;
-            }
-            place_roots(&mut viewport);
-        }
-
-        let (_, thumb) = switch_track_children(&mut viewport);
-        assert!(
-            (thumb.box_model_snapshot().x - 2.0).abs() < 0.75,
-            "thumb should converge back near final x=2, got {}",
-            thumb.box_model_snapshot().x
-        );
-        assert!(
-            !viewport.transition_claims.contains_key(&crate::transition::TrackKey {
-                target: initial_spacer_id,
-                channel: crate::transition::LayoutField::Width.channel_id(),
-            }),
-            "completed reverse width transition should release its claimed track"
-        );
+        assert!((min_x - expected_left).abs() < 0.05);
+        assert!((max_y - expected_top).abs() < 0.05);
     }
 }

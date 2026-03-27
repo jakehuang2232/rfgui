@@ -27,9 +27,7 @@ pub fn MainScene() -> RsxNode {
     let message =
         use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
     let switch_on = use_state(|| THEME_DARK_MODE.load(Ordering::Relaxed));
-    let component_test_count = use_state(|| 0_i32);
     let component_test_checked = use_state(|| false);
-    let component_test_number = use_state(|| 5.0_f64);
     let component_test_selected = use_state(|| String::from("Option A"));
     let component_test_slider = use_state(|| 25.0_f64);
     let component_test_switch = use_state(|| true);
@@ -52,9 +50,7 @@ pub fn MainScene() -> RsxNode {
     let click_count_value = click_count.get();
     let message_value = message.get();
     let switch_on_value = switch_on.get();
-    let component_test_count_value = component_test_count.get();
     let component_test_checked_value = component_test_checked.get();
-    let component_test_number_value = component_test_number.get();
     let component_test_selected_value = component_test_selected.get();
     let component_test_slider_value = component_test_slider.get();
     let component_test_switch_value = component_test_switch.get();
@@ -111,17 +107,13 @@ pub fn MainScene() -> RsxNode {
         vec![build_component_test_window(
             &theme,
             ComponentTestBindings {
-                count: component_test_count.binding(),
                 checked: component_test_checked.binding(),
-                number: component_test_number.binding(),
                 selected: component_test_selected.binding(),
                 slider: component_test_slider.binding(),
                 switch_state: component_test_switch.binding(),
             },
             ComponentTestValues {
-                count: component_test_count_value,
                 checked: component_test_checked_value,
-                number: component_test_number_value,
                 selected: component_test_selected_value,
                 slider: component_test_slider_value,
                 switch_state: component_test_switch_value,

@@ -726,6 +726,20 @@ mod tests {
     }
 
     #[test]
+    fn text_area_on_blur_accepts_typed_event_closure() {
+        let node = rsx! {
+            <crate::ui::host::TextArea
+                on_blur={move |event: &mut crate::ui::BlurEvent| event.meta.stop_propagation()}
+            />
+        };
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert!(node.props.iter().any(|(key, _)| key == "on_blur"));
+    }
+
+    #[test]
     fn click_event_props_accept_zero_arg_closures() {
         let called = Rc::new(Cell::new(false));
         let called_for_handler = called.clone();

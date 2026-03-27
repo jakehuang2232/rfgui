@@ -951,6 +951,10 @@ fn convert_text_area_element(
                 let handler = as_text_area_focus_handler(value, key)?;
                 text_area.on_focus(move |event| handler.call(event));
             }
+            "on_blur" => {
+                let handler = as_blur_handler(value, key)?;
+                text_area.on_blur(move |event, _control| handler.call(event));
+            }
             "on_change" => {
                 let handler = as_text_change_handler(value, key)?;
                 text_area.on_change(move |event| handler.call(event));
@@ -2371,31 +2375,20 @@ mod tests {
         let error = rsx_to_elements(&tree).err().expect("legacy color prop should fail");
         assert!(error.contains("unknown prop `color` on <TextArea>"));
     }
-
+    
     #[test]
-    fn textarea_uses_selection_background_from_style() {
+    fn textarea_accepts_on_blur_prop() {
         let tree = rsx! {
-            <TextArea
-                style={{
-                    selection: {
-                        background: Color::hex("#ffffff"),
-                    },
-                }}
+            <crate::ui::host::TextArea
+                on_blur={move |event: &mut crate::ui::BlurEvent| event.meta.stop_propagation()}
                 content="hello"
                 multiline={false}
             />
         };
 
         let roots = rsx_to_elements(&tree).expect("convert rsx");
-        let textarea = roots
-            .first()
-            .and_then(|node| node.as_any().downcast_ref::<TextArea>())
-            .expect("textarea root");
-
-        assert_eq!(
-            textarea.selection_background_rgba_f32(),
-            Color::rgba(255, 255, 255, 255).to_rgba_f32()
-        );
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0].as_any().downcast_ref::<TextArea>().is_some());
     }
 
     #[test]

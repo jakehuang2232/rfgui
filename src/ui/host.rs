@@ -127,6 +127,7 @@ pub struct TextAreaPropSchema {
     pub binding: Option<crate::ui::Binding<String>>,
     pub style: Option<Style>,
     pub on_focus: Option<TextAreaFocusHandlerProp>,
+    pub on_blur: Option<BlurHandlerProp>,
     pub on_change: Option<TextChangeHandlerProp>,
     pub placeholder: Option<String>,
     pub x: Option<f64>,
@@ -250,6 +251,9 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         }
         if let Some(handler) = props.on_focus {
             node = node.with_prop("on_focus", handler);
+        }
+        if let Some(handler) = props.on_blur {
+            node = node.with_prop("on_blur", handler);
         }
         if let Some(handler) = props.on_change {
             node = node.with_prop("on_change", handler);

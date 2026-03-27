@@ -9,18 +9,14 @@ use rfgui::ui::use_state;
 use rfgui_components::Accordion;
 
 pub struct ComponentTestBindings {
-    pub count: Binding<i32>,
     pub checked: Binding<bool>,
-    pub number: Binding<f64>,
     pub selected: Binding<String>,
     pub slider: Binding<f64>,
     pub switch_state: Binding<bool>,
 }
 
 pub struct ComponentTestValues {
-    pub count: i32,
     pub checked: bool,
-    pub number: f64,
     pub selected: String,
     pub slider: f64,
     pub switch_state: bool,
@@ -35,7 +31,6 @@ pub fn build(
     bindings: ComponentTestBindings,
     values: ComponentTestValues,
 ) -> RsxNode {
-    let _count_reset = bindings.count.clone();
     let options = (1..=1000)
         .map(|index| format!("Option {index}"))
         .collect::<Vec<String>>();
@@ -45,6 +40,9 @@ pub fn build(
     let count_increment = move |_event: &mut crate::rfgui::ui::ClickEvent| {
         count_for_increment.update(|value| *value += 1)
     };
+
+    let int_number = use_state(|| 0);
+    let float_number = use_state(|| 0.0);
 
     rsx! {
         <Element style={{
@@ -116,6 +114,22 @@ pub fn build(
                     <Text>{format!("Count: {}", count.get())}</Text>
                 </Element>
             </Accordion>
+            <Accordion title="Number Field">
+                 <NumberField
+                    binding={int_number.binding()}
+                    min=0
+                    max=100
+                    step=1
+                    label="I32 Number"
+                />
+                <NumberField 
+                    binding={float_number.binding()}
+                    min=0.0
+                    max=100.0
+                    step=0.1
+                    label="F32 Number"
+                />
+            </Accordion>
             <Checkbox
                 label="Enable flag"
                 binding={bindings.checked}
@@ -124,13 +138,7 @@ pub fn build(
                 label="Switch state"
                 binding={bindings.switch_state}
             />
-            <NumberField
-                binding={bindings.number}
-                min=0.0
-                max=100.0
-                step=1.0
-                label="Number"
-            />
+           
             <Select
                 data={options}
                 to_label={select_label}
@@ -144,10 +152,8 @@ pub fn build(
             />
             <Text>
                 {format!(
-                    "Count: {} checked={} number={:.0} selected={} slider={:.0} switch={}",
-                    values.count,
+                    "checked={} selected={} slider={:.0} switch={}",
                     values.checked,
-                    values.number,
                     values.selected,
                     values.slider,
                     values.switch_state

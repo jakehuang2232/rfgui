@@ -698,6 +698,12 @@ impl UiBuildContext {
     }
 }
 
+impl ViewportContext {
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutContext {
     pub width: f32,
