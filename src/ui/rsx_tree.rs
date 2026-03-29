@@ -1,5 +1,4 @@
 use crate::FontSize;
-use crate::Style;
 use crate::TextAlign;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
@@ -354,7 +353,6 @@ pub enum PropValue {
     F64(f64),
     FontSize(FontSize),
     String(String),
-    Style(Style),
     OnMouseDown(MouseDownHandlerProp),
     OnMouseUp(MouseUpHandlerProp),
     OnMouseMove(MouseMoveHandlerProp),
@@ -430,12 +428,6 @@ impl From<&str> for PropValue {
 impl From<String> for PropValue {
     fn from(value: String) -> Self {
         PropValue::String(value)
-    }
-}
-
-impl From<Style> for PropValue {
-    fn from(value: Style) -> Self {
-        PropValue::Style(value)
     }
 }
 
@@ -577,12 +569,6 @@ impl IntoPropValue for String {
     }
 }
 
-impl IntoPropValue for Style {
-    fn into_prop_value(self) -> PropValue {
-        PropValue::Style(self)
-    }
-}
-
 impl IntoPropValue for MouseDownHandlerProp {
     fn into_prop_value(self) -> PropValue {
         PropValue::OnMouseDown(self)
@@ -700,15 +686,6 @@ impl FromPropValue for FontSize {
         match value {
             PropValue::FontSize(v) => Ok(v),
             _ => Err("expected FontSize value".to_string()),
-        }
-    }
-}
-
-impl FromPropValue for Style {
-    fn from_prop_value(value: PropValue) -> Result<Self, String> {
-        match value {
-            PropValue::Style(v) => Ok(v),
-            _ => Err("expected style value".to_string()),
         }
     }
 }

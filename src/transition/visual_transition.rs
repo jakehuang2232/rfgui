@@ -101,6 +101,10 @@ impl VisualTransitionPlugin {
         if let Some(existing) = self.tracks.get(&key) {
             let same_to = (existing.to - to).abs() <= 0.0001;
             if same_to {
+                if (existing.current - existing.to).abs() <= 0.0001 {
+                    self.tracks.remove(&key);
+                    host.release_track_claim(self.plugin_id, key);
+                }
                 return Ok(());
             }
             next_from = existing.current;
@@ -354,5 +358,40 @@ mod tests {
         assert_eq!(state.to, 20.0);
         assert_eq!(state.transition.duration_ms, 500);
         assert!(state.started_at_seconds.is_none());
+    }
+
+    #[test]
+    fn start_visual_track_clears_finished_track_when_destination_unchanged() {
+        let mut plugin = VisualTransitionPlugin::new();
+        let mut host = TestHost::with_channels(&[CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y]);
+        let target = 9_u64;
+        let field = VisualField::Y;
+        let key = TrackKey {
+            target,
+            channel: field.channel_id(),
+        };
+
+        plugin
+            .start_visual_track(&mut host, target, field, -12.0, 0.0, transition(100))
+            .expect("track should start");
+        plugin.run_tracks(
+            TransitionFrame {
+                dt_seconds: 0.2,
+                now_seconds: 1.0,
+            },
+            &mut host,
+        );
+        assert!(!plugin.tracks.contains_key(&key), "finished track should be removed");
+
+        plugin
+            .start_visual_track(&mut host, target, field, -99.0, 0.0, transition(100))
+            .expect("same destination after finish should be accepted");
+        let state = plugin
+            .tracks
+            .get(&key)
+            .copied()
+            .expect("track should be recreated after prior finish");
+        assert_eq!(state.from, -99.0);
+        assert_eq!(state.to, 0.0);
     }
 }

@@ -110,7 +110,12 @@ impl Element {
             SizeValue::Length(Length::Vw(_)) => true,
             SizeValue::Length(Length::Vh(_)) => true,
             SizeValue::Length(_) => true,
-            SizeValue::Auto => self.layout_assigned_height.is_some(),
+            SizeValue::Auto => {
+                self.layout_assigned_height.is_some()
+                    || (self.intrinsic_size_is_percent_base
+                        && proposal.percent_base_height.is_some()
+                        && self.core.size.height > 0.0)
+            }
         }
     }
 
@@ -265,6 +270,15 @@ impl Element {
     }
 
     fn update_size_from_measured_children(&mut self) {
+        let has_in_flow_children = self
+            .children
+            .iter()
+            .enumerate()
+            .any(|(idx, _)| !self.child_is_absolute(idx));
+        if !has_in_flow_children {
+            return;
+        }
+
         let mut max_w = 0.0_f32;
         let mut max_h = 0.0_f32;
         for (idx, child) in self.children.iter().enumerate() {
@@ -358,14 +372,14 @@ impl Element {
             height: proposal.height.max(0.0),
         };
         self.anchor_parent_clip_rect = Some(parent_rect);
+        // The current layout pass must always start from the latest assigned size.
+        // Active transition targets are historical state used only for retarget detection.
         let mut target_width = self
-            .layout_transition_target_width
-            .or(self.layout_assigned_width)
+            .layout_assigned_width
             .unwrap_or(self.core.size.width)
             .max(0.0);
         let mut target_height = self
-            .layout_transition_target_height
-            .or(self.layout_assigned_height)
+            .layout_assigned_height
             .unwrap_or(self.core.size.height)
             .max(0.0);
         let mut target_rel_x = self.core.position.x;
@@ -689,9 +703,18 @@ impl Element {
         target_width: f32,
         target_height: f32,
     ) {
-        let width_is_close_enough = (prev_width - target_width).abs() < Self::LAYOUT_TRANSITION_FINISH_EPSILON;
+        let current_width = self
+            .layout_transition_override_width
+            .unwrap_or(prev_width)
+            .max(0.0);
+        let current_height = self
+            .layout_transition_override_height
+            .unwrap_or(prev_height)
+            .max(0.0);
+        let width_is_close_enough =
+            (current_width - target_width).abs() < Self::LAYOUT_TRANSITION_FINISH_EPSILON;
         let height_is_close_enough =
-            (prev_height - target_height).abs() < Self::LAYOUT_TRANSITION_FINISH_EPSILON;
+            (current_height - target_height).abs() < Self::LAYOUT_TRANSITION_FINISH_EPSILON;
         if width_is_close_enough {
             self.layout_transition_override_width = None;
             self.layout_transition_target_width = None;
@@ -721,11 +744,11 @@ impl Element {
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
                                 field: LayoutField::Width,
-                                from: prev_width,
+                                from: current_width,
                                 to: target_width,
                                 transition: runtime_layout,
                             });
-                        self.layout_transition_override_width = Some(prev_width.max(0.0));
+                        self.layout_transition_override_width = Some(current_width);
                         self.layout_transition_target_width = Some(target_width);
                     }
                     let should_start_height = self
@@ -736,11 +759,11 @@ impl Element {
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
                                 field: LayoutField::Height,
-                                from: prev_height,
+                                from: current_height,
                                 to: target_height,
                                 transition: runtime_layout,
                             });
-                        self.layout_transition_override_height = Some(prev_height.max(0.0));
+                        self.layout_transition_override_height = Some(current_height);
                         self.layout_transition_target_height = Some(target_height);
                     }
                 }
@@ -787,11 +810,11 @@ impl Element {
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
                                 field: LayoutField::Width,
-                                from: prev_width,
+                                from: current_width,
                                 to: target_width,
                                 transition: runtime_layout,
                             });
-                        self.layout_transition_override_width = Some(prev_width.max(0.0));
+                        self.layout_transition_override_width = Some(current_width);
                         self.layout_transition_target_width = Some(target_width);
                     }
                 }
@@ -804,11 +827,11 @@ impl Element {
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
                                 field: LayoutField::Height,
-                                from: prev_height,
+                                from: current_height,
                                 to: target_height,
                                 transition: runtime_layout,
                             });
-                        self.layout_transition_override_height = Some(prev_height.max(0.0));
+                        self.layout_transition_override_height = Some(current_height);
                         self.layout_transition_target_height = Some(target_height);
                     }
                 }

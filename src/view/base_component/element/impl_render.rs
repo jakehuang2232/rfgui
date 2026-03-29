@@ -299,7 +299,7 @@ impl Element {
                     resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
                         .unwrap_or(0.0)
                 }
-                SizeValue::Auto => 0.0,
+                SizeValue::Auto => child.flex_auto_base_main_size(is_row).unwrap_or(0.0),
             },
         }
         .max(0.0)

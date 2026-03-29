@@ -3773,6 +3773,8 @@ impl Viewport {
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(to_ui_mouse_button(button)),
                 buttons,
                 modifiers: self.current_key_modifiers(),
@@ -3857,6 +3859,8 @@ impl Viewport {
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(to_ui_mouse_button(button)),
                 buttons,
                 modifiers: self.current_key_modifiers(),
@@ -3928,6 +3932,8 @@ impl Viewport {
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: None,
                 buttons,
                 modifiers: self.current_key_modifiers(),
@@ -4005,6 +4011,8 @@ impl Viewport {
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(to_ui_mouse_button(button)),
                 buttons,
                 modifiers: self.current_key_modifiers(),
@@ -4657,8 +4665,8 @@ impl<'a> FrameParts<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MouseButton, PendingClick, append_overlay_label_geometry,
-        build_reuse_overlay_geometry, is_valid_click_candidate,
+        MouseButton, PendingClick, append_overlay_label_geometry, build_reuse_overlay_geometry,
+        is_valid_click_candidate,
     };
     use crate::view::base_component::BoxModelSnapshot;
 
@@ -4733,23 +4741,15 @@ mod tests {
         };
 
         let (plain_vertices, plain_indices) =
-            build_reuse_overlay_geometry(
-                &snapshot,
-                1.0,
-                200.0,
-                200.0,
-                [1.0, 0.0, 0.0, 1.0],
-                None,
-            );
-        let (label_vertices, label_indices) =
-            build_reuse_overlay_geometry(
-                &snapshot,
-                1.0,
-                200.0,
-                200.0,
-                [1.0, 0.0, 0.0, 1.0],
-                Some("42"),
-            );
+            build_reuse_overlay_geometry(&snapshot, 1.0, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
+        let (label_vertices, label_indices) = build_reuse_overlay_geometry(
+            &snapshot,
+            1.0,
+            200.0,
+            200.0,
+            [1.0, 0.0, 0.0, 1.0],
+            Some("42"),
+        );
 
         assert!(label_vertices.len() > plain_vertices.len());
         assert!(label_indices.len() > plain_indices.len());
@@ -4798,14 +4798,8 @@ mod tests {
             should_render: true,
         };
 
-        let (vertices, indices) = build_reuse_overlay_geometry(
-            &snapshot,
-            2.0,
-            200.0,
-            200.0,
-            [1.0, 0.0, 0.0, 1.0],
-            None,
-        );
+        let (vertices, indices) =
+            build_reuse_overlay_geometry(&snapshot, 2.0, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
 
         assert!(!vertices.is_empty());
         assert!(!indices.is_empty());

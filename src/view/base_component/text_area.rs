@@ -354,7 +354,8 @@ impl TextArea {
     where
         F: FnMut(&mut crate::ui::TextChangeEvent) + 'static,
     {
-        self.on_change_handlers.push(crate::ui::TextChangeHandlerProp::new(handler));
+        self.on_change_handlers
+            .push(crate::ui::TextChangeHandlerProp::new(handler));
     }
 
     pub fn on_focus<F>(&mut self, handler: F)
@@ -1683,7 +1684,9 @@ impl ElementTrait for TextArea {
         self.content.hash(&mut hasher);
         self.placeholder.hash(&mut hasher);
         self.color.to_rgba_u8().hash(&mut hasher);
-        self.selection_background_color.to_rgba_u8().hash(&mut hasher);
+        self.selection_background_color
+            .to_rgba_u8()
+            .hash(&mut hasher);
         self.placeholder_color.to_rgba_u8().hash(&mut hasher);
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
@@ -1980,7 +1983,9 @@ impl Layoutable for TextArea {
     }
 
     fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
-        if self.flex_has_explicit_min_main_size(is_row) || self.flex_main_size(is_row) != crate::SizeValue::Auto {
+        if self.flex_has_explicit_min_main_size(is_row)
+            || self.flex_main_size(is_row) != crate::SizeValue::Auto
+        {
             return None;
         }
         let (measured_w, measured_h) = self.measured_size();
@@ -2254,13 +2259,13 @@ fn push_text_pass_explicit(
 #[cfg(test)]
 mod tests {
     use super::TextArea;
+    use crate::Length;
     use crate::ui::{BlurEvent, EventMeta, FocusEvent, TextInputEvent, ViewportListenerAction};
     use crate::view::base_component::{
         ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
         select_all_text_by_id, select_text_range_by_id,
     };
     use crate::view::{Viewport, ViewportControl};
-    use crate::Length;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2434,6 +2439,8 @@ mod tests {
                     viewport_y: 4.0,
                     local_x: 4.0,
                     local_y: 4.0,
+                    current_target_width: 0.0,
+                    current_target_height: 0.0,
                     button: Some(crate::ui::MouseButton::Left),
                     buttons: crate::ui::MouseButtons {
                         left: true,
@@ -2462,6 +2469,8 @@ mod tests {
                     viewport_y: 4.0,
                     local_x: 4.0,
                     local_y: 4.0,
+                    current_target_width: 0.0,
+                    current_target_height: 0.0,
                     button: Some(crate::ui::MouseButton::Left),
                     buttons: crate::ui::MouseButtons {
                         left: false,
@@ -2561,5 +2570,4 @@ mod tests {
         assert!((width_1x - 100.0).abs() < 0.01);
         assert!((width_2x - 200.0).abs() < 0.01);
     }
-
 }

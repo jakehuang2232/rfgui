@@ -394,7 +394,11 @@ impl GraphicsPass for TextPass {
         }
         ctx.set_stencil_reference(stencil_reference);
         let _ = renderer.render(&resources.atlas, glyphon_viewport, ctx.raw_render_pass());
-        resources.put_prepared_renderer(prepared.renderer_key, prepared.prepare_signature, renderer);
+        resources.put_prepared_renderer(
+            prepared.renderer_key,
+            prepared.prepare_signature,
+            renderer,
+        );
     }
 }
 

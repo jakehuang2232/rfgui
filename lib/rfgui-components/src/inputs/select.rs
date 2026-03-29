@@ -2,13 +2,16 @@ use std::any::Any;
 use std::rc::Rc;
 
 use crate::use_theme;
-use rfgui::view::{Element, Text};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
     MouseDownHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,
     use_state,
 };
-use rfgui::{flex, Align, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout, Length, Operator, Position, ScrollDirection};
+use rfgui::view::{Element, Text};
+use rfgui::{
+    Align, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout, Length,
+    Operator, Position, ScrollDirection, flex,
+};
 
 pub struct Select;
 

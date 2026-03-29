@@ -1527,8 +1527,8 @@ mod tests {
             .iter()
             .find(|r| r.field == LayoutField::Width)
             .expect("width transition request should exist");
-        assert!((w_req.from - 140.0).abs() < 0.01);
-        assert!((w_req.to - 220.0).abs() < 0.01);
+        assert!((w_req.from - 140.0).abs() < 0.01, "{w_req:?}");
+        assert!((w_req.to - 220.0).abs() < 0.01, "{w_req:?}");
     }
 
     #[test]
@@ -1597,8 +1597,72 @@ mod tests {
             .iter()
             .find(|r| r.field == LayoutField::Height)
             .expect("height transition request should exist");
+        assert!((h_req.from - 70.0).abs() < 0.01, "{h_req:?}");
+        assert!((h_req.to - 160.0).abs() < 0.01, "{h_req:?}");
+    }
+
+    #[test]
+    fn height_transition_retargets_to_latest_assigned_height_midflight() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Height,
+                200,
+            ))),
+        );
+        el.apply_style(style);
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+        let placement = LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        };
+
+        el.measure(constraints);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+
+        let mut expanded_style = Style::new();
+        expanded_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(160.0)));
+        el.apply_style(expanded_style);
+        el.measure(constraints);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+
+        el.set_layout_transition_height(70.0);
+        el.place(placement);
+        let _ = el.take_layout_transition_requests();
+
+        let mut collapsed_style = Style::new();
+        collapsed_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        el.apply_style(collapsed_style);
+        el.measure(constraints);
+        el.place(placement);
+
+        let reqs = el.take_layout_transition_requests();
+        let h_req = reqs
+            .iter()
+            .find(|r| r.field == LayoutField::Height)
+            .expect("height transition request should retarget");
         assert!((h_req.from - 70.0).abs() < 0.01);
-        assert!((h_req.to - 160.0).abs() < 0.01);
+        assert!((h_req.to - 20.0).abs() < 0.01);
     }
 
     #[test]

@@ -1114,6 +1114,8 @@ fn dispatch_mouse_down_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    event.mouse.current_target_width = snapshot.width;
+    event.mouse.current_target_height = snapshot.height;
     node.dispatch_mouse_down(event, control);
     true
 }
@@ -1146,6 +1148,8 @@ fn dispatch_mouse_up_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    event.mouse.current_target_width = snapshot.width;
+    event.mouse.current_target_height = snapshot.height;
     node.dispatch_mouse_up(event, control);
     true
 }
@@ -1178,6 +1182,8 @@ fn dispatch_mouse_move_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    event.mouse.current_target_width = snapshot.width;
+    event.mouse.current_target_height = snapshot.height;
     node.dispatch_mouse_move(event, control);
     true
 }
@@ -1210,6 +1216,8 @@ fn dispatch_click_bubble(
     event.meta.set_current_target_id(node_id);
     event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
     event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    event.mouse.current_target_width = snapshot.width;
+    event.mouse.current_target_height = snapshot.height;
     node.dispatch_click(event, control);
     true
 }
@@ -1922,6 +1930,8 @@ mod tests {
                 viewport_y: 15.0,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(MouseButton::Left),
                 buttons: MouseButtons::default(),
                 modifiers: KeyModifiers::default(),
@@ -1942,6 +1952,8 @@ mod tests {
                 viewport_y: 15.0,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(MouseButton::Left),
                 buttons: MouseButtons::default(),
                 modifiers: KeyModifiers::default(),
@@ -2066,6 +2078,8 @@ mod tests {
                 viewport_y: 60.0,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(MouseButton::Left),
                 buttons: MouseButtons::default(),
                 modifiers: KeyModifiers::default(),
@@ -2127,6 +2141,8 @@ mod tests {
                 viewport_y: 60.0,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(MouseButton::Left),
                 buttons: MouseButtons::default(),
                 modifiers: KeyModifiers::default(),

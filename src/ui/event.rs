@@ -82,7 +82,11 @@ pub enum ViewportListenerAction {
     SetFocus(Option<u64>),
     SetCursor(Option<Cursor>),
     SelectTextRangeAll(u64),
-    SelectTextRange { target_id: u64, start: usize, end: usize },
+    SelectTextRange {
+        target_id: u64,
+        start: usize,
+        end: usize,
+    },
     RemoveListener(ViewportListenerHandle),
 }
 
@@ -265,6 +269,8 @@ pub struct MouseEventData {
     pub viewport_y: f32,
     pub local_x: f32,
     pub local_y: f32,
+    pub current_target_width: f32,
+    pub current_target_height: f32,
     pub button: Option<MouseButton>,
     pub buttons: MouseButtons,
     pub modifiers: KeyModifiers,
@@ -374,14 +380,13 @@ impl TextSelectionTarget {
     }
 
     pub fn select_range(&mut self, start: usize, end: usize) {
-        self.state
-            .borrow_mut()
-            .viewport_listener_actions
-            .push(ViewportListenerAction::SelectTextRange {
+        self.state.borrow_mut().viewport_listener_actions.push(
+            ViewportListenerAction::SelectTextRange {
                 target_id: self.target_id,
                 start,
                 end,
-            });
+            },
+        );
     }
 }
 

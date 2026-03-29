@@ -8,13 +8,17 @@ pub use theme::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::{Accordion, Button, ButtonVariant, Checkbox, NumberField, Select, Switch, Window};
-    use rfgui::view::{Element, ElementPropSchema, Image, Text, TextArea, TextPropSchema};
+    use crate::{
+        Accordion, Button, ButtonHoverStyleSlot, ButtonStyleSlot, ButtonVariant, Checkbox,
+        NumberField, Select, Switch, Window,
+    };
     use rfgui::ui::{
         EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
         RsxNode, RsxTagDescriptor, TextChangeEvent, create_tag_element, global_state, rsx,
         take_state_dirty,
     };
+    use rfgui::view::{Element, ElementPropSchema, Image, Text, TextArea, TextPropSchema};
+    use rfgui::{Border, BorderRadius, Color, Length, Padding, ParsedValue, PropertyId};
 
     fn select_label(item: &String, _: usize) -> String {
         item.clone()
@@ -67,6 +71,8 @@ mod tests {
                 viewport_y: 8.0,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(UiMouseButton::Left),
                 buttons: rfgui::ui::MouseButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
@@ -235,6 +241,8 @@ mod tests {
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(UiMouseButton::Left),
                 buttons: rfgui::ui::MouseButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
@@ -267,6 +275,86 @@ mod tests {
             panic!("text should carry string child");
         };
         assert_eq!(content.content, "Click Me");
+    }
+
+    #[test]
+    fn button_style_slot_overrides_base_and_hover_styles() {
+        let tree = rsx! {
+            <Button
+                label="Styled"
+                style={Some(ButtonStyleSlot {
+                    color: Some(Color::rgb(1, 2, 3)),
+                    background: Some(Color::rgb(4, 5, 6)),
+                    padding: Some(
+                        Padding::uniform(Length::Zero).xy(Length::px(12.0), Length::px(8.0))
+                    ),
+                    border: Some(Border::uniform(Length::px(2.0), &Color::rgb(7, 8, 9))),
+                    border_radius: Some(BorderRadius::uniform(Length::px(10.0))),
+                    hover: Some(ButtonHoverStyleSlot {
+                        color: Some(Color::rgb(10, 11, 12)),
+                        background: Some(Color::rgb(13, 14, 15)),
+                        border: Some(Border::uniform(Length::px(3.0), &Color::rgb(16, 17, 18))),
+                    }),
+                })}
+            />
+        };
+
+        let RsxNode::Element(root) = &tree else {
+            panic!("button should render element root");
+        };
+        let root_style = find_style(root);
+        assert_eq!(
+            root_style.get(PropertyId::BackgroundColor),
+            Some(&ParsedValue::Color(Color::rgb(4, 5, 6)))
+        );
+        assert_eq!(
+            root_style.get(PropertyId::PaddingTop),
+            Some(&ParsedValue::Length(Length::px(8.0)))
+        );
+        assert_eq!(
+            root_style.get(PropertyId::PaddingRight),
+            Some(&ParsedValue::Length(Length::px(12.0)))
+        );
+        assert_eq!(
+            root_style.get(PropertyId::BorderTopWidth),
+            Some(&ParsedValue::Length(Length::px(2.0)))
+        );
+        assert_eq!(
+            root_style.get(PropertyId::BorderTopColor),
+            Some(&ParsedValue::Color(Color::rgb(7, 8, 9)))
+        );
+        assert_eq!(
+            root_style.get(PropertyId::BorderTopLeftRadius),
+            Some(&ParsedValue::Length(Length::px(10.0)))
+        );
+
+        let root_hover = root_style.hover().expect("button root hover style");
+        assert_eq!(
+            root_hover.get(PropertyId::BackgroundColor),
+            Some(&ParsedValue::Color(Color::rgb(13, 14, 15)))
+        );
+        assert_eq!(
+            root_hover.get(PropertyId::BorderTopWidth),
+            Some(&ParsedValue::Length(Length::px(3.0)))
+        );
+        assert_eq!(
+            root_hover.get(PropertyId::BorderTopColor),
+            Some(&ParsedValue::Color(Color::rgb(16, 17, 18)))
+        );
+
+        let Some(RsxNode::Element(text)) = root.children.first() else {
+            panic!("button should have text child");
+        };
+        let text_style = find_style(text);
+        assert_eq!(
+            text_style.get(PropertyId::Color),
+            Some(&ParsedValue::Color(Color::rgb(1, 2, 3)))
+        );
+        let text_hover = text_style.hover().expect("button text hover style");
+        assert_eq!(
+            text_hover.get(PropertyId::Color),
+            Some(&ParsedValue::Color(Color::rgb(10, 11, 12)))
+        );
     }
 
     fn collect_text_nodes(node: &RsxNode, out: &mut Vec<String>) {
@@ -309,6 +397,27 @@ mod tests {
                 .find_map(|child| find_first_element_by_tag(child, tag)),
             RsxNode::Text(_) => None,
         }
+    }
+
+    fn find_style(node: &RsxElementNode) -> rfgui::Style {
+        node.props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", PropValue::Shared(shared)) => shared
+                    .value()
+                    .downcast::<rfgui::view::ElementStylePropSchema>()
+                    .ok()
+                    .map(|style| style.to_style())
+                    .or_else(|| {
+                        shared
+                            .value()
+                            .downcast::<rfgui::view::TextStylePropSchema>()
+                            .ok()
+                            .map(|style| style.to_style())
+                    }),
+                _ => None,
+            })
+            .expect("missing style prop")
     }
 
     #[test]
@@ -627,8 +736,14 @@ mod tests {
         let icon = &boxes[4];
 
         assert!(header.4 > 400.0, "header should use full width: {boxes:#?}");
-        assert!(title.4 > 300.0, "title should grow to fill remaining width: {boxes:#?}");
+        assert!(
+            title.4 > 300.0,
+            "title should grow to fill remaining width: {boxes:#?}"
+        );
         assert!(icon.4 < 40.0, "icon text should stay intrinsic: {boxes:#?}");
-        assert!(icon.2 > title.2 + title.4 - 1.0, "icon should be pushed after title: {boxes:#?}");
+        assert!(
+            icon.2 > title.2 + title.4 - 1.0,
+            "icon should be pushed after title: {boxes:#?}"
+        );
     }
 }

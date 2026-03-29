@@ -1,4 +1,3 @@
-use crate::view::{ImageFit, ImageSampling, ImageSource};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
     ImageSnapshot, acquire_image_resource, needs_upload, release_image_resource, snapshot_image,
@@ -7,6 +6,7 @@ use crate::view::render_pass::TextureCompositePass;
 use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams,
 };
+use crate::view::{ImageFit, ImageSampling, ImageSource};
 use crate::{ParsedValue, PropertyId, Style};
 
 use super::{
@@ -384,7 +384,13 @@ impl Layoutable for Image {
     }
 
     fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
-        <Element as Layoutable>::flex_auto_min_main_size(&self.element, is_row)
+        let _ = is_row;
+        None
+    }
+
+    fn flex_auto_base_main_size(&self, is_row: bool) -> Option<f32> {
+        let (measured_w, measured_h) = self.measured_size();
+        Some(if is_row { measured_w } else { measured_h }.max(0.0))
     }
 
     fn flex_min_main_size(&self, is_row: bool) -> crate::SizeValue {
@@ -537,10 +543,12 @@ fn compute_image_mapping(
 #[cfg(test)]
 mod tests {
     use super::Image;
-    use crate::{Length, ParsedValue, PropertyId, Style};
-    use crate::view::ImageSource;
-    use crate::view::base_component::{Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable};
     use crate::Layout;
+    use crate::view::ImageSource;
+    use crate::view::base_component::{
+        Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable,
+    };
+    use crate::{Length, ParsedValue, PropertyId, Style};
 
     fn rgba_source(width: u32, height: u32) -> ImageSource {
         ImageSource::Rgba {
@@ -579,14 +587,20 @@ mod tests {
 
         let mut image = Image::new_with_id(2, rgba_source(20, 20));
         let mut image_style = Style::new();
-        image_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        image_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().shrink(1.0)),
+        );
         image.apply_style(image_style);
 
         let mut sibling = Element::new(0.0, 0.0, 120.0, 20.0);
         let mut sibling_style = Style::new();
         sibling_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
         sibling_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        sibling_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        sibling_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().shrink(1.0)),
+        );
         sibling.apply_style(sibling_style);
 
         parent.add_child(Box::new(image));

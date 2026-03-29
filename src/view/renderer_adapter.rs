@@ -1,11 +1,13 @@
 use crate::Style;
-use crate::view::{ImageFit, ImageSampling, ImageSource};
 use crate::ui::{
     Binding, FromPropValue, GlobalKey, Patch, PropValue, RenderBackend, RsxElementNode, RsxKey,
     RsxNode, RsxNodeIdentity, RsxTagDescriptor,
 };
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Image, Text, TextArea};
+use crate::view::{
+    ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, TextStylePropSchema,
+};
 use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -73,7 +75,10 @@ fn is_builtin_text_area_node(node: &RsxElementNode) -> bool {
 }
 
 fn is_builtin_image_node(node: &RsxElementNode) -> bool {
-    node.tag_descriptor.map(is_image_descriptor).unwrap_or(false) || node.tag == "Image"
+    node.tag_descriptor
+        .map(is_image_descriptor)
+        .unwrap_or(false)
+        || node.tag == "Image"
 }
 
 pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
@@ -598,13 +603,15 @@ fn convert_container_element(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
+    let initial_size = if path.is_empty() { 10_000.0 } else { 0.0 };
     let mut element = Element::new_with_id(
         stable_node_id_from_parts(element_runtime_name(node), path, global_path.as_ref()),
         0.0,
         0.0,
-        10_000.0,
-        10_000.0,
+        initial_size,
+        initial_size,
     );
+    element.set_intrinsic_size_as_percent_base(false);
     let mut base_style = Style::new();
     base_style.insert(PropertyId::Width, ParsedValue::Auto);
     base_style.insert(PropertyId::Height, ParsedValue::Auto);
@@ -617,7 +624,7 @@ fn convert_container_element(
     let mut has_user_style = false;
     for (key, value) in &node.props {
         if key.as_str() == "style" {
-            let style = as_style(value, key)?;
+            let style = as_element_style(value, key)?;
             if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
                 child_inherited_text_style.font_families = font_family.as_slice().to_vec();
             }
@@ -716,7 +723,7 @@ fn convert_container_element(
                     "unknown prop `{}` on <{}>",
                     key,
                     element_display_name(node)
-                ))
+                ));
             }
         }
     }
@@ -807,7 +814,7 @@ fn convert_text_element(
             continue;
         }
         match key.as_str() {
-            "style" => style = Some(as_style(value, key)?),
+            "style" => style = Some(as_text_style(value, key)?),
             "font_size" => {
                 text.set_font_size(as_font_size_px(
                     value,
@@ -928,7 +935,10 @@ fn length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option
     }
 }
 
-fn size_length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option<Length>, String> {
+fn size_length_from_parsed_value(
+    value: &ParsedValue,
+    context: &str,
+) -> Result<Option<Length>, String> {
     match value {
         ParsedValue::Length(length) => Ok(Some(*length)),
         ParsedValue::Auto => Ok(None),
@@ -1015,7 +1025,7 @@ fn convert_text_area_element(
             continue;
         }
         match key.as_str() {
-            "style" => style = Some(as_style(value, key)?),
+            "style" => style = Some(as_element_style(value, key)?),
             "on_focus" => {
                 let handler = as_text_area_focus_handler(value, key)?;
                 text_area.on_focus(move |event| handler.call(event));
@@ -1150,7 +1160,7 @@ fn convert_image_element(
             "source" => source = Some(ImageSource::from_prop_value(value.clone())?),
             "fit" => fit = ImageFit::from_prop_value(value.clone())?,
             "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
-            "style" => style = Some(as_style(value, key)?),
+            "style" => style = Some(as_element_style(value, key)?),
             "loading" => {
                 loading = convert_image_slot(
                     value,
@@ -1204,6 +1214,7 @@ fn convert_image_slot(
         10_000.0,
         10_000.0,
     );
+    wrapper.set_intrinsic_size_as_percent_base(false);
     let mut wrapper_style = Style::new();
     wrapper_style.insert(
         PropertyId::Position,
@@ -1484,11 +1495,16 @@ fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
     }
 }
 
-fn as_style(value: &PropValue, key: &str) -> Result<Style, String> {
-    match value {
-        PropValue::Style(style) => Ok(style.clone()),
-        _ => Err(format!("prop `{key}` expects style value")),
-    }
+fn as_element_style(value: &PropValue, key: &str) -> Result<Style, String> {
+    ElementStylePropSchema::from_prop_value(value.clone())
+        .map(|style| style.to_style())
+        .map_err(|_| format!("prop `{key}` expects ElementStylePropSchema value"))
+}
+
+fn as_text_style(value: &PropValue, key: &str) -> Result<Style, String> {
+    TextStylePropSchema::from_prop_value(value.clone())
+        .map(|style| style.to_style())
+        .map_err(|_| format!("prop `{key}` expects TextStylePropSchema value"))
 }
 
 fn as_mouse_down_handler(
@@ -1585,7 +1601,9 @@ fn as_text_area_focus_handler(
 ) -> Result<crate::ui::TextAreaFocusHandlerProp, String> {
     match value {
         PropValue::OnTextAreaFocus(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects text area focus handler value")),
+        _ => Err(format!(
+            "prop `{key}` expects text area focus handler value"
+        )),
     }
 }
 
@@ -1607,15 +1625,20 @@ mod tests {
         rsx_to_elements, rsx_to_elements_lossy, rsx_to_elements_with_context,
         stable_node_id_from_parts,
     };
-    use crate::view::{Element as HostElement, Text as HostText, TextArea as HostTextArea};
-    use crate::ui::{GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx};
+    use crate::ui::{
+        GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx,
+    };
     use crate::view::Viewport;
     use crate::view::base_component::{
         Element, ElementTrait, Text, TextArea, get_cursor_by_id, hit_test,
     };
+    use crate::view::{
+        Element as HostElement, ElementStylePropSchema, Text as HostText, TextArea as HostTextArea,
+        TextStylePropSchema,
+    };
     use crate::{
-        Align, Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length, ParsedValue,
-        PropertyId, Style, Unit,
+        Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout,
+        Length, ParsedValue, PropertyId, Style, Unit,
     };
     use std::sync::Arc;
 
@@ -1631,13 +1654,12 @@ mod tests {
         RsxNode::tagged("TextArea", RsxTagDescriptor::of::<HostTextArea>())
     }
 
-    fn style_bg(hex: &str) -> Style {
-        let mut style = Style::new();
-        style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::Color(IntoColor::<Color>::into_color(Color::hex(hex))),
-        );
-        style
+    fn empty_element_style() -> ElementStylePropSchema {
+        crate::ui::build_typed_prop::<ElementStylePropSchema, _>(|_| {})
+    }
+
+    fn empty_text_style() -> TextStylePropSchema {
+        crate::ui::build_typed_prop::<TextStylePropSchema, _>(|_| {})
     }
 
     #[test]
@@ -1673,7 +1695,7 @@ mod tests {
     fn key_prop_is_accepted_for_element_node() {
         let node = host_element_node()
             .with_prop("key", "feature-1")
-            .with_prop("style", Style::new());
+            .with_prop("style", empty_element_style());
         let converted = rsx_to_elements(&node);
         assert!(converted.is_ok());
     }
@@ -1722,7 +1744,7 @@ mod tests {
         let node = host_element_node()
             .with_key(GlobalKey::from("feature-1"))
             .with_invocation_type("Button")
-            .with_prop("style", Style::new());
+            .with_prop("style", empty_element_style());
         let converted = rsx_to_elements(&node);
         assert!(converted.is_ok());
     }
@@ -1730,11 +1752,10 @@ mod tests {
     #[test]
     fn global_key_registry_keeps_fragment_path_without_node_id() {
         let global_key = GlobalKey::from("fragment-root");
-        let node = RsxNode::fragment(vec![
-            host_element_node().with_prop("style", Style::new()),
-        ])
-        .with_key(global_key)
-        .with_invocation_type("Button");
+        let node =
+            RsxNode::fragment(vec![host_element_node().with_prop("style", empty_element_style())])
+            .with_key(global_key)
+            .with_invocation_type("Button");
 
         let registry = super::collect_global_key_registry(&node).expect("registry should build");
         let entry = registry.get(&global_key).expect("global key entry");
@@ -1752,28 +1773,28 @@ mod tests {
     fn backend_rebuilds_global_key_registry_after_replace_root() {
         let global_key = GlobalKey::from("moving-root");
         let first_root = host_element_node()
-            .with_prop("style", Style::new())
+            .with_prop("style", empty_element_style())
             .with_child(
                 host_element_node()
-                    .with_prop("style", Style::new())
+                    .with_prop("style", empty_element_style())
                     .with_child(
                         host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Button")
-                            .with_prop("style", Style::new()),
+                            .with_prop("style", empty_element_style()),
                     ),
             );
         let second_root = host_element_node()
-            .with_prop("style", Style::new())
-            .with_child(host_element_node().with_prop("style", Style::new()))
+            .with_prop("style", empty_element_style())
+            .with_child(host_element_node().with_prop("style", empty_element_style()))
             .with_child(
                 host_element_node()
-                    .with_prop("style", Style::new())
+                    .with_prop("style", empty_element_style())
                     .with_child(
                         host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Button")
-                            .with_prop("style", Style::new()),
+                            .with_prop("style", empty_element_style()),
                     ),
             );
 
@@ -1811,34 +1832,30 @@ mod tests {
     fn global_key_subtree_node_id_is_stable_across_parent_move() {
         let global_key = GlobalKey::from("stable-subtree");
         let first_root = host_element_node()
-            .with_prop("style", Style::new())
+            .with_prop("style", empty_element_style())
             .with_child(
                 host_element_node()
-                    .with_prop("style", Style::new())
+                    .with_prop("style", empty_element_style())
                     .with_child(
                         host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Card")
-                            .with_prop("style", Style::new())
-                            .with_child(
-                                host_element_node().with_prop("style", Style::new()),
-                            ),
+                            .with_prop("style", empty_element_style())
+                            .with_child(host_element_node().with_prop("style", empty_element_style())),
                     ),
             );
         let second_root = host_element_node()
-            .with_prop("style", Style::new())
-            .with_child(host_element_node().with_prop("style", Style::new()))
+            .with_prop("style", empty_element_style())
+            .with_child(host_element_node().with_prop("style", empty_element_style()))
             .with_child(
                 host_element_node()
-                    .with_prop("style", Style::new())
+                    .with_prop("style", empty_element_style())
                     .with_child(
                         host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Card")
-                            .with_prop("style", Style::new())
-                            .with_child(
-                                host_element_node().with_prop("style", Style::new()),
-                            ),
+                            .with_prop("style", empty_element_style())
+                            .with_child(host_element_node().with_prop("style", empty_element_style())),
                     ),
             );
 
@@ -1857,20 +1874,21 @@ mod tests {
 
     #[test]
     fn element_anchor_prop_and_style_position_are_supported() {
-        let mut root_style = Style::new();
-        root_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
-        root_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
-        let mut child_style = Style::new();
-        child_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
+        let root_style = ElementStylePropSchema {
+            width: Some(Length::px(120.0)),
+            height: Some(Length::px(80.0)),
+            ..empty_element_style()
+        };
+        let child_style = ElementStylePropSchema {
+            position: Some(
                 crate::Position::absolute()
                     .anchor("card_anchor")
                     .top(Length::px(8.0)),
             ),
-        );
-        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
-        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(10.0)));
+            width: Some(Length::px(20.0)),
+            height: Some(Length::px(10.0)),
+            ..empty_element_style()
+        };
         let tree = host_element_node()
             .with_prop("anchor", "card_anchor")
             .with_prop("style", root_style)
@@ -1879,29 +1897,52 @@ mod tests {
         assert!(converted.is_ok());
     }
 
-    fn style_bg_border(bg_hex: &str, border_hex: &str, border_width: f32) -> Style {
-        let mut style = style_bg(bg_hex);
-        style.set_border(Border::uniform(
-            Length::px(border_width),
-            &Color::hex(border_hex),
-        ));
-        style
+    fn style_bg_border(bg_hex: &str, border_hex: &str, border_width: f32) -> ElementStylePropSchema {
+        ElementStylePropSchema {
+            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(bg_hex)))),
+            border: Some(Border::uniform(
+                Length::px(border_width),
+                &Color::hex(border_hex),
+            )),
+            ..empty_element_style()
+        }
     }
 
-    fn style_with_radius(mut style: Style, radius: f32) -> Style {
-        style.set_border_radius(BorderRadius::uniform(Unit::px(radius)));
-        style
+    fn style_with_radius(
+        style: ElementStylePropSchema,
+        radius: f32,
+    ) -> ElementStylePropSchema {
+        ElementStylePropSchema {
+            border_radius: Some(BorderRadius::uniform(Unit::px(radius))),
+            ..style
+        }
     }
 
-    fn style_with_size(mut style: Style, width: f32, height: f32) -> Style {
-        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-        style
+    fn style_with_size(
+        style: ElementStylePropSchema,
+        width: f32,
+        height: f32,
+    ) -> ElementStylePropSchema {
+        ElementStylePropSchema {
+            width: Some(Length::px(width)),
+            height: Some(Length::px(height)),
+            ..style
+        }
     }
 
-    fn style_with_color(mut style: Style, color_hex: &str) -> Style {
-        style.insert_color_like(PropertyId::Color, Color::hex(color_hex));
-        style
+    fn text_style_with_color(color_hex: &str) -> TextStylePropSchema {
+        TextStylePropSchema {
+            color: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(color_hex)))),
+            ..empty_text_style()
+        }
+    }
+
+    fn text_style_with_size(width: f32, height: f32) -> TextStylePropSchema {
+        TextStylePropSchema {
+            width: Some(Length::px(width)),
+            height: Some(Length::px(height)),
+            ..empty_text_style()
+        }
     }
 
     fn walk_layout(
@@ -1951,7 +1992,7 @@ mod tests {
             .with_child(
                 host_text_node()
                     .with_prop("font_size", 26)
-                    .with_prop("style", style_with_color(Style::new(), "#0F172A"))
+                    .with_prop("style", text_style_with_color("#0F172A"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Hello Rust GUI Text Test")),
             );
@@ -1968,14 +2009,14 @@ mod tests {
             .with_child(
                 host_text_node()
                     .with_prop("font_size", 22)
-                    .with_prop("style", style_with_color(Style::new(), "#E2E8F0"))
+                    .with_prop("style", text_style_with_color("#E2E8F0"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Test Component")),
             )
             .with_child(
                 host_text_node()
                     .with_prop("font_size", 14)
-                    .with_prop("style", style_with_color(Style::new(), "#CBD5E1"))
+                    .with_prop("style", text_style_with_color("#CBD5E1"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text(
                         "Used to verify event hit-testing and bubbling.",
@@ -1984,7 +2025,7 @@ mod tests {
             .with_child(
                 host_text_node()
                     .with_prop("font_size", 14)
-                    .with_prop("style", style_with_color(Style::new(), "#F8FAFC"))
+                    .with_prop("style", text_style_with_color("#F8FAFC"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Click Count: 0")),
             );
@@ -2033,14 +2074,14 @@ mod tests {
     #[test]
     fn element_padding_offsets_child_layout() {
         let tree = host_element_node()
-            .with_prop("style", style_with_size(Style::new(), 200.0, 120.0))
+            .with_prop("style", style_with_size(empty_element_style(), 200.0, 120.0))
             .with_prop("padding_left", 8)
             .with_prop("padding_top", 12)
             .with_prop("padding_right", 16)
             .with_prop("padding_bottom", 10)
             .with_child(
                 host_text_node()
-                    .with_prop("style", style_with_size(Style::new(), 300.0, 300.0))
+                    .with_prop("style", text_style_with_size(300.0, 300.0))
                     .with_child(RsxNode::text("inner")),
             );
 
@@ -2087,26 +2128,25 @@ mod tests {
 
     #[test]
     fn flow_row_without_explicit_size_uses_children_content_size() {
-        let mut row_style = Style::new();
-        row_style.insert(
-            PropertyId::Layout,
-            ParsedValue::Layout(Layout::flex().row().into()),
-        );
-        row_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
+        let row_style = ElementStylePropSchema {
+            layout: Some(Layout::flex().row().into()),
+            gap: Some(Length::px(8.0)),
+            ..empty_element_style()
+        };
 
         let tree = host_element_node()
             .with_prop("style", row_style)
             .with_child(
                 host_element_node()
-                    .with_prop("style", style_with_size(Style::new(), 98.0, 34.0)),
+                    .with_prop("style", style_with_size(empty_element_style(), 98.0, 34.0)),
             )
             .with_child(
                 host_element_node()
-                    .with_prop("style", style_with_size(Style::new(), 98.0, 34.0)),
+                    .with_prop("style", style_with_size(empty_element_style(), 98.0, 34.0)),
             )
             .with_child(
                 host_element_node()
-                    .with_prop("style", style_with_size(Style::new(), 70.0, 34.0)),
+                    .with_prop("style", style_with_size(empty_element_style(), 70.0, 34.0)),
             );
 
         let mut roots = rsx_to_elements(&tree).expect("convert rsx");
@@ -2140,14 +2180,14 @@ mod tests {
     #[test]
     fn nested_fragment_children_are_flattened_during_conversion() {
         let tree = host_element_node()
-            .with_prop("style", style_with_size(Style::new(), 120.0, 60.0))
+            .with_prop("style", style_with_size(empty_element_style(), 120.0, 60.0))
             .with_child(RsxNode::fragment(vec![
                 host_text_node()
-                    .with_prop("style", style_with_size(Style::new(), 16.0, 16.0))
+                    .with_prop("style", text_style_with_size(16.0, 16.0))
                     .with_child(RsxNode::text("A")),
                 RsxNode::fragment(vec![
                     host_text_node()
-                        .with_prop("style", style_with_size(Style::new(), 16.0, 16.0))
+                        .with_prop("style", text_style_with_size(16.0, 16.0))
                         .with_child(RsxNode::text("B")),
                 ]),
             ]));
@@ -2158,7 +2198,7 @@ mod tests {
 
     #[test]
     fn lossy_conversion_skips_bad_nodes_and_keeps_good_nodes() {
-        let good = host_element_node().with_prop("style", Style::new());
+        let good = host_element_node().with_prop("style", empty_element_style());
         let bad = host_element_node().with_prop("not_exists", true);
         let tree = RsxNode::fragment(vec![good, bad]);
 
@@ -2169,22 +2209,20 @@ mod tests {
 
     #[test]
     fn cursor_style_inherits_to_child_when_child_has_no_cursor() {
-        let mut parent_style = Style::new();
-        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
-        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
-        parent_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#101010")),
-        );
-        parent_style.set_cursor(Cursor::Pointer);
+        let parent_style = ElementStylePropSchema {
+            width: Some(Length::px(100.0)),
+            height: Some(Length::px(100.0)),
+            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex("#101010")))),
+            cursor: Some(Cursor::Pointer),
+            ..empty_element_style()
+        };
 
-        let mut child_style = Style::new();
-        child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(40.0)));
-        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
-        child_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#ff0000")),
-        );
+        let child_style = ElementStylePropSchema {
+            width: Some(Length::px(40.0)),
+            height: Some(Length::px(40.0)),
+            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex("#ff0000")))),
+            ..empty_element_style()
+        };
 
         let tree = host_element_node()
             .with_prop("style", parent_style)
@@ -2220,14 +2258,13 @@ mod tests {
 
     #[test]
     fn cursor_style_inherits_to_text_child() {
-        let mut parent_style = Style::new();
-        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
-        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
-        parent_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#101010")),
-        );
-        parent_style.set_cursor(Cursor::Pointer);
+        let parent_style = ElementStylePropSchema {
+            width: Some(Length::px(200.0)),
+            height: Some(Length::px(80.0)),
+            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex("#101010")))),
+            cursor: Some(Cursor::Pointer),
+            ..empty_element_style()
+        };
 
         let tree = host_element_node()
             .with_prop("style", parent_style)
@@ -2267,16 +2304,14 @@ mod tests {
 
     #[test]
     fn text_style_font_size_em_inherits_from_parent_font_size() {
-        let mut parent_style = Style::new();
-        parent_style.insert(
-            PropertyId::FontSize,
-            ParsedValue::FontSize(FontSize::px(20.0)),
-        );
-        let mut child_style = Style::new();
-        child_style.insert(
-            PropertyId::FontSize,
-            ParsedValue::FontSize(FontSize::em(1.5)),
-        );
+        let parent_style = ElementStylePropSchema {
+            font_size: Some(FontSize::px(20.0)),
+            ..empty_element_style()
+        };
+        let child_style = TextStylePropSchema {
+            font_size: Some(FontSize::em(1.5)),
+            ..empty_text_style()
+        };
 
         let tree = host_element_node()
             .with_prop("style", parent_style)
@@ -2319,14 +2354,13 @@ mod tests {
     #[test]
     fn rem_font_size_uses_viewport_style_root_font_size() {
         let text_tree = host_text_node()
-            .with_prop("style", {
-                let mut style = Style::new();
-                style.insert(
-                    PropertyId::FontSize,
-                    ParsedValue::FontSize(FontSize::rem(2.0)),
-                );
-                style
-            })
+            .with_prop(
+                "style",
+                TextStylePropSchema {
+                    font_size: Some(FontSize::rem(2.0)),
+                    ..empty_text_style()
+                },
+            )
             .with_child(RsxNode::text("MMMMMMMM"));
 
         let mut small_root_style = Style::new();
@@ -2398,11 +2432,10 @@ mod tests {
 
     #[test]
     fn textarea_inherits_font_size_from_parent_style() {
-        let mut parent_style = Style::new();
-        parent_style.insert(
-            PropertyId::FontSize,
-            ParsedValue::FontSize(FontSize::px(24.0)),
-        );
+        let parent_style = ElementStylePropSchema {
+            font_size: Some(FontSize::px(24.0)),
+            ..empty_element_style()
+        };
 
         let tree = host_element_node()
             .with_prop("style", parent_style)
@@ -2450,11 +2483,15 @@ mod tests {
         let parent_color = IntoColor::<Color>::into_color(Color::hex("#336699"));
         let local_color = IntoColor::<Color>::into_color(Color::hex("#aa5500"));
 
-        let mut parent_style = Style::new();
-        parent_style.insert(PropertyId::Color, ParsedValue::Color(parent_color));
+        let parent_style = ElementStylePropSchema {
+            color: Some(Box::new(parent_color)),
+            ..empty_element_style()
+        };
 
-        let mut textarea_style = Style::new();
-        textarea_style.insert(PropertyId::Color, ParsedValue::Color(local_color));
+        let textarea_style = ElementStylePropSchema {
+            color: Some(Box::new(local_color)),
+            ..empty_element_style()
+        };
 
         let inherited_tree = host_element_node()
             .with_prop("style", parent_style.clone())
@@ -2488,8 +2525,14 @@ mod tests {
             .and_then(|node| node.as_any().downcast_ref::<TextArea>())
             .expect("explicit textarea");
 
-        assert_eq!(inherited_textarea.color_rgba_f32(), parent_color.to_rgba_f32());
-        assert_eq!(explicit_textarea.color_rgba_f32(), local_color.to_rgba_f32());
+        assert_eq!(
+            inherited_textarea.color_rgba_f32(),
+            parent_color.to_rgba_f32()
+        );
+        assert_eq!(
+            explicit_textarea.color_rgba_f32(),
+            local_color.to_rgba_f32()
+        );
     }
 
     #[test]
@@ -2499,10 +2542,12 @@ mod tests {
             .with_prop("content", "hello")
             .with_prop("multiline", false);
 
-        let error = rsx_to_elements(&tree).err().expect("legacy color prop should fail");
+        let error = rsx_to_elements(&tree)
+            .err()
+            .expect("legacy color prop should fail");
         assert!(error.contains("unknown prop `color` on <TextArea>"));
     }
-    
+
     #[test]
     fn textarea_accepts_on_blur_prop() {
         let tree = rsx! {
@@ -2520,9 +2565,11 @@ mod tests {
 
     #[test]
     fn textarea_uses_style_width_and_height() {
-        let mut textarea_style = Style::new();
-        textarea_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(296.0)));
-        textarea_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(78.0)));
+        let textarea_style = ElementStylePropSchema {
+            width: Some(Length::px(296.0)),
+            height: Some(Length::px(78.0)),
+            ..empty_element_style()
+        };
 
         let tree = host_text_area_node()
             .with_prop("style", textarea_style)
@@ -2559,13 +2606,17 @@ mod tests {
 
     #[test]
     fn textarea_uses_percent_size_from_parent_inner() {
-        let mut parent_style = Style::new();
-        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(400.0)));
-        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(200.0)));
+        let parent_style = ElementStylePropSchema {
+            width: Some(Length::px(400.0)),
+            height: Some(Length::px(200.0)),
+            ..empty_element_style()
+        };
 
-        let mut textarea_style = Style::new();
-        textarea_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(50.0)));
-        textarea_style.insert(PropertyId::Height, ParsedValue::Length(Length::percent(25.0)));
+        let textarea_style = ElementStylePropSchema {
+            width: Some(Length::percent(50.0)),
+            height: Some(Length::percent(25.0)),
+            ..empty_element_style()
+        };
 
         let tree = host_element_node()
             .with_prop("style", parent_style)
@@ -2609,4 +2660,53 @@ mod tests {
         assert_eq!(snapshot.height, 50.0);
     }
 
+    #[test]
+    fn nested_container_percent_height_without_definite_parent_does_not_keep_placeholder_size() {
+        let root_style = ElementStylePropSchema {
+            width: Some(Length::px(200.0)),
+            ..empty_element_style()
+        };
+
+        let child_style = ElementStylePropSchema {
+            height: Some(Length::percent(100.0)),
+            ..empty_element_style()
+        };
+
+        let tree = host_element_node()
+            .with_prop("style", root_style)
+            .with_child(host_element_node().with_prop("style", child_style));
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let root = roots.first_mut().expect("single root");
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
+        });
+
+        let child = root
+            .children()
+            .expect("root children")
+            .first()
+            .expect("child");
+        let root_snapshot = root.box_model_snapshot();
+        let child_snapshot = child.box_model_snapshot();
+        assert_eq!(root_snapshot.height, 0.0);
+        assert_eq!(child_snapshot.height, 0.0);
+    }
 }
