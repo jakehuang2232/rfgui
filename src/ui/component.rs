@@ -93,26 +93,14 @@ impl_no_arg_event_into_optional_prop!(
     crate::ui::MouseLeaveHandlerProp,
     crate::ui::into_mouse_leave_handler
 );
-impl_no_arg_event_into_optional_prop!(
-    crate::ui::ClickHandlerProp,
-    crate::ui::into_click_handler
-);
+impl_no_arg_event_into_optional_prop!(crate::ui::ClickHandlerProp, crate::ui::into_click_handler);
 impl_no_arg_event_into_optional_prop!(
     crate::ui::KeyDownHandlerProp,
     crate::ui::into_key_down_handler
 );
-impl_no_arg_event_into_optional_prop!(
-    crate::ui::KeyUpHandlerProp,
-    crate::ui::into_key_up_handler
-);
-impl_no_arg_event_into_optional_prop!(
-    crate::ui::FocusHandlerProp,
-    crate::ui::into_focus_handler
-);
-impl_no_arg_event_into_optional_prop!(
-    crate::ui::BlurHandlerProp,
-    crate::ui::into_blur_handler
-);
+impl_no_arg_event_into_optional_prop!(crate::ui::KeyUpHandlerProp, crate::ui::into_key_up_handler);
+impl_no_arg_event_into_optional_prop!(crate::ui::FocusHandlerProp, crate::ui::into_focus_handler);
+impl_no_arg_event_into_optional_prop!(crate::ui::BlurHandlerProp, crate::ui::into_blur_handler);
 impl_no_arg_event_into_optional_prop!(
     crate::ui::TextAreaFocusHandlerProp,
     crate::ui::into_text_area_focus_handler
@@ -128,9 +116,125 @@ impl<'a> IntoOptionalProp<crate::Color> for crate::HexColor<'a> {
     }
 }
 
+impl IntoOptionalProp<Box<dyn crate::ColorLike>> for &str {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
+        Some(Box::new(crate::IntoColor::<crate::Color>::into_color(self)))
+    }
+}
+
+impl IntoOptionalProp<Box<dyn crate::ColorLike>> for String {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
+        Some(Box::new(crate::IntoColor::<crate::Color>::into_color(self)))
+    }
+}
+
+impl IntoOptionalProp<Box<dyn crate::ColorLike>> for crate::Color {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
+        Some(Box::new(self))
+    }
+}
+
+impl<'a> IntoOptionalProp<Box<dyn crate::ColorLike>> for crate::HexColor<'a> {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
+        Some(Box::new(crate::IntoColor::<crate::Color>::into_color(self)))
+    }
+}
+
 impl IntoOptionalProp<String> for &str {
     fn into_optional_prop(self) -> Option<String> {
         Some(self.to_string())
+    }
+}
+
+macro_rules! impl_numeric_into_optional_length {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl IntoOptionalProp<crate::Length> for $ty {
+                fn into_optional_prop(self) -> Option<crate::Length> {
+                    Some(crate::Length::px(self as f32))
+                }
+            }
+        )*
+    };
+}
+
+impl_numeric_into_optional_length!(i32, i64, u32, usize, f32, f64);
+
+impl IntoOptionalProp<crate::BorderRadius> for crate::Length {
+    fn into_optional_prop(self) -> Option<crate::BorderRadius> {
+        Some(crate::BorderRadius::uniform(self))
+    }
+}
+
+macro_rules! impl_numeric_into_optional_border_radius {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl IntoOptionalProp<crate::BorderRadius> for $ty {
+                fn into_optional_prop(self) -> Option<crate::BorderRadius> {
+                    Some(crate::BorderRadius::uniform(crate::Length::px(self as f32)))
+                }
+            }
+        )*
+    };
+}
+
+impl_numeric_into_optional_border_radius!(i32, i64, u32, usize, f32, f64);
+
+macro_rules! impl_numeric_into_optional_font_weight {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl IntoOptionalProp<crate::FontWeight> for $ty {
+                fn into_optional_prop(self) -> Option<crate::FontWeight> {
+                    Some(crate::FontWeight::new((self as i64).max(0) as u16))
+                }
+            }
+        )*
+    };
+}
+
+impl_numeric_into_optional_font_weight!(i32, i64, u32, usize, u16);
+
+macro_rules! impl_numeric_into_optional_opacity {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl IntoOptionalProp<crate::Opacity> for $ty {
+                fn into_optional_prop(self) -> Option<crate::Opacity> {
+                    Some(crate::Opacity::new(self as f32))
+                }
+            }
+        )*
+    };
+}
+
+impl_numeric_into_optional_opacity!(i32, i64, u32, usize, f32, f64);
+
+impl IntoOptionalProp<crate::Layout> for crate::FlexLayout {
+    fn into_optional_prop(self) -> Option<crate::Layout> {
+        Some(self.into())
+    }
+}
+
+impl IntoOptionalProp<crate::Layout> for crate::FlowLayout {
+    fn into_optional_prop(self) -> Option<crate::Layout> {
+        Some(self.into())
+    }
+}
+
+impl IntoOptionalProp<crate::Transitions> for crate::Transition {
+    fn into_optional_prop(self) -> Option<crate::Transitions> {
+        Some(self.into())
+    }
+}
+
+impl IntoOptionalProp<crate::Transitions> for Vec<crate::Transition> {
+    fn into_optional_prop(self) -> Option<crate::Transitions> {
+        Some(self.into())
+    }
+}
+
+impl<const N: usize> IntoOptionalProp<crate::Transitions> for [crate::Transition; N] {
+    fn into_optional_prop(self) -> Option<crate::Transitions> {
+        Some(self.into())
     }
 }
 
@@ -287,7 +391,9 @@ where
     children.extend(value.into_rsx_children());
 }
 
-#[deprecated(note = "use create_tag_element::<T>(props, children); legacy bridge for old host/component path")]
+#[deprecated(
+    note = "use create_tag_element::<T>(props, children); legacy bridge for old host/component path"
+)]
 pub fn create_element<T, P, C>(_element_type: PhantomData<T>, props: P, children: C) -> RsxNode
 where
     T: RsxChildrenPolicy + RsxComponent<P> + 'static,
@@ -306,11 +412,7 @@ where
     create_tag_element_with_key::<T, P, C>(props, children, None)
 }
 
-pub fn create_tag_element_with_key<T, P, C>(
-    props: P,
-    children: C,
-    key: Option<RsxKey>,
-) -> RsxNode
+pub fn create_tag_element_with_key<T, P, C>(props: P, children: C, key: Option<RsxKey>) -> RsxNode
 where
     T: RsxTag<P>,
     P: RsxPropsBuilder,
@@ -331,7 +433,9 @@ where
     })
 }
 
-#[deprecated(note = "use create_tag_element_with_key::<T>(props, children, key); legacy bridge for old host/component path")]
+#[deprecated(
+    note = "use create_tag_element_with_key::<T>(props, children, key); legacy bridge for old host/component path"
+)]
 pub fn create_element_with_key<T, P, C>(
     _element_type: PhantomData<T>,
     props: P,
@@ -394,25 +498,23 @@ mod tests {
     macro_rules! style {
         ($($tokens:tt)*) => {{
             let _ = stringify!($($tokens)*);
-            let mut style = crate::Style::new();
-            style.insert(
-                crate::PropertyId::Width,
-                crate::ParsedValue::Length(crate::Length::px(42.0)),
-            );
-            style
+            crate::view::ElementStylePropSchema {
+                width: Some(crate::Length::px(42.0)),
+                ..crate::ui::build_typed_prop::<crate::view::ElementStylePropSchema, _>(|_| {})
+            }
         }};
     }
 
     use super::{
-        GlobalKey, RsxChildrenPolicy, RsxComponent, RsxPropsBuilder, RsxTag,
+        GlobalKey, RsxChildrenPolicy, RsxComponent, RsxPropsBuilder, RsxPropsStyleSchema, RsxTag,
         create_tag_element, create_tag_element_with_key,
     };
     use crate::style::{Color, FontSize, FontWeight, Length, ParsedValue, PropertyId};
-    use crate::view::{Element, Text};
     use crate::ui::{
         ClickEvent, EventMeta, KeyDownEvent, KeyEventData, MouseButton, MouseButtons,
-        MouseEventData, Patch, PropValue, RsxKey, RsxNode, component, reconcile, rsx,
+        MouseEventData, Patch, PropValue, RsxKey, RsxNode, component, props, reconcile, rsx,
     };
+    use crate::view::{Element, Text};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -444,19 +546,28 @@ mod tests {
 
     impl RsxComponent<()> for Button {
         fn render(_: (), _: Vec<RsxNode>) -> RsxNode {
-            RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<crate::view::Element>())
+            RsxNode::tagged(
+                "Element",
+                crate::ui::RsxTagDescriptor::of::<crate::view::Element>(),
+            )
         }
     }
 
     impl RsxComponent<()> for ElementLike {
         fn render(_: (), _: Vec<RsxNode>) -> RsxNode {
-            RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<crate::view::Element>())
+            RsxNode::tagged(
+                "Element",
+                crate::ui::RsxTagDescriptor::of::<crate::view::Element>(),
+            )
         }
     }
 
     impl RsxComponent<()> for AnotherElementLike {
         fn render(_: (), _: Vec<RsxNode>) -> RsxNode {
-            RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<crate::view::Element>())
+            RsxNode::tagged(
+                "Element",
+                crate::ui::RsxTagDescriptor::of::<crate::view::Element>(),
+            )
         }
     }
 
@@ -487,13 +598,52 @@ mod tests {
         }
     }
 
+    #[props]
+    struct NestedStyleSlot {
+        style: Option<crate::view::ElementStylePropSchema>,
+    }
+
+    impl RsxPropsStyleSchema for NestedStyleSlot {
+        type StyleSchema = crate::view::ElementStylePropSchema;
+    }
+
+    #[component]
+    fn NestedStyleProbe(nested: Option<NestedStyleSlot>) -> RsxNode {
+        let style = nested.and_then(|slot| slot.style);
+        rsx! {
+            <crate::view::Element style={style} />
+        }
+    }
+
+    fn extract_element_style(node: &crate::ui::RsxElementNode) -> crate::Style {
+        node.props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Shared(shared)) => shared
+                    .value()
+                    .downcast::<crate::view::ElementStylePropSchema>()
+                    .ok()
+                    .map(|style| style.to_style()),
+                _ => None,
+            })
+            .expect("missing style prop")
+    }
+
     #[test]
     #[should_panic(expected = "duplicate GlobalKey detected in the same build")]
     fn duplicate_global_key_panics_in_same_build() {
         crate::ui::build_scope(|| {
             let global_key = GlobalKey::from("dup");
-            let _ = create_tag_element_with_key::<Button, _, _>((), (), Some(RsxKey::Global(global_key)));
-            let _ = create_tag_element_with_key::<Button, _, _>((), (), Some(RsxKey::Global(global_key)));
+            let _ = create_tag_element_with_key::<Button, _, _>(
+                (),
+                (),
+                Some(RsxKey::Global(global_key)),
+            );
+            let _ = create_tag_element_with_key::<Button, _, _>(
+                (),
+                (),
+                Some(RsxKey::Global(global_key)),
+            );
         });
     }
 
@@ -504,7 +654,11 @@ mod tests {
             create_tag_element_with_key::<Button, _, _>((), (), Some(RsxKey::Global(global_key)))
         });
         let new = crate::ui::build_scope(|| {
-            create_tag_element_with_key::<ElementLike, _, _>((), (), Some(RsxKey::Global(global_key)))
+            create_tag_element_with_key::<ElementLike, _, _>(
+                (),
+                (),
+                Some(RsxKey::Global(global_key)),
+            )
         });
 
         let patches = reconcile(Some(&old), &new);
@@ -521,7 +675,10 @@ mod tests {
             panic!("expected element node");
         };
         assert_eq!(node.identity.key, Some(RsxKey::Local(7)));
-        assert_eq!(node.tag_descriptor, Some(crate::ui::RsxTagDescriptor::of::<Button>()));
+        assert_eq!(
+            node.tag_descriptor,
+            Some(crate::ui::RsxTagDescriptor::of::<Button>())
+        );
     }
 
     #[test]
@@ -541,8 +698,7 @@ mod tests {
     #[test]
     fn tag_descriptor_distinguishes_same_string_tag_from_different_tag_types() {
         let old = crate::ui::build_scope(|| create_tag_element::<ElementLike, _, _>((), ()));
-        let new =
-            crate::ui::build_scope(|| create_tag_element::<AnotherElementLike, _, _>((), ()));
+        let new = crate::ui::build_scope(|| create_tag_element::<AnotherElementLike, _, _>((), ()));
 
         let patches = reconcile(Some(&old), &new);
         assert!(matches!(patches.as_slice(), [Patch::ReplaceRoot(_)]));
@@ -683,14 +839,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        let style = node
-            .props
-            .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", crate::ui::PropValue::Style(style)) => Some(style),
-                _ => None,
-            })
-            .expect("missing style prop");
+        let style = extract_element_style(&node);
         assert_eq!(
             style.get(PropertyId::Width),
             Some(&ParsedValue::Length(Length::px(10.0)))
@@ -713,14 +862,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        let style = node
-            .props
-            .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", crate::ui::PropValue::Style(style)) => Some(style),
-                _ => None,
-            })
-            .expect("missing style prop");
+        let style = extract_element_style(&node);
         assert_eq!(
             style.get(PropertyId::Width),
             Some(&ParsedValue::Length(Length::px(42.0)))
@@ -739,14 +881,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        let style = node
-            .props
-            .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", crate::ui::PropValue::Style(style)) => Some(style),
-                _ => None,
-            })
-            .expect("missing style prop");
+        let style = extract_element_style(&node);
         assert_eq!(
             style.get(PropertyId::FontSize),
             Some(&ParsedValue::FontSize(FontSize::px(14.0)))
@@ -766,14 +901,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        let style = node
-            .props
-            .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", crate::ui::PropValue::Style(style)) => Some(style),
-                _ => None,
-            })
-            .expect("missing style prop");
+        let style = extract_element_style(&node);
         assert_eq!(
             style.get(PropertyId::Color),
             Some(&ParsedValue::Color(Color::rgba(17, 34, 51, 255)))
@@ -796,14 +924,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        let style = node
-            .props
-            .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", crate::ui::PropValue::Style(style)) => Some(style),
-                _ => None,
-            })
-            .expect("missing style prop");
+        let style = extract_element_style(&node);
         assert_eq!(
             style.get(PropertyId::FontWeight),
             Some(&ParsedValue::FontWeight(FontWeight::new(700)))
@@ -822,14 +943,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        let style = node
-            .props
-            .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", crate::ui::PropValue::Style(style)) => Some(style),
-                _ => None,
-            })
-            .expect("missing style prop");
+        let style = extract_element_style(&node);
         assert_eq!(
             style.get(PropertyId::TextWrap),
             Some(&ParsedValue::TextWrap(crate::TextWrap::NoWrap))
@@ -850,18 +964,40 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        let style = node
-            .props
-            .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", crate::ui::PropValue::Style(style)) => Some(style),
-                _ => None,
-            })
-            .expect("missing style prop");
+        let style = extract_element_style(&node);
         let selection = style.selection().expect("missing selection style");
         assert_eq!(
             selection.background_color(),
             Some(Color::rgba(255, 255, 255, 255))
+        );
+    }
+
+    #[test]
+    fn nested_object_prop_supports_nested_style_schema_hooks() {
+        let node = rsx! {
+            <NestedStyleProbe
+                nested={{
+                    style: {
+                        width: Length::px(16.0),
+                        selection: {
+                            background: Color::hex("#abcdef"),
+                        },
+                    },
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = extract_element_style(&node);
+        assert_eq!(
+            style.get(PropertyId::Width),
+            Some(&ParsedValue::Length(Length::px(16.0)))
+        );
+        let selection = style.selection().expect("missing selection style");
+        assert_eq!(
+            selection.background_color(),
+            Some(Color::rgba(171, 205, 239, 255))
         );
     }
 
@@ -956,6 +1092,8 @@ mod tests {
                 viewport_y: 0.0,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(MouseButton::Left),
                 buttons: MouseButtons::default(),
                 modifiers: crate::ui::KeyModifiers::default(),
@@ -1021,6 +1159,8 @@ mod tests {
                 viewport_y: 0.0,
                 local_x: 0.0,
                 local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
                 button: Some(MouseButton::Left),
                 buttons: MouseButtons::default(),
                 modifiers: crate::ui::KeyModifiers::default(),

@@ -1,14 +1,14 @@
 use crate::use_theme;
 use rfgui::TextAlign::Center;
-use rfgui::view::{Element, Text};
 use rfgui::ui::{
-    ClickEvent, ClickHandlerProp, EventMeta, MouseButton, MouseEventData, RsxChildrenPolicy,
-    MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxComponent, RsxNode,
-    component, props, rsx, use_interval, use_state,
+    ClickEvent, ClickHandlerProp, EventMeta, MouseButton, MouseDownHandlerProp,
+    MouseEnterHandlerProp, MouseEventData, MouseLeaveHandlerProp, RsxChildrenPolicy, RsxComponent,
+    RsxNode, component, props, rsx, use_interval, use_state,
 };
+use rfgui::view::{Element, Text};
 use rfgui::{
-    Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition,
-    TransitionProperty, Transitions,
+    Align, Border, BorderRadius, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding,
+    Transition, TransitionProperty, Transitions,
 };
 use std::time::Duration;
 
@@ -44,7 +44,27 @@ pub struct ButtonProps {
     pub variant: Option<ButtonVariant>,
     pub disabled: Option<bool>,
     pub repeat: Option<bool>,
+    pub style: Option<ButtonStyleSlot>,
     pub on_click: Option<ClickHandlerProp>,
+}
+
+#[props]
+#[derive(Clone)]
+pub struct ButtonStyleSlot {
+    pub color: Option<Color>,
+    pub background: Option<Color>,
+    pub padding: Option<Padding>,
+    pub border: Option<Border>,
+    pub border_radius: Option<BorderRadius>,
+    pub hover: Option<ButtonHoverStyleSlot>,
+}
+
+#[props]
+#[derive(Clone)]
+pub struct ButtonHoverStyleSlot {
+    pub color: Option<Color>,
+    pub background: Option<Color>,
+    pub border: Option<Border>,
 }
 
 impl RsxComponent<ButtonProps> for Button {
@@ -55,6 +75,7 @@ impl RsxComponent<ButtonProps> for Button {
                 variant={props.variant}
                 disabled={props.disabled}
                 repeat={props.repeat}
+                style={props.style}
                 on_click={props.on_click}
             />
         }
@@ -88,12 +109,18 @@ fn trigger_click(handler: &ClickHandlerProp, trigger: &ButtonRepeatTrigger) {
     handler.call(&mut event);
 }
 
+fn resolve_color(color: &dyn ColorLike) -> Color {
+    let [r, g, b, a] = color.to_rgba_u8();
+    Color::rgba(r, g, b, a)
+}
+
 #[component]
 fn ButtonView(
     label: String,
     variant: Option<ButtonVariant>,
     disabled: Option<bool>,
     repeat: Option<bool>,
+    style: Option<ButtonStyleSlot>,
     on_click: Option<ClickHandlerProp>,
 ) -> RsxNode {
     const REPEAT_DELAY: Duration = Duration::from_millis(400);
@@ -110,37 +137,33 @@ fn ButtonView(
     if repeat_enabled {
         let interval_state = repeat_state.clone();
         let interval_click = on_click.clone();
-        use_interval(
-            repeat_snapshot.pressed,
-            REPEAT_TICK,
-            move || {
-                let Some(handler) = interval_click.as_ref() else {
-                    return;
-                };
-                let snapshot = interval_state.get();
-                if !snapshot.pressed || !snapshot.hovered {
-                    return;
-                }
-                let Some(remaining_until_fire) = snapshot.remaining_until_fire else {
-                    return;
-                };
-                if remaining_until_fire > REPEAT_TICK {
-                    interval_state.update(|state| {
-                        state.remaining_until_fire =
-                            Some(remaining_until_fire.saturating_sub(REPEAT_TICK));
-                    });
-                    return;
-                }
-                let Some(trigger) = snapshot.trigger else {
-                    return;
-                };
+        use_interval(repeat_snapshot.pressed, REPEAT_TICK, move || {
+            let Some(handler) = interval_click.as_ref() else {
+                return;
+            };
+            let snapshot = interval_state.get();
+            if !snapshot.pressed || !snapshot.hovered {
+                return;
+            }
+            let Some(remaining_until_fire) = snapshot.remaining_until_fire else {
+                return;
+            };
+            if remaining_until_fire > REPEAT_TICK {
                 interval_state.update(|state| {
-                    state.repeating_started = true;
-                    state.remaining_until_fire = Some(REPEAT_INTERVAL);
+                    state.remaining_until_fire =
+                        Some(remaining_until_fire.saturating_sub(REPEAT_TICK));
                 });
-                trigger_click(handler, &trigger);
-            },
-        );
+                return;
+            }
+            let Some(trigger) = snapshot.trigger else {
+                return;
+            };
+            interval_state.update(|state| {
+                state.repeating_started = true;
+                state.remaining_until_fire = Some(REPEAT_INTERVAL);
+            });
+            trigger_click(handler, &trigger);
+        });
     } else {
         use_interval(false, REPEAT_TICK, || {});
     }
@@ -198,6 +221,46 @@ fn ButtonView(
             ButtonVariant::Outlined => theme.color.text.primary.clone(),
             ButtonVariant::Text => theme.color.text.primary.clone(),
         }
+    };
+    let style_slot = style.as_ref();
+    let root_background = style_slot
+        .and_then(|slot| slot.background)
+        .unwrap_or_else(|| resolve_color(background.as_ref()));
+    let root_padding = style_slot
+        .and_then(|slot| slot.padding)
+        .unwrap_or(theme.component.button.padding);
+    let root_border = style_slot
+        .and_then(|slot| slot.border.clone())
+        .unwrap_or(border);
+    let root_border_radius = style_slot
+        .and_then(|slot| slot.border_radius)
+        .unwrap_or(theme.component.button.radius);
+    let root_hover_background = if disabled {
+        root_background
+    } else {
+        style_slot
+            .and_then(|slot| slot.hover.as_ref())
+            .and_then(|hover| hover.background)
+            .unwrap_or_else(|| resolve_color(hover_background.as_ref()))
+    };
+    let root_hover_border = if disabled {
+        root_border.clone()
+    } else {
+        style_slot
+            .and_then(|slot| slot.hover.as_ref())
+            .and_then(|hover| hover.border.clone())
+            .unwrap_or_else(|| root_border.clone())
+    };
+    let resolved_text_color = style_slot
+        .and_then(|slot| slot.color)
+        .unwrap_or_else(|| resolve_color(text_color.as_ref()));
+    let text_hover_color = if disabled {
+        resolved_text_color
+    } else {
+        style_slot
+            .and_then(|slot| slot.hover.as_ref())
+            .and_then(|hover| hover.color)
+            .unwrap_or(resolved_text_color)
     };
 
     let mouse_down = if repeat_enabled {
@@ -292,17 +355,18 @@ fn ButtonView(
                     .no_wrap()
                     .justify_content(JustifyContent::Center)
                     .align(Align::Center),
-                padding: theme.component.button.padding,
-                border_radius: theme.component.button.radius,
-                border: border,
-                background: background,
+                padding: root_padding,
+                border_radius: root_border_radius,
+                border: root_border,
+                background: root_background,
                 transition: Transitions::single(
                     Transition::new(TransitionProperty::BackgroundColor, theme.motion.duration.normal)
                         .ease_in_out(),
                 ),
                 cursor: if disabled { Cursor::Default } else { Cursor::Pointer },
                 hover: {
-                    background: hover_background,
+                    background: root_hover_background,
+                    border: root_hover_border,
                 },
             }}
             on_mouse_down={mouse_down}
@@ -314,7 +378,10 @@ fn ButtonView(
                 font_size={theme.typography.size.sm}
                 align={Center}
                 style={{
-                    color: text_color
+                    color: resolved_text_color,
+                    hover: {
+                        color: text_hover_color,
+                    }
                 }}
             >
                 {label}

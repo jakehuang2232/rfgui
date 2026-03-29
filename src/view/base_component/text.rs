@@ -535,7 +535,9 @@ impl Layoutable for Text {
     }
 
     fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
-        if self.flex_has_explicit_min_main_size(is_row) || self.flex_main_size(is_row) != crate::SizeValue::Auto {
+        if self.flex_has_explicit_min_main_size(is_row)
+            || self.flex_main_size(is_row) != crate::SizeValue::Auto
+        {
             return None;
         }
         let (measured_w, measured_h) = self.measured_size();
@@ -738,8 +740,8 @@ impl Renderable for Text {
 #[cfg(test)]
 mod tests {
     use super::{ElementTrait, Layoutable, Text};
-    use crate::{Length, TextWrap};
     use crate::view::base_component::{LayoutConstraints, LayoutPlacement};
+    use crate::{Length, TextWrap};
 
     #[test]
     fn layout_clamps_to_parent_available_area() {
@@ -885,7 +887,6 @@ mod tests {
         });
         assert_eq!(text.measured_size().0, 10.0);
     }
-
 
     #[test]
     fn auto_width_for_cjk_text_is_not_underestimated() {

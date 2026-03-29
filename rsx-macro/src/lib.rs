@@ -494,10 +494,9 @@ fn parse_style_entries(input: ParseStream) -> Result<Vec<StyleEntry>> {
             ));
         }
         input.parse::<Token![:]>()?;
-        let style_value =
-            if matches!(style_key.to_string().as_str(), "hover" | "selection")
-                && input.peek(syn::token::Brace)
-            {
+        let style_value = if matches!(style_key.to_string().as_str(), "hover" | "selection")
+            && input.peek(syn::token::Brace)
+        {
             let nested;
             braced!(nested in input);
             StyleValueExpr::StyleObject(parse_style_entries(&nested)?)
@@ -703,10 +702,16 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
         });
         if let Some(inner_ty) = option_inner_type(field_ty) {
             let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
             builder_prop_type_methods.push(quote! {
                 pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#inner_ty> {
                     ::core::marker::PhantomData
                 }
+
+                pub fn #object_schema_method_ident<F>(&self, _: F)
+                where
+                    F: ::core::ops::FnOnce(&#inner_ty),
+                {}
             });
             if is_style_type(inner_ty) {
                 let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
@@ -752,10 +757,16 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
             });
         } else {
             let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
             builder_prop_type_methods.push(quote! {
                 pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#field_ty> {
                     ::core::marker::PhantomData
                 }
+
+                pub fn #object_schema_method_ident<F>(&self, _: F)
+                where
+                    F: ::core::ops::FnOnce(&#field_ty),
+                {}
             });
             if is_style_type(field_ty) {
                 let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
@@ -906,7 +917,9 @@ fn is_style_type(ty: &Type) -> bool {
     let Type::Path(TypePath { qself: None, path }) = ty else {
         return false;
     };
-    path.segments.last().is_some_and(|segment| segment.ident == "Style")
+    path.segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Style")
 }
 
 fn expand_builder_assignment(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
@@ -1069,20 +1082,14 @@ fn expand_style_object_for_builder(
     entries: &[StyleEntry],
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", key);
-    let selection_schema_method_ident = format_ident!("__rsx_style_selection_schema_{}", key);
-    let style_inserts = entries.iter().map(|entry| {
-        expand_style_entry_for_builder_schema(
-            entry,
-            builder_ident.clone(),
-            style_schema_method_ident.clone(),
-            selection_schema_method_ident.clone(),
-        )
-    });
+    let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
+    let assignments = entries
+        .iter()
+        .map(|entry| expand_style_assignment(entry, quote!(__rsx_style_builder)));
     quote! {{
-        let mut __rsx_style = ::rfgui::Style::new();
-        #(#style_inserts)*
-        __rsx_style
+        ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_style_builder| {
+            #(#assignments)*
+        })
     }}
 }
 
@@ -1092,14 +1099,36 @@ fn expand_object_value_for_builder(
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
+    let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", key);
     let assignments = entries
         .iter()
         .map(|entry| expand_object_assignment(entry, quote!(__rsx_object_builder)));
+    let schema_probe =
+        expand_object_schema_probe(entries, builder_ident.clone(), object_schema_method_ident);
     quote! {{
+        #schema_probe
         ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_object_builder| {
             #(#assignments)*
         })
     }}
+}
+
+fn expand_object_schema_probe(
+    entries: &[ObjectEntry],
+    builder_ident: proc_macro2::TokenStream,
+    object_schema_method_ident: Ident,
+) -> proc_macro2::TokenStream {
+    let field_probes = entries.iter().map(|entry| {
+        let key_ident = &entry.key;
+        quote! {
+            let _ = &__rsx_object_schema.#key_ident;
+        }
+    });
+    quote! {
+        #builder_ident.#object_schema_method_ident(|__rsx_object_schema| {
+            #(#field_probes)*
+        });
+    }
 }
 
 fn expand_object_assignment(
@@ -1126,10 +1155,17 @@ fn expand_object_value_expr(
         }
         ObjectValueExpr::Object(entries) => {
             let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
+            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", key);
             let assignments = entries
                 .iter()
                 .map(|entry| expand_object_assignment(entry, quote!(__rsx_nested_builder)));
+            let schema_probe = expand_object_schema_probe(
+                entries,
+                builder_ident.clone(),
+                object_schema_method_ident,
+            );
             quote! {{
+                #schema_probe
                 ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_nested_builder| {
                     #(#assignments)*
                 })
@@ -1138,44 +1174,18 @@ fn expand_object_value_expr(
     }
 }
 
-fn expand_style_entry_for_builder_schema(
+fn expand_style_assignment(
     entry: &StyleEntry,
     builder_ident: proc_macro2::TokenStream,
-    style_schema_method_ident: Ident,
-    selection_schema_method_ident: Ident,
 ) -> proc_macro2::TokenStream {
     let key_ident = &entry.key;
-    expand_style_entry_for_schema(
-        entry,
-        quote! {
-            #builder_ident.#style_schema_method_ident(|__style_schema| {
-                let _ = &__style_schema.#key_ident;
-            });
-        },
-        builder_ident.clone(),
-        selection_schema_method_ident.clone(),
-        |nested| {
-            expand_style_entry_for_builder_schema(
-                nested,
-                builder_ident.clone(),
-                style_schema_method_ident.clone(),
-                selection_schema_method_ident.clone(),
-            )
-        },
-    )
-}
-
-fn expand_style_entry_for_schema(
-    entry: &StyleEntry,
-    style_key_probe: proc_macro2::TokenStream,
-    selection_builder_ident: proc_macro2::TokenStream,
-    selection_schema_method_ident: Ident,
-    nested_expand: impl Fn(&StyleEntry) -> proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
     let key = entry.key.to_string();
+    let key_probe = quote! {
+        let _ = &#builder_ident.#key_ident;
+    };
     if matches!(&entry.value, StyleValueExpr::Missing) {
         return quote! {
-            #style_key_probe
+            #key_probe
             compile_error!(concat!(
                 "style key `",
                 #key,
@@ -1191,290 +1201,67 @@ fn expand_style_entry_for_schema(
             compile_error!("string style values are unsupported for this key; use typed values (colors are the only string exception)");
         };
     }
-    let expr_style_tokens =
-        |error_message: &str, expand_expr: fn(&Expr) -> proc_macro2::TokenStream| match &entry.value
-        {
-            StyleValueExpr::Expr(value) => expand_expr(value),
-            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!(#error_message);
-            },
-            StyleValueExpr::Missing => unreachable!("missing style value handled above"),
-        };
+    let expr_style_tokens = |error_message: &str| match &entry.value {
+        StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
+            quote! {
+                #builder_ident.#key_ident(#inner);
+            }
+        }),
+        StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
+            compile_error!(#error_message);
+        },
+        StyleValueExpr::Missing => unreachable!("missing style value handled above"),
+    };
     let style_value_tokens = match key.as_str() {
-        "border" => expr_style_tokens("style.border requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| quote! { __rsx_style.set_border(#inner); })
-        }),
+        "border" => expr_style_tokens("style.border requires an expression value"),
         "background" | "background_color" => {
-            expr_style_tokens("style.background requires an expression value", |value| {
-                expand_color_style_value(value, quote!(::rfgui::PropertyId::BackgroundColor))
-            })
+            expr_style_tokens("style.background requires an expression value")
         }
-        "color" => expr_style_tokens("style.color requires an expression value", |value| {
-            expand_color_style_value(value, quote!(::rfgui::PropertyId::Color))
-        }),
-        "font" => expr_style_tokens("style.font requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::FontFamily,
-                        ::rfgui::ParsedValue::FontFamily(#inner),
-                    );
-                }
-            })
-        }),
-        "font_size" => expr_style_tokens("style.font_size requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_font_size(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::FontSize,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "font_weight" => {
-            expr_style_tokens("style.font_weight requires an expression value", |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        ::rfgui::insert_style_font_weight(
-                            &mut __rsx_style,
-                            ::rfgui::PropertyId::FontWeight,
-                            #inner,
-                        );
-                    }
-                })
-            })
+        "color" => expr_style_tokens("style.color requires an expression value"),
+        "font" => expr_style_tokens("style.font requires an expression value"),
+        "font_size" => expr_style_tokens("style.font_size requires an expression value"),
+        "font_weight" => expr_style_tokens("style.font_weight requires an expression value"),
+        "text_wrap" => expr_style_tokens("style.text_wrap requires an expression value"),
+        "border_radius" => expr_style_tokens("style.border_radius requires an expression value"),
+        "opacity" => expr_style_tokens("style.opacity requires an expression value"),
+        "box_shadow" => expr_style_tokens("style.box_shadow requires an expression value"),
+        "transition" => expr_style_tokens("style.transition requires an expression value"),
+        "padding" => expr_style_tokens("style.padding requires an expression value"),
+        "position" => expr_style_tokens("style.position requires an expression value"),
+        "width" => expr_style_tokens("style.width requires an expression value"),
+        "min_width" => expr_style_tokens("style.min_width requires an expression value"),
+        "max_width" => expr_style_tokens("style.max_width requires an expression value"),
+        "height" => expr_style_tokens("style.height requires an expression value"),
+        "min_height" => expr_style_tokens("style.min_height requires an expression value"),
+        "max_height" => expr_style_tokens("style.max_height requires an expression value"),
+        "layout" => expr_style_tokens("style.layout requires an expression value"),
+        "cross_size" => expr_style_tokens("style.cross_size requires an expression value"),
+        "align" => expr_style_tokens("style.align requires an expression value"),
+        "flex" => expr_style_tokens("style.flex requires an expression value"),
+        "gap" => expr_style_tokens("style.gap requires an expression value"),
+        "scroll_direction" => {
+            expr_style_tokens("style.scroll_direction requires an expression value")
         }
-        "text_wrap" => expr_style_tokens("style.text_wrap requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_text_wrap(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::TextWrap,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "border_radius" => expr_style_tokens(
-            "style.border_radius requires an expression value",
-            |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        __rsx_style.set_border_radius(::rfgui::IntoBorderRadius::into_border_radius(#inner));
-                    }
-                })
-            },
-        ),
-        "opacity" => expr_style_tokens("style.opacity requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::Opacity,
-                        ::rfgui::ParsedValue::Opacity(::rfgui::Opacity::new((#inner) as f32)),
-                    );
-                }
-            })
-        }),
-        "box_shadow" => {
-            expr_style_tokens("style.box_shadow requires an expression value", |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        __rsx_style.insert(
-                            ::rfgui::PropertyId::BoxShadow,
-                            ::rfgui::ParsedValue::BoxShadow(#inner),
-                        );
-                    }
-                })
-            })
-        }
-        "transition" => {
-            expr_style_tokens("style.transition requires an expression value", |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        __rsx_style.insert(
-                            ::rfgui::PropertyId::Transition,
-                            ::rfgui::ParsedValue::Transition((#inner).into()),
-                        );
-                    }
-                })
-            })
-        }
-        "padding" => expr_style_tokens("style.padding requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| quote! { __rsx_style.set_padding(#inner); })
-        }),
-        "position" => expr_style_tokens("style.position requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::Position,
-                        ::rfgui::ParsedValue::Position(#inner),
-                    );
-                }
-            })
-        }),
-        "width" => expr_style_tokens("style.width requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_length(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::Width,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "min_width" => expr_style_tokens("style.min_width requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_length(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::MinWidth,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "max_width" => expr_style_tokens("style.max_width requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_length(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::MaxWidth,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "height" => expr_style_tokens("style.height requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_length(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::Height,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "min_height" => {
-            expr_style_tokens("style.min_height requires an expression value", |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        ::rfgui::insert_style_length(
-                            &mut __rsx_style,
-                            ::rfgui::PropertyId::MinHeight,
-                            #inner,
-                        );
-                    }
-                })
-            })
-        }
-        "max_height" => {
-            expr_style_tokens("style.max_height requires an expression value", |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        ::rfgui::insert_style_length(
-                            &mut __rsx_style,
-                            ::rfgui::PropertyId::MaxHeight,
-                            #inner,
-                        );
-                    }
-                })
-            })
-        }
-        "layout" => expr_style_tokens("style.layout requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::Layout,
-                        ::rfgui::ParsedValue::Layout((#inner).into()),
-                    );
-                }
-            })
-        }),
-        "cross_size" => {
-            expr_style_tokens("style.cross_size requires an expression value", |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        __rsx_style.insert(
-                            ::rfgui::PropertyId::CrossSize,
-                            ::rfgui::ParsedValue::CrossSize(#inner),
-                        );
-                    }
-                })
-            })
-        }
-        "align" => expr_style_tokens("style.align requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::Align,
-                        ::rfgui::ParsedValue::Align(#inner),
-                    );
-                }
-            })
-        }),
-        "flex" => expr_style_tokens("style.flex requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_flex(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::Flex,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "gap" => expr_style_tokens("style.gap requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    ::rfgui::insert_style_length(
-                        &mut __rsx_style,
-                        ::rfgui::PropertyId::Gap,
-                        #inner,
-                    );
-                }
-            })
-        }),
-        "scroll_direction" => expr_style_tokens(
-            "style.scroll_direction requires an expression value",
-            |value| {
-                expand_maybe_none_style_expr(value, |inner| {
-                    quote! {
-                        __rsx_style.insert(
-                            ::rfgui::PropertyId::ScrollDirection,
-                            ::rfgui::ParsedValue::ScrollDirection(#inner),
-                        );
-                    }
-                })
-            },
-        ),
-        "cursor" => expr_style_tokens("style.cursor requires an expression value", |value| {
-            expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_style.insert(
-                        ::rfgui::PropertyId::Cursor,
-                        ::rfgui::ParsedValue::Cursor(#inner),
-                    );
-                }
-            })
-        }),
+        "cursor" => expr_style_tokens("style.cursor requires an expression value"),
         "hover" => match &entry.value {
             StyleValueExpr::StyleObject(entries) => {
-                let hover_inserts = entries.iter().map(nested_expand);
+                let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
+                let assignments = entries.iter().map(|nested| {
+                    expand_style_assignment(nested, quote!(__rsx_nested_style_builder))
+                });
                 quote! {
-                    let mut __rsx_hover_style = ::rfgui::Style::new();
-                    {
-                        let __rsx_style = &mut __rsx_hover_style;
-                        #(#hover_inserts)*
-                    }
-                    __rsx_style.set_hover(__rsx_hover_style);
+                    #builder_ident.#key_ident(
+                        ::rfgui::ui::build_typed_prop_for(
+                            #builder_ident.#type_method_ident(),
+                            |__rsx_nested_style_builder| {
+                                #(#assignments)*
+                            }
+                        )
+                    );
                 }
             }
             StyleValueExpr::Expr(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.hover requires object syntax, e.g. hover: {{ background: \"#fff\" }}");
+                compile_error!("style.hover requires object syntax, e.g. hover: { background: Color::hex(\"#fff\") }");
             },
             StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
                 compile_error!("style.hover is incomplete; expected `:` and a value");
@@ -1482,20 +1269,19 @@ fn expand_style_entry_for_schema(
         },
         "selection" => match &entry.value {
             StyleValueExpr::StyleObject(entries) => {
-                let selection_inserts = entries.iter().map(|nested| {
-                    expand_selection_style_entry(
-                        nested,
-                        selection_builder_ident.clone(),
-                        selection_schema_method_ident.clone(),
-                    )
+                let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
+                let assignments = entries.iter().map(|nested| {
+                    expand_style_assignment(nested, quote!(__rsx_nested_style_builder))
                 });
                 quote! {
-                    let mut __rsx_selection_style = ::rfgui::SelectionStyle::new();
-                    {
-                        let __rsx_selection_style = &mut __rsx_selection_style;
-                        #(#selection_inserts)*
-                    }
-                    __rsx_style.set_selection(__rsx_selection_style);
+                    #builder_ident.#key_ident(
+                        ::rfgui::ui::build_typed_prop_for(
+                            #builder_ident.#type_method_ident(),
+                            |__rsx_nested_style_builder| {
+                                #(#assignments)*
+                            }
+                        )
+                    );
                 }
             }
             StyleValueExpr::Expr(_) => quote_spanned! {entry.key.span()=>
@@ -1511,42 +1297,7 @@ fn expand_style_entry_for_schema(
     };
 
     quote! {
-        #style_key_probe
-        #style_value_tokens
-    }
-}
-
-fn expand_selection_style_entry(
-    entry: &StyleEntry,
-    selection_builder_ident: proc_macro2::TokenStream,
-    selection_schema_method_ident: Ident,
-) -> proc_macro2::TokenStream {
-    let key_ident = &entry.key;
-    let key = key_ident.to_string();
-
-    let style_value_tokens = match key.as_str() {
-        "background" => match &entry.value {
-            StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
-                quote! {
-                    __rsx_selection_style.set_background(#inner);
-                }
-            }),
-            StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.selection.background requires an expression value");
-            },
-            StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
-                compile_error!("style.selection.background is incomplete; expected `:` and a value");
-            },
-        },
-        _ => quote_spanned! {entry.key.span()=>
-            compile_error!("unsupported selection style key");
-        },
-    };
-
-    quote! {
-        #selection_builder_ident.#selection_schema_method_ident(|__selection_schema| {
-            let _ = &__selection_schema.#key_ident;
-        });
+        #key_probe
         #style_value_tokens
     }
 }
@@ -1661,16 +1412,6 @@ fn is_string_literal_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Lit(expr_lit) if matches!(&expr_lit.lit, Lit::Str(_)))
 }
 
-fn expand_color_style_value(
-    value: &Expr,
-    property: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    expand_maybe_none_style_expr(value, |inner| {
-        quote! {
-            __rsx_style.insert(#property, ::rfgui::style_color_value(#inner));
-        }
-    })
-}
 
 fn expand_node(child: &Child) -> proc_macro2::TokenStream {
     match child {
@@ -1763,10 +1504,16 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         });
         if let Some(inner_ty) = option_inner_type(&props_field_ty) {
             let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
             builder_prop_type_methods.push(quote! {
                 pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#inner_ty> {
                     ::core::marker::PhantomData
                 }
+
+                pub fn #object_schema_method_ident<F>(&self, _: F)
+                where
+                    F: ::core::ops::FnOnce(&#inner_ty),
+                {}
             });
             if is_style_type(inner_ty) {
                 let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
@@ -1814,10 +1561,16 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             });
         } else {
             let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
+            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
             builder_prop_type_methods.push(quote! {
                 pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#props_field_ty> {
                     ::core::marker::PhantomData
                 }
+
+                pub fn #object_schema_method_ident<F>(&self, _: F)
+                where
+                    F: ::core::ops::FnOnce(&#props_field_ty),
+                {}
             });
             if is_style_type(&props_field_ty) {
                 let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
@@ -2038,8 +1791,9 @@ mod tests {
 
     #[test]
     fn parses_prop_macro_invocation() {
-        let parsed = syn::parse_str::<MultipleNodes>(r#"<Element style!{ width: Length::px(10.0) } />"#)
-            .expect("rsx should parse prop macro");
+        let parsed =
+            syn::parse_str::<MultipleNodes>(r#"<Element style!{ width: Length::px(10.0) } />"#)
+                .expect("rsx should parse prop macro");
 
         let node = match &parsed.nodes[0] {
             super::Child::Element(node) => node,
@@ -2050,7 +1804,10 @@ mod tests {
         let PropValueExpr::Macro(tokens) = &prop.value else {
             panic!("expected macro prop value");
         };
-        assert_eq!(tokens.to_string(), "style ! { width : Length :: px (10.0) }");
+        assert_eq!(
+            tokens.to_string(),
+            "style ! { width : Length :: px (10.0) }"
+        );
     }
 
     #[test]
@@ -2163,6 +1920,18 @@ mod tests {
         let expanded = expand_node(&parsed.nodes[0]).to_string();
         assert!(expanded.contains("Text"));
         assert!(expanded.contains("__rsx_style_schema_style"));
+    }
+
+    #[test]
+    fn object_prop_expansion_uses_object_schema_hooks() {
+        let parsed = syn::parse_str::<MultipleNodes>(
+            r##"<Window window_slots={{ root_style: { background: Color::hex("#fff") } }} />"##,
+        )
+        .expect("rsx should parse nested object prop");
+
+        let expanded = expand_node(&parsed.nodes[0]).to_string();
+        assert!(expanded.contains("__rsx_object_schema_window_slots"));
+        assert!(expanded.contains("__rsx_object_schema_root_style"));
     }
 
     #[test]

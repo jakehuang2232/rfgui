@@ -1,8 +1,8 @@
 use crate::platform::{key_to_string, map_cursor_icon, map_device_button, map_mouse_button};
 use crate::rfgui::promotion::ViewportPromotionConfig;
 use crate::rfgui::ui::{
-    RsxNode, clear_redraw_callback, next_timer_deadline, rsx, run_due_timers,
-    set_redraw_callback, take_state_dirty,
+    RsxNode, clear_redraw_callback, next_timer_deadline, rsx, run_due_timers, set_redraw_callback,
+    take_state_dirty,
 };
 use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::{Theme, init_theme};
@@ -153,14 +153,24 @@ impl App {
         delta: MouseScrollDelta,
     ) -> Option<(f32, f32)> {
         let normalized = match delta {
-            MouseScrollDelta::LineDelta(x, y) => (x * config.mouse_line_step, y * config.mouse_line_step),
+            MouseScrollDelta::LineDelta(x, y) => {
+                (x * config.mouse_line_step, y * config.mouse_line_step)
+            }
             MouseScrollDelta::PixelDelta(position) => {
                 let (dx, dy) =
                     viewport.physical_to_logical_point(position.x as f32, position.y as f32);
                 let dx = dx * config.touchpad_pixel_scale;
                 let dy = dy * config.touchpad_pixel_scale;
-                let dx = if dx.abs() < config.min_touchpad_delta { 0.0 } else { dx };
-                let dy = if dy.abs() < config.min_touchpad_delta { 0.0 } else { dy };
+                let dx = if dx.abs() < config.min_touchpad_delta {
+                    0.0
+                } else {
+                    dx
+                };
+                let dy = if dy.abs() < config.min_touchpad_delta {
+                    0.0
+                } else {
+                    dy
+                };
                 (dx, dy)
             }
         };

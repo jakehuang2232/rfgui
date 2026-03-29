@@ -610,7 +610,10 @@ mod tests {
     #[test]
     fn compute_style_reads_text_wrap() {
         let mut style = Style::new();
-        style.insert(PropertyId::TextWrap, ParsedValue::TextWrap(TextWrap::NoWrap));
+        style.insert(
+            PropertyId::TextWrap,
+            ParsedValue::TextWrap(TextWrap::NoWrap),
+        );
 
         let computed = compute_style(&style, None);
         assert_eq!(computed.text_wrap, TextWrap::NoWrap);

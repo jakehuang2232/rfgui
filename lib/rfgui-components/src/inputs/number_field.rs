@@ -1,10 +1,10 @@
 use crate::{Button, use_theme};
-use rfgui::view::{Element, TextArea};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode,
     TextChangeHandlerProp, props, rsx, use_state,
 };
-use rfgui::{Align, Layout, Length, TextWrap, flex, Padding};
+use rfgui::view::{Element, TextArea};
+use rfgui::{Align, Layout, Length, Padding, TextWrap, flex};
 
 pub struct NumberField;
 
@@ -122,7 +122,7 @@ where
             <Element style={{
                 layout: Layout::flex().row().align(Align::Center),
                 width: Length::percent(100.0),
-                gap: Length::px(2.0),
+                gap: Length::px(4.0),
             }}>
                 <Element style={{
                     border_radius: theme.component.input.radius,
@@ -149,8 +149,21 @@ where
                         on_focus={|event| event.target.select_all()}
                     />
                 </Element>
-                <Button label="-" repeat on_click={minus_click} disabled={disabled} />
-                <Button label="+" repeat on_click={plus_click} disabled={disabled} />
+                <Button
+                    label="-"
+                    style={
+                        padding: Padding::new().x(Length::px(5.0)),
+                    }
+                    repeat on_click={minus_click}
+                    disabled={disabled}/>
+                <Button
+                    label="+"
+                    style={
+                        padding: Padding::new().x(Length::px(5.0)),
+                    }
+                    repeat on_click={plus_click}
+                    disabled={disabled}
+                />
                 <Element style={{
                     flex: flex().grow(1.0).shrink(1.0).basis(theme.component.input.label_width_basis.clone()),
                     max_width: theme.component.input.label_max_width.clone(),
@@ -363,7 +376,10 @@ mod tests {
 
     #[test]
     fn blur_commit_restores_current_value_for_intermediate_input() {
-        assert_eq!(commit_text_input::<i32>("-", 7, Some(0), Some(10)), (7, "7".to_string()));
+        assert_eq!(
+            commit_text_input::<i32>("-", 7, Some(0), Some(10)),
+            (7, "7".to_string())
+        );
     }
 
     #[test]

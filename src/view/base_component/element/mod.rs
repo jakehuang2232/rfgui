@@ -789,6 +789,9 @@ pub trait Layoutable {
     fn flex_auto_min_main_size(&self, _is_row: bool) -> Option<f32> {
         None
     }
+    fn flex_auto_base_main_size(&self, _is_row: bool) -> Option<f32> {
+        None
+    }
     fn flex_min_main_size(&self, _is_row: bool) -> SizeValue {
         SizeValue::Length(Length::Px(0.0))
     }
@@ -1024,6 +1027,7 @@ pub struct Element {
     layout_inner_position: Position,
     layout_flow_inner_position: Position,
     layout_inner_size: Size,
+    intrinsic_size_is_percent_base: bool,
     parsed_style: Style,
     computed_style: ComputedStyle,
     padding: EdgeInsets,

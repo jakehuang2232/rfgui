@@ -375,14 +375,18 @@ impl Element {
 
     pub fn new_with_id(id: u64, x: f32, y: f32, width: f32, height: f32) -> Self {
         let mut style = Style::new();
-        style.insert(
-            crate::style::PropertyId::Width,
-            crate::style::ParsedValue::Length(Length::px(width)),
-        );
-        style.insert(
-            crate::style::PropertyId::Height,
-            crate::style::ParsedValue::Length(Length::px(height)),
-        );
+        if width != 0.0 {
+            style.insert(
+                crate::style::PropertyId::Width,
+                crate::style::ParsedValue::Length(Length::px(width)),
+            );
+        }
+        if height != 0.0 {
+            style.insert(
+                crate::style::PropertyId::Height,
+                crate::style::ParsedValue::Length(Length::px(height)),
+            );
+        }
 
         let mut el = Element {
             core: if id == 0 {
@@ -398,6 +402,7 @@ impl Element {
                 width: width.max(0.0),
                 height: height.max(0.0),
             },
+            intrinsic_size_is_percent_base: true,
             parsed_style: style,
             computed_style: ComputedStyle::default(),
             padding: EdgeInsets {
@@ -675,6 +680,10 @@ impl Element {
     pub fn apply_style(&mut self, style: Style) {
         self.parsed_style = self.parsed_style.clone() + style;
         self.recompute_style();
+    }
+
+    pub fn set_intrinsic_size_as_percent_base(&mut self, enabled: bool) {
+        self.intrinsic_size_is_percent_base = enabled;
     }
 
     fn recompute_style(&mut self) {

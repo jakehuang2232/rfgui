@@ -1,6 +1,6 @@
 use crate::components::GlobalKeyRenderTestBlock;
-use crate::rfgui::view::{Element, Image, ImageFit, Text, TextArea};
 use crate::rfgui::ui::{Binding, ClickHandlerProp, RsxNode, rsx};
+use crate::rfgui::view::{Element, Image, ImageFit, Text, TextArea};
 use crate::rfgui::{
     Align, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, CrossSize,
     FontFamily, JustifyContent, Layout, Length, Padding, Position, ScrollDirection, Transition,

@@ -244,7 +244,9 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
             LIVE_TIMER_HOOKS.with(|hooks| {
                 let live_hooks = hooks.borrow().clone();
                 TIMER_STORE.with(|timers| {
-                    timers.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                    timers
+                        .borrow_mut()
+                        .retain(|key, _| live_hooks.contains(key));
                 });
             });
         }
@@ -426,9 +428,8 @@ where
         let callback: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(callback));
         match timers.get_mut(&key) {
             Some(entry) => {
-                let should_reset = entry.mode != mode
-                    || entry.duration != duration
-                    || (!entry.enabled && enabled);
+                let should_reset =
+                    entry.mode != mode || entry.duration != duration || (!entry.enabled && enabled);
                 entry.mode = mode;
                 entry.duration = duration;
                 entry.enabled = enabled;

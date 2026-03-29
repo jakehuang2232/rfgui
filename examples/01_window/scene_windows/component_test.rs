@@ -1,10 +1,10 @@
-use rfgui::ScrollDirection;
-use crate::rfgui::view::{Element, Text};
 use crate::rfgui::ui::{Binding, RsxNode, rsx};
+use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme,
 };
+use rfgui::ScrollDirection;
 use rfgui::ui::use_state;
 use rfgui_components::Accordion;
 
@@ -115,14 +115,14 @@ pub fn build(
                 </Element>
             </Accordion>
             <Accordion title="Number Field">
-                 <NumberField
+                <NumberField
                     binding={int_number.binding()}
                     min=0
                     max=100
                     step=1
                     label="I32 Number"
                 />
-                <NumberField 
+                <NumberField
                     binding={float_number.binding()}
                     min=0.0
                     max=100.0
@@ -138,7 +138,7 @@ pub fn build(
                 label="Switch state"
                 binding={bindings.switch_state}
             />
-           
+
             <Select
                 data={options}
                 to_label={select_label}
@@ -149,6 +149,7 @@ pub fn build(
                 binding={bindings.slider}
                 min=0.0
                 max=100.0
+                label="Slider"
             />
             <Text>
                 {format!(

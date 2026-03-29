@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::use_theme;
 use rfgui::ClipMode::Viewport;
-use rfgui::view::{Element, Text};
 use rfgui::ui::{
     BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp, RsxChildrenPolicy,
     RsxComponent, RsxNode, ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
 };
+use rfgui::view::{Element, Text};
 use rfgui::{
     Align, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout,
     Length, Padding, Position, ScrollDirection,

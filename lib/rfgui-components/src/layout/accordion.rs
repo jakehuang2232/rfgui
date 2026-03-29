@@ -1,8 +1,8 @@
 use crate::use_theme;
-use rfgui::view::{Element, Text};
 use rfgui::ui::{
     Binding, RsxChildrenPolicy, RsxComponent, RsxNode, component, on_click, props, rsx, use_state,
 };
+use rfgui::view::{Element, Text};
 use rfgui::{
     Align, Border, ClipMode, Color, Cursor, Layout, Length, Position, Transition,
     TransitionProperty, flex,
@@ -67,7 +67,7 @@ fn AccordionView(
             style={{
                 width: Length::percent(100.0),
                 layout: Layout::flow().column().no_wrap(),
-                border_radius: theme.component.card.radius,
+                border_radius: theme.component.input.radius,
                 border: theme.component.card.border.clone(),
                 background: if disabled {
                     theme.color.state.disabled.clone()
