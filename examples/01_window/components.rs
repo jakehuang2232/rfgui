@@ -1,4 +1,4 @@
-use crate::rfgui::ui::host::{Element, Text};
+use crate::rfgui::view::{Element, Text};
 use crate::rfgui::ui::{GlobalKey, RsxNode, component, on_click, rsx, use_state};
 use crate::rfgui::{
     Border, Layout, Length, Padding, ScrollDirection, Transition, TransitionProperty,

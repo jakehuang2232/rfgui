@@ -1,4 +1,4 @@
-use crate::ui::host::ImageSampling;
+use crate::view::ImageSampling;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferResource, PrepareContext, ResourceCache};

@@ -1,4 +1,4 @@
-use crate::rfgui::ui::host::{Element, Text};
+use crate::rfgui::view::{Element, Text};
 use crate::rfgui::ui::{Binding, RsxNode, rsx};
 use crate::rfgui::{
     Border, Color, JustifyContent, Layout, Length, Padding, ScrollDirection, Transition,

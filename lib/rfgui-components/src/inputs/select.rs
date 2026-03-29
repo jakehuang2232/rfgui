@@ -2,7 +2,7 @@ use std::any::Any;
 use std::rc::Rc;
 
 use crate::use_theme;
-use rfgui::ui::host::{Element, Text};
+use rfgui::view::{Element, Text};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
     MouseDownHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,

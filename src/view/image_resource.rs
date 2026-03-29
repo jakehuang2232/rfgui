@@ -1,4 +1,4 @@
-use crate::ui::host::ImageSource;
+use crate::view::ImageSource;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};

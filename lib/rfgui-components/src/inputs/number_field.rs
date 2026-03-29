@@ -1,5 +1,5 @@
 use crate::{Button, use_theme};
-use rfgui::ui::host::{Element, TextArea};
+use rfgui::view::{Element, TextArea};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode,
     TextChangeHandlerProp, props, rsx, use_state,

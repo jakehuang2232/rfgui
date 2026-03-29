@@ -5,7 +5,9 @@ pub mod promotion;
 mod promotion_builder;
 pub mod render_pass;
 pub mod renderer_adapter;
+mod tags;
 pub mod viewport;
 
 pub use renderer_adapter::*;
+pub use tags::*;
 pub use viewport::*;

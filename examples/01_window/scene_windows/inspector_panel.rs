@@ -2,7 +2,7 @@ use crate::rfgui::ui::{Binding, RsxNode, rsx};
 use crate::rfgui::{Border, Color, Layout, Length, Padding};
 use crate::rfgui_components::{Button, ButtonVariant, Switch, Theme};
 use crate::state::REQUEST_DUMP_FRAME_GRAPH_DOT;
-use rfgui::ui::host::Element;
+use rfgui::view::Element;
 use std::sync::atomic::Ordering;
 
 pub struct InspectorPanelBindings {

@@ -94,7 +94,12 @@ fn reconcile_element(
     path: &[usize],
     patches: &mut Vec<Patch>,
 ) {
-    if old.tag != new.tag {
+    let same_tag = match (old.tag_descriptor, new.tag_descriptor) {
+        (Some(old_desc), Some(new_desc)) => old_desc == new_desc,
+        _ => old.tag == new.tag,
+    };
+
+    if !same_tag {
         if path.is_empty() {
             patches.push(Patch::ReplaceRoot(RsxNode::Element(new.clone())));
         } else {

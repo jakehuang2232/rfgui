@@ -488,7 +488,7 @@ macro_rules! impl_handler_prop {
         impl $ty {
             pub fn new<F>(handler: F) -> Self
             where
-                F: FnMut(&mut $event_ty) + 'static,
+                F: for<'a> FnMut(&'a mut $event_ty) + 'static,
             {
                 Self {
                     id: next_handler_id(),
@@ -521,7 +521,7 @@ macro_rules! impl_handler_prop {
 
         impl<F> From<F> for $ty
         where
-            F: FnMut(&mut $event_ty) + 'static,
+            F: for<'a> FnMut(&'a mut $event_ty) + 'static,
         {
             fn from(handler: F) -> Self {
                 $ty::new(handler)
@@ -540,7 +540,7 @@ macro_rules! impl_into_event_handler_prop {
 
         impl<F> IntoEventHandlerProp<$handler_ty> for F
         where
-            F: FnMut(&mut $event_ty) + 'static,
+            F: for<'a> FnMut(&'a mut $event_ty) + 'static,
         {
             fn into_event_handler_prop(self) -> $handler_ty {
                 <$handler_ty>::new(self)

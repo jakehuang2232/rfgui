@@ -1,6 +1,6 @@
 use crate::use_theme;
 use rfgui::TextAlign::Center;
-use rfgui::ui::host::{Element, Text};
+use rfgui::view::{Element, Text};
 use rfgui::ui::{
     ClickEvent, ClickHandlerProp, EventMeta, MouseButton, MouseEventData, RsxChildrenPolicy,
     MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxComponent, RsxNode,

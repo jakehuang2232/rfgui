@@ -88,7 +88,7 @@ Key files:
 
 ```rust
 use rfgui::ui::{component, rsx, RsxNode};
-use rfgui::ui::host::Element;
+use rfgui::view::Element;
 use rfgui::{Layout, Length};
 
 #[component]
@@ -105,13 +105,11 @@ fn Card() -> RsxNode {
 }
 ```
 
-### 2) Hand-written typed `create_element(...)`
+### 2) Hand-written typed `create_tag_element(...)`
 
 ```rust
-use std::marker::PhantomData;
-
-use rfgui::ui::host::{Element, ElementPropSchema};
-use rfgui::ui::{create_element, RsxChildrenPolicy, RsxComponent, RsxNode, props};
+use rfgui::view::{Element, ElementPropSchema};
+use rfgui::ui::{create_tag_element, RsxChildrenPolicy, RsxComponent, RsxNode, props};
 use rfgui::{Border, BorderRadius, Color, Length, Padding, Style};
 
 pub struct Card;
@@ -129,8 +127,7 @@ impl RsxComponent<CardProps> for Card {
             .with_border(Border::uniform(Length::px(2.0), &Color::hex("#1f2937")))
             .with_border_radius(BorderRadius::uniform(Length::px(10.0)));
 
-        create_element(
-            PhantomData::<Element>,
+        create_tag_element::<Element, _, _>(
             ElementPropSchema {
                 anchor: None,
                 style: Some(style),
@@ -164,7 +161,7 @@ RSX 的 `key` 目前分成兩種：
 
 ```rust
 use rfgui::ui::{GlobalKey, rsx};
-use rfgui::ui::host::Element;
+use rfgui::view::Element;
 
 let tree = rsx! {
     <Element style={{}}>

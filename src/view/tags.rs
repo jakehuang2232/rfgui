@@ -2,8 +2,8 @@ use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
-    MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, TextAreaFocusHandlerProp,
-    TextChangeHandlerProp, props,
+    MouseUpHandlerProp, RsxChildrenPolicy, RsxComponent, RsxPropsStyleSchema, RsxStyleSchema,
+    TextAreaFocusHandlerProp, TextChangeHandlerProp, props,
 };
 use crate::{
     Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize,
@@ -111,6 +111,30 @@ pub struct BorderStylePropSchema {
     pub color: Box<dyn ColorLike>,
 }
 
+impl RsxStyleSchema for ElementStylePropSchema {
+    type SelectionSchema = SelectionStylePropSchema;
+}
+
+impl RsxStyleSchema for TextStylePropSchema {
+    type SelectionSchema = SelectionStylePropSchema;
+}
+
+impl RsxPropsStyleSchema for ElementPropSchema {
+    type StyleSchema = ElementStylePropSchema;
+}
+
+impl RsxPropsStyleSchema for TextPropSchema {
+    type StyleSchema = TextStylePropSchema;
+}
+
+impl RsxPropsStyleSchema for TextAreaPropSchema {
+    type StyleSchema = ElementStylePropSchema;
+}
+
+impl RsxPropsStyleSchema for ImagePropSchema {
+    type StyleSchema = ElementStylePropSchema;
+}
+
 #[props]
 pub struct TextPropSchema {
     pub style: Option<Style>,
@@ -152,7 +176,7 @@ pub struct ImagePropSchema {
 
 impl RsxComponent<ElementPropSchema> for Element {
     fn render(props: ElementPropSchema, children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::element("Element");
+        let mut node = RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<Element>());
         if let Some(anchor) = props.anchor {
             node = node.with_prop("anchor", anchor);
         }
@@ -198,7 +222,7 @@ impl RsxComponent<ElementPropSchema> for Element {
 
 impl RsxComponent<TextPropSchema> for Text {
     fn render(props: TextPropSchema, children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::element("Text");
+        let mut node = RsxNode::tagged("Text", crate::ui::RsxTagDescriptor::of::<Text>());
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
         }
@@ -234,7 +258,7 @@ impl RsxComponent<TextPropSchema> for Text {
 
 impl RsxComponent<TextAreaPropSchema> for TextArea {
     fn render(props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::element("TextArea");
+        let mut node = RsxNode::tagged("TextArea", crate::ui::RsxTagDescriptor::of::<TextArea>());
         if let Some(content) = props.content
             && !content.is_empty()
         {
@@ -308,10 +332,8 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
 
 impl RsxComponent<ImagePropSchema> for Image {
     fn render(props: ImagePropSchema, _children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::element("Image").with_prop(
-            "source",
-            crate::ui::IntoPropValue::into_prop_value(props.source),
-        );
+        let mut node = RsxNode::tagged("Image", crate::ui::RsxTagDescriptor::of::<Image>())
+            .with_prop("source", crate::ui::IntoPropValue::into_prop_value(props.source));
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
         }
@@ -336,6 +358,7 @@ impl RsxComponent<ImagePropSchema> for Image {
         node
     }
 }
+
 impl RsxChildrenPolicy for Element {
     const ACCEPTS_CHILDREN: bool = true;
 }
@@ -429,5 +452,12 @@ impl crate::ui::FromPropValue for RsxNode {
 }
 
 fn is_unset_font_size(font_size: FontSize) -> bool {
-    matches!(font_size, FontSize::Px(v) if v == 0.0)
+    match font_size {
+        FontSize::Px(v)
+        | FontSize::Percent(v)
+        | FontSize::Em(v)
+        | FontSize::Rem(v)
+        | FontSize::Vw(v)
+        | FontSize::Vh(v) => v == 0.0,
+    }
 }
