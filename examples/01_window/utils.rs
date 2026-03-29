@@ -1,4 +1,4 @@
-use crate::rfgui::ui::host::ImageSource;
+use crate::rfgui::view::ImageSource;
 use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::Theme;
 use std::path::PathBuf;

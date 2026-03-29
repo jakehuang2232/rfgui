@@ -1,12 +1,13 @@
 use crate::Style;
-use crate::ui::host::{ImageFit, ImageSampling, ImageSource};
+use crate::view::{ImageFit, ImageSampling, ImageSource};
 use crate::ui::{
     Binding, FromPropValue, GlobalKey, Patch, PropValue, RenderBackend, RsxElementNode, RsxKey,
-    RsxNode, RsxNodeIdentity,
+    RsxNode, RsxNodeIdentity, RsxTagDescriptor,
 };
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Image, Text, TextArea};
 use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -18,10 +19,61 @@ fn element_factories() -> &'static RwLock<HashMap<String, ElementFactory>> {
     FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+fn typed_element_factories() -> &'static RwLock<HashMap<TypeId, ElementFactory>> {
+    static FACTORIES: OnceLock<RwLock<HashMap<TypeId, ElementFactory>>> = OnceLock::new();
+    FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
 pub fn register_element_factory(tag: impl Into<String>, factory: ElementFactory) {
     if let Ok(mut map) = element_factories().write() {
         map.insert(tag.into(), factory);
     }
+}
+
+pub fn register_tag_element_factory<T: 'static>(factory: ElementFactory) {
+    if let Ok(mut map) = typed_element_factories().write() {
+        map.insert(TypeId::of::<T>(), factory);
+    }
+}
+
+fn element_runtime_name(node: &RsxElementNode) -> &str {
+    node.tag_descriptor
+        .map(|descriptor| descriptor.type_name)
+        .unwrap_or(node.tag.as_str())
+}
+
+fn element_display_name(node: &RsxElementNode) -> &str {
+    node.tag.as_str()
+}
+
+fn is_text_descriptor(descriptor: RsxTagDescriptor) -> bool {
+    let name = descriptor.type_name;
+    name.ends_with("::Text") || name == "Text"
+}
+
+fn is_text_area_descriptor(descriptor: RsxTagDescriptor) -> bool {
+    let name = descriptor.type_name;
+    name.ends_with("::TextArea") || name == "TextArea"
+}
+
+fn is_image_descriptor(descriptor: RsxTagDescriptor) -> bool {
+    let name = descriptor.type_name;
+    name.ends_with("::Image") || name == "Image"
+}
+
+fn is_builtin_text_node(node: &RsxElementNode) -> bool {
+    node.tag_descriptor.map(is_text_descriptor).unwrap_or(false) || node.tag == "Text"
+}
+
+fn is_builtin_text_area_node(node: &RsxElementNode) -> bool {
+    node.tag_descriptor
+        .map(is_text_area_descriptor)
+        .unwrap_or(false)
+        || node.tag == "TextArea"
+}
+
+fn is_builtin_image_node(node: &RsxElementNode) -> bool {
+    node.tag_descriptor.map(is_image_descriptor).unwrap_or(false) || node.tag == "Image"
 }
 
 pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
@@ -388,7 +440,7 @@ fn rendered_node_id(
 ) -> Option<u64> {
     match node {
         RsxNode::Element(element) => Some(stable_node_id_from_parts(
-            element.tag.as_str(),
+            element_runtime_name(element),
             path,
             global_path,
         )),
@@ -511,19 +563,33 @@ fn convert_element(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
-    match node.tag.as_str() {
-        "Text" => convert_text_element(node, path, global_path, inherited_text_style),
-        "TextArea" => convert_text_area_element(node, path, global_path, inherited_text_style),
-        "Image" => convert_image_element(node, path, global_path, inherited_text_style),
-        _ => {
-            if let Ok(map) = element_factories().read() {
-                if let Some(factory) = map.get(&node.tag) {
-                    return factory(node, path);
-                }
-            }
-            convert_container_element(node, path, global_path, inherited_text_style)
+    if is_builtin_text_node(node) {
+        return convert_text_element(node, path, global_path, inherited_text_style);
+    }
+    if is_builtin_text_area_node(node) {
+        return convert_text_area_element(node, path, global_path, inherited_text_style);
+    }
+    if is_builtin_image_node(node) {
+        return convert_image_element(node, path, global_path, inherited_text_style);
+    }
+
+    if let Some(descriptor) = node.tag_descriptor
+        && let Ok(map) = typed_element_factories().read()
+        && let Some(factory) = map.get(&descriptor.type_id)
+    {
+        return factory(node, path);
+    }
+
+    if let Ok(map) = element_factories().read() {
+        if let Some(factory) = map.get(element_runtime_name(node)) {
+            return factory(node, path);
+        }
+        if let Some(factory) = map.get(&node.tag) {
+            return factory(node, path);
         }
     }
+
+    convert_container_element(node, path, global_path, inherited_text_style)
 }
 
 fn convert_container_element(
@@ -533,7 +599,7 @@ fn convert_container_element(
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut element = Element::new_with_id(
-        stable_node_id_from_parts(node.tag.as_str(), path, global_path.as_ref()),
+        stable_node_id_from_parts(element_runtime_name(node), path, global_path.as_ref()),
         0.0,
         0.0,
         10_000.0,
@@ -604,9 +670,7 @@ fn convert_container_element(
             "padding_top" => element.set_padding_top(as_f32(value, key)?),
             "padding_bottom" => element.set_padding_bottom(as_f32(value, key)?),
             "opacity" => element.set_opacity(as_f32(value, key)?),
-            "style" => {
-                // Style has already been merged and applied once to avoid initial mount transitions.
-            }
+            "style" => {}
             "on_mouse_down" => {
                 let handler = as_mouse_down_handler(value, key)?;
                 element.on_mouse_down(move |event, _control| handler.call(event));
@@ -647,11 +711,16 @@ fn convert_container_element(
                 let handler = as_blur_handler(value, key)?;
                 element.on_blur(move |event, _control| handler.call(event));
             }
-            _ => return Err(format!("unknown prop `{}` on <{}>", key, node.tag)),
+            _ => {
+                return Err(format!(
+                    "unknown prop `{}` on <{}>",
+                    key,
+                    element_display_name(node)
+                ))
+            }
         }
     }
 
-    // Reuse a single path buffer for all children to avoid per-child path allocations.
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
     child_path.extend_from_slice(path);
     let current_global_path =
@@ -1533,16 +1602,35 @@ fn as_text_change_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        RenderedGlobalKeyEntry, ViewportRenderBackend, identity_token_from_node_identity,
-        rendered_node_id, rsx_to_elements, rsx_to_elements_lossy, rsx_to_elements_with_context,
+        RenderedGlobalKeyEntry, ViewportRenderBackend, element_runtime_name,
+        identity_token_from_node_identity, register_tag_element_factory, rendered_node_id,
+        rsx_to_elements, rsx_to_elements_lossy, rsx_to_elements_with_context,
+        stable_node_id_from_parts,
     };
-    use crate::ui::{GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, rsx};
+    use crate::view::{Element as HostElement, Text as HostText, TextArea as HostTextArea};
+    use crate::ui::{GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx};
     use crate::view::Viewport;
-    use crate::view::base_component::{ElementTrait, Text, TextArea, get_cursor_by_id, hit_test};
+    use crate::view::base_component::{
+        Element, ElementTrait, Text, TextArea, get_cursor_by_id, hit_test,
+    };
     use crate::{
         Align, Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length, ParsedValue,
         PropertyId, Style, Unit,
     };
+    use std::sync::Arc;
+
+    fn host_element_node() -> RsxNode {
+        RsxNode::tagged("Element", RsxTagDescriptor::of::<HostElement>())
+    }
+
+    fn host_text_node() -> RsxNode {
+        RsxNode::tagged("Text", RsxTagDescriptor::of::<HostText>())
+    }
+
+    fn host_text_area_node() -> RsxNode {
+        RsxNode::tagged("TextArea", RsxTagDescriptor::of::<HostTextArea>())
+    }
+
     fn style_bg(hex: &str) -> Style {
         let mut style = Style::new();
         style.insert(
@@ -1583,7 +1671,7 @@ mod tests {
 
     #[test]
     fn key_prop_is_accepted_for_element_node() {
-        let node = RsxNode::element("Element")
+        let node = host_element_node()
             .with_prop("key", "feature-1")
             .with_prop("style", Style::new());
         let converted = rsx_to_elements(&node);
@@ -1591,8 +1679,47 @@ mod tests {
     }
 
     #[test]
+    fn rendered_node_id_prefers_tag_descriptor_type_name() {
+        struct DescriptorA;
+        struct DescriptorB;
+
+        let path = [1_u64, 2_u64];
+        let first = RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<DescriptorA>());
+        let second = RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<DescriptorB>());
+
+        assert_ne!(
+            rendered_node_id(&first, &path, None),
+            rendered_node_id(&second, &path, None)
+        );
+    }
+
+    #[test]
+    fn typed_factory_registration_uses_tag_descriptor_type_id() {
+        struct CustomContainer;
+
+        register_tag_element_factory::<CustomContainer>(Arc::new(|node, path| {
+            let mut element = Element::new_with_id(
+                stable_node_id_from_parts(element_runtime_name(node), path, None),
+                0.0,
+                0.0,
+                64.0,
+                32.0,
+            );
+            element.apply_style(Style::new());
+            Ok(Box::new(element))
+        }));
+
+        let node = RsxNode::tagged(
+            "CustomContainer",
+            crate::ui::RsxTagDescriptor::of::<CustomContainer>(),
+        );
+        let converted = rsx_to_elements(&node).expect("typed factory should convert");
+        assert_eq!(converted.len(), 1);
+    }
+
+    #[test]
     fn metadata_key_is_accepted_for_element_node() {
-        let node = RsxNode::element("Element")
+        let node = host_element_node()
             .with_key(GlobalKey::from("feature-1"))
             .with_invocation_type("Button")
             .with_prop("style", Style::new());
@@ -1604,7 +1731,7 @@ mod tests {
     fn global_key_registry_keeps_fragment_path_without_node_id() {
         let global_key = GlobalKey::from("fragment-root");
         let node = RsxNode::fragment(vec![
-            RsxNode::element("Element").with_prop("style", Style::new()),
+            host_element_node().with_prop("style", Style::new()),
         ])
         .with_key(global_key)
         .with_invocation_type("Button");
@@ -1624,26 +1751,26 @@ mod tests {
     #[test]
     fn backend_rebuilds_global_key_registry_after_replace_root() {
         let global_key = GlobalKey::from("moving-root");
-        let first_root = RsxNode::element("Element")
+        let first_root = host_element_node()
             .with_prop("style", Style::new())
             .with_child(
-                RsxNode::element("Element")
+                host_element_node()
                     .with_prop("style", Style::new())
                     .with_child(
-                        RsxNode::element("Element")
+                        host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Button")
                             .with_prop("style", Style::new()),
                     ),
             );
-        let second_root = RsxNode::element("Element")
+        let second_root = host_element_node()
             .with_prop("style", Style::new())
-            .with_child(RsxNode::element("Element").with_prop("style", Style::new()))
+            .with_child(host_element_node().with_prop("style", Style::new()))
             .with_child(
-                RsxNode::element("Element")
+                host_element_node()
                     .with_prop("style", Style::new())
                     .with_child(
-                        RsxNode::element("Element")
+                        host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Button")
                             .with_prop("style", Style::new()),
@@ -1683,34 +1810,34 @@ mod tests {
     #[test]
     fn global_key_subtree_node_id_is_stable_across_parent_move() {
         let global_key = GlobalKey::from("stable-subtree");
-        let first_root = RsxNode::element("Element")
+        let first_root = host_element_node()
             .with_prop("style", Style::new())
             .with_child(
-                RsxNode::element("Element")
+                host_element_node()
                     .with_prop("style", Style::new())
                     .with_child(
-                        RsxNode::element("Element")
+                        host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Card")
                             .with_prop("style", Style::new())
                             .with_child(
-                                RsxNode::element("Element").with_prop("style", Style::new()),
+                                host_element_node().with_prop("style", Style::new()),
                             ),
                     ),
             );
-        let second_root = RsxNode::element("Element")
+        let second_root = host_element_node()
             .with_prop("style", Style::new())
-            .with_child(RsxNode::element("Element").with_prop("style", Style::new()))
+            .with_child(host_element_node().with_prop("style", Style::new()))
             .with_child(
-                RsxNode::element("Element")
+                host_element_node()
                     .with_prop("style", Style::new())
                     .with_child(
-                        RsxNode::element("Element")
+                        host_element_node()
                             .with_key(global_key)
                             .with_invocation_type("Card")
                             .with_prop("style", Style::new())
                             .with_child(
-                                RsxNode::element("Element").with_prop("style", Style::new()),
+                                host_element_node().with_prop("style", Style::new()),
                             ),
                     ),
             );
@@ -1744,10 +1871,10 @@ mod tests {
         );
         child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
         child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(10.0)));
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("anchor", "card_anchor")
             .with_prop("style", root_style)
-            .with_child(RsxNode::element("Element").with_prop("style", child_style));
+            .with_child(host_element_node().with_prop("style", child_style));
         let converted = rsx_to_elements(&tree);
         assert!(converted.is_ok());
     }
@@ -1804,7 +1931,7 @@ mod tests {
 
     #[test]
     fn text_nodes_keep_expected_layout_bounds_in_scene() {
-        let first_panel = RsxNode::element("Element")
+        let first_panel = host_element_node()
             .with_prop(
                 "style",
                 style_with_size(
@@ -1813,23 +1940,23 @@ mod tests {
                     140.0,
                 ),
             )
-            .with_child(RsxNode::element("Element").with_prop(
+            .with_child(host_element_node().with_prop(
                 "style",
                 style_with_size(style_bg_border("#FFD166", "#EF476F", 3.0), 72.0, 48.0),
             ))
-            .with_child(RsxNode::element("Element").with_prop(
+            .with_child(host_element_node().with_prop(
                 "style",
                 style_with_size(style_bg_border("#F72585", "#B5179E", 4.0), 120.0, 80.0),
             ))
             .with_child(
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("font_size", 26)
                     .with_prop("style", style_with_color(Style::new(), "#0F172A"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Hello Rust GUI Text Test")),
             );
 
-        let second_panel = RsxNode::element("Element")
+        let second_panel = host_element_node()
             .with_prop(
                 "style",
                 style_with_size(
@@ -1839,14 +1966,14 @@ mod tests {
                 ),
             )
             .with_child(
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("font_size", 22)
                     .with_prop("style", style_with_color(Style::new(), "#E2E8F0"))
                     .with_prop("font", "Noto Sans CJK TC")
                     .with_child(RsxNode::text("Test Component")),
             )
             .with_child(
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("font_size", 14)
                     .with_prop("style", style_with_color(Style::new(), "#CBD5E1"))
                     .with_prop("font", "Noto Sans CJK TC")
@@ -1855,7 +1982,7 @@ mod tests {
                     )),
             )
             .with_child(
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("font_size", 14)
                     .with_prop("style", style_with_color(Style::new(), "#F8FAFC"))
                     .with_prop("font", "Noto Sans CJK TC")
@@ -1905,14 +2032,14 @@ mod tests {
 
     #[test]
     fn element_padding_offsets_child_layout() {
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", style_with_size(Style::new(), 200.0, 120.0))
             .with_prop("padding_left", 8)
             .with_prop("padding_top", 12)
             .with_prop("padding_right", 16)
             .with_prop("padding_bottom", 10)
             .with_child(
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("style", style_with_size(Style::new(), 300.0, 300.0))
                     .with_child(RsxNode::text("inner")),
             );
@@ -1967,18 +2094,18 @@ mod tests {
         );
         row_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
 
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", row_style)
             .with_child(
-                RsxNode::element("Element")
+                host_element_node()
                     .with_prop("style", style_with_size(Style::new(), 98.0, 34.0)),
             )
             .with_child(
-                RsxNode::element("Element")
+                host_element_node()
                     .with_prop("style", style_with_size(Style::new(), 98.0, 34.0)),
             )
             .with_child(
-                RsxNode::element("Element")
+                host_element_node()
                     .with_prop("style", style_with_size(Style::new(), 70.0, 34.0)),
             );
 
@@ -2012,14 +2139,14 @@ mod tests {
 
     #[test]
     fn nested_fragment_children_are_flattened_during_conversion() {
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", style_with_size(Style::new(), 120.0, 60.0))
             .with_child(RsxNode::fragment(vec![
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("style", style_with_size(Style::new(), 16.0, 16.0))
                     .with_child(RsxNode::text("A")),
                 RsxNode::fragment(vec![
-                    RsxNode::element("Text")
+                    host_text_node()
                         .with_prop("style", style_with_size(Style::new(), 16.0, 16.0))
                         .with_child(RsxNode::text("B")),
                 ]),
@@ -2031,8 +2158,8 @@ mod tests {
 
     #[test]
     fn lossy_conversion_skips_bad_nodes_and_keeps_good_nodes() {
-        let good = RsxNode::element("Element").with_prop("style", Style::new());
-        let bad = RsxNode::element("Element").with_prop("not_exists", true);
+        let good = host_element_node().with_prop("style", Style::new());
+        let bad = host_element_node().with_prop("not_exists", true);
         let tree = RsxNode::fragment(vec![good, bad]);
 
         let (converted, errors) = rsx_to_elements_lossy(&tree);
@@ -2059,9 +2186,9 @@ mod tests {
             ParsedValue::color_like(Color::hex("#ff0000")),
         );
 
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", parent_style)
-            .with_child(RsxNode::element("Element").with_prop("style", child_style));
+            .with_child(host_element_node().with_prop("style", child_style));
 
         let mut roots = rsx_to_elements(&tree).expect("convert rsx");
         let root = roots.first_mut().expect("single root");
@@ -2102,10 +2229,10 @@ mod tests {
         );
         parent_style.set_cursor(Cursor::Pointer);
 
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", parent_style)
             .with_child(
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("font_size", 16.0)
                     .with_child(RsxNode::text("Button label")),
             );
@@ -2151,10 +2278,10 @@ mod tests {
             ParsedValue::FontSize(FontSize::em(1.5)),
         );
 
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", parent_style)
             .with_child(
-                RsxNode::element("Text")
+                host_text_node()
                     .with_prop("style", child_style)
                     .with_child(RsxNode::text("MMMMMMMM")),
             );
@@ -2191,7 +2318,7 @@ mod tests {
 
     #[test]
     fn rem_font_size_uses_viewport_style_root_font_size() {
-        let text_tree = RsxNode::element("Text")
+        let text_tree = host_text_node()
             .with_prop("style", {
                 let mut style = Style::new();
                 style.insert(
@@ -2277,10 +2404,10 @@ mod tests {
             ParsedValue::FontSize(FontSize::px(24.0)),
         );
 
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", parent_style)
             .with_child(
-                RsxNode::element("TextArea")
+                host_text_area_node()
                     .with_prop("content", "hello")
                     .with_prop("multiline", false),
             );
@@ -2329,17 +2456,17 @@ mod tests {
         let mut textarea_style = Style::new();
         textarea_style.insert(PropertyId::Color, ParsedValue::Color(local_color));
 
-        let inherited_tree = RsxNode::element("Element")
+        let inherited_tree = host_element_node()
             .with_prop("style", parent_style.clone())
             .with_child(
-                RsxNode::element("TextArea")
+                host_text_area_node()
                     .with_prop("content", "hello")
                     .with_prop("multiline", false),
             );
-        let explicit_tree = RsxNode::element("Element")
+        let explicit_tree = host_element_node()
             .with_prop("style", parent_style)
             .with_child(
-                RsxNode::element("TextArea")
+                host_text_area_node()
                     .with_prop("style", textarea_style)
                     .with_prop("content", "hello")
                     .with_prop("multiline", false),
@@ -2367,7 +2494,7 @@ mod tests {
 
     #[test]
     fn textarea_rejects_legacy_color_prop() {
-        let tree = RsxNode::element("TextArea")
+        let tree = host_text_area_node()
             .with_prop("color", "#ff0000")
             .with_prop("content", "hello")
             .with_prop("multiline", false);
@@ -2379,7 +2506,7 @@ mod tests {
     #[test]
     fn textarea_accepts_on_blur_prop() {
         let tree = rsx! {
-            <crate::ui::host::TextArea
+            <crate::view::TextArea
                 on_blur={move |event: &mut crate::ui::BlurEvent| event.meta.stop_propagation()}
                 content="hello"
                 multiline={false}
@@ -2397,7 +2524,7 @@ mod tests {
         textarea_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(296.0)));
         textarea_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(78.0)));
 
-        let tree = RsxNode::element("TextArea")
+        let tree = host_text_area_node()
             .with_prop("style", textarea_style)
             .with_prop("content", "hello")
             .with_prop("multiline", true);
@@ -2440,10 +2567,10 @@ mod tests {
         textarea_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(50.0)));
         textarea_style.insert(PropertyId::Height, ParsedValue::Length(Length::percent(25.0)));
 
-        let tree = RsxNode::element("Element")
+        let tree = host_element_node()
             .with_prop("style", parent_style)
             .with_child(
-                RsxNode::element("TextArea")
+                host_text_area_node()
                     .with_prop("style", textarea_style)
                     .with_prop("content", "hello")
                     .with_prop("multiline", true),

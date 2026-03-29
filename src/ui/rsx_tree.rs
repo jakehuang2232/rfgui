@@ -6,7 +6,7 @@ use crate::ui::{
     MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
     MouseUpHandlerProp, TextAreaFocusHandlerProp, TextChangeHandlerProp,
 };
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -66,10 +66,26 @@ pub enum RsxNode {
     Fragment(RsxFragmentNode),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RsxTagDescriptor {
+    pub type_id: TypeId,
+    pub type_name: &'static str,
+}
+
+impl RsxTagDescriptor {
+    pub fn of<T: 'static>() -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            type_name: std::any::type_name::<T>(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RsxElementNode {
     pub identity: RsxNodeIdentity,
     pub tag: String,
+    pub tag_descriptor: Option<RsxTagDescriptor>,
     pub props: Vec<(String, PropValue)>,
     pub children: Vec<RsxNode>,
 }
@@ -199,6 +215,18 @@ impl RsxNode {
         Self::Element(RsxElementNode {
             identity: RsxNodeIdentity::new(tag.clone(), None),
             tag,
+            tag_descriptor: None,
+            props: Vec::new(),
+            children: Vec::new(),
+        })
+    }
+
+    pub fn tagged(tag: impl Into<String>, descriptor: RsxTagDescriptor) -> Self {
+        let tag = tag.into();
+        Self::Element(RsxElementNode {
+            identity: RsxNodeIdentity::new(descriptor.type_name, None),
+            tag,
+            tag_descriptor: Some(descriptor),
             props: Vec::new(),
             children: Vec::new(),
         })
@@ -280,6 +308,13 @@ impl RsxNode {
             Self::Element(node) => Some(&mut node.children),
             Self::Fragment(node) => Some(&mut node.children),
             Self::Text(_) => None,
+        }
+    }
+
+    pub fn tag_descriptor(&self) -> Option<RsxTagDescriptor> {
+        match self {
+            Self::Element(node) => node.tag_descriptor,
+            Self::Text(_) | Self::Fragment(_) => None,
         }
     }
 }
@@ -814,7 +849,7 @@ where
                 .value()
                 .downcast::<T>()
                 .map_err(|_| "expected shared prop value of requested type".to_string()),
-            _ => Err("expected shared prop value".to_string()),
+            _ => Err("expected  shared prop value".to_string()),
         }
     }
 }

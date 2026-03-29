@@ -585,7 +585,12 @@ mod tests {
         assert_eq!(state_before.get(), 7);
         let _ = take_state_dirty();
 
-        let _ = build_scope(|| RsxNode::element("Element"));
+        let _ = build_scope(|| {
+            RsxNode::tagged(
+                "Element",
+                crate::ui::RsxTagDescriptor::of::<crate::view::Element>(),
+            )
+        });
 
         let state_after = build_scope(|| {
             crate::ui::render_component::<u32, _>(|| {

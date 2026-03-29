@@ -1,5 +1,5 @@
 use rfgui::ScrollDirection;
-use crate::rfgui::ui::host::{Element, Text};
+use crate::rfgui::view::{Element, Text};
 use crate::rfgui::ui::{Binding, RsxNode, rsx};
 use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::{

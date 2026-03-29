@@ -1,6 +1,6 @@
 use crate::ui::{
-    GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, register_global_key, render_component,
-    with_component_key,
+    GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, register_global_key,
+    render_component, with_component_key,
 };
 use std::marker::PhantomData;
 
@@ -45,6 +45,19 @@ macro_rules! impl_event_into_optional_prop {
     };
 }
 
+macro_rules! impl_no_arg_event_into_optional_prop {
+    ($handler_ty:ty, $into_fn:path) => {
+        impl<F> IntoOptionalProp<$handler_ty> for crate::ui::NoArgHandler<F>
+        where
+            F: FnMut() + 'static,
+        {
+            fn into_optional_prop(self) -> Option<$handler_ty> {
+                Some($into_fn(self))
+            }
+        }
+    };
+}
+
 impl_event_into_optional_prop!(crate::ui::MouseDownHandlerProp, crate::ui::MouseDownEvent);
 impl_event_into_optional_prop!(crate::ui::MouseUpHandlerProp, crate::ui::MouseUpEvent);
 impl_event_into_optional_prop!(crate::ui::MouseMoveHandlerProp, crate::ui::MouseMoveEvent);
@@ -60,6 +73,54 @@ impl_event_into_optional_prop!(
     crate::ui::TextAreaFocusEvent
 );
 impl_event_into_optional_prop!(crate::ui::TextChangeHandlerProp, crate::ui::TextChangeEvent);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::MouseDownHandlerProp,
+    crate::ui::into_mouse_down_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::MouseUpHandlerProp,
+    crate::ui::into_mouse_up_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::MouseMoveHandlerProp,
+    crate::ui::into_mouse_move_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::MouseEnterHandlerProp,
+    crate::ui::into_mouse_enter_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::MouseLeaveHandlerProp,
+    crate::ui::into_mouse_leave_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::ClickHandlerProp,
+    crate::ui::into_click_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::KeyDownHandlerProp,
+    crate::ui::into_key_down_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::KeyUpHandlerProp,
+    crate::ui::into_key_up_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::FocusHandlerProp,
+    crate::ui::into_focus_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::BlurHandlerProp,
+    crate::ui::into_blur_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::TextAreaFocusHandlerProp,
+    crate::ui::into_text_area_focus_handler
+);
+impl_no_arg_event_into_optional_prop!(
+    crate::ui::TextChangeHandlerProp,
+    crate::ui::into_text_change_handler
+);
 
 impl<'a> IntoOptionalProp<crate::Color> for crate::HexColor<'a> {
     fn into_optional_prop(self) -> Option<crate::Color> {
@@ -155,11 +216,28 @@ pub trait RsxComponent<Props>: Sized {
     fn render(props: Props, children: Vec<RsxNode>) -> RsxNode;
 }
 
+pub trait RsxTag<Props>: 'static
+where
+    Props: RsxPropsBuilder,
+{
+    const ACCEPTS_CHILDREN: bool = true;
+
+    fn create_node(props: Props, children: Vec<RsxNode>, key: Option<RsxKey>) -> RsxNode;
+}
+
 pub trait RsxPropsBuilder: Sized {
     type Builder;
 
     fn builder() -> Self::Builder;
     fn build(builder: Self::Builder) -> Result<Self, String>;
+}
+
+pub trait RsxStyleSchema {
+    type SelectionSchema;
+}
+
+pub trait RsxPropsStyleSchema {
+    type StyleSchema: RsxStyleSchema;
 }
 
 pub trait IntoRsxChildren {
@@ -209,14 +287,51 @@ where
     children.extend(value.into_rsx_children());
 }
 
-pub fn create_element<T, P, C>(element_type: PhantomData<T>, props: P, children: C) -> RsxNode
+#[deprecated(note = "use create_tag_element::<T>(props, children); legacy bridge for old host/component path")]
+pub fn create_element<T, P, C>(_element_type: PhantomData<T>, props: P, children: C) -> RsxNode
 where
     T: RsxChildrenPolicy + RsxComponent<P> + 'static,
+    P: RsxPropsBuilder,
     C: IntoRsxChildren,
 {
-    create_element_with_key(element_type, props, children, None)
+    create_tag_element::<T, P, C>(props, children)
 }
 
+pub fn create_tag_element<T, P, C>(props: P, children: C) -> RsxNode
+where
+    T: RsxTag<P>,
+    P: RsxPropsBuilder,
+    C: IntoRsxChildren,
+{
+    create_tag_element_with_key::<T, P, C>(props, children, None)
+}
+
+pub fn create_tag_element_with_key<T, P, C>(
+    props: P,
+    children: C,
+    key: Option<RsxKey>,
+) -> RsxNode
+where
+    T: RsxTag<P>,
+    P: RsxPropsBuilder,
+    C: IntoRsxChildren,
+{
+    let children = children.into_rsx_children();
+    debug_assert!(T::ACCEPTS_CHILDREN || children.is_empty());
+    if let Some(RsxKey::Global(global_key)) = key.clone() {
+        register_global_key(global_key);
+    }
+    with_component_key(key.clone(), || {
+        let mut node = T::create_node(props, children, key.clone());
+        node.set_identity(RsxNodeIdentity::new(std::any::type_name::<T>(), key));
+        if let RsxNode::Element(element) = &mut node {
+            element.tag_descriptor = Some(RsxTagDescriptor::of::<T>());
+        }
+        node
+    })
+}
+
+#[deprecated(note = "use create_tag_element_with_key::<T>(props, children, key); legacy bridge for old host/component path")]
 pub fn create_element_with_key<T, P, C>(
     _element_type: PhantomData<T>,
     props: P,
@@ -225,18 +340,22 @@ pub fn create_element_with_key<T, P, C>(
 ) -> RsxNode
 where
     T: RsxChildrenPolicy + RsxComponent<P> + 'static,
+    P: RsxPropsBuilder,
     C: IntoRsxChildren,
 {
-    let children = children.into_rsx_children();
-    debug_assert!(T::ACCEPTS_CHILDREN || children.is_empty());
-    if let Some(RsxKey::Global(global_key)) = key {
-        register_global_key(global_key);
+    create_tag_element_with_key::<T, P, C>(props, children, key)
+}
+
+impl<T, P> RsxTag<P> for T
+where
+    T: RsxChildrenPolicy + RsxComponent<P> + 'static,
+    P: RsxPropsBuilder,
+{
+    const ACCEPTS_CHILDREN: bool = T::ACCEPTS_CHILDREN;
+
+    fn create_node(props: P, children: Vec<RsxNode>, _key: Option<RsxKey>) -> RsxNode {
+        render_component::<T, _>(|| T::render(props, children))
     }
-    with_component_key(key.clone(), || {
-        let mut node = render_component::<T, _>(|| T::render(props, children));
-        node.set_identity(RsxNodeIdentity::new(std::any::type_name::<T>(), key));
-        node
-    })
 }
 
 impl From<GlobalKey> for RsxKey {
@@ -272,19 +391,34 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{GlobalKey, RsxChildrenPolicy, RsxComponent, create_element_with_key};
+    macro_rules! style {
+        ($($tokens:tt)*) => {{
+            let _ = stringify!($($tokens)*);
+            let mut style = crate::Style::new();
+            style.insert(
+                crate::PropertyId::Width,
+                crate::ParsedValue::Length(crate::Length::px(42.0)),
+            );
+            style
+        }};
+    }
+
+    use super::{
+        GlobalKey, RsxChildrenPolicy, RsxComponent, RsxPropsBuilder, RsxTag,
+        create_tag_element, create_tag_element_with_key,
+    };
     use crate::style::{Color, FontSize, FontWeight, Length, ParsedValue, PropertyId};
-    use crate::ui::host::{Element, Text};
+    use crate::view::{Element, Text};
     use crate::ui::{
         ClickEvent, EventMeta, KeyDownEvent, KeyEventData, MouseButton, MouseButtons,
         MouseEventData, Patch, PropValue, RsxKey, RsxNode, component, reconcile, rsx,
     };
     use std::cell::Cell;
-    use std::marker::PhantomData;
     use std::rc::Rc;
 
     struct Button;
     struct ElementLike;
+    struct AnotherElementLike;
 
     impl RsxChildrenPolicy for Button {
         const ACCEPTS_CHILDREN: bool = false;
@@ -294,15 +428,35 @@ mod tests {
         const ACCEPTS_CHILDREN: bool = false;
     }
 
+    impl RsxChildrenPolicy for AnotherElementLike {
+        const ACCEPTS_CHILDREN: bool = false;
+    }
+
+    impl RsxPropsBuilder for () {
+        type Builder = ();
+
+        fn builder() -> Self::Builder {}
+
+        fn build(_builder: Self::Builder) -> Result<Self, String> {
+            Ok(())
+        }
+    }
+
     impl RsxComponent<()> for Button {
         fn render(_: (), _: Vec<RsxNode>) -> RsxNode {
-            RsxNode::element("Element")
+            RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<crate::view::Element>())
         }
     }
 
     impl RsxComponent<()> for ElementLike {
         fn render(_: (), _: Vec<RsxNode>) -> RsxNode {
-            RsxNode::element("Element")
+            RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<crate::view::Element>())
+        }
+    }
+
+    impl RsxComponent<()> for AnotherElementLike {
+        fn render(_: (), _: Vec<RsxNode>) -> RsxNode {
+            RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<crate::view::Element>())
         }
     }
 
@@ -338,18 +492,8 @@ mod tests {
     fn duplicate_global_key_panics_in_same_build() {
         crate::ui::build_scope(|| {
             let global_key = GlobalKey::from("dup");
-            let _ = create_element_with_key::<Button, _, _>(
-                PhantomData,
-                (),
-                (),
-                Some(RsxKey::Global(global_key)),
-            );
-            let _ = create_element_with_key::<Button, _, _>(
-                PhantomData,
-                (),
-                (),
-                Some(RsxKey::Global(global_key)),
-            );
+            let _ = create_tag_element_with_key::<Button, _, _>((), (), Some(RsxKey::Global(global_key)));
+            let _ = create_tag_element_with_key::<Button, _, _>((), (), Some(RsxKey::Global(global_key)));
         });
     }
 
@@ -357,21 +501,48 @@ mod tests {
     fn same_global_key_but_different_invocation_type_replaces_node() {
         let global_key = GlobalKey::from("shared");
         let old = crate::ui::build_scope(|| {
-            create_element_with_key::<Button, _, _>(
-                PhantomData,
-                (),
-                (),
-                Some(RsxKey::Global(global_key)),
-            )
+            create_tag_element_with_key::<Button, _, _>((), (), Some(RsxKey::Global(global_key)))
         });
         let new = crate::ui::build_scope(|| {
-            create_element_with_key::<ElementLike, _, _>(
-                PhantomData,
-                (),
-                (),
-                Some(RsxKey::Global(global_key)),
-            )
+            create_tag_element_with_key::<ElementLike, _, _>((), (), Some(RsxKey::Global(global_key)))
         });
+
+        let patches = reconcile(Some(&old), &new);
+        assert!(matches!(patches.as_slice(), [Patch::ReplaceRoot(_)]));
+    }
+
+    #[test]
+    fn create_tag_element_with_key_bridges_existing_rsx_component_types() {
+        let node = crate::ui::build_scope(|| {
+            create_tag_element_with_key::<Button, _, _>((), (), Some(RsxKey::Local(7)))
+        });
+
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        assert_eq!(node.identity.key, Some(RsxKey::Local(7)));
+        assert_eq!(node.tag_descriptor, Some(crate::ui::RsxTagDescriptor::of::<Button>()));
+    }
+
+    #[test]
+    fn component_macro_types_implement_rsx_tag() {
+        fn accepts_tag<T, P>()
+        where
+            T: RsxTag<P>,
+            P: RsxPropsBuilder,
+        {
+        }
+
+        accepts_tag::<BoolFlag, BoolFlagProps>();
+        accepts_tag::<OptionalFlag, OptionalFlagProps>();
+        accepts_tag::<PassThrough, PassThroughProps>();
+    }
+
+    #[test]
+    fn tag_descriptor_distinguishes_same_string_tag_from_different_tag_types() {
+        let old = crate::ui::build_scope(|| create_tag_element::<ElementLike, _, _>((), ()));
+        let new =
+            crate::ui::build_scope(|| create_tag_element::<AnotherElementLike, _, _>((), ()));
 
         let patches = reconcile(Some(&old), &new);
         assert!(matches!(patches.as_slice(), [Patch::ReplaceRoot(_)]));
@@ -501,7 +672,7 @@ mod tests {
     #[test]
     fn numeric_length_style_values_coerce_to_px() {
         let node = rsx! {
-            <crate::ui::host::Element
+            <crate::view::Element
                 style={{
                     width: 10,
                     height: 12.5,
@@ -535,9 +706,31 @@ mod tests {
     }
 
     #[test]
+    fn prop_macro_style_syntax_expands_to_typed_style_value() {
+        let node = rsx! {
+            <crate::view::Element style! { width: Length::px(10.0) } />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = node
+            .props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", crate::ui::PropValue::Style(style)) => Some(style),
+                _ => None,
+            })
+            .expect("missing style prop");
+        assert_eq!(
+            style.get(PropertyId::Width),
+            Some(&ParsedValue::Length(Length::px(42.0)))
+        );
+    }
+
+    #[test]
     fn numeric_font_size_style_values_coerce_to_px() {
         let node = rsx! {
-            <crate::ui::host::Element
+            <crate::view::Element
                 style={{
                     font_size: 14,
                 }}
@@ -563,7 +756,7 @@ mod tests {
     #[test]
     fn typed_color_style_values_coerce_via_style_field_helper() {
         let node = rsx! {
-            <crate::ui::host::Element
+            <crate::view::Element
                 style={{
                     color: Color::hex("#112233"),
                     background: Color::rgba(1, 2, 3, 255),
@@ -594,7 +787,7 @@ mod tests {
     #[test]
     fn numeric_font_weight_style_values_coerce_via_style_field_helper() {
         let node = rsx! {
-            <crate::ui::host::Element
+            <crate::view::Element
                 style={{
                     font_weight: 700,
                 }}
@@ -620,7 +813,7 @@ mod tests {
     #[test]
     fn text_wrap_style_values_use_typed_helper() {
         let node = rsx! {
-            <crate::ui::host::Element
+            <crate::view::Element
                 style={{
                     text_wrap: crate::TextWrap::NoWrap,
                 }}
@@ -646,7 +839,7 @@ mod tests {
     #[test]
     fn selection_style_object_uses_typed_background() {
         let node = rsx! {
-            <crate::ui::host::Element
+            <crate::view::Element
                 style={{
                     selection: {
                         background: Color::hex("#ffffff"),
@@ -700,7 +893,7 @@ mod tests {
     #[test]
     fn text_area_on_change_accepts_typed_event_closure() {
         let node = rsx! {
-            <crate::ui::host::TextArea
+            <crate::view::TextArea
                 on_change={move |event: &mut crate::ui::TextChangeEvent| event.meta.stop_propagation()}
             />
         };
@@ -714,7 +907,7 @@ mod tests {
     #[test]
     fn text_area_on_focus_accepts_target_selection_methods() {
         let node = rsx! {
-            <crate::ui::host::TextArea
+            <crate::view::TextArea
                 on_focus={move |event| event.target.select_all()}
             />
         };
@@ -728,7 +921,7 @@ mod tests {
     #[test]
     fn text_area_on_blur_accepts_typed_event_closure() {
         let node = rsx! {
-            <crate::ui::host::TextArea
+            <crate::view::TextArea
                 on_blur={move |event: &mut crate::ui::BlurEvent| event.meta.stop_propagation()}
             />
         };

@@ -2,7 +2,7 @@ use crate::use_theme;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use rfgui::ui::host::{Element, Text};
+use rfgui::view::{Element, Text};
 use rfgui::ui::{
     Binding, RsxChildrenPolicy, RsxComponent, RsxNode, component, on_mouse_down, on_mouse_move,
     on_mouse_up, props, rsx, use_state,

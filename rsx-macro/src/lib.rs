@@ -92,6 +92,7 @@ struct Prop {
 #[derive(Clone)]
 enum PropValueExpr {
     Expr(Expr),
+    Macro(proc_macro2::TokenStream),
     StyleObject(Vec<StyleEntry>),
     Object(Vec<ObjectEntry>),
     Missing,
@@ -157,6 +158,29 @@ impl Parse for ElementNode {
                         key, key
                     ),
                 ));
+            }
+            if input.peek(Token![!]) {
+                let bang: Token![!] = input.parse()?;
+                let macro_body: TokenTree = input.parse()?;
+                let TokenTree::Group(group) = macro_body else {
+                    return Err(syn::Error::new(
+                        bang.span(),
+                        format!("expected delimiter group after `{}!`", key),
+                    ));
+                };
+                let delimiter = group.delimiter();
+                if delimiter == Delimiter::None {
+                    return Err(syn::Error::new(
+                        group.span(),
+                        format!("expected delimiter group after `{}!`", key),
+                    ));
+                }
+                let macro_tokens = quote! { #key ! #group };
+                props.push(Prop {
+                    key,
+                    value: PropValueExpr::Macro(macro_tokens),
+                });
+                continue;
             }
             if !input.peek(Token![=]) {
                 if can_recover_incomplete_prop(input) {
@@ -559,7 +583,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
             fn __rsx_builder_for_props<__RsxComponentProps>() -> <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::Builder
             where
                 __RsxComponentProps: ::rfgui::ui::RsxPropsBuilder,
-                #tag: ::rfgui::ui::RsxComponent<__RsxComponentProps>,
+                #tag: ::rfgui::ui::RsxTag<__RsxComponentProps>,
             {
                 <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::builder()
             }
@@ -568,7 +592,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
             ) -> ::core::result::Result<__RsxComponentProps, ::std::string::String>
             where
                 __RsxComponentProps: ::rfgui::ui::RsxPropsBuilder,
-                #tag: ::rfgui::ui::RsxComponent<__RsxComponentProps>,
+                #tag: ::rfgui::ui::RsxTag<__RsxComponentProps>,
             {
                 <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::build(builder)
             }
@@ -578,8 +602,7 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
             #(#builder_assignments)*
             let __rsx_props = __rsx_build_props(__rsx_props_builder)
                 .expect(concat!("rsx build error on <", stringify!(#tag), ">"));
-            ::rfgui::ui::create_element_with_key(
-                ::core::marker::PhantomData::<#tag>,
+            ::rfgui::ui::create_tag_element_with_key::<#tag, _, _>(
                 __rsx_props,
                 #children_value,
                 #component_key,
@@ -612,7 +635,7 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
         PropValueExpr::Expr(expr) => {
             quote! { ::core::option::Option::Some(::rfgui::ui::classify_component_key(&(#expr))) }
         }
-        PropValueExpr::StyleObject(_) | PropValueExpr::Object(_) => {
+        PropValueExpr::Macro(_) | PropValueExpr::StyleObject(_) | PropValueExpr::Object(_) => {
             quote_spanned! {prop.key.span()=>
                 compile_error!("`key` must be a Rust expression")
             }
@@ -685,6 +708,28 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
                     ::core::marker::PhantomData
                 }
             });
+            if is_style_type(inner_ty) {
+                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
+                let selection_schema_method_ident =
+                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
+                builder_prop_type_methods.push(quote! {
+                    pub fn #style_schema_method_ident<F>(&self, _: F)
+                    where
+                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
+                        ),
+                    {}
+
+                    pub fn #selection_schema_method_ident<F>(&self, _: F)
+                    where
+                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
+                        ),
+                    {}
+                });
+            }
             default_fields.push(quote! { #field_ident: ::core::option::Option::None, });
             if is_fn_pointer_type(inner_ty) {
                 builder_setters.push(quote! {
@@ -712,6 +757,28 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
                     ::core::marker::PhantomData
                 }
             });
+            if is_style_type(field_ty) {
+                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
+                let selection_schema_method_ident =
+                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
+                builder_prop_type_methods.push(quote! {
+                    pub fn #style_schema_method_ident<F>(&self, _: F)
+                    where
+                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
+                        ),
+                    {}
+
+                    pub fn #selection_schema_method_ident<F>(&self, _: F)
+                    where
+                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
+                        ),
+                    {}
+                });
+            }
             all_optional = false;
             if is_fn_pointer_type(field_ty) {
                 builder_setters.push(quote! {
@@ -835,6 +902,13 @@ fn is_fn_pointer_type(ty: &Type) -> bool {
     matches!(ty, Type::BareFn(_))
 }
 
+fn is_style_type(ty: &Type) -> bool {
+    let Type::Path(TypePath { qself: None, path }) = ty else {
+        return false;
+    };
+    path.segments.last().is_some_and(|segment| segment.ident == "Style")
+}
+
 fn expand_builder_assignment(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
     let key_ident = &prop.key;
     if matches!(prop.value, PropValueExpr::Missing) {
@@ -856,82 +930,103 @@ fn expand_builder_value_expr(
     prop: &Prop,
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let value = expand_prop_value_expr_for_builder(tag, &prop.key, &prop.value, builder_ident);
-    match &prop.value {
-        PropValueExpr::Expr(expr) => wrap_event_expr(tag, &prop.key.to_string(), expr, value),
-        _ => value,
-    }
+    expand_prop_value_expr_for_builder(tag, &prop.key, &prop.value, builder_ident)
 }
 
 fn is_text_area_tag(tag: &Path) -> bool {
     path_key(tag).ends_with("TextArea")
 }
 
-fn is_text_tag(tag: &Path) -> bool {
-    let key = path_key(tag);
-    key.ends_with("Text") && !key.ends_with("TextArea")
-}
-
-fn event_handler_converter(tag: &Path, prop_key: &str) -> Option<proc_macro2::TokenStream> {
-    match prop_key {
-        "on_mouse_down" => Some(quote! { ::rfgui::ui::into_mouse_down_handler }),
-        "on_mouse_up" => Some(quote! { ::rfgui::ui::into_mouse_up_handler }),
-        "on_mouse_move" => Some(quote! { ::rfgui::ui::into_mouse_move_handler }),
-        "on_mouse_enter" => Some(quote! { ::rfgui::ui::into_mouse_enter_handler }),
-        "on_mouse_leave" => Some(quote! { ::rfgui::ui::into_mouse_leave_handler }),
-        "on_click" => Some(quote! { ::rfgui::ui::into_click_handler }),
-        "on_key_down" => Some(quote! { ::rfgui::ui::into_key_down_handler }),
-        "on_key_up" => Some(quote! { ::rfgui::ui::into_key_up_handler }),
-        "on_focus" if is_text_area_tag(tag) => {
-            Some(quote! { ::rfgui::ui::into_text_area_focus_handler })
-        }
-        "on_focus" => Some(quote! { ::rfgui::ui::into_focus_handler }),
-        "on_blur" => Some(quote! { ::rfgui::ui::into_blur_handler }),
-        _ => None,
+fn is_zero_arg_closure(expr: &Expr) -> bool {
+    match expr {
+        Expr::Closure(closure) => closure.inputs.is_empty(),
+        _ => false,
     }
 }
 
-fn event_handler_wrapper(tag: &Path, prop_key: &str) -> Option<proc_macro2::TokenStream> {
-    match prop_key {
-        "on_mouse_down" => Some(quote! { ::rfgui::ui::on_mouse_down }),
-        "on_mouse_up" => Some(quote! { ::rfgui::ui::on_mouse_up }),
-        "on_mouse_move" => Some(quote! { ::rfgui::ui::on_mouse_move }),
-        "on_mouse_enter" => Some(quote! { ::rfgui::ui::on_mouse_enter }),
-        "on_mouse_leave" => Some(quote! { ::rfgui::ui::on_mouse_leave }),
-        "on_click" => Some(quote! { ::rfgui::ui::on_click }),
-        "on_key_down" => Some(quote! { ::rfgui::ui::on_key_down }),
-        "on_key_up" => Some(quote! { ::rfgui::ui::on_key_up }),
-        "on_focus" if is_text_area_tag(tag) => Some(quote! { ::rfgui::ui::on_text_area_focus }),
-        "on_blur" => Some(quote! { ::rfgui::ui::on_blur }),
-        "on_focus" => Some(quote! { ::rfgui::ui::on_focus }),
-        _ => None,
-    }
-}
-
-fn wrap_event_expr(
+fn event_handler_binding(
     tag: &Path,
-    prop_key: &str,
-    expr: &Expr,
-    raw: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let Some(converter_fn) = event_handler_converter(tag, prop_key) else {
-        return raw;
+    key: &Ident,
+) -> Option<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
+    let binding = match key.to_string().as_str() {
+        "on_mouse_down" => (
+            quote!(::rfgui::ui::into_mouse_down_handler),
+            quote!(::rfgui::ui::MouseDownEvent),
+        ),
+        "on_mouse_up" => (
+            quote!(::rfgui::ui::into_mouse_up_handler),
+            quote!(::rfgui::ui::MouseUpEvent),
+        ),
+        "on_mouse_move" => (
+            quote!(::rfgui::ui::into_mouse_move_handler),
+            quote!(::rfgui::ui::MouseMoveEvent),
+        ),
+        "on_mouse_enter" => (
+            quote!(::rfgui::ui::into_mouse_enter_handler),
+            quote!(::rfgui::ui::MouseEnterEvent),
+        ),
+        "on_mouse_leave" => (
+            quote!(::rfgui::ui::into_mouse_leave_handler),
+            quote!(::rfgui::ui::MouseLeaveEvent),
+        ),
+        "on_click" => (
+            quote!(::rfgui::ui::into_click_handler),
+            quote!(::rfgui::ui::ClickEvent),
+        ),
+        "on_key_down" => (
+            quote!(::rfgui::ui::into_key_down_handler),
+            quote!(::rfgui::ui::KeyDownEvent),
+        ),
+        "on_key_up" => (
+            quote!(::rfgui::ui::into_key_up_handler),
+            quote!(::rfgui::ui::KeyUpEvent),
+        ),
+        "on_focus" if is_text_area_tag(tag) => (
+            quote!(::rfgui::ui::into_text_area_focus_handler),
+            quote!(::rfgui::ui::TextAreaFocusEvent),
+        ),
+        "on_focus" => (
+            quote!(::rfgui::ui::into_focus_handler),
+            quote!(::rfgui::ui::FocusEvent),
+        ),
+        "on_blur" => (
+            quote!(::rfgui::ui::into_blur_handler),
+            quote!(::rfgui::ui::BlurEvent),
+        ),
+        "on_change" => (
+            quote!(::rfgui::ui::into_text_change_handler),
+            quote!(::rfgui::ui::TextChangeEvent),
+        ),
+        _ => return None,
     };
+    Some(binding)
+}
 
-    if let Expr::Closure(closure) = expr
-        && closure.inputs.is_empty()
-    {
-        return quote! { #converter_fn(::rfgui::ui::no_arg_handler(#raw)) };
-    }
-
-    if matches!(expr, Expr::Closure(_))
-        && let Some(wrapper_fn) = event_handler_wrapper(tag, prop_key)
-    {
-        quote! { #wrapper_fn(#raw) }
-    } else if matches!(expr, Expr::Closure(_)) {
-        quote! { #converter_fn(#raw) }
-    } else {
-        raw
+fn wrap_event_expr(tag: &Path, key: &Ident, expr: &Expr) -> proc_macro2::TokenStream {
+    let Some((converter, event_ty)) = event_handler_binding(tag, key) else {
+        return quote! { #expr };
+    };
+    match expr {
+        Expr::Closure(closure) if is_zero_arg_closure(expr) => {
+            quote! { #converter(::rfgui::ui::no_arg_handler(#expr)) }
+        }
+        Expr::Closure(closure) => {
+            let capture = &closure.capture;
+            if let Some(input) = closure.inputs.first() {
+                match input {
+                    Pat::Type(_) => quote! { #converter(#expr) },
+                    _ => {
+                        let body = &closure.body;
+                        quote! {
+                            #converter(#capture |#input: &mut #event_ty| #body)
+                        }
+                    }
+                }
+            } else {
+                quote! { #converter(#expr) }
+            }
+        }
+        _ => quote! { #expr },
     }
 }
 
@@ -949,17 +1044,13 @@ fn expand_prop_value_expr_for_builder(
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     match value {
-        PropValueExpr::Expr(value) => quote! { #value },
+        PropValueExpr::Expr(value) => wrap_event_expr(tag, key, value),
+        PropValueExpr::Macro(tokens) => quote! { #tokens },
         PropValueExpr::StyleObject(entries) => {
-            let style_inserts = entries.iter().map(|entry| expand_style_entry_for_tag(tag, entry));
-            quote! {{
-                let mut __rsx_style = ::rfgui::Style::new();
-                #(#style_inserts)*
-                __rsx_style
-            }}
+            expand_style_object_for_builder(key, entries, builder_ident)
         }
         PropValueExpr::Object(entries) => {
-            expand_object_value_for_builder(tag, key, entries, builder_ident)
+            expand_object_value_for_builder(key, entries, builder_ident)
         }
         PropValueExpr::Missing => quote_spanned! {key.span()=>
             compile_error!("internal rsx error: missing prop value reached value expansion");
@@ -973,8 +1064,29 @@ fn expand_prop_value_expr_for_builder(
     }
 }
 
+fn expand_style_object_for_builder(
+    key: &Ident,
+    entries: &[StyleEntry],
+    builder_ident: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", key);
+    let selection_schema_method_ident = format_ident!("__rsx_style_selection_schema_{}", key);
+    let style_inserts = entries.iter().map(|entry| {
+        expand_style_entry_for_builder_schema(
+            entry,
+            builder_ident.clone(),
+            style_schema_method_ident.clone(),
+            selection_schema_method_ident.clone(),
+        )
+    });
+    quote! {{
+        let mut __rsx_style = ::rfgui::Style::new();
+        #(#style_inserts)*
+        __rsx_style
+    }}
+}
+
 fn expand_object_value_for_builder(
-    tag: &Path,
     key: &Ident,
     entries: &[ObjectEntry],
     builder_ident: proc_macro2::TokenStream,
@@ -982,7 +1094,7 @@ fn expand_object_value_for_builder(
     let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
     let assignments = entries
         .iter()
-        .map(|entry| expand_object_assignment(tag, entry, quote!(__rsx_object_builder)));
+        .map(|entry| expand_object_assignment(entry, quote!(__rsx_object_builder)));
     quote! {{
         ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_object_builder| {
             #(#assignments)*
@@ -991,12 +1103,11 @@ fn expand_object_value_for_builder(
 }
 
 fn expand_object_assignment(
-    tag: &Path,
     entry: &ObjectEntry,
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let key_ident = &entry.key;
-    let value = expand_object_value_expr(tag, key_ident, &entry.value, builder_ident.clone());
+    let value = expand_object_value_expr(key_ident, &entry.value, builder_ident.clone());
     quote! {
         let _ = &#builder_ident.#key_ident;
         #builder_ident.#key_ident(#value);
@@ -1004,29 +1115,20 @@ fn expand_object_assignment(
 }
 
 fn expand_object_value_expr(
-    tag: &Path,
     key: &Ident,
     value: &ObjectValueExpr,
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     match value {
-        ObjectValueExpr::Expr(value) => {
-            let raw = quote! { #value };
-            wrap_event_expr(tag, &key.to_string(), value, raw)
-        }
+        ObjectValueExpr::Expr(value) => quote! { #value },
         ObjectValueExpr::StyleObject(entries) => {
-            let style_inserts = entries.iter().map(expand_style_entry);
-            quote! {{
-                let mut __rsx_style = ::rfgui::Style::new();
-                #(#style_inserts)*
-                __rsx_style
-            }}
+            expand_style_object_for_builder(key, entries, builder_ident)
         }
         ObjectValueExpr::Object(entries) => {
             let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
             let assignments = entries
                 .iter()
-                .map(|entry| expand_object_assignment(tag, entry, quote!(__rsx_nested_builder)));
+                .map(|entry| expand_object_assignment(entry, quote!(__rsx_nested_builder)));
             quote! {{
                 ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_nested_builder| {
                     #(#assignments)*
@@ -1036,30 +1138,44 @@ fn expand_object_value_expr(
     }
 }
 
-fn expand_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
-    expand_style_entry_for_schema(entry, false)
-}
-
-fn expand_style_entry_for_tag(tag: &Path, entry: &StyleEntry) -> proc_macro2::TokenStream {
-    expand_style_entry_for_schema(entry, is_text_tag(tag))
+fn expand_style_entry_for_builder_schema(
+    entry: &StyleEntry,
+    builder_ident: proc_macro2::TokenStream,
+    style_schema_method_ident: Ident,
+    selection_schema_method_ident: Ident,
+) -> proc_macro2::TokenStream {
+    let key_ident = &entry.key;
+    expand_style_entry_for_schema(
+        entry,
+        quote! {
+            #builder_ident.#style_schema_method_ident(|__style_schema| {
+                let _ = &__style_schema.#key_ident;
+            });
+        },
+        builder_ident.clone(),
+        selection_schema_method_ident.clone(),
+        |nested| {
+            expand_style_entry_for_builder_schema(
+                nested,
+                builder_ident.clone(),
+                style_schema_method_ident.clone(),
+                selection_schema_method_ident.clone(),
+            )
+        },
+    )
 }
 
 fn expand_style_entry_for_schema(
     entry: &StyleEntry,
-    use_text_style_schema: bool,
+    style_key_probe: proc_macro2::TokenStream,
+    selection_builder_ident: proc_macro2::TokenStream,
+    selection_schema_method_ident: Ident,
+    nested_expand: impl Fn(&StyleEntry) -> proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let key_ident = &entry.key;
     let key = entry.key.to_string();
-    let style_schema_ty = if use_text_style_schema {
-        quote!(::rfgui::ui::host::TextStylePropSchema)
-    } else {
-        quote!(::rfgui::ui::host::ElementStylePropSchema)
-    };
     if matches!(&entry.value, StyleValueExpr::Missing) {
         return quote! {
-            let _ = |__style_schema: &#style_schema_ty| {
-                let _ = &__style_schema.#key_ident;
-            };
+            #style_key_probe
             compile_error!(concat!(
                 "style key `",
                 #key,
@@ -1347,9 +1463,7 @@ fn expand_style_entry_for_schema(
         }),
         "hover" => match &entry.value {
             StyleValueExpr::StyleObject(entries) => {
-                let hover_inserts = entries
-                    .iter()
-                    .map(|nested| expand_style_entry_for_schema(nested, use_text_style_schema));
+                let hover_inserts = entries.iter().map(nested_expand);
                 quote! {
                     let mut __rsx_hover_style = ::rfgui::Style::new();
                     {
@@ -1368,7 +1482,13 @@ fn expand_style_entry_for_schema(
         },
         "selection" => match &entry.value {
             StyleValueExpr::StyleObject(entries) => {
-                let selection_inserts = entries.iter().map(expand_selection_style_entry);
+                let selection_inserts = entries.iter().map(|nested| {
+                    expand_selection_style_entry(
+                        nested,
+                        selection_builder_ident.clone(),
+                        selection_schema_method_ident.clone(),
+                    )
+                });
                 quote! {
                     let mut __rsx_selection_style = ::rfgui::SelectionStyle::new();
                     {
@@ -1391,14 +1511,16 @@ fn expand_style_entry_for_schema(
     };
 
     quote! {
-        let _ = |__style_schema: &#style_schema_ty| {
-            let _ = &__style_schema.#key_ident;
-        };
+        #style_key_probe
         #style_value_tokens
     }
 }
 
-fn expand_selection_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream {
+fn expand_selection_style_entry(
+    entry: &StyleEntry,
+    selection_builder_ident: proc_macro2::TokenStream,
+    selection_schema_method_ident: Ident,
+) -> proc_macro2::TokenStream {
     let key_ident = &entry.key;
     let key = key_ident.to_string();
 
@@ -1422,9 +1544,9 @@ fn expand_selection_style_entry(entry: &StyleEntry) -> proc_macro2::TokenStream 
     };
 
     quote! {
-        let _ = |__selection_schema: &::rfgui::ui::host::SelectionStylePropSchema| {
+        #selection_builder_ident.#selection_schema_method_ident(|__selection_schema| {
             let _ = &__selection_schema.#key_ident;
-        };
+        });
         #style_value_tokens
     }
 }
@@ -1646,6 +1768,28 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
                     ::core::marker::PhantomData
                 }
             });
+            if is_style_type(inner_ty) {
+                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
+                let selection_schema_method_ident =
+                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
+                builder_prop_type_methods.push(quote! {
+                    pub fn #style_schema_method_ident<F>(&self, _: F)
+                    where
+                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
+                        ),
+                    {}
+
+                    pub fn #selection_schema_method_ident<F>(&self, _: F)
+                    where
+                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
+                        ),
+                    {}
+                });
+            }
             optional_default_fields.push(quote! {
                 #field_ident: ::core::option::Option::None,
             });
@@ -1675,6 +1819,28 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
                     ::core::marker::PhantomData
                 }
             });
+            if is_style_type(&props_field_ty) {
+                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
+                let selection_schema_method_ident =
+                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
+                builder_prop_type_methods.push(quote! {
+                    pub fn #style_schema_method_ident<F>(&self, _: F)
+                    where
+                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
+                        ),
+                    {}
+
+                    pub fn #selection_schema_method_ident<F>(&self, _: F)
+                    where
+                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
+                        F: ::core::ops::FnOnce(
+                            &<<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
+                        ),
+                    {}
+                });
+            }
             all_optional = false;
             if is_fn_pointer_type(&props_field_ty) {
                 builder_setters.push(quote! {
@@ -1871,6 +2037,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_prop_macro_invocation() {
+        let parsed = syn::parse_str::<MultipleNodes>(r#"<Element style!{ width: Length::px(10.0) } />"#)
+            .expect("rsx should parse prop macro");
+
+        let node = match &parsed.nodes[0] {
+            super::Child::Element(node) => node,
+            _ => panic!("expected element node"),
+        };
+        let prop = node.props.first().expect("missing macro prop");
+        assert_eq!(prop.key.to_string(), "style");
+        let PropValueExpr::Macro(tokens) = &prop.value else {
+            panic!("expected macro prop value");
+        };
+        assert_eq!(tokens.to_string(), "style ! { width : Length :: px (10.0) }");
+    }
+
+    #[test]
     fn recovers_incomplete_style_key_before_style_object_end() {
         let parsed = syn::parse_str::<MultipleNodes>(
             r##"<Element style={{ background: Color::hex("#000"), backg }} />"##,
@@ -1978,6 +2161,15 @@ mod tests {
         .expect("rsx should parse text style");
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
-        assert!(expanded.contains("TextStylePropSchema"));
+        assert!(expanded.contains("Text"));
+        assert!(expanded.contains("__rsx_style_schema_style"));
+    }
+
+    #[test]
+    fn rsx_expansion_uses_create_tag_element_path() {
+        let parsed = syn::parse_str::<MultipleNodes>(r#"<Element />"#).expect("rsx should parse");
+
+        let expanded = expand_node(&parsed.nodes[0]).to_string();
+        assert!(expanded.contains("create_tag_element_with_key"));
     }
 }

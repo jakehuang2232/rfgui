@@ -1,5 +1,5 @@
 use crate::use_theme;
-use rfgui::ui::host::{Element, Text};
+use rfgui::view::{Element, Text};
 use rfgui::ui::{
     Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxChildrenPolicy,
     RsxComponent, RsxNode, component, props, rsx, use_state,

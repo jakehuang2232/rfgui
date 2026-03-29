@@ -1,10 +1,10 @@
-use crate::rfgui::ui::host::Element;
+use crate::rfgui::view::Element;
 use crate::rfgui::ui::{RsxNode, rsx};
 use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::Theme;
 use crate::utils::output_image_source;
 use rfgui::Align;
-use rfgui::ui::host::{Image, ImageFit, ImageSampling};
+use rfgui::view::{Image, ImageFit, ImageSampling};
 
 pub fn build(theme: &Theme) -> RsxNode {
     rsx! {

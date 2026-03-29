@@ -1,6 +1,5 @@
 mod component;
 mod event;
-pub mod host;
 mod reconciler;
 mod render_backend;
 mod rsx_tree;

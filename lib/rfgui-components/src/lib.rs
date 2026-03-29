@@ -9,15 +9,19 @@ pub use theme::*;
 #[cfg(test)]
 mod tests {
     use crate::{Accordion, Button, ButtonVariant, Checkbox, NumberField, Select, Switch, Window};
-    use rfgui::ui::host::{Element, ElementPropSchema, Text, TextPropSchema};
+    use rfgui::view::{Element, ElementPropSchema, Image, Text, TextArea, TextPropSchema};
     use rfgui::ui::{
         EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
-        RsxNode, TextChangeEvent, create_element, global_state, rsx, take_state_dirty,
+        RsxNode, RsxTagDescriptor, TextChangeEvent, create_tag_element, global_state, rsx,
+        take_state_dirty,
     };
-    use std::marker::PhantomData;
 
     fn select_label(item: &String, _: usize) -> String {
         item.clone()
+    }
+
+    fn is_host_tag<T: 'static>(node: &RsxElementNode) -> bool {
+        node.tag_descriptor == Some(RsxTagDescriptor::of::<T>())
     }
 
     #[test]
@@ -284,7 +288,14 @@ mod tests {
     fn find_first_element_by_tag<'a>(node: &'a RsxNode, tag: &str) -> Option<&'a RsxElementNode> {
         match node {
             RsxNode::Element(element) => {
-                if element.tag == tag {
+                let matches = match tag {
+                    "Element" => is_host_tag::<Element>(element),
+                    "Text" => is_host_tag::<Text>(element),
+                    "TextArea" => is_host_tag::<TextArea>(element),
+                    "Image" => is_host_tag::<Image>(element),
+                    _ => element.tag == tag,
+                };
+                if matches {
                     return Some(element);
                 }
                 element
@@ -448,14 +459,13 @@ mod tests {
         let RsxNode::Element(root) = tree else {
             panic!("window should render element root");
         };
-        assert_eq!(root.tag, "Element");
+        assert_eq!(root.tag_descriptor, Some(RsxTagDescriptor::of::<Window>()));
         assert!(!root.children.is_empty());
     }
 
     #[test]
     fn create_element_supports_multiple_children() {
-        let tree = create_element(
-            PhantomData::<Element>,
+        let tree = create_tag_element::<Element, _, _>(
             ElementPropSchema {
                 anchor: None,
                 style: None,
@@ -471,8 +481,7 @@ mod tests {
                 on_blur: None,
             },
             vec![
-                create_element(
-                    PhantomData::<Text>,
+                create_tag_element::<Text, _, _>(
                     TextPropSchema {
                         style: None,
                         align: None,
@@ -483,8 +492,7 @@ mod tests {
                     },
                     "A",
                 ),
-                create_element(
-                    PhantomData::<Text>,
+                create_tag_element::<Text, _, _>(
                     TextPropSchema {
                         style: None,
                         align: None,
@@ -501,7 +509,7 @@ mod tests {
         let RsxNode::Element(root) = tree else {
             panic!("create_element should produce an element root");
         };
-        assert_eq!(root.tag, "Element");
+        assert_eq!(root.tag_descriptor, Some(RsxTagDescriptor::of::<Element>()));
         assert_eq!(root.children.len(), 2);
     }
 
@@ -526,7 +534,7 @@ mod tests {
         let RsxNode::Element(root) = tree else {
             panic!("window should render element root");
         };
-        assert_eq!(root.tag, "Element");
+        assert_eq!(root.tag_descriptor, Some(RsxTagDescriptor::of::<Window>()));
         assert!(!root.children.is_empty());
     }
 

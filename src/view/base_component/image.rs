@@ -1,4 +1,4 @@
-use crate::ui::host::{ImageFit, ImageSampling, ImageSource};
+use crate::view::{ImageFit, ImageSampling, ImageSource};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
     ImageSnapshot, acquire_image_resource, needs_upload, release_image_resource, snapshot_image,
@@ -538,7 +538,7 @@ fn compute_image_mapping(
 mod tests {
     use super::Image;
     use crate::{Length, ParsedValue, PropertyId, Style};
-    use crate::ui::host::ImageSource;
+    use crate::view::ImageSource;
     use crate::view::base_component::{Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable};
     use crate::Layout;
 
