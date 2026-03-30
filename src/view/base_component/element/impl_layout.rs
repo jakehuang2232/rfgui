@@ -231,6 +231,64 @@ impl Element {
         self.border_radius = self.border_radii.max();
     }
 
+    pub(crate) fn set_border_radius_transition_sample(&mut self, radius: f32) {
+        let proposal = self.last_layout_proposal.unwrap_or(LayoutProposal {
+            width: self.core.layout_size.width.max(0.0),
+            height: self.core.layout_size.height.max(0.0),
+            viewport_width: 0.0,
+            viewport_height: 0.0,
+            percent_base_width: None,
+            percent_base_height: None,
+        });
+        let radius_base = self
+            .core
+            .layout_size
+            .width
+            .min(self.core.layout_size.height)
+            .max(0.0);
+        let target_radii = CornerRadii {
+            top_left: resolve_px(
+                self.computed_style.border_radii.top_left,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
+            top_right: resolve_px(
+                self.computed_style.border_radii.top_right,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
+            bottom_right: resolve_px(
+                self.computed_style.border_radii.bottom_right,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
+            bottom_left: resolve_px(
+                self.computed_style.border_radii.bottom_left,
+                radius_base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            ),
+        };
+        let target_max = target_radii.max();
+        if target_max <= f32::EPSILON {
+            self.border_radii = CornerRadii::uniform(0.0);
+            self.border_radius = 0.0;
+            return;
+        }
+
+        let scale = radius.max(0.0) / target_max;
+        self.border_radii = CornerRadii {
+            top_left: target_radii.top_left * scale,
+            top_right: target_radii.top_right * scale,
+            bottom_right: target_radii.bottom_right * scale,
+            bottom_left: target_radii.bottom_left * scale,
+        };
+        self.border_radius = self.border_radii.max();
+    }
+
     fn update_content_size_from_children(&mut self) {
         if self.children.is_empty() {
             self.content_size = Size {
@@ -1247,22 +1305,14 @@ impl Element {
             );
 
             for &child_idx in line {
-                let (item_main, item_cross) = info.child_sizes[child_idx];
-                let cross_offset = cross_item_offset(line_cross, item_cross, align);
-                let (offset_x, offset_y) = if is_row {
-                    (main_cursor, cross_cursor + cross_offset)
-                } else {
-                    (cross_cursor + cross_offset, main_cursor)
-                };
-
+                let (item_main, _item_cross) = info.child_sizes[child_idx];
                 if is_row {
                     self.children[child_idx].set_layout_width(item_main);
                 } else {
                     self.children[child_idx].set_layout_height(item_main);
                 }
 
-                // Implement Stretch
-                if cross_size == CrossSize::Stretch
+                let stretched_cross = if cross_size == CrossSize::Stretch
                     && self.children[child_idx].allows_cross_stretch(is_row)
                 {
                     if is_row {
@@ -1270,7 +1320,19 @@ impl Element {
                     } else {
                         self.children[child_idx].set_layout_width(line_cross);
                     }
-                }
+                    Some(line_cross)
+                } else {
+                    None
+                };
+                let alignment_cross = self.children[child_idx]
+                    .cross_alignment_size(is_row, stretched_cross)
+                    .max(0.0);
+                let cross_offset = cross_item_offset(line_cross, alignment_cross, align);
+                let (offset_x, offset_y) = if is_row {
+                    (main_cursor, cross_cursor + cross_offset)
+                } else {
+                    (cross_cursor + cross_offset, main_cursor)
+                };
 
                 self.children[child_idx].set_layout_offset(offset_x, offset_y);
                 LAYOUT_PLACE_PROFILE.with(|profile| {

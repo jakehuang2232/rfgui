@@ -769,7 +769,7 @@ pub fn set_style_field_by_id(
                 }
                 StyleField::BorderRadius => {
                     if let StyleValue::Scalar(value) = value {
-                        element.set_border_radius(value);
+                        element.set_border_radius_transition_sample(value);
                     } else {
                         return false;
                     }
