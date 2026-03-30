@@ -1,7 +1,9 @@
 [package]
 name = "rfgui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
+description = "An innovative gui framework"
+license = "MIT"
 
 [workspace]
 members = [
@@ -16,8 +18,8 @@ bytemuck = { version = "1.14", features = ["derive"] }
 once_cell = "1.21.3"
 glyphon = "0.10"
 arboard = "3.6.1"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-rfgui-rsx = { path = "rsx-macro" }
+image = { version = "0.25", default-features = false, features = ["default-formats"] }
+rfgui-rsx = { version = "0.1.0-alpha.1", path = "rsx-macro" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26.1"

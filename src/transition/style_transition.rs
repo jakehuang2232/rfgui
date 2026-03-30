@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Style transition primitives for animating style-derived values.
+
 use std::collections::HashMap;
 
 use super::{

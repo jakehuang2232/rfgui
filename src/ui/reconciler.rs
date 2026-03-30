@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Tree reconciliation helpers used by the RSX runtime.
+
 use crate::ui::{PropValue, RsxElementNode, RsxNode, RsxNodeIdentity};
 use std::collections::{HashMap, VecDeque};
 

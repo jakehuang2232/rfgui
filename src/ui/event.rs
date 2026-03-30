@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Event payloads and handler prop types used by the retained UI runtime.
+
 use crate::Cursor;
 use std::cell::RefCell;
 use std::fmt;

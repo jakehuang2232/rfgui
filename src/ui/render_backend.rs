@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Backend traits implemented by retained view hosts that can consume RSX patches.
+
 use crate::ui::RsxNode;
 use crate::ui::reconciler::Patch;
 

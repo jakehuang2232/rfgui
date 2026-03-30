@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Typed color APIs used throughout parsed style, computed style, and rendering.
+
 use once_cell::sync::Lazy;
 
 mod hex_color;
@@ -6,6 +10,7 @@ mod oklch_color;
 pub use hex_color::*;
 pub use oklch_color::*;
 
+/// A packed sRGBA color value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     r: u8,
@@ -36,6 +41,7 @@ impl Color {
     }
 }
 
+/// A trait implemented by color values that can be resolved into RGBA output.
 pub trait ColorLike {
     fn box_clone(&self) -> Box<dyn ColorLike>;
     fn to_rgba_f32(&self) -> [f32; 4];
@@ -100,6 +106,7 @@ impl Default for Box<dyn ColorLike> {
     }
 }
 
+/// Converts a source value into a concrete color representation.
 pub trait IntoColor<T> {
     fn into_color(self) -> T;
 }

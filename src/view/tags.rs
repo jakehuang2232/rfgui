@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Built-in RSX host tags and their typed prop schemas.
+
 use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, FromPropValue, IntoPropValue,
@@ -15,11 +19,16 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// The built-in container host tag.
 pub struct Element;
+/// The built-in single-line or wrapped text host tag.
 pub struct Text;
+/// The built-in editable text host tag.
 pub struct TextArea;
+/// The built-in image host tag.
 pub struct Image;
 
+/// Controls how an image is fitted into its allocated box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageFit {
     Contain,
@@ -27,12 +36,14 @@ pub enum ImageFit {
     Fill,
 }
 
+/// Controls how image textures are sampled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageSampling {
     Linear,
     Nearest,
 }
 
+/// Declares the source backing an [`Image`] host tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImageSource {
     Path(PathBuf),

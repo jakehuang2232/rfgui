@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Visual transition primitives for animating paint-only offsets.
+
 use std::collections::HashMap;
 
 use super::{

@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Stateful hooks and global state helpers used by typed RSX components.
+
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;

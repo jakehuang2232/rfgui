@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Component traits and helper APIs used by typed RSX components.
+
 use crate::ui::{
     GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, register_global_key,
     render_component, with_component_key,

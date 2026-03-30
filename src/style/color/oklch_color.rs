@@ -1,5 +1,10 @@
+#![allow(missing_docs)]
+
+//! OKLCH-based color values for perceptual color authoring.
+
 use crate::style::color::ColorLike;
 
+/// A color stored in the OKLCH color space with alpha.
 #[derive(Clone)]
 pub struct OklchColor {
     raw: [f32; 4],   // [l, c, h, a]

@@ -1,3 +1,5 @@
+//! Public UI authoring APIs for RSX components, events, state, and rendering.
+
 mod component;
 mod event;
 mod reconciler;
