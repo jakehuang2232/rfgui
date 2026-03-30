@@ -577,6 +577,19 @@ fn format_style_field(field: StyleField) -> &'static str {
     }
 }
 
+fn style_field_requires_relayout(field: StyleField) -> bool {
+    match field {
+        StyleField::Opacity
+        | StyleField::BorderRadius
+        | StyleField::BackgroundColor
+        | StyleField::Color
+        | StyleField::BorderTopColor
+        | StyleField::BorderRightColor
+        | StyleField::BorderBottomColor
+        | StyleField::BorderLeftColor => false,
+    }
+}
+
 fn format_style_value(value: StyleValue) -> String {
     match value {
         StyleValue::Scalar(value) => format!("{value:.3}"),
@@ -585,6 +598,12 @@ fn format_style_value(value: StyleValue) -> String {
             format!("rgba({r},{g},{b},{a})")
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PostLayoutTransitionResult {
+    redraw_changed: bool,
+    relayout_required: bool,
 }
 
 fn append_overlay_line_quad(
@@ -1587,7 +1606,7 @@ impl Viewport {
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
         dt: f32,
         now_seconds: f64,
-    ) -> bool {
+    ) -> PostLayoutTransitionResult {
         let mut style_requests = Vec::new();
         for root in roots.iter_mut() {
             super::base_component::take_style_transition_requests(
@@ -1723,9 +1742,10 @@ impl Viewport {
         };
         self.sync_layout_transition_claims();
         let samples = self.scroll_transition_plugin.take_samples();
-        let mut changed = false;
+        let mut redraw_changed = false;
+        let mut relayout_required = false;
         for sample in samples {
-            changed |= Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
+            redraw_changed |= Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
         }
         let style_samples = self.style_transition_plugin.take_samples();
         for sample in style_samples {
@@ -1743,7 +1763,10 @@ impl Viewport {
                     sample.field,
                     sample.value,
                 ) {
-                    changed = true;
+                    redraw_changed = true;
+                    if style_field_requires_relayout(sample.field) {
+                        relayout_required = true;
+                    }
                     applied = true;
                     break;
                 }
@@ -1766,7 +1789,7 @@ impl Viewport {
                     sample.field,
                     sample.value,
                 ) {
-                    changed = true;
+                    redraw_changed = true;
                     break;
                 }
             }
@@ -1780,7 +1803,8 @@ impl Viewport {
                     sample.field,
                     sample.value,
                 ) {
-                    changed = true;
+                    redraw_changed = true;
+                    relayout_required = true;
                     break;
                 }
             }
@@ -1792,11 +1816,14 @@ impl Viewport {
         {
             self.request_redraw();
         }
-        changed
-            || scroll_result.keep_running
-            || style_result.keep_running
-            || visual_result.keep_running
-            || layout_result.keep_running
+        PostLayoutTransitionResult {
+            redraw_changed: redraw_changed
+                || scroll_result.keep_running
+                || style_result.keep_running
+                || visual_result.keep_running
+                || layout_result.keep_running,
+            relayout_required,
+        }
     }
 
     fn sync_inflight_transition_state(
@@ -2678,7 +2705,7 @@ impl Viewport {
         // After layout is resolved for this frame, immediately run visual/style/scroll transitions
         // so their updated endpoints are visible in the same frame.
         let post_layout_transition_started_at = Instant::now();
-        let transition_changed_after_layout =
+        let post_layout_transition =
             self.run_post_layout_transitions(roots, dt, now_seconds);
         let post_layout_transition_elapsed_ms =
             post_layout_transition_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -2687,7 +2714,7 @@ impl Viewport {
         let mut relayout_place_elapsed_ms = 0.0_f64;
         let mut relayout_collect_box_models_elapsed_ms = 0.0_f64;
         let mut relayout_place_profile = super::base_component::LayoutPlaceProfile::default();
-        if transition_changed_after_layout {
+        if post_layout_transition.relayout_required {
             self.frame_box_models.clear();
             let relayout_measure_started_at = Instant::now();
             for root in roots.iter_mut() {
@@ -3071,7 +3098,7 @@ impl Viewport {
         }
         self.frame_stats.record_frame(frame_start.elapsed());
         self.last_frame_graph = Some(graph);
-        transition_changed_after_layout
+        post_layout_transition.redraw_changed
     }
 
     pub fn render_rsx(&mut self, root: &RsxNode) -> Result<(), String> {
