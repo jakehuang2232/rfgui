@@ -608,7 +608,6 @@ impl Element {
         let radius = radius.max(0.0);
         self.border_radii = CornerRadii::uniform(radius);
         self.border_radius = radius;
-        self.layout_dirty = true;
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {

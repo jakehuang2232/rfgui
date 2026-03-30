@@ -3127,4 +3127,15 @@ mod tests {
         assert_eq!(inner.height, 30.0);
     }
 
+    #[test]
+    fn setting_border_radius_does_not_mark_layout_dirty() {
+        let mut el = Element::new(0.0, 0.0, 20.0, 20.0);
+        el.layout_dirty = false;
+
+        el.set_border_radius(12.0);
+
+        assert_eq!(el.border_radius, 12.0);
+        assert!(!el.layout_dirty);
+    }
+
 }
