@@ -6,7 +6,8 @@ use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
     CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
-    ScrollDirection, SizeValue, Style, TransitionProperty, TransitionTiming, compute_style,
+    ScrollDirection, SizeValue, Style, Transform, TransformKind, TransformOrigin,
+    TransitionProperty, TransitionTiming, compute_style,
 };
 use crate::transition::{
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -32,6 +33,7 @@ use crate::view::render_pass::{
     ShadowParams, build_shadow_module,
 };
 use crate::view::viewport::ViewportControl;
+use glam::{Mat4, Vec3, Vec4};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -190,6 +192,18 @@ fn intersect_rect(a: Rect, b: Rect) -> Rect {
     }
 }
 
+fn css_perspective_matrix(depth: f32) -> Mat4 {
+    if depth.abs() <= 0.000_001 {
+        return Mat4::IDENTITY;
+    }
+    Mat4::from_cols(
+        Vec4::new(1.0, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 1.0, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0, -1.0 / depth),
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+    )
+}
+
 fn hash_f32<H: Hasher>(state: &mut H, value: f32) {
     value.to_bits().hash(state);
 }
@@ -204,6 +218,10 @@ pub(crate) fn promoted_clip_mask_stable_key(node_id: u64) -> u64 {
 
 pub(crate) fn promoted_final_layer_stable_key(node_id: u64) -> u64 {
     0xC0DE_F1A1_0000_0000u64 | node_id
+}
+
+pub(crate) fn transformed_layer_stable_key(node_id: u64) -> u64 {
+    0x7F00_0000_0000_0000u64 | node_id
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1095,6 +1113,10 @@ pub struct Element {
     border_radii: CornerRadii,
     border_radius: f32,
     box_shadows: Vec<BoxShadow>,
+    transform: Transform,
+    transform_origin: TransformOrigin,
+    resolved_transform: Option<Mat4>,
+    resolved_inverse_transform: Option<Mat4>,
     foreground_color: Color,
     opacity: f32,
     scroll_direction: ScrollDirection,
@@ -1141,6 +1163,23 @@ pub struct Element {
     anchor_parent_clip_rect: Option<Rect>,
     hit_test_clip_rect: Option<Rect>,
     children: Vec<Box<dyn ElementTrait>>,
+}
+
+impl Element {
+    pub(crate) fn map_viewport_to_paint_space(
+        &self,
+        viewport_x: f32,
+        viewport_y: f32,
+    ) -> Option<(f32, f32)> {
+        let inverse = self.resolved_inverse_transform?;
+        let mapped = inverse * Vec4::new(viewport_x, viewport_y, 0.0, 1.0);
+        let w = if mapped.w.abs() <= 0.000_001 {
+            1.0
+        } else {
+            mapped.w
+        };
+        Some((mapped.x / w, mapped.y / w))
+    }
 }
 
 impl ElementTrait for Element {

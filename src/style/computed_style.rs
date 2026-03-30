@@ -5,7 +5,7 @@
 use crate::style::color::Color;
 use crate::style::parsed_style::{
     Align, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
-    PropertyId, ScrollDirection, Style, TextWrap, Transitions,
+    PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin, Transitions,
 };
 
 /// A resolved size value used by computed style.
@@ -69,6 +69,8 @@ pub struct ComputedStyle {
     pub border_colors: EdgeInsets<Color>,
     pub opacity: f32,
     pub box_shadow: Vec<BoxShadow>,
+    pub transform: Transform,
+    pub transform_origin: TransformOrigin,
     pub transition: Transitions,
 }
 
@@ -134,6 +136,8 @@ impl Default for ComputedStyle {
             },
             opacity: 1.0,
             box_shadow: Vec::new(),
+            transform: Transform::default(),
+            transform_origin: TransformOrigin::center(),
             transition: Transitions::default(),
         }
     }
@@ -440,6 +444,16 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             PropertyId::BoxShadow => {
                 if let ParsedValue::BoxShadow(value) = &declaration.value {
                     computed.box_shadow = value.clone();
+                }
+            }
+            PropertyId::Transform => {
+                if let ParsedValue::Transform(value) = &declaration.value {
+                    computed.transform = value.clone();
+                }
+            }
+            PropertyId::TransformOrigin => {
+                if let ParsedValue::TransformOrigin(value) = &declaration.value {
+                    computed.transform_origin = *value;
                 }
             }
             PropertyId::Transition => {

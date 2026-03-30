@@ -1,8 +1,6 @@
 use crate::view::frame_graph::ResourceCache;
-use crate::view::render_pass::render_target::{
-    render_target_ref, render_target_sample_count,
-};
 use crate::view::render_pass::GraphicsCtx;
+use crate::view::render_pass::render_target::{render_target_ref, render_target_sample_count};
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 

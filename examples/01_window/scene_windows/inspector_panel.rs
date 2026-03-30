@@ -91,7 +91,7 @@ pub fn build(theme: &Theme, bindings: InspectorPanelBindings) -> RsxNode {
                     </Element>
                 }
             } else {
-                rsx! { <Element /> }
+                rsx! { <Element style={{background: "#ff0000"}}/> }
             }}
             <Switch
                 label="Enable Layer Promotion"

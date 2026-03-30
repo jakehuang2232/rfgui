@@ -1,13 +1,17 @@
 use crate::view::frame_graph::FrameGraph;
-use crate::view::image_resource::{
-    ImageSnapshot, acquire_image_resource, needs_upload, release_image_resource, snapshot_image,
-};
+use crate::view::image_resource::ImageSnapshot;
 use crate::view::render_pass::TextureCompositePass;
 use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams,
 };
-use crate::view::{ImageFit, ImageSampling, ImageSource};
+use crate::view::svg_resource::{
+    SvgDocumentSnapshot, acquire_svg_document, acquire_svg_raster, needs_upload,
+    quantize_svg_raster_size, release_svg_document, release_svg_raster, snapshot_svg_document,
+    snapshot_svg_raster,
+};
+use crate::view::{ImageFit, ImageSampling, SvgSource};
 use crate::{ParsedValue, PropertyId, Style};
+use std::time::{Duration, Instant};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -15,6 +19,8 @@ use super::{
 };
 
 const PLACEHOLDER_SIZE: f32 = 120.0;
+const SVG_RESIZE_REQUEST_COOLDOWN: Duration = Duration::from_millis(90);
+const SVG_RESIZE_HYSTERESIS_PX: u32 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveSlot {
@@ -23,19 +29,21 @@ enum ActiveSlot {
     Error,
 }
 
-pub struct Image {
+pub struct Svg {
     element: Element,
-    source: ImageSource,
+    source_key: u64,
     fit: ImageFit,
     sampling: ImageSampling,
-    source_key: u64,
     loading_slot: Vec<Box<dyn ElementTrait>>,
     error_slot: Vec<Box<dyn ElementTrait>>,
     active_slot: ActiveSlot,
+    active_raster_key: Option<u64>,
+    active_raster_size: Option<(u32, u32)>,
+    last_raster_request_at: Option<Instant>,
 }
 
-impl Image {
-    pub fn new_with_id(id: u64, source: ImageSource) -> Self {
+impl Svg {
+    pub fn new_with_id(id: u64, source: SvgSource) -> Self {
         let mut element = Element::new_with_id(id, 0.0, 0.0, PLACEHOLDER_SIZE, PLACEHOLDER_SIZE);
         let mut base_style = Style::new();
         base_style.insert(PropertyId::Width, ParsedValue::Auto);
@@ -43,13 +51,15 @@ impl Image {
         element.apply_style(base_style);
         Self {
             element,
-            source_key: acquire_image_resource(&source),
-            source,
+            source_key: acquire_svg_document(&source),
             fit: ImageFit::Contain,
             sampling: ImageSampling::Linear,
             loading_slot: Vec::new(),
             error_slot: Vec::new(),
             active_slot: ActiveSlot::None,
+            active_raster_key: None,
+            active_raster_size: None,
+            last_raster_request_at: None,
         }
     }
 
@@ -73,8 +83,8 @@ impl Image {
         self.error_slot = slot;
     }
 
-    fn snapshot(&mut self) -> ImageSnapshot {
-        snapshot_image(self.source_key).unwrap_or(ImageSnapshot::Loading)
+    fn document_snapshot(&self) -> SvgDocumentSnapshot {
+        snapshot_svg_document(self.source_key).unwrap_or(SvgDocumentSnapshot::Loading)
     }
 
     fn sync_active_slot(&mut self, next_slot: ActiveSlot) {
@@ -95,24 +105,74 @@ impl Image {
         self.active_slot = next_slot;
     }
 
-    fn intrinsic_size(snapshot: &ImageSnapshot) -> (f32, f32) {
+    fn intrinsic_size(snapshot: &SvgDocumentSnapshot) -> (f32, f32) {
         match snapshot {
-            ImageSnapshot::Ready(image) => (image.width.max(1) as f32, image.height.max(1) as f32),
-            ImageSnapshot::Loading | ImageSnapshot::Error(_) => {
+            SvgDocumentSnapshot::Ready {
+                intrinsic_width,
+                intrinsic_height,
+            } => (intrinsic_width.max(1.0), intrinsic_height.max(1.0)),
+            SvgDocumentSnapshot::Loading | SvgDocumentSnapshot::Error(_) => {
                 (PLACEHOLDER_SIZE, PLACEHOLDER_SIZE)
             }
         }
     }
 
-    fn resolve_slot(snapshot: &ImageSnapshot) -> ActiveSlot {
+    fn resolve_document_slot(snapshot: &SvgDocumentSnapshot) -> ActiveSlot {
         match snapshot {
-            ImageSnapshot::Loading => ActiveSlot::Loading,
-            ImageSnapshot::Error(message) => {
+            SvgDocumentSnapshot::Loading => ActiveSlot::Loading,
+            SvgDocumentSnapshot::Error(message) => {
                 let _ = message;
                 ActiveSlot::Error
             }
-            ImageSnapshot::Ready(_) => ActiveSlot::None,
+            SvgDocumentSnapshot::Ready { .. } => ActiveSlot::None,
         }
+    }
+
+    fn resolve_raster_size(
+        &self,
+        source_w: f32,
+        source_h: f32,
+        dest_w: f32,
+        dest_h: f32,
+    ) -> (u32, u32) {
+        let (draw_bounds, _) =
+            super::image::compute_image_mapping(self.fit, source_w, source_h, dest_w, dest_h);
+        quantize_svg_raster_size(
+            draw_bounds[2].round().max(1.0) as u32,
+            draw_bounds[3].round().max(1.0) as u32,
+        )
+    }
+
+    fn should_keep_existing_raster(&self, raster_size: (u32, u32), now: Instant) -> bool {
+        let Some(current_size) = self.active_raster_size else {
+            return false;
+        };
+        if current_size == raster_size {
+            return true;
+        }
+        let within_hysteresis = current_size.0.abs_diff(raster_size.0) <= SVG_RESIZE_HYSTERESIS_PX
+            && current_size.1.abs_diff(raster_size.1) <= SVG_RESIZE_HYSTERESIS_PX;
+        let within_cooldown = self
+            .last_raster_request_at
+            .is_some_and(|last| now.duration_since(last) < SVG_RESIZE_REQUEST_COOLDOWN);
+        within_hysteresis || within_cooldown
+    }
+
+    fn sync_raster_key(&mut self, raster_size: (u32, u32), now: Instant) -> Option<u64> {
+        if self.active_raster_size == Some(raster_size) {
+            return self.active_raster_key;
+        }
+        if self.should_keep_existing_raster(raster_size, now) {
+            return self.active_raster_key;
+        }
+        if let Some(previous_key) = self.active_raster_key.take() {
+            release_svg_raster(previous_key);
+        }
+        let raster_key = acquire_svg_raster(self.source_key, raster_size.0, raster_size.1);
+        self.active_raster_size = Some(raster_size);
+        self.active_raster_key = Some(raster_key);
+        self.last_raster_request_at = Some(now);
+        self.active_raster_key
     }
 
     fn apply_intrinsic_measurement(
@@ -151,7 +211,7 @@ impl Image {
     }
 }
 
-impl ElementTrait for Image {
+impl ElementTrait for Svg {
     fn id(&self) -> u64 {
         self.element.id()
     }
@@ -225,7 +285,7 @@ impl ElementTrait for Image {
     }
 }
 
-impl EventTarget for Image {
+impl EventTarget for Svg {
     fn dispatch_mouse_down(
         &mut self,
         event: &mut crate::ui::MouseDownEvent,
@@ -343,10 +403,10 @@ impl EventTarget for Image {
     }
 }
 
-impl Layoutable for Image {
+impl Layoutable for Svg {
     fn measure(&mut self, constraints: LayoutConstraints) {
-        let snapshot = self.snapshot();
-        self.sync_active_slot(Self::resolve_slot(&snapshot));
+        let snapshot = self.document_snapshot();
+        self.sync_active_slot(Self::resolve_document_slot(&snapshot));
         self.element.measure(constraints);
         self.apply_intrinsic_measurement(constraints, Self::intrinsic_size(&snapshot));
     }
@@ -391,8 +451,7 @@ impl Layoutable for Image {
         <Element as Layoutable>::flex_has_explicit_min_main_size(&self.element, is_row)
     }
 
-    fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
-        let _ = is_row;
+    fn flex_auto_min_main_size(&self, _is_row: bool) -> Option<f32> {
         None
     }
 
@@ -414,21 +473,28 @@ impl Layoutable for Image {
     }
 }
 
-impl Drop for Image {
+impl Drop for Svg {
     fn drop(&mut self) {
-        release_image_resource(&self.source, self.source_key);
+        if let Some(raster_key) = self.active_raster_key.take() {
+            release_svg_raster(raster_key);
+        }
+        release_svg_document(self.source_key);
     }
 }
 
-impl Renderable for Image {
+impl Renderable for Svg {
     fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> super::BuildState {
-        let snapshot = self.snapshot();
-        self.sync_active_slot(Self::resolve_slot(&snapshot));
+        let document_snapshot = self.document_snapshot();
+        self.sync_active_slot(Self::resolve_document_slot(&document_snapshot));
 
         let viewport = ctx.viewport();
         let base_state = self.element.build_base_only(graph, ctx);
         let mut ctx = UiBuildContext::from_parts(viewport, base_state);
-        let ImageSnapshot::Ready(image) = snapshot else {
+        let SvgDocumentSnapshot::Ready {
+            intrinsic_width,
+            intrinsic_height,
+        } = document_snapshot
+        else {
             return ctx.into_state();
         };
 
@@ -440,8 +506,24 @@ impl Renderable for Image {
             return ctx.into_state();
         };
 
-        let should_upload = needs_upload(self.source_key, image.generation);
-        let (local_draw_bounds, uv_bounds) = compute_image_mapping(
+        let raster_size =
+            self.resolve_raster_size(intrinsic_width, intrinsic_height, inner_w, inner_h);
+        let Some(raster_key) = self.sync_raster_key(raster_size, Instant::now()) else {
+            return ctx.into_state();
+        };
+        let snapshot = snapshot_svg_raster(raster_key).unwrap_or(ImageSnapshot::Loading);
+        let active_slot = match &snapshot {
+            ImageSnapshot::Loading => ActiveSlot::Loading,
+            ImageSnapshot::Error(_) => ActiveSlot::Error,
+            ImageSnapshot::Ready(_) => ActiveSlot::None,
+        };
+        self.sync_active_slot(active_slot);
+        let ImageSnapshot::Ready(image) = snapshot else {
+            return ctx.into_state();
+        };
+
+        let should_upload = needs_upload(raster_key, image.generation);
+        let (local_draw_bounds, uv_bounds) = super::image::compute_image_mapping(
             self.fit,
             image.width as f32,
             image.height as f32,
@@ -454,6 +536,7 @@ impl Renderable for Image {
             local_draw_bounds[2],
             local_draw_bounds[3],
         ];
+
         graph.add_graphics_pass(TextureCompositePass::new(
             TextureCompositeParams {
                 bounds: draw_bounds,
@@ -471,7 +554,7 @@ impl Renderable for Image {
             },
             TextureCompositeInput {
                 source: Default::default(),
-                sampled_source_key: Some(self.source_key),
+                sampled_source_key: Some(raster_key),
                 sampled_source_size: Some((image.width, image.height)),
                 sampled_source_upload: if should_upload {
                     Some(image.pixels.clone())
@@ -479,7 +562,7 @@ impl Renderable for Image {
                     None
                 },
                 sampled_upload_state_key: if should_upload {
-                    Some(self.source_key)
+                    Some(raster_key)
                 } else {
                     None
                 },
@@ -501,77 +584,26 @@ impl Renderable for Image {
     }
 }
 
-pub(crate) fn compute_image_mapping(
-    fit: ImageFit,
-    source_w: f32,
-    source_h: f32,
-    dest_w: f32,
-    dest_h: f32,
-) -> ([f32; 4], [f32; 4]) {
-    if source_w <= 0.0 || source_h <= 0.0 || dest_w <= 0.0 || dest_h <= 0.0 {
-        return (
-            [0.0, 0.0, dest_w.max(1.0), dest_h.max(1.0)],
-            [0.0, 0.0, source_w.max(1.0), source_h.max(1.0)],
-        );
-    }
-    match fit {
-        ImageFit::Fill => ([0.0, 0.0, dest_w, dest_h], [0.0, 0.0, source_w, source_h]),
-        ImageFit::Contain => {
-            let scale = (dest_w / source_w).min(dest_h / source_h);
-            let draw_w = (source_w * scale).max(1.0);
-            let draw_h = (source_h * scale).max(1.0);
-            let offset_x = (dest_w - draw_w) * 0.5;
-            let offset_y = (dest_h - draw_h) * 0.5;
-            (
-                [offset_x, offset_y, draw_w, draw_h],
-                [0.0, 0.0, source_w, source_h],
-            )
-        }
-        ImageFit::Cover => {
-            let source_ratio = source_w / source_h;
-            let dest_ratio = dest_w / dest_h;
-            if source_ratio > dest_ratio {
-                let crop_w = source_h * dest_ratio;
-                let offset_x = (source_w - crop_w) * 0.5;
-                (
-                    [0.0, 0.0, dest_w, dest_h],
-                    [offset_x, 0.0, crop_w, source_h],
-                )
-            } else {
-                let crop_h = source_w / dest_ratio;
-                let offset_y = (source_h - crop_h) * 0.5;
-                (
-                    [0.0, 0.0, dest_w, dest_h],
-                    [0.0, offset_y, source_w, crop_h],
-                )
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::Image;
-    use crate::Layout;
-    use crate::view::ImageSource;
-    use crate::view::base_component::{
-        Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable,
-    };
-    use crate::{Length, ParsedValue, PropertyId, Style};
+    use super::Svg;
+    use crate::Style;
+    use crate::view::SvgSource;
+    use crate::view::base_component::{LayoutConstraints, Layoutable};
+    use std::time::{Duration, Instant};
 
-    fn rgba_source(width: u32, height: u32) -> ImageSource {
-        ImageSource::Rgba {
-            width,
-            height,
-            pixels: std::sync::Arc::<[u8]>::from(vec![255; (width * height * 4) as usize]),
-        }
+    fn simple_svg() -> SvgSource {
+        SvgSource::Content(
+            r##"<svg width="80" height="40" viewBox="0 0 80 40" xmlns="http://www.w3.org/2000/svg"><rect width="80" height="40" fill="#ff0000"/></svg>"##.to_string(),
+        )
     }
 
     #[test]
-    fn auto_size_uses_intrinsic_dimensions_when_loaded() {
-        let mut image = Image::new_with_id(1, rgba_source(80, 40));
-        image.apply_style(Style::new());
-        image.measure(LayoutConstraints {
+    fn auto_size_uses_svg_intrinsic_dimensions_when_loaded() {
+        let mut svg = Svg::new_with_id(1, simple_svg());
+        svg.apply_style(Style::new());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        svg.measure(LayoutConstraints {
             max_width: 500.0,
             max_height: 500.0,
             viewport_width: 500.0,
@@ -579,78 +611,22 @@ mod tests {
             percent_base_width: None,
             percent_base_height: None,
         });
-        assert_eq!(image.measured_size(), (80.0, 40.0));
+        assert_eq!(svg.measured_size(), (80.0, 40.0));
     }
 
     #[test]
-    fn flex_distribution_does_not_feed_back_into_image_basis() {
-        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
-        let mut parent_style = Style::new();
-        parent_style.insert(
-            PropertyId::Layout,
-            ParsedValue::Layout(Layout::flex().row().into()),
-        );
-        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
-        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
-        parent.apply_style(parent_style);
+    fn keep_existing_raster_during_resize_cooldown() {
+        let mut svg = Svg::new_with_id(2, simple_svg());
+        svg.active_raster_size = Some((128, 64));
+        svg.last_raster_request_at = Some(Instant::now());
+        assert!(svg.should_keep_existing_raster((160, 96), Instant::now()));
+    }
 
-        let mut image = Image::new_with_id(2, rgba_source(20, 20));
-        let mut image_style = Style::new();
-        image_style.insert(
-            PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().shrink(1.0)),
-        );
-        image.apply_style(image_style);
-
-        let mut sibling = Element::new(0.0, 0.0, 120.0, 20.0);
-        let mut sibling_style = Style::new();
-        sibling_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
-        sibling_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        sibling_style.insert(
-            PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().shrink(1.0)),
-        );
-        sibling.apply_style(sibling_style);
-
-        parent.add_child(Box::new(image));
-        parent.add_child(Box::new(sibling));
-
-        let constraints = LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        };
-        let placement = LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        };
-
-        parent.measure(constraints);
-        parent.place(placement);
-        let children = parent.children().expect("children after first layout");
-        let image_snapshot = children[0].box_model_snapshot();
-        let sibling_snapshot = children[1].box_model_snapshot();
-        assert!((image_snapshot.width - 14.285_714).abs() < 0.01);
-        assert!((sibling_snapshot.width - 85.714_29).abs() < 0.01);
-
-        parent.mark_layout_dirty();
-        parent.measure(constraints);
-        parent.place(placement);
-        let children = parent.children().expect("children after second layout");
-        let image_snapshot = children[0].box_model_snapshot();
-        let sibling_snapshot = children[1].box_model_snapshot();
-        assert!((image_snapshot.width - 14.285_714).abs() < 0.01);
-        assert!((sibling_snapshot.width - 85.714_29).abs() < 0.01);
+    #[test]
+    fn keep_existing_raster_within_hysteresis_window() {
+        let mut svg = Svg::new_with_id(3, simple_svg());
+        svg.active_raster_size = Some((128, 64));
+        svg.last_raster_request_at = Some(Instant::now() - Duration::from_millis(200));
+        assert!(svg.should_keep_existing_raster((144, 80), Instant::now()));
     }
 }

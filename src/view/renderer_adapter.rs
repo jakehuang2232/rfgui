@@ -8,9 +8,9 @@ use crate::ui::{
     RsxNode, RsxNodeIdentity, RsxTagDescriptor,
 };
 use crate::view::Viewport;
-use crate::view::base_component::{Element, ElementTrait, Image, Text, TextArea};
+use crate::view::base_component::{Element, ElementTrait, Image, Svg, Text, TextArea};
 use crate::view::{
-    ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, TextStylePropSchema,
+    ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, SvgSource, TextStylePropSchema,
 };
 use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
 use std::any::TypeId;
@@ -67,6 +67,11 @@ fn is_image_descriptor(descriptor: RsxTagDescriptor) -> bool {
     name.ends_with("::Image") || name == "Image"
 }
 
+fn is_svg_descriptor(descriptor: RsxTagDescriptor) -> bool {
+    let name = descriptor.type_name;
+    name.ends_with("::Svg") || name == "Svg"
+}
+
 fn is_builtin_text_node(node: &RsxElementNode) -> bool {
     node.tag_descriptor.map(is_text_descriptor).unwrap_or(false) || node.tag == "Text"
 }
@@ -83,6 +88,10 @@ fn is_builtin_image_node(node: &RsxElementNode) -> bool {
         .map(is_image_descriptor)
         .unwrap_or(false)
         || node.tag == "Image"
+}
+
+fn is_builtin_svg_node(node: &RsxElementNode) -> bool {
+    node.tag_descriptor.map(is_svg_descriptor).unwrap_or(false) || node.tag == "Svg"
 }
 
 pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
@@ -580,6 +589,9 @@ fn convert_element(
     }
     if is_builtin_image_node(node) {
         return convert_image_element(node, path, global_path, inherited_text_style);
+    }
+    if is_builtin_svg_node(node) {
+        return convert_svg_element(node, path, global_path, inherited_text_style);
     }
 
     if let Some(descriptor) = node.tag_descriptor
@@ -1203,6 +1215,70 @@ fn convert_image_element(
     Ok(Box::new(image))
 }
 
+fn convert_svg_element(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<Box<dyn ElementTrait>, String> {
+    if !node.children.is_empty() {
+        return Err("<Svg> does not accept children; use loading/error props".to_string());
+    }
+
+    let mut source: Option<SvgSource> = None;
+    let mut fit = ImageFit::Contain;
+    let mut sampling = ImageSampling::Linear;
+    let mut style: Option<Style> = None;
+    let mut loading = Vec::new();
+    let mut error = Vec::new();
+
+    for (key, value) in &node.props {
+        if key.as_str() == "key" {
+            continue;
+        }
+        match key.as_str() {
+            "source" => source = Some(SvgSource::from_prop_value(value.clone())?),
+            "fit" => fit = ImageFit::from_prop_value(value.clone())?,
+            "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
+            "style" => style = Some(as_element_style(value, key)?),
+            "loading" => {
+                loading = convert_image_slot(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "loading",
+                )?
+            }
+            "error" => {
+                error = convert_image_slot(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "error",
+                )?
+            }
+            _ => return Err(format!("unknown prop `{}` on <Svg>", key)),
+        }
+    }
+
+    let mut svg = Svg::new_with_id(
+        stable_node_id_from_parts("Svg", path, global_path.as_ref()),
+        source.ok_or_else(|| "<Svg> requires `source`".to_string())?,
+    );
+    svg.set_fit(fit);
+    svg.set_sampling(sampling);
+    if let Some(style) = style {
+        svg.apply_style(style);
+    } else {
+        svg.apply_style(Style::new());
+    }
+    svg.set_loading_slot(loading);
+    svg.set_error_slot(error);
+    Ok(Box::new(svg))
+}
+
 fn convert_image_slot(
     value: &PropValue,
     path: &[u64],
@@ -1637,8 +1713,8 @@ mod tests {
         Element, ElementTrait, Text, TextArea, get_cursor_by_id, hit_test,
     };
     use crate::view::{
-        Element as HostElement, ElementStylePropSchema, Text as HostText, TextArea as HostTextArea,
-        TextStylePropSchema,
+        Element as HostElement, ElementStylePropSchema, Svg as HostSvg, SvgSource,
+        Text as HostText, TextArea as HostTextArea, TextStylePropSchema,
     };
     use crate::{
         Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length,
@@ -1656,6 +1732,10 @@ mod tests {
 
     fn host_text_area_node() -> RsxNode {
         RsxNode::tagged("TextArea", RsxTagDescriptor::of::<HostTextArea>())
+    }
+
+    fn host_svg_node() -> RsxNode {
+        RsxNode::tagged("Svg", RsxTagDescriptor::of::<HostSvg>())
     }
 
     fn empty_element_style() -> ElementStylePropSchema {
@@ -1748,6 +1828,21 @@ mod tests {
         let node = host_element_node()
             .with_key(GlobalKey::from("feature-1"))
             .with_invocation_type("Button")
+            .with_prop("style", empty_element_style());
+        let converted = rsx_to_elements(&node);
+        assert!(converted.is_ok());
+    }
+
+    #[test]
+    fn svg_node_accepts_typed_source_prop() {
+        let node = host_svg_node()
+            .with_prop(
+                "source",
+                SvgSource::Content(
+                    r#"<svg width="8" height="4" xmlns="http://www.w3.org/2000/svg"></svg>"#
+                        .to_string(),
+                ),
+            )
             .with_prop("style", empty_element_style());
         let converted = rsx_to_elements(&node);
         assert!(converted.is_ok());

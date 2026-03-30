@@ -3135,8 +3135,9 @@ impl Viewport {
     }
 
     pub fn render_rsx(&mut self, root: &RsxNode) -> Result<(), String> {
-        let state_changed =
-            take_state_dirty() || crate::view::image_resource::take_image_redraw_dirty();
+        let state_changed = take_state_dirty()
+            || crate::view::image_resource::take_image_redraw_dirty()
+            || crate::view::svg_resource::take_svg_redraw_dirty();
         let needs_rebuild = state_changed || self.last_rsx_root.as_ref() != Some(root);
         if needs_rebuild {
             // Clear and save current scroll states
@@ -3359,12 +3360,9 @@ impl Viewport {
             .sampled_texture_cache
             .keys()
             .filter_map(|key| {
-                let retention = crate::view::image_resource::image_asset_retention_info(*key)?;
-                if retention.ref_count == 0 {
-                    Some((*key, retention.last_access_tick))
-                } else {
-                    None
-                }
+                let retention = crate::view::image_resource::image_asset_retention_info(*key)
+                    .or_else(|| crate::view::svg_resource::svg_asset_retention_info(*key))?;
+                (retention.ref_count == 0).then_some((*key, retention.last_access_tick))
             })
             .collect::<Vec<_>>();
         candidates.sort_by_key(|(_, tick)| *tick);
@@ -3542,6 +3540,7 @@ impl Viewport {
         self.offscreen_render_target_pool.clear();
         self.sampled_texture_cache.clear();
         crate::view::image_resource::invalidate_uploaded_images();
+        crate::view::svg_resource::invalidate_uploaded_images();
         self.frame_buffer_pool.clear();
         self.draw_rect_uniform_pool.clear();
         self.draw_rect_uniform_cursor = 0;

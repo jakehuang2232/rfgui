@@ -1,10 +1,10 @@
 use crate::components::GlobalKeyRenderTestBlock;
 use crate::rfgui::ui::{Binding, ClickHandlerProp, RsxNode, rsx};
-use crate::rfgui::view::{Element, Image, ImageFit, Text, TextArea};
+use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text, TextArea};
 use crate::rfgui::{
-    Align, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, CrossSize,
-    FontFamily, JustifyContent, Layout, Length, Padding, Position, ScrollDirection, Transition,
-    TransitionProperty,
+    Align, Angle, Border, BorderRadius, ClipMode, Collision, CollisionBoundary, Color, CrossSize,
+    FontFamily, JustifyContent, Layout, Length, Padding, Perspective, Position, Rotate, Scale,
+    ScrollDirection, Transform, TransformOrigin, Transition, TransitionProperty, Translate,
 };
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
 use crate::utils::output_image_source;
@@ -14,11 +14,13 @@ pub struct RenderTestBindings {
     pub align: Binding<Align>,
     pub cross_size: Binding<CrossSize>,
     pub message: Binding<String>,
+    pub transform_event_status: Binding<String>,
 }
 
 pub struct RenderTestValues {
     pub click_count: i32,
     pub message: String,
+    pub transform_event_status: String,
 }
 
 pub fn build(
@@ -39,6 +41,12 @@ pub fn build(
     let align_end = bindings.align.clone();
     let cross_size_fit = bindings.cross_size.clone();
     let cross_size_stretch = bindings.cross_size.clone();
+    let transform_enter = bindings.transform_event_status.clone();
+    let transform_leave = bindings.transform_event_status.clone();
+    let transform_move = bindings.transform_event_status.clone();
+    let transform_down = bindings.transform_event_status.clone();
+    let transform_up = bindings.transform_event_status.clone();
+    let transform_click = bindings.transform_event_status.clone();
     rsx! {
         <Element style={{
             width: Length::percent(100.0),
@@ -184,6 +192,59 @@ pub fn build(
                             padding: Padding::uniform(theme.spacing.sm),
                         }}>
                             <Text>Logo load failed</Text>
+                        </Element>
+                    }}
+                />
+            </Element>
+            <Element style={{
+                width: Length::px(220.0),
+                height: Length::px(170.0),
+                background: theme.color.layer.surface.clone(),
+                border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()),
+                border_radius: theme.radius.lg,
+                padding: Padding::uniform(theme.spacing.sm),
+                layout: Layout::flow().column().no_wrap(),
+                gap: theme.spacing.xs,
+                color: theme.color.text.primary.clone(),
+            }}>
+                <Text>Svg Test</Text>
+                <Svg
+                    source={SvgSource::Content(
+                        r##"<svg width="160" height="120" viewBox="0 0 160 120" xmlns="http://www.w3.org/2000/svg">
+<rect x="8" y="8" width="144" height="104" rx="20" fill="#0f766e"/>
+<circle cx="48" cy="42" r="18" fill="#99f6e4"/>
+<path d="M38 84 L72 58 L98 80 L122 46" fill="none" stroke="#f0fdfa" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="94" y="72" width="34" height="24" rx="8" fill="#f59e0b"/>
+</svg>"##
+                            .to_string()
+                    )}
+                    fit={ImageFit::Contain}
+                    style={{
+                        width: Length::percent(100.0),
+                        height: Length::px(120.0),
+                        background: theme.color.layer.raised.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
+                        border_radius: theme.radius.md,
+                    }}
+                    loading={rsx! {
+                        <Element style={{
+                            width: Length::percent(100.0),
+                            height: Length::percent(100.0),
+                            background: theme.color.layer.raised.clone(),
+                            color: theme.color.text.secondary.clone(),
+                        }}>
+                            <Text>Loading svg...</Text>
+                        </Element>
+                    }}
+                    error={rsx! {
+                        <Element style={{
+                            width: Length::percent(100.0),
+                            height: Length::percent(100.0),
+                            background: Color::hex("#b91c1c"),
+                            color: theme.color.background.base.clone(),
+                            padding: Padding::uniform(theme.spacing.sm),
+                        }}>
+                            <Text>Svg load failed</Text>
                         </Element>
                     }}
                 />
@@ -498,6 +559,178 @@ pub fn build(
                     border_radius: theme.radius.md,
                 }}>
                     <Text>fallback parent anchor</Text>
+                </Element>
+            </Element>
+            <Element style={{
+                width: Length::percent(100.0),
+                background: theme.color.layer.surface.clone(),
+                border: Border::uniform(Length::px(2.0), theme.color.primary.base.as_ref()),
+                border_radius: theme.radius.lg,
+                padding: Padding::uniform(theme.spacing.md),
+                layout: Layout::flow().column().no_wrap(),
+                gap: theme.spacing.sm,
+                color: theme.color.text.primary.clone(),
+            }}>
+                <Text>Transform Test</Text>
+                <Text>{values.transform_event_status.clone()}</Text>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    layout: Layout::flow().row().wrap(),
+                    gap: theme.spacing.lg,
+                    cross_size: CrossSize::Fit,
+                }}>
+                    <Element style={{
+                        width: Length::px(210.0),
+                        height: Length::px(170.0),
+                        background: theme.color.layer.raised.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
+                        color: theme.color.text.secondary.clone(),
+                        layout: Layout::flow().column().no_wrap(),
+                        gap: theme.spacing.xs,
+                    }}>
+                        <Text>translate + scale</Text>
+                        <Element style={{
+                            width: Length::px(136.0),
+                            height: Length::px(96.0),
+                            background: theme.color.primary.base.clone(),
+                            color: theme.color.primary.on.clone(),
+                            border_radius: theme.radius.md,
+                            transform: Transform::new([
+                                Translate::x(Length::px(10.0)).with_y(Length::px(8.0)),
+                                Scale::xy(1.1, 0.9),
+                            ]),
+                            transform_origin: TransformOrigin::center(),
+                        }}>
+                            <Text>translate + scale</Text>
+                        </Element>
+                    </Element>
+                    <Element style={{
+                        width: Length::px(210.0),
+                        height: Length::px(170.0),
+                        background: theme.color.layer.raised.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
+                        color: theme.color.text.secondary.clone(),
+                        layout: Layout::flow().column().no_wrap(),
+                        gap: theme.spacing.xs,
+                    }}>
+                        <Text>rotate z</Text>
+                        <Element style={{
+                            width: Length::px(132.0),
+                            height: Length::px(92.0),
+                            background: "#0f766e",
+                            color: theme.color.background.base.clone(),
+                            border_radius: theme.radius.md,
+                            transform: Transform::new([
+                                Rotate::z(Angle::deg(-15.0)),
+                            ]),
+                            transform_origin: TransformOrigin::center(),
+                        }}>
+                            <Text>rotate z</Text>
+                        </Element>
+                    </Element>
+                    <Element style={{
+                        width: Length::px(210.0),
+                        height: Length::px(170.0),
+                        background: theme.color.layer.raised.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
+                        color: theme.color.text.secondary.clone(),
+                        layout: Layout::flow().column().no_wrap(),
+                        gap: theme.spacing.xs,
+                    }}>
+                        <Text>perspective + rotate x/y</Text>
+                        <Element style={{
+                            width: Length::px(132.0),
+                            height: Length::px(92.0),
+                            background: "#7c3aed",
+                            color: theme.color.background.base.clone(),
+                            border_radius: theme.radius.md,
+                            transform: Transform::new([
+                                Perspective::px(560.0),
+                                Rotate::x(Angle::deg(26.0)).y(Angle::deg(-18.0)).z(Angle::deg(8.0)),
+                            ]),
+                            transform_origin: TransformOrigin::center().with_z(12.0),
+                        }}>
+                            <Text>3D card</Text>
+                        </Element>
+                    </Element>
+                    <Element style={{
+                        width: Length::px(210.0),
+                        height: Length::px(170.0),
+                        background: theme.color.layer.raised.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                        border_radius: theme.radius.md,
+                        padding: Padding::uniform(theme.spacing.sm),
+                        color: theme.color.text.secondary.clone(),
+                        layout: Layout::flow().column().no_wrap(),
+                        gap: theme.spacing.xs,
+                    }}>
+                        <Text>interactive transform</Text>
+                        <Element
+                            style={{
+                                width: Length::px(136.0),
+                                height: Length::px(96.0),
+                                background: "#dc2626",
+                                color: theme.color.background.base.clone(),
+                                border_radius: theme.radius.md,
+                                transform: Transform::new([
+                                    Perspective::px(720.0),
+                                    Translate::x(Length::px(6.0)).with_y(Length::px(6.0)),
+                                    Rotate::x(Angle::deg(18.0)).y(Angle::deg(18.0)).z(Angle::deg(-10.0)),
+                                    Scale::xy(1.04, 1.04),
+                                ]),
+                                transform_origin: TransformOrigin::percent(50.0, 50.0).with_z(18.0),
+                                hover: {
+                                    background: "#f97316",
+                                    border: Border::uniform(Length::px(2.0), theme.color.background.base.as_ref()),
+                                },
+                                transition: [
+                                    Transition::new(TransitionProperty::All, theme.motion.duration.fast).ease_in_out(),
+                                ],
+                            }}
+                            on_mouse_enter={move |_| {
+                                transform_enter.set("transform target: mouse enter".to_string());
+                            }}
+                            on_mouse_leave={move |_| {
+                                transform_leave.set("transform target: mouse leave".to_string());
+                            }}
+                            on_mouse_move={move |event| {
+                                transform_move.set(format!(
+                                    "transform target: move local=({:.1}, {:.1})",
+                                    event.mouse.local_x,
+                                    event.mouse.local_y
+                                ));
+                            }}
+                            on_mouse_down={move |event| {
+                                transform_down.set(format!(
+                                    "transform target: mouse down local=({:.1}, {:.1})",
+                                    event.mouse.local_x,
+                                    event.mouse.local_y
+                                ));
+                            }}
+                            on_mouse_up={move |event| {
+                                transform_up.set(format!(
+                                    "transform target: mouse up local=({:.1}, {:.1})",
+                                    event.mouse.local_x,
+                                    event.mouse.local_y
+                                ));
+                            }}
+                            on_click={move |event| {
+                                transform_click.set(format!(
+                                    "transform target: click local=({:.1}, {:.1})",
+                                    event.mouse.local_x,
+                                    event.mouse.local_y
+                                ));
+                            }}
+                        >
+                            <Text>hover / enter / move / click</Text>
+                        </Element>
+                    </Element>
                 </Element>
             </Element>
             <GlobalKeyRenderTestBlock />

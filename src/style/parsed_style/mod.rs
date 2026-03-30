@@ -55,6 +55,8 @@ pub enum PropertyId {
     BorderLeftColor,
     Opacity,
     BoxShadow,
+    Transform,
+    TransformOrigin,
     Transition,
 }
 
@@ -596,6 +598,233 @@ pub enum Length {
     Vh(f32),
     Calc(LengthCalc),
     Zero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Angle {
+    Deg(f32),
+    Rad(f32),
+}
+
+impl Angle {
+    pub const fn deg(value: f32) -> Self {
+        Self::Deg(value)
+    }
+
+    pub const fn rad(value: f32) -> Self {
+        Self::Rad(value)
+    }
+
+    pub fn to_radians(self) -> f32 {
+        match self {
+            Self::Deg(value) => value.to_radians(),
+            Self::Rad(value) => value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum TransformKind {
+    Translate { x: Length, y: Length, z: f32 },
+    Scale { x: f32, y: f32, z: f32 },
+    Rotate { x: Angle, y: Angle, z: Angle },
+    Perspective { depth: f32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransformEntry {
+    kind: TransformKind,
+}
+
+pub struct Translate;
+pub struct Scale;
+pub struct Rotate;
+pub struct Perspective;
+
+impl TransformEntry {
+    pub const fn y(mut self, value: Angle) -> Self {
+        match self.kind {
+            TransformKind::Rotate { x, z, .. } => {
+                self.kind = TransformKind::Rotate { x, y: value, z };
+            }
+            _ => {}
+        }
+        self
+    }
+
+    pub const fn z(mut self, value: Angle) -> Self {
+        match self.kind {
+            TransformKind::Rotate { x, y, .. } => {
+                self.kind = TransformKind::Rotate { x, y, z: value };
+            }
+            _ => {}
+        }
+        self
+    }
+
+    pub const fn with_y(mut self, value: Length) -> Self {
+        match self.kind {
+            TransformKind::Translate { x, z, .. } => {
+                self.kind = TransformKind::Translate { x, y: value, z };
+            }
+            _ => {}
+        }
+        self
+    }
+
+    pub const fn with_z(mut self, value: f32) -> Self {
+        match self.kind {
+            TransformKind::Translate { x, y, .. } => {
+                self.kind = TransformKind::Translate { x, y, z: value };
+            }
+            TransformKind::Scale { x, y, .. } => {
+                self.kind = TransformKind::Scale { x, y, z: value };
+            }
+            _ => {}
+        }
+        self
+    }
+
+    pub(crate) const fn kind(self) -> TransformKind {
+        self.kind
+    }
+}
+
+impl Translate {
+    pub const fn x(value: Length) -> TransformEntry {
+        TransformEntry {
+            kind: TransformKind::Translate {
+                x: value,
+                y: Length::Zero,
+                z: 0.0,
+            },
+        }
+    }
+
+    pub const fn xy(x: Length, y: Length) -> TransformEntry {
+        TransformEntry {
+            kind: TransformKind::Translate { x, y, z: 0.0 },
+        }
+    }
+}
+
+impl Scale {
+    pub const fn xy(x: f32, y: f32) -> TransformEntry {
+        TransformEntry {
+            kind: TransformKind::Scale { x, y, z: 1.0 },
+        }
+    }
+
+    pub const fn uniform(value: f32) -> TransformEntry {
+        Self::xy(value, value)
+    }
+}
+
+impl Rotate {
+    pub const fn x(value: Angle) -> TransformEntry {
+        TransformEntry {
+            kind: TransformKind::Rotate {
+                x: value,
+                y: Angle::deg(0.0),
+                z: Angle::deg(0.0),
+            },
+        }
+    }
+
+    pub const fn y(value: Angle) -> TransformEntry {
+        TransformEntry {
+            kind: TransformKind::Rotate {
+                x: Angle::deg(0.0),
+                y: value,
+                z: Angle::deg(0.0),
+            },
+        }
+    }
+
+    pub const fn z(value: Angle) -> TransformEntry {
+        TransformEntry {
+            kind: TransformKind::Rotate {
+                x: Angle::deg(0.0),
+                y: Angle::deg(0.0),
+                z: value,
+            },
+        }
+    }
+
+    pub const fn deg(value: f32) -> TransformEntry {
+        Self::z(Angle::deg(value))
+    }
+
+    pub const fn rad(value: f32) -> TransformEntry {
+        Self::z(Angle::rad(value))
+    }
+}
+
+impl Perspective {
+    pub const fn px(value: f32) -> TransformEntry {
+        TransformEntry {
+            kind: TransformKind::Perspective { depth: value },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Transform(Vec<TransformEntry>);
+
+impl Transform {
+    pub fn new<const N: usize>(entries: [TransformEntry; N]) -> Self {
+        Self(entries.to_vec())
+    }
+
+    pub fn as_slice(&self) -> &[TransformEntry] {
+        self.0.as_slice()
+    }
+
+    pub fn into_vec(self) -> Vec<TransformEntry> {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransformOrigin {
+    x: Length,
+    y: Length,
+    z: f32,
+}
+
+impl TransformOrigin {
+    pub const fn new(x: Length, y: Length) -> Self {
+        Self { x, y, z: 0.0 }
+    }
+
+    pub const fn center() -> Self {
+        Self::new(Length::percent(50.0), Length::percent(50.0))
+    }
+
+    pub const fn px(x: f32, y: f32) -> Self {
+        Self::new(Length::px(x), Length::px(y))
+    }
+
+    pub const fn percent(x: f32, y: f32) -> Self {
+        Self::new(Length::percent(x), Length::percent(y))
+    }
+
+    pub const fn with_z(mut self, z: f32) -> Self {
+        self.z = z;
+        self
+    }
+
+    pub const fn x(self) -> Length {
+        self.x
+    }
+
+    pub const fn y(self) -> Length {
+        self.y
+    }
+
+    pub const fn z(self) -> f32 {
+        self.z
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1699,6 +1928,8 @@ pub enum ParsedValue {
     TextWrap(TextWrap),
     Opacity(Opacity),
     BoxShadow(Vec<BoxShadow>),
+    Transform(Transform),
+    TransformOrigin(TransformOrigin),
     Transition(Transitions),
     Color(Color),
 }
@@ -2148,6 +2379,27 @@ impl Style {
 
     pub fn with_box_shadow(mut self, box_shadow: Vec<BoxShadow>) -> Self {
         self.set_box_shadow(box_shadow);
+        self
+    }
+
+    pub fn set_transform(&mut self, transform: Transform) {
+        self.insert(PropertyId::Transform, ParsedValue::Transform(transform));
+    }
+
+    pub fn with_transform(mut self, transform: Transform) -> Self {
+        self.set_transform(transform);
+        self
+    }
+
+    pub fn set_transform_origin(&mut self, transform_origin: TransformOrigin) {
+        self.insert(
+            PropertyId::TransformOrigin,
+            ParsedValue::TransformOrigin(transform_origin),
+        );
+    }
+
+    pub fn with_transform_origin(mut self, transform_origin: TransformOrigin) -> Self {
+        self.set_transform_origin(transform_origin);
         self
     }
 

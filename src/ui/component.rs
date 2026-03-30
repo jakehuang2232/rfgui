@@ -977,6 +977,33 @@ mod tests {
     }
 
     #[test]
+    fn transform_style_values_use_typed_helper() {
+        let node = rsx! {
+            <crate::view::Element
+                style={{
+                    transform: crate::Transform::new([
+                        crate::Translate::x(crate::Length::px(10.0)),
+                        crate::Rotate::z(crate::Angle::deg(12.0)),
+                    ]),
+                    transform_origin: crate::TransformOrigin::percent(50.0, 50.0),
+                }}
+            />
+        };
+        let RsxNode::Element(node) = node else {
+            panic!("expected element node");
+        };
+        let style = extract_element_style(&node);
+        assert!(matches!(
+            style.get(PropertyId::Transform),
+            Some(ParsedValue::Transform(_))
+        ));
+        assert!(matches!(
+            style.get(PropertyId::TransformOrigin),
+            Some(ParsedValue::TransformOrigin(_))
+        ));
+    }
+
+    #[test]
     fn nested_object_prop_supports_nested_style_schema_hooks() {
         let node = rsx! {
             <NestedStyleProbe
