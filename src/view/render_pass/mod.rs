@@ -11,15 +11,11 @@ pub mod debug_overlay_pass;
 pub mod draw_rect_pass;
 pub mod present_surface_pass;
 pub(crate) mod render_target;
-pub mod retain_layer_pass;
 pub mod shadow_module;
 pub mod text_pass;
 pub mod texture_composite_pass;
-pub use blur_module::{BlurModuleInput, BlurModuleOutput, BlurModuleParams, build_blur_module};
 pub use clear_pass::ClearPass;
-pub use composite_layer_pass::{CompositeLayerPass, LayerOut, LayerTag};
-pub use draw_rect_pass::{AlphaRectPass, DrawRectPass, OpaqueRectPass, RectRenderMode};
-pub use retain_layer_pass::RetainLayerPass;
+pub use draw_rect_pass::{DrawRectPass, OpaqueRectPass, RectRenderMode};
 pub use shadow_module::{ShadowMesh, ShadowModuleSpec, ShadowParams, build_shadow_module};
 pub use text_pass::{TextPass, prewarm_text_pipeline};
 pub use texture_composite_pass::{

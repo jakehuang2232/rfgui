@@ -3856,30 +3856,6 @@ impl<'a, 'b> RecordContext<'a, 'b> {
         }
     }
 
-    pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {
-        if !self.viewport.debug_trace_render_time() || elapsed_ms <= 0.0 {
-            return;
-        }
-        let name = name.to_string();
-        if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
-        }
-        *self.detail_timings.entry(name.clone()).or_insert(0.0) += elapsed_ms;
-        *self.detail_counts.entry(name).or_insert(0) += 1;
-    }
-
-    pub fn record_detail_count(&mut self, name: &'static str) {
-        if !self.viewport.debug_trace_render_time() {
-            return;
-        }
-        let name = name.to_string();
-        if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
-        }
-        self.detail_timings.entry(name.clone()).or_insert(0.0);
-        *self.detail_counts.entry(name).or_insert(0) += 1;
-    }
-
     fn take_detail_timings(&mut self) -> Vec<(String, f64, usize)> {
         let mut ordered = Vec::with_capacity(self.detail_order.len());
         for name in self.detail_order.drain(..) {

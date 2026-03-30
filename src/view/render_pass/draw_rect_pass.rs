@@ -21,7 +21,6 @@ pub struct RectPassParams {
     pub opacity: f32,
     pub border_widths: [f32; 4],
     pub border_radii: [[f32; 2]; 4],
-    pub color_write_enabled: bool,
     pub border_color: [f32; 4],
     pub border_side_colors: [[f32; 4]; 4],
     pub use_border_side_colors: bool,
@@ -29,12 +28,6 @@ pub struct RectPassParams {
 }
 
 impl RectPassParams {
-    pub fn set_border_color(&mut self, color: [f32; 4]) {
-        self.border_color = color;
-        self.border_side_colors = [color; 4];
-        self.use_border_side_colors = false;
-    }
-
     pub fn set_border_side_colors(
         &mut self,
         left: [f32; 4],
@@ -64,10 +57,6 @@ impl RectPassParams {
             let r = v.max(0.0);
             [r, r]
         });
-    }
-
-    pub fn set_border_radii_xy(&mut self, radii: [[f32; 2]; 4]) {
-        self.border_radii = radii.map(|v| [v[0].max(0.0), v[1].max(0.0)]);
     }
 }
 
@@ -190,20 +179,8 @@ impl DrawRectPass {
         self.color_write_enabled = enabled;
     }
 
-    pub fn set_depth_stencil_target(&mut self, enabled: bool) {
-        self.input.pass_context.uses_depth_stencil = enabled;
-    }
-
     pub fn set_render_mode(&mut self, mode: RectRenderMode) {
         self.render_mode = mode;
-    }
-
-    pub fn set_fill_only(&mut self) {
-        self.render_mode = RectRenderMode::FillOnly;
-    }
-
-    pub fn set_border_only(&mut self) {
-        self.render_mode = RectRenderMode::BorderOnly;
     }
 
     pub fn set_input(&mut self, input: RenderTargetIn) {
@@ -477,14 +454,6 @@ impl OpaqueRectPass {
         self.inner.set_scissor_rect(scissor_rect);
     }
 
-    pub fn set_input(&mut self, input: RenderTargetIn) {
-        self.inner.set_input(input);
-    }
-
-    pub fn set_output(&mut self, output: RenderTargetOut) {
-        self.inner.set_output(output);
-    }
-
     pub fn set_depth_order(&mut self, depth_order: u32) {
         self.depth_order = depth_order;
         self.apply_depth_order();
@@ -528,7 +497,6 @@ const RECT_UNIFORM_SLOT_COUNT: u32 = 4096;
 pub struct RenderTargetTag;
 pub type RenderTargetIn = InSlot<TextureResource, RenderTargetTag>;
 pub type RenderTargetOut = OutSlot<TextureResource, RenderTargetTag>;
-pub type AlphaRectPass = DrawRectPass;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RectShaderVariant {

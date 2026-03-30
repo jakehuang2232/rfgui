@@ -1032,10 +1032,8 @@ fn texture_composite_resources_cache() -> &'static Mutex<ResourceCache<TextureCo
     CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
 }
 
-pub fn clear_texture_composite_resources_cache() {
-    let cache = texture_composite_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    cache.clear();
+pub(crate) fn clear_texture_composite_resources_cache() {
+    texture_composite_resources_cache().lock().unwrap().clear();
 }
 
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {

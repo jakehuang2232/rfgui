@@ -5,7 +5,7 @@ use rfgui::ui::{
     props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{Align, Cursor, JustifyContent, Layout, Length, Operator, Padding, Position, TextWrap, Transition, TransitionProperty, flex, Border};
+use rfgui::{Align, Cursor, JustifyContent, Layout, Length, Operator, Position, TextWrap, Transition, TransitionProperty, flex};
 
 pub struct Slider;
 
@@ -37,7 +37,6 @@ impl RsxComponent<SliderProps> for Slider {
         let height = slider_theme.height.max(1.0);
         let grab_padding = slider_theme.grab_padding.max(0.0).min(height * 0.5);
         let thumb_width = slider_theme.grab_width.max(1.0).min(height);
-        let thumb_height = (height - grab_padding * 2.0).max(1.0);
 
         let fallback_value = use_state(|| value);
         let value_binding = if has_binding {

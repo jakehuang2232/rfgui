@@ -320,7 +320,7 @@ pub(crate) fn build_node_by_id(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct LayoutTransitionSnapshotSeed {
+pub(crate) struct LayoutTransitionSnapshotSeed {
     pub layout_x: f32,
     pub layout_y: f32,
     pub flow_x: f32,
@@ -331,7 +331,7 @@ pub struct LayoutTransitionSnapshotSeed {
     pub parent_layout_y: f32,
 }
 
-pub fn collect_layout_transition_snapshots(
+pub(crate) fn collect_layout_transition_snapshots(
     roots: &[Box<dyn ElementTrait>],
 ) -> HashMap<u64, LayoutTransitionSnapshotSeed> {
     let mut out = HashMap::new();
@@ -382,7 +382,7 @@ pub fn collect_layout_transition_snapshots(
     out
 }
 
-pub fn seed_layout_transition_snapshots(
+pub(crate) fn seed_layout_transition_snapshots(
     roots: &mut [Box<dyn ElementTrait>],
     snapshots: &HashMap<u64, LayoutTransitionSnapshotSeed>,
 ) {
@@ -586,7 +586,7 @@ pub fn dispatch_mouse_up_from_hit_test(
     dispatch_mouse_up_bubble(root, target_id, event, control)
 }
 
-pub fn dispatch_mouse_up_to_target(
+pub(crate) fn dispatch_mouse_up_to_target(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut MouseUpEvent,
@@ -608,7 +608,7 @@ pub fn dispatch_mouse_move_from_hit_test(
     dispatch_mouse_move_bubble(root, target_id, event, control)
 }
 
-pub fn dispatch_mouse_move_to_target(
+pub(crate) fn dispatch_mouse_move_to_target(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut MouseMoveEvent,
@@ -630,7 +630,7 @@ pub fn dispatch_click_from_hit_test(
     dispatch_click_bubble(root, target_id, event, control)
 }
 
-pub fn dispatch_click_to_target(
+pub(crate) fn dispatch_click_to_target(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut ClickEvent,
@@ -653,18 +653,7 @@ pub fn dispatch_scroll_from_hit_test(
     dispatch_scroll_bubble(root, target_id, delta_x, delta_y)
 }
 
-pub fn find_scroll_handler_from_hit_test(
-    root: &dyn ElementTrait,
-    viewport_x: f32,
-    viewport_y: f32,
-    delta_x: f32,
-    delta_y: f32,
-) -> Option<u64> {
-    let target_id = hit_test(root, viewport_x, viewport_y)?;
-    find_scroll_handler_bubble(root, target_id, delta_x, delta_y)
-}
-
-pub fn find_scroll_handler_from_target(
+pub(crate) fn find_scroll_handler_from_target(
     root: &dyn ElementTrait,
     target_id: u64,
     delta_x: f32,
@@ -673,7 +662,7 @@ pub fn find_scroll_handler_from_target(
     find_scroll_handler_bubble(root, target_id, delta_x, delta_y)
 }
 
-pub fn dispatch_scroll_to_target(
+pub(crate) fn dispatch_scroll_to_target(
     root: &mut dyn ElementTrait,
     target_id: u64,
     delta_x: f32,
@@ -715,7 +704,7 @@ pub fn set_scroll_offset_by_id(
     false
 }
 
-pub fn take_style_transition_requests(
+pub(crate) fn take_style_transition_requests(
     root: &mut dyn ElementTrait,
     out: &mut Vec<StyleTrackRequest>,
 ) {
@@ -727,7 +716,7 @@ pub fn take_style_transition_requests(
     out.extend(root.take_style_transition_requests());
 }
 
-pub fn take_layout_transition_requests(
+pub(crate) fn take_layout_transition_requests(
     root: &mut dyn ElementTrait,
     out: &mut Vec<LayoutTrackRequest>,
 ) {
@@ -739,7 +728,7 @@ pub fn take_layout_transition_requests(
     out.extend(root.take_layout_transition_requests());
 }
 
-pub fn take_visual_transition_requests(
+pub(crate) fn take_visual_transition_requests(
     root: &mut dyn ElementTrait,
     out: &mut Vec<VisualTrackRequest>,
 ) {
@@ -751,7 +740,7 @@ pub fn take_visual_transition_requests(
     out.extend(root.take_visual_transition_requests());
 }
 
-pub fn collect_transition_track_allowlist(
+pub(crate) fn collect_transition_track_allowlist(
     roots: &[Box<dyn ElementTrait>],
 ) -> HashSet<TrackKey<TrackTarget>> {
     let mut out = HashSet::new();
@@ -779,7 +768,7 @@ pub fn collect_transition_track_allowlist(
     out
 }
 
-pub fn set_style_field_by_id(
+pub(crate) fn set_style_field_by_id(
     root: &mut dyn ElementTrait,
     node_id: u64,
     field: StyleField,
@@ -859,7 +848,7 @@ pub fn set_style_field_by_id(
     false
 }
 
-pub fn set_layout_field_by_id(
+pub(crate) fn set_layout_field_by_id(
     root: &mut dyn ElementTrait,
     node_id: u64,
     field: LayoutField,
@@ -889,7 +878,7 @@ pub fn set_layout_field_by_id(
     false
 }
 
-pub fn set_visual_field_by_id(
+pub(crate) fn set_visual_field_by_id(
     root: &mut dyn ElementTrait,
     node_id: u64,
     field: VisualField,
@@ -915,7 +904,7 @@ pub fn set_visual_field_by_id(
     false
 }
 
-pub fn update_hover_state(root: &mut dyn ElementTrait, target_id: Option<u64>) -> bool {
+pub(crate) fn update_hover_state(root: &mut dyn ElementTrait, target_id: Option<u64>) -> bool {
     fn walk(node: &mut dyn ElementTrait, target_id: Option<u64>) -> (bool, bool) {
         let self_id = node.id();
         let mut contains_target = target_id == Some(self_id);
@@ -952,7 +941,10 @@ fn append_path_to_target(node: &dyn ElementTrait, target_id: u64, path: &mut Vec
     false
 }
 
-pub fn hover_path_for_target(roots: &[Box<dyn ElementTrait>], target_id: Option<u64>) -> Vec<u64> {
+pub(crate) fn hover_path_for_target(
+    roots: &[Box<dyn ElementTrait>],
+    target_id: Option<u64>,
+) -> Vec<u64> {
     let Some(target_id) = target_id else {
         return Vec::new();
     };
@@ -1003,7 +995,7 @@ fn dispatch_mouse_leave_to_target(node: &mut dyn ElementTrait, target_id: u64) -
     false
 }
 
-pub fn dispatch_hover_transition(
+pub(crate) fn dispatch_hover_transition(
     roots: &mut [Box<dyn ElementTrait>],
     previous_target: Option<u64>,
     next_target: Option<u64>,
@@ -1046,7 +1038,7 @@ pub fn dispatch_hover_transition(
     dispatched
 }
 
-pub fn cancel_pointer_interactions(root: &mut dyn ElementTrait) -> bool {
+pub(crate) fn cancel_pointer_interactions(root: &mut dyn ElementTrait) -> bool {
     fn walk(node: &mut dyn ElementTrait) -> bool {
         let mut changed = node.cancel_pointer_interaction();
         if let Some(children) = node.children_mut() {
@@ -1060,7 +1052,7 @@ pub fn cancel_pointer_interactions(root: &mut dyn ElementTrait) -> bool {
     walk(root)
 }
 
-pub fn dispatch_key_down_bubble(
+pub(crate) fn dispatch_key_down_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut KeyDownEvent,
@@ -1069,7 +1061,7 @@ pub fn dispatch_key_down_bubble(
     dispatch_key_down_impl(root, target_id, event, control)
 }
 
-pub fn dispatch_key_up_bubble(
+pub(crate) fn dispatch_key_up_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut KeyUpEvent,
@@ -1078,7 +1070,7 @@ pub fn dispatch_key_up_bubble(
     dispatch_key_up_impl(root, target_id, event, control)
 }
 
-pub fn dispatch_text_input_bubble(
+pub(crate) fn dispatch_text_input_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut TextInputEvent,
@@ -1087,7 +1079,7 @@ pub fn dispatch_text_input_bubble(
     dispatch_text_input_impl(root, target_id, event, control)
 }
 
-pub fn dispatch_ime_preedit_bubble(
+pub(crate) fn dispatch_ime_preedit_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut ImePreeditEvent,
@@ -1096,7 +1088,7 @@ pub fn dispatch_ime_preedit_bubble(
     dispatch_ime_preedit_impl(root, target_id, event, control)
 }
 
-pub fn dispatch_focus_bubble(
+pub(crate) fn dispatch_focus_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut FocusEvent,
@@ -1105,7 +1097,7 @@ pub fn dispatch_focus_bubble(
     dispatch_focus_impl(root, target_id, event, control)
 }
 
-pub fn dispatch_blur_bubble(
+pub(crate) fn dispatch_blur_bubble(
     root: &mut dyn ElementTrait,
     target_id: u64,
     event: &mut BlurEvent,
@@ -1569,7 +1561,7 @@ pub fn get_cursor_by_id(root: &dyn ElementTrait, node_id: u64) -> Option<crate::
     None
 }
 
-pub fn select_all_text_by_id(root: &mut dyn ElementTrait, node_id: u64) -> bool {
+pub(crate) fn select_all_text_by_id(root: &mut dyn ElementTrait, node_id: u64) -> bool {
     if root.id() == node_id {
         if let Some(text_area) = root.as_any_mut().downcast_mut::<TextArea>() {
             text_area.select_all();
@@ -1587,7 +1579,7 @@ pub fn select_all_text_by_id(root: &mut dyn ElementTrait, node_id: u64) -> bool 
     false
 }
 
-pub fn select_text_range_by_id(
+pub(crate) fn select_text_range_by_id(
     root: &mut dyn ElementTrait,
     node_id: u64,
     start: usize,

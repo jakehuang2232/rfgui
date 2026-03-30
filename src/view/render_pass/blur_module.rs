@@ -25,15 +25,6 @@ pub struct BlurModuleParams {
     pub intermediate_format: wgpu::TextureFormat,
 }
 
-impl BlurModuleParams {
-    pub fn new(blur_radius: f32) -> Self {
-        Self {
-            blur_radius: blur_radius.max(0.0),
-            intermediate_format: wgpu::TextureFormat::Rgba16Float,
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct BlurModuleInput {
     pub layer: LayerIn,
