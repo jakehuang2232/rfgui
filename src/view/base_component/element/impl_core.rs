@@ -443,6 +443,10 @@ impl Element {
             border_radii: CornerRadii::zero(),
             border_radius: 0.0,
             box_shadows: Vec::new(),
+            transform: Transform::default(),
+            transform_origin: TransformOrigin::center(),
+            resolved_transform: None,
+            resolved_inverse_transform: None,
             foreground_color: Color::rgb(0, 0, 0),
             opacity: 1.0,
             scroll_direction: ScrollDirection::None,
@@ -627,6 +631,7 @@ impl Element {
             width: layout_width.max(0.0),
             height: layout_height.max(0.0),
         };
+        self.update_resolved_transform();
         self.last_parent_layout_x = parent_layout_x;
         self.last_parent_layout_y = parent_layout_y;
         self.has_layout_snapshot = true;

@@ -1099,36 +1099,14 @@ fn expand_object_value_for_builder(
     builder_ident: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
-    let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", key);
     let assignments = entries
         .iter()
         .map(|entry| expand_object_assignment(entry, quote!(__rsx_object_builder)));
-    let schema_probe =
-        expand_object_schema_probe(entries, builder_ident.clone(), object_schema_method_ident);
     quote! {{
-        #schema_probe
         ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_object_builder| {
             #(#assignments)*
         })
     }}
-}
-
-fn expand_object_schema_probe(
-    entries: &[ObjectEntry],
-    builder_ident: proc_macro2::TokenStream,
-    object_schema_method_ident: Ident,
-) -> proc_macro2::TokenStream {
-    let field_probes = entries.iter().map(|entry| {
-        let key_ident = &entry.key;
-        quote! {
-            let _ = &__rsx_object_schema.#key_ident;
-        }
-    });
-    quote! {
-        #builder_ident.#object_schema_method_ident(|__rsx_object_schema| {
-            #(#field_probes)*
-        });
-    }
 }
 
 fn expand_object_assignment(
@@ -1155,17 +1133,10 @@ fn expand_object_value_expr(
         }
         ObjectValueExpr::Object(entries) => {
             let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
-            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", key);
             let assignments = entries
                 .iter()
                 .map(|entry| expand_object_assignment(entry, quote!(__rsx_nested_builder)));
-            let schema_probe = expand_object_schema_probe(
-                entries,
-                builder_ident.clone(),
-                object_schema_method_ident,
-            );
             quote! {{
-                #schema_probe
                 ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_nested_builder| {
                     #(#assignments)*
                 })
@@ -1201,99 +1172,29 @@ fn expand_style_assignment(
             compile_error!("string style values are unsupported for this key; use typed values (colors are the only string exception)");
         };
     }
-    let expr_style_tokens = |error_message: &str| match &entry.value {
+    let style_value_tokens = match &entry.value {
         StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
             quote! {
                 #builder_ident.#key_ident(#inner);
             }
         }),
-        StyleValueExpr::StyleObject(_) => quote_spanned! {entry.key.span()=>
-            compile_error!(#error_message);
-        },
+        StyleValueExpr::StyleObject(entries) => {
+            let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
+            let assignments = entries
+                .iter()
+                .map(|nested| expand_style_assignment(nested, quote!(__rsx_nested_style_builder)));
+            quote! {
+                #builder_ident.#key_ident(
+                    ::rfgui::ui::build_typed_prop_for(
+                        #builder_ident.#type_method_ident(),
+                        |__rsx_nested_style_builder| {
+                            #(#assignments)*
+                        }
+                    )
+                );
+            }
+        }
         StyleValueExpr::Missing => unreachable!("missing style value handled above"),
-    };
-    let style_value_tokens = match key.as_str() {
-        "border" => expr_style_tokens("style.border requires an expression value"),
-        "background" | "background_color" => {
-            expr_style_tokens("style.background requires an expression value")
-        }
-        "color" => expr_style_tokens("style.color requires an expression value"),
-        "font" => expr_style_tokens("style.font requires an expression value"),
-        "font_size" => expr_style_tokens("style.font_size requires an expression value"),
-        "font_weight" => expr_style_tokens("style.font_weight requires an expression value"),
-        "text_wrap" => expr_style_tokens("style.text_wrap requires an expression value"),
-        "border_radius" => expr_style_tokens("style.border_radius requires an expression value"),
-        "opacity" => expr_style_tokens("style.opacity requires an expression value"),
-        "box_shadow" => expr_style_tokens("style.box_shadow requires an expression value"),
-        "transition" => expr_style_tokens("style.transition requires an expression value"),
-        "padding" => expr_style_tokens("style.padding requires an expression value"),
-        "position" => expr_style_tokens("style.position requires an expression value"),
-        "width" => expr_style_tokens("style.width requires an expression value"),
-        "min_width" => expr_style_tokens("style.min_width requires an expression value"),
-        "max_width" => expr_style_tokens("style.max_width requires an expression value"),
-        "height" => expr_style_tokens("style.height requires an expression value"),
-        "min_height" => expr_style_tokens("style.min_height requires an expression value"),
-        "max_height" => expr_style_tokens("style.max_height requires an expression value"),
-        "layout" => expr_style_tokens("style.layout requires an expression value"),
-        "cross_size" => expr_style_tokens("style.cross_size requires an expression value"),
-        "align" => expr_style_tokens("style.align requires an expression value"),
-        "flex" => expr_style_tokens("style.flex requires an expression value"),
-        "gap" => expr_style_tokens("style.gap requires an expression value"),
-        "scroll_direction" => {
-            expr_style_tokens("style.scroll_direction requires an expression value")
-        }
-        "cursor" => expr_style_tokens("style.cursor requires an expression value"),
-        "hover" => match &entry.value {
-            StyleValueExpr::StyleObject(entries) => {
-                let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
-                let assignments = entries.iter().map(|nested| {
-                    expand_style_assignment(nested, quote!(__rsx_nested_style_builder))
-                });
-                quote! {
-                    #builder_ident.#key_ident(
-                        ::rfgui::ui::build_typed_prop_for(
-                            #builder_ident.#type_method_ident(),
-                            |__rsx_nested_style_builder| {
-                                #(#assignments)*
-                            }
-                        )
-                    );
-                }
-            }
-            StyleValueExpr::Expr(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.hover requires object syntax, e.g. hover: { background: Color::hex(\"#fff\") }");
-            },
-            StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
-                compile_error!("style.hover is incomplete; expected `:` and a value");
-            },
-        },
-        "selection" => match &entry.value {
-            StyleValueExpr::StyleObject(entries) => {
-                let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
-                let assignments = entries.iter().map(|nested| {
-                    expand_style_assignment(nested, quote!(__rsx_nested_style_builder))
-                });
-                quote! {
-                    #builder_ident.#key_ident(
-                        ::rfgui::ui::build_typed_prop_for(
-                            #builder_ident.#type_method_ident(),
-                            |__rsx_nested_style_builder| {
-                                #(#assignments)*
-                            }
-                        )
-                    );
-                }
-            }
-            StyleValueExpr::Expr(_) => quote_spanned! {entry.key.span()=>
-                compile_error!("style.selection requires object syntax, e.g. selection: { background: Color::hex(\"#fff\") }");
-            },
-            StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
-                compile_error!("style.selection is incomplete; expected `:` and a value");
-            },
-        },
-        _ => quote_spanned! {entry.key.span()=>
-            compile_error!("unsupported style key");
-        },
     };
 
     quote! {

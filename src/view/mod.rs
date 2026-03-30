@@ -9,6 +9,7 @@ pub mod promotion;
 mod promotion_builder;
 pub(crate) mod render_pass;
 mod renderer_adapter;
+pub(crate) mod svg_resource;
 mod tags;
 /// The retained viewport runtime and platform-facing integration surface.
 pub mod viewport;

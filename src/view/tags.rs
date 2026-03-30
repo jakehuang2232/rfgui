@@ -13,7 +13,7 @@ use crate::ui::{
 use crate::{
     Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize,
     FontWeight, Layout, Length, Opacity, Padding, Position, ScrollDirection, SelectionStyle, Style,
-    TextAlign, TextWrap, Transitions,
+    TextAlign, TextWrap, Transform, TransformOrigin, Transitions,
 };
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -27,6 +27,8 @@ pub struct Text;
 pub struct TextArea;
 /// The built-in image host tag.
 pub struct Image;
+/// The built-in svg host tag.
+pub struct Svg;
 
 /// Controls how an image is fitted into its allocated box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,13 @@ pub enum ImageSource {
         height: u32,
         pixels: Arc<[u8]>,
     },
+}
+
+/// Declares the source backing an [`Svg`] host tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SvgSource {
+    Path(PathBuf),
+    Content(String),
 }
 
 #[props]
@@ -101,6 +110,8 @@ pub struct ElementStylePropSchema {
     pub opacity: Option<Opacity>,
     pub box_shadow: Option<Vec<BoxShadow>>,
     pub padding: Option<Padding>,
+    pub transform: Option<Transform>,
+    pub transform_origin: Option<TransformOrigin>,
     pub transition: Option<Transitions>,
 }
 
@@ -134,6 +145,8 @@ pub struct HoverElementStylePropSchema {
     pub opacity: Option<Opacity>,
     pub box_shadow: Option<Vec<BoxShadow>>,
     pub padding: Option<Padding>,
+    pub transform: Option<Transform>,
+    pub transform_origin: Option<TransformOrigin>,
     pub transition: Option<Transitions>,
 }
 
@@ -205,6 +218,10 @@ impl RsxPropsStyleSchema for ImagePropSchema {
     type StyleSchema = ElementStylePropSchema;
 }
 
+impl RsxPropsStyleSchema for SvgPropSchema {
+    type StyleSchema = ElementStylePropSchema;
+}
+
 #[props]
 pub struct TextPropSchema {
     pub style: Option<TextStylePropSchema>,
@@ -237,6 +254,16 @@ pub struct TextAreaPropSchema {
 #[props]
 pub struct ImagePropSchema {
     pub source: ImageSource,
+    pub style: Option<ElementStylePropSchema>,
+    pub fit: Option<ImageFit>,
+    pub sampling: Option<ImageSampling>,
+    pub loading: Option<RsxNode>,
+    pub error: Option<RsxNode>,
+}
+
+#[props]
+pub struct SvgPropSchema {
+    pub source: SvgSource,
     pub style: Option<ElementStylePropSchema>,
     pub fit: Option<ImageFit>,
     pub sampling: Option<ImageSampling>,
@@ -432,6 +459,37 @@ impl RsxComponent<ImagePropSchema> for Image {
     }
 }
 
+impl RsxComponent<SvgPropSchema> for Svg {
+    fn render(props: SvgPropSchema, _children: Vec<RsxNode>) -> RsxNode {
+        let mut node = RsxNode::tagged("Svg", crate::ui::RsxTagDescriptor::of::<Svg>()).with_prop(
+            "source",
+            crate::ui::IntoPropValue::into_prop_value(props.source),
+        );
+        if let Some(style) = props.style {
+            node = node.with_prop("style", style);
+        }
+        if let Some(fit) = props.fit {
+            node = node.with_prop("fit", crate::ui::IntoPropValue::into_prop_value(fit));
+        }
+        if let Some(sampling) = props.sampling {
+            node = node.with_prop(
+                "sampling",
+                crate::ui::IntoPropValue::into_prop_value(sampling),
+            );
+        }
+        if let Some(loading) = props.loading {
+            node = node.with_prop(
+                "loading",
+                crate::ui::IntoPropValue::into_prop_value(loading),
+            );
+        }
+        if let Some(error) = props.error {
+            node = node.with_prop("error", crate::ui::IntoPropValue::into_prop_value(error));
+        }
+        node
+    }
+}
+
 impl RsxChildrenPolicy for Element {
     const ACCEPTS_CHILDREN: bool = true;
 }
@@ -445,6 +503,10 @@ impl RsxChildrenPolicy for TextArea {
 }
 
 impl RsxChildrenPolicy for Image {
+    const ACCEPTS_CHILDREN: bool = false;
+}
+
+impl RsxChildrenPolicy for Svg {
     const ACCEPTS_CHILDREN: bool = false;
 }
 
@@ -619,6 +681,12 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
     if let Some(padding) = schema.padding {
         style.set_padding(padding);
     }
+    if let Some(transform) = &schema.transform {
+        style.set_transform(transform.clone());
+    }
+    if let Some(transform_origin) = schema.transform_origin {
+        style.set_transform_origin(transform_origin);
+    }
     if let Some(transition) = &schema.transition {
         style.insert(
             crate::PropertyId::Transition,
@@ -669,6 +737,8 @@ impl ElementStylePropSchema {
             opacity: self.opacity,
             box_shadow: self.box_shadow.clone(),
             padding: self.padding,
+            transform: self.transform.clone(),
+            transform_origin: self.transform_origin,
             transition: self.transition.clone(),
         };
         apply_element_style_fields(&mut style, &hover_view);
@@ -792,6 +862,18 @@ impl crate::ui::IntoPropValue for ImageSource {
     }
 }
 
+impl crate::ui::IntoPropValue for SvgSource {
+    fn into_prop_value(self) -> crate::ui::PropValue {
+        crate::ui::PropValue::Shared(crate::ui::SharedPropValue::new(Rc::new(self)))
+    }
+}
+
+impl From<SvgSource> for crate::ui::PropValue {
+    fn from(value: SvgSource) -> Self {
+        crate::ui::IntoPropValue::into_prop_value(value)
+    }
+}
+
 impl crate::ui::FromPropValue for ImageSource {
     fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
         match value {
@@ -801,6 +883,19 @@ impl crate::ui::FromPropValue for ImageSource {
                 .map(|value| (*value).clone())
                 .map_err(|_| "expected ImageSource value".to_string()),
             _ => Err("expected ImageSource value".to_string()),
+        }
+    }
+}
+
+impl crate::ui::FromPropValue for SvgSource {
+    fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
+        match value {
+            crate::ui::PropValue::Shared(shared) => shared
+                .value()
+                .downcast::<SvgSource>()
+                .map(|value| (*value).clone())
+                .map_err(|_| "expected SvgSource value".to_string()),
+            _ => Err("expected SvgSource value".to_string()),
         }
     }
 }

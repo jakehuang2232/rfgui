@@ -26,6 +26,7 @@ pub fn MainScene() -> RsxNode {
     let click_count = globalState(|| 0_i32);
     let message =
         use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
+    let transform_event_status = use_state(|| String::from("Move over the transform cards"));
     let switch_on = use_state(|| THEME_DARK_MODE.load(Ordering::Relaxed));
     let component_test_checked = use_state(|| false);
     let component_test_selected = use_state(|| String::from("Option A"));
@@ -49,6 +50,7 @@ pub fn MainScene() -> RsxNode {
 
     let click_count_value = click_count.get();
     let message_value = message.get();
+    let transform_event_status_value = transform_event_status.get();
     let switch_on_value = switch_on.get();
     let component_test_checked_value = component_test_checked.get();
     let component_test_selected_value = component_test_selected.get();
@@ -131,10 +133,12 @@ pub fn MainScene() -> RsxNode {
                 align: align.binding(),
                 cross_size: cross_size.binding(),
                 message: message.binding(),
+                transform_event_status: transform_event_status.binding(),
             },
             RenderTestValues {
                 click_count: click_count_value,
                 message: message_value,
+                transform_event_status: transform_event_status_value,
             },
             increment.clone(),
         )],

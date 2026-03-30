@@ -17,12 +17,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod core;
 mod element;
 mod image;
+mod svg;
 mod text;
 mod text_area;
 
 pub(crate) use core::*;
 pub use element::*;
 pub use image::*;
+pub use svg::*;
 pub use text::*;
 pub use text_area::*;
 
@@ -424,6 +426,13 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
         height: f32,
     }
 
+    fn point_for_node(node: &dyn ElementTrait, x: f32, y: f32) -> (f32, f32) {
+        node.as_any()
+            .downcast_ref::<Element>()
+            .and_then(|element| element.map_viewport_to_paint_space(x, y))
+            .unwrap_or((x, y))
+    }
+
     fn point_in_rect(rect: Rect, x: f32, y: f32) -> bool {
         rect.width > 0.0
             && rect.height > 0.0
@@ -463,6 +472,7 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
         }
 
         fn find_deepest_in_subtree(node: &dyn ElementTrait, x: f32, y: f32) -> Option<u64> {
+            let (x, y) = point_for_node(node, x, y);
             let snapshot = node.box_model_snapshot();
             if !snapshot.should_render && !has_absolute_descendant(node) {
                 return None;
@@ -516,6 +526,7 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
     }
 
     fn find(node: &dyn ElementTrait, x: f32, y: f32, viewport_rect: Rect) -> Option<u64> {
+        let (x, y) = point_for_node(node, x, y);
         let snapshot = node.box_model_snapshot();
         let has_absolute_descendant = node
             .as_any()
@@ -1114,6 +1125,20 @@ fn dispatch_mouse_down_bubble(
     event: &mut MouseDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    fn local_point(
+        node: &dyn ElementTrait,
+        snapshot: &BoxModelSnapshot,
+        viewport_x: f32,
+        viewport_y: f32,
+    ) -> (f32, f32) {
+        let (paint_x, paint_y) = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .and_then(|element| element.map_viewport_to_paint_space(viewport_x, viewport_y))
+            .unwrap_or((viewport_x, viewport_y));
+        (paint_x - snapshot.x, paint_y - snapshot.y)
+    }
+
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
     let mut found = node_id == target_id;
@@ -1134,8 +1159,14 @@ fn dispatch_mouse_down_bubble(
     }
 
     event.meta.set_current_target_id(node_id);
-    event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
-    event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    let (local_x, local_y) = local_point(
+        node,
+        &snapshot,
+        event.mouse.viewport_x,
+        event.mouse.viewport_y,
+    );
+    event.mouse.local_x = local_x;
+    event.mouse.local_y = local_y;
     event.mouse.current_target_width = snapshot.width;
     event.mouse.current_target_height = snapshot.height;
     node.dispatch_mouse_down(event, control);
@@ -1148,6 +1179,20 @@ fn dispatch_mouse_up_bubble(
     event: &mut MouseUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    fn local_point(
+        node: &dyn ElementTrait,
+        snapshot: &BoxModelSnapshot,
+        viewport_x: f32,
+        viewport_y: f32,
+    ) -> (f32, f32) {
+        let (paint_x, paint_y) = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .and_then(|element| element.map_viewport_to_paint_space(viewport_x, viewport_y))
+            .unwrap_or((viewport_x, viewport_y));
+        (paint_x - snapshot.x, paint_y - snapshot.y)
+    }
+
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
     let mut found = node_id == target_id;
@@ -1168,8 +1213,14 @@ fn dispatch_mouse_up_bubble(
     }
 
     event.meta.set_current_target_id(node_id);
-    event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
-    event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    let (local_x, local_y) = local_point(
+        node,
+        &snapshot,
+        event.mouse.viewport_x,
+        event.mouse.viewport_y,
+    );
+    event.mouse.local_x = local_x;
+    event.mouse.local_y = local_y;
     event.mouse.current_target_width = snapshot.width;
     event.mouse.current_target_height = snapshot.height;
     node.dispatch_mouse_up(event, control);
@@ -1182,6 +1233,20 @@ fn dispatch_mouse_move_bubble(
     event: &mut MouseMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    fn local_point(
+        node: &dyn ElementTrait,
+        snapshot: &BoxModelSnapshot,
+        viewport_x: f32,
+        viewport_y: f32,
+    ) -> (f32, f32) {
+        let (paint_x, paint_y) = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .and_then(|element| element.map_viewport_to_paint_space(viewport_x, viewport_y))
+            .unwrap_or((viewport_x, viewport_y));
+        (paint_x - snapshot.x, paint_y - snapshot.y)
+    }
+
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
     let mut found = node_id == target_id;
@@ -1202,8 +1267,14 @@ fn dispatch_mouse_move_bubble(
     }
 
     event.meta.set_current_target_id(node_id);
-    event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
-    event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    let (local_x, local_y) = local_point(
+        node,
+        &snapshot,
+        event.mouse.viewport_x,
+        event.mouse.viewport_y,
+    );
+    event.mouse.local_x = local_x;
+    event.mouse.local_y = local_y;
     event.mouse.current_target_width = snapshot.width;
     event.mouse.current_target_height = snapshot.height;
     node.dispatch_mouse_move(event, control);
@@ -1216,6 +1287,20 @@ fn dispatch_click_bubble(
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    fn local_point(
+        node: &dyn ElementTrait,
+        snapshot: &BoxModelSnapshot,
+        viewport_x: f32,
+        viewport_y: f32,
+    ) -> (f32, f32) {
+        let (paint_x, paint_y) = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .and_then(|element| element.map_viewport_to_paint_space(viewport_x, viewport_y))
+            .unwrap_or((viewport_x, viewport_y));
+        (paint_x - snapshot.x, paint_y - snapshot.y)
+    }
+
     let node_id = node.id();
     let snapshot = node.box_model_snapshot();
     let mut found = node_id == target_id;
@@ -1236,8 +1321,14 @@ fn dispatch_click_bubble(
     }
 
     event.meta.set_current_target_id(node_id);
-    event.mouse.local_x = event.mouse.viewport_x - snapshot.x;
-    event.mouse.local_y = event.mouse.viewport_y - snapshot.y;
+    let (local_x, local_y) = local_point(
+        node,
+        &snapshot,
+        event.mouse.viewport_x,
+        event.mouse.viewport_y,
+    );
+    event.mouse.local_x = local_x;
+    event.mouse.local_y = local_y;
     event.mouse.current_target_width = snapshot.width;
     event.mouse.current_target_height = snapshot.height;
     node.dispatch_click(event, control);
@@ -1657,7 +1748,8 @@ mod tests {
         hit_test,
     };
     use crate::style::{
-        ClipMode, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
+        Angle, ClipMode, Length, ParsedValue, Position, PropertyId, Rotate, ScrollDirection, Style,
+        Transform, TransformOrigin, Translate,
     };
     use crate::ui::{
         ClickEvent, EventMeta, KeyModifiers, MouseButton, MouseButtons, MouseDownEvent,
@@ -1718,6 +1810,83 @@ mod tests {
         });
 
         assert_eq!(hit_test(&root, 135.0, 15.0), Some(child_id));
+    }
+
+    #[test]
+    fn hit_test_maps_points_through_translated_parent_transform() {
+        let mut root = Element::new(0.0, 0.0, 400.0, 300.0);
+        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.set_transform(Transform::new([Translate::x(Length::px(100.0))]));
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(10.0, 10.0, 20.0, 20.0);
+        let child_id = child.id();
+        child.set_background_color_value(Color::rgb(255, 0, 0));
+        parent.add_child(Box::new(child));
+        root.add_child(Box::new(parent));
+
+        root.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+
+        assert_eq!(hit_test(&root, 115.0, 15.0), Some(child_id));
+    }
+
+    #[test]
+    fn hit_test_maps_points_through_rotated_parent_transform() {
+        let mut root = Element::new(0.0, 0.0, 400.0, 300.0);
+        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.set_transform(Transform::new([Rotate::z(Angle::deg(90.0))]));
+        parent_style.set_transform_origin(TransformOrigin::center());
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(70.0, 10.0, 20.0, 20.0);
+        let child_id = child.id();
+        child.set_background_color_value(Color::rgb(255, 0, 0));
+        parent.add_child(Box::new(child));
+        root.add_child(Box::new(parent));
+
+        root.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+            viewport_height: 300.0,
+        });
+
+        assert_eq!(hit_test(&root, 80.0, 80.0), Some(child_id));
     }
 
     #[test]

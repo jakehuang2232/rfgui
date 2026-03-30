@@ -30,6 +30,7 @@ pub struct TextureCompositePass {
 #[derive(Clone, Copy, Debug)]
 pub struct TextureCompositeParams {
     pub bounds: [f32; 4],
+    pub quad_positions: Option<[[f32; 2]; 4]>,
     pub uv_bounds: Option<[f32; 4]>,
     pub mask_uv_bounds: Option<[f32; 4]>,
     pub use_mask: bool,
@@ -42,6 +43,7 @@ impl Default for TextureCompositeParams {
     fn default() -> Self {
         Self {
             bounds: [0.0, 0.0, 0.0, 0.0],
+            quad_positions: None,
             uv_bounds: None,
             mask_uv_bounds: None,
             use_mask: false,
@@ -249,10 +251,14 @@ impl GraphicsPass for TextureCompositePass {
             opacity: self.params.opacity.clamp(0.0, 1.0),
             _pad: 0.0,
         };
-        let (vertices, indices) = quad_for_bounds(
+        let (vertices, indices) = texture_composite_geometry(
+            self.params.quad_positions,
             bounds,
+            scale,
             target_w as f32,
             target_h as f32,
+            target_meta.global_origin_f32(),
+            target_meta.logical_origin_f32(),
             uv_bounds,
             mask_uv_bounds,
         );
@@ -291,6 +297,7 @@ impl GraphicsPass for TextureCompositePass {
                         self.input.sampled_upload_generation,
                     ) {
                         crate::view::image_resource::mark_uploaded(state_key, generation);
+                        crate::view::svg_resource::mark_uploaded(state_key, generation);
                     }
                 }
             }
@@ -448,10 +455,14 @@ impl GraphicsPass for TextureCompositePass {
                 mask_meta.global_origin_f32(),
                 mask_meta.logical_origin_f32(),
             );
-            let (vertices, indices) = quad_for_bounds(
+            let (vertices, indices) = texture_composite_geometry(
+                self.params.quad_positions,
                 bounds,
+                scale,
                 target_meta.physical_size.0 as f32,
                 target_meta.physical_size.1 as f32,
+                target_meta.global_origin_f32(),
+                target_meta.logical_origin_f32(),
                 source_uv_bounds,
                 mask_uv_bounds,
             );
@@ -976,6 +987,98 @@ fn quad_for_bounds(
         ],
         [0, 1, 2, 0, 2, 3],
     )
+}
+
+fn resolve_quad_positions(
+    quad_positions: [[f32; 2]; 4],
+    scale: f32,
+    target_origin: [f32; 2],
+    target_logical_origin: [f32; 2],
+) -> [[f32; 2]; 4] {
+    quad_positions.map(|point| {
+        [
+            point[0] * scale - target_origin[0] + target_logical_origin[0],
+            point[1] * scale - target_origin[1] + target_logical_origin[1],
+        ]
+    })
+}
+
+fn quad_for_positions(
+    positions: [[f32; 2]; 4],
+    target_w: f32,
+    target_h: f32,
+    source_uv_bounds: [f32; 4],
+    mask_uv_bounds: [f32; 4],
+) -> ([CompositeVertex; 4], [u16; 6]) {
+    let source_uv_left = source_uv_bounds[0];
+    let source_uv_top = source_uv_bounds[1];
+    let source_uv_right = source_uv_bounds[0] + source_uv_bounds[2].max(0.0);
+    let source_uv_bottom = source_uv_bounds[1] + source_uv_bounds[3].max(0.0);
+    let mask_uv_left = mask_uv_bounds[0];
+    let mask_uv_top = mask_uv_bounds[1];
+    let mask_uv_right = mask_uv_bounds[0] + mask_uv_bounds[2].max(0.0);
+    let mask_uv_bottom = mask_uv_bounds[1] + mask_uv_bounds[3].max(0.0);
+    (
+        [
+            CompositeVertex {
+                position: [
+                    (positions[0][0] / target_w) * 2.0 - 1.0,
+                    1.0 - (positions[0][1] / target_h) * 2.0,
+                ],
+                source_uv: [source_uv_left, source_uv_bottom],
+                mask_uv: [mask_uv_left, mask_uv_bottom],
+            },
+            CompositeVertex {
+                position: [
+                    (positions[1][0] / target_w) * 2.0 - 1.0,
+                    1.0 - (positions[1][1] / target_h) * 2.0,
+                ],
+                source_uv: [source_uv_right, source_uv_bottom],
+                mask_uv: [mask_uv_right, mask_uv_bottom],
+            },
+            CompositeVertex {
+                position: [
+                    (positions[2][0] / target_w) * 2.0 - 1.0,
+                    1.0 - (positions[2][1] / target_h) * 2.0,
+                ],
+                source_uv: [source_uv_right, source_uv_top],
+                mask_uv: [mask_uv_right, mask_uv_top],
+            },
+            CompositeVertex {
+                position: [
+                    (positions[3][0] / target_w) * 2.0 - 1.0,
+                    1.0 - (positions[3][1] / target_h) * 2.0,
+                ],
+                source_uv: [source_uv_left, source_uv_top],
+                mask_uv: [mask_uv_left, mask_uv_top],
+            },
+        ],
+        [0, 1, 2, 0, 2, 3],
+    )
+}
+
+fn texture_composite_geometry(
+    quad_positions: Option<[[f32; 2]; 4]>,
+    bounds: [f32; 4],
+    scale: f32,
+    target_w: f32,
+    target_h: f32,
+    target_origin: [f32; 2],
+    target_logical_origin: [f32; 2],
+    source_uv_bounds: [f32; 4],
+    mask_uv_bounds: [f32; 4],
+) -> ([CompositeVertex; 4], [u16; 6]) {
+    if let Some(quad_positions) = quad_positions {
+        quad_for_positions(
+            resolve_quad_positions(quad_positions, scale, target_origin, target_logical_origin),
+            target_w,
+            target_h,
+            source_uv_bounds,
+            mask_uv_bounds,
+        )
+    } else {
+        quad_for_bounds(bounds, target_w, target_h, source_uv_bounds, mask_uv_bounds)
+    }
 }
 
 fn resolve_bounds(

@@ -689,6 +689,7 @@ impl Element {
             width: frame.width,
             height: frame.height,
         };
+        self.update_resolved_transform();
 
         self.absolute_clip_rect = if is_absolute {
             absolute_clip_rect

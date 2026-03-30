@@ -5,7 +5,10 @@ use rfgui::ui::{
     props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{Align, Cursor, JustifyContent, Layout, Length, Operator, Position, TextWrap, Transition, TransitionProperty, flex};
+use rfgui::{
+    Align, Cursor, JustifyContent, Layout, Length, Operator, Position, TextWrap, Transition,
+    TransitionProperty, flex,
+};
 
 pub struct Slider;
 

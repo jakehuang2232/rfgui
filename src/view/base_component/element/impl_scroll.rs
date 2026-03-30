@@ -155,6 +155,9 @@ impl Element {
             ScrollbarAxis::Vertical => self.scroll_offset.y = next_scroll,
             ScrollbarAxis::Horizontal => self.scroll_offset.x = next_scroll,
         }
+        if changed {
+            self.mark_place_dirty();
+        }
         changed
     }
 

@@ -29,8 +29,18 @@ impl Element {
     fn build_base_descendants_only(
         &mut self,
         graph: &mut FrameGraph,
+        ctx: UiBuildContext,
+        force_self_opaque: bool,
+    ) -> BuildState {
+        self.build_base_descendants_only_inner(graph, ctx, force_self_opaque, true)
+    }
+
+    fn build_base_descendants_only_inner(
+        &mut self,
+        graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
+        allow_transform: bool,
     ) -> BuildState {
         trace_promoted_build(
             "base",
@@ -49,6 +59,10 @@ impl Element {
                 self.collect_root_viewport_deferred_descendants(&mut ctx);
             }
             return ctx.into_state();
+        }
+
+        if allow_transform && self.resolved_transform.is_some() {
+            return self.build_transformed_subtree(graph, ctx, force_self_opaque);
         }
 
         let previous_scissor_rect = self
@@ -734,6 +748,8 @@ impl Element {
         self.background_color = Box::new(self.computed_style.background_color);
         self.foreground_color = self.computed_style.color;
         self.box_shadows = self.computed_style.box_shadow.clone();
+        self.transform = self.computed_style.transform.clone();
+        self.transform_origin = self.computed_style.transform_origin;
         self.border_colors.left = Box::new(self.computed_style.border_colors.left);
         self.border_colors.right = Box::new(self.computed_style.border_colors.right);
         self.border_colors.top = Box::new(self.computed_style.border_colors.top);
@@ -791,6 +807,7 @@ impl Element {
         };
         self.border_radius = self.border_radii.max();
         self.opacity = self.computed_style.opacity.clamp(0.0, 1.0);
+        self.update_resolved_transform();
         self.scroll_direction = self.computed_style.scroll_direction;
         self.padding.left = resolve_px(
             self.computed_style.padding.left,
@@ -816,6 +833,68 @@ impl Element {
             0.0,
             0.0,
         );
+    }
+
+    fn update_resolved_transform(&mut self) {
+        self.resolved_transform = self.compute_transform_matrix();
+        self.resolved_inverse_transform = self.resolved_transform.and_then(|matrix| {
+            let det = matrix.determinant();
+            if det.abs() <= 0.000_001 {
+                None
+            } else {
+                Some(matrix.inverse())
+            }
+        });
+    }
+
+    fn compute_transform_matrix(&self) -> Option<Mat4> {
+        if self.transform.as_slice().is_empty() {
+            return None;
+        }
+        let size = self.core.layout_size;
+        let origin = Vec3::new(
+            resolve_px(
+                self.transform_origin.x(),
+                size.width.max(0.0),
+                0.0,
+                0.0,
+            ),
+            resolve_px(
+                self.transform_origin.y(),
+                size.height.max(0.0),
+                0.0,
+                0.0,
+            ),
+            self.transform_origin.z(),
+        );
+        let mut transform = Mat4::IDENTITY;
+        for entry in self.transform.as_slice() {
+            let next = match entry.kind() {
+                TransformKind::Translate { x, y, z } => Mat4::from_translation(Vec3::new(
+                    resolve_px(x, size.width.max(0.0), 0.0, 0.0),
+                    resolve_px(y, size.height.max(0.0), 0.0, 0.0),
+                    z,
+                )),
+                TransformKind::Scale { x, y, z } => Mat4::from_scale(Vec3::new(x, y, z)),
+                TransformKind::Rotate { x, y, z } => {
+                    Mat4::from_rotation_x(x.to_radians())
+                        * Mat4::from_rotation_y(y.to_radians())
+                        * Mat4::from_rotation_z(z.to_radians())
+                }
+                TransformKind::Perspective { depth } => css_perspective_matrix(depth.max(0.0001)),
+            };
+            transform *= next;
+        }
+        let origin_world = Vec3::new(
+            self.core.layout_position.x + origin.x,
+            self.core.layout_position.y + origin.y,
+            origin.z,
+        );
+        Some(
+            Mat4::from_translation(origin_world)
+                * transform
+                * Mat4::from_translation(-origin_world),
+        )
     }
 
     fn render_box_shadows(
@@ -908,6 +987,94 @@ impl Element {
         let target = ctx.allocate_target(graph);
         ctx.set_current_target(target);
         target
+    }
+
+    fn transformed_quad_positions(&self, bounds: crate::view::base_component::PromotionCompositeBounds) -> [[f32; 2]; 4] {
+        let corners = [
+            Vec3::new(bounds.x, bounds.y + bounds.height, 0.0),
+            Vec3::new(bounds.x + bounds.width, bounds.y + bounds.height, 0.0),
+            Vec3::new(bounds.x + bounds.width, bounds.y, 0.0),
+            Vec3::new(bounds.x, bounds.y, 0.0),
+        ];
+        let matrix = self.resolved_transform.unwrap_or(Mat4::IDENTITY);
+        corners.map(|corner| {
+            let transformed = matrix * corner.extend(1.0);
+            let w = if transformed.w.abs() <= 0.000_001 {
+                1.0
+            } else {
+                transformed.w
+            };
+            [transformed.x / w, transformed.y / w]
+        })
+    }
+
+    fn build_transformed_subtree(
+        &mut self,
+        graph: &mut FrameGraph,
+        mut ctx: UiBuildContext,
+        force_self_opaque: bool,
+    ) -> BuildState {
+        let bounds = self.promotion_composite_bounds();
+        let mut layer_ctx = UiBuildContext::from_parts(
+            ctx.viewport(),
+            BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
+        );
+        let layer_target = layer_ctx.allocate_persistent_target_with_key(
+            graph,
+            crate::view::base_component::transformed_layer_stable_key(self.id()),
+            bounds,
+        );
+        layer_ctx.set_current_target(layer_target);
+        graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
+            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+            crate::view::render_pass::clear_pass::ClearInput {
+                pass_context: layer_ctx.graphics_pass_context(),
+                clear_depth_stencil: true,
+            },
+            crate::view::render_pass::clear_pass::ClearOutput {
+                render_target: layer_target,
+            },
+        ));
+        let layer_state =
+            self.build_base_descendants_only_inner(graph, layer_ctx, force_self_opaque, false);
+        ctx.state.merge_child_side_effects(&layer_state);
+
+        let parent_target = ctx.current_target().unwrap_or_else(|| {
+            let target = ctx.allocate_target(graph);
+            ctx.set_current_target(target);
+            target
+        });
+        ctx.set_current_target(parent_target);
+        graph.add_graphics_pass(crate::view::render_pass::TextureCompositePass::new(
+            crate::view::render_pass::TextureCompositeParams {
+                bounds: [bounds.x, bounds.y, bounds.width, bounds.height],
+                quad_positions: Some(self.transformed_quad_positions(bounds)),
+                uv_bounds: Some([bounds.x, bounds.y, bounds.width, bounds.height]),
+                mask_uv_bounds: None,
+                use_mask: false,
+                source_is_premultiplied: true,
+                opacity: 1.0,
+                scissor_rect: ctx.state.scissor_rect,
+            },
+            crate::view::render_pass::TextureCompositeInput {
+                source: crate::view::render_pass::TextureCompositeSourceIn::with_handle(
+                    layer_target.handle().expect("transformed layer target should exist"),
+                ),
+                sampled_source_key: None,
+                sampled_source_size: None,
+                sampled_source_upload: None,
+                sampled_upload_state_key: None,
+                sampled_upload_generation: None,
+                sampled_source_sampling: None,
+                mask: Default::default(),
+                pass_context: ctx.graphics_pass_context(),
+            },
+            crate::view::render_pass::TextureCompositeOutput {
+                render_target: parent_target,
+            },
+        ));
+        ctx.set_current_target(parent_target);
+        ctx.into_state()
     }
 
     pub(crate) fn build_base_only(
@@ -1164,6 +1331,7 @@ impl Element {
                     composite_bounds.width,
                     composite_bounds.height,
                 ],
+                quad_positions: None,
                 uv_bounds: Some([
                     composite_bounds.x,
                     composite_bounds.y,
