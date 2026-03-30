@@ -1922,6 +1922,7 @@ impl EventTarget for TextArea {
         self.scroll_y = next;
         if changed {
             self.cached_ime_cursor_rect = None;
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
         }
         changed || max > 0.0
     }
@@ -1943,9 +1944,13 @@ impl EventTarget for TextArea {
     }
 
     fn set_scroll_offset(&mut self, offset: (f32, f32)) {
+        let changed = (self.scroll_y - offset.1).abs() > 0.001;
         self.scroll_y = offset.1;
         self.clamp_scroll();
         self.cached_ime_cursor_rect = None;
+        if changed {
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
+        }
     }
 
     fn ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
