@@ -2,6 +2,8 @@
 name = "rfgui-rsx"
 version = "0.1.0-alpha.1"
 edition = "2024"
+description = "rsx support for rfgui"
+license = "MIT"
 
 [lib]
 proc-macro = true
