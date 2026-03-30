@@ -733,6 +733,10 @@ impl Length {
     pub const fn percent(value: f32) -> Self {
         Self::Percent(value)
     }
+    
+    pub const fn full() -> Self {
+        Self::Percent(100.0)
+    }
 
     pub const fn vw(value: f32) -> Self {
         Self::Vw(value)

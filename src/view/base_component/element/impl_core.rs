@@ -50,8 +50,7 @@ impl Element {
             || !self.computed_style.box_shadow.is_empty()
     }
 
-    fn transition_inner_rect(&self) -> Rect {
-        let (frame_width, frame_height) = self.current_layout_transition_size();
+    fn inner_rect_for_frame_size(&self, frame_width: f32, frame_height: f32) -> Rect {
         let max_bw = (frame_width.min(frame_height)) * 0.5;
         let border_left = self.border_widths.left.clamp(0.0, max_bw);
         let border_right = self.border_widths.right.clamp(0.0, max_bw);
@@ -67,6 +66,11 @@ impl Element {
             width: (frame_width - inset_left - inset_right).max(0.0),
             height: (frame_height - inset_top - inset_bottom).max(0.0),
         }
+    }
+
+    fn transition_inner_rect(&self) -> Rect {
+        let (frame_width, frame_height) = self.current_layout_transition_size();
+        self.inner_rect_for_frame_size(frame_width, frame_height)
     }
 
     fn has_inner_render_area(&self) -> bool {
@@ -110,7 +114,8 @@ impl Element {
     }
 
     fn inner_clip_rect(&self) -> Rect {
-        self.transition_inner_rect()
+        let (frame_width, frame_height) = self.current_clip_layout_size();
+        self.inner_rect_for_frame_size(frame_width, frame_height)
     }
 
     fn inner_clip_scissor_rect(&self) -> Option<[u32; 4]> {
@@ -353,6 +358,17 @@ impl Element {
                 .unwrap_or(self.core.size.width)
                 .max(0.0),
             self.layout_transition_override_height
+                .unwrap_or(self.core.size.height)
+                .max(0.0),
+        )
+    }
+
+    fn current_clip_layout_size(&self) -> (f32, f32) {
+        (
+            self.layout_assigned_width
+                .unwrap_or(self.core.size.width)
+                .max(0.0),
+            self.layout_assigned_height
                 .unwrap_or(self.core.size.height)
                 .max(0.0),
         )

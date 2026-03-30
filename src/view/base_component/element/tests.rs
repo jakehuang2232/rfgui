@@ -439,6 +439,61 @@ mod tests {
     }
 
     #[test]
+    fn inner_clip_rect_uses_flex_assigned_width() {
+        let mut parent = Element::new(0.0, 0.0, 240.0, 40.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(240.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent.apply_style(parent_style);
+
+        let mut child = Element::new(0.0, 0.0, 0.0, 18.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
+        child_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::flex().grow(1.0).shrink(1.0)),
+        );
+        child_style.set_border_radius(BorderRadius::uniform(Length::px(4.0)));
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 240.0,
+            max_height: 40.0,
+            viewport_width: 240.0,
+            viewport_height: 40.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(40.0),
+        });
+        parent.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 240.0,
+            available_height: 40.0,
+            viewport_width: 240.0,
+            viewport_height: 40.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(40.0),
+        });
+
+        let child = parent.children().expect("child")[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("element child");
+        let snapshot = child.box_model_snapshot();
+        let inner = child.inner_clip_rect();
+
+        assert!((snapshot.width - 240.0).abs() < 0.01);
+        assert!((inner.width - 240.0).abs() < 0.01);
+    }
+
+    #[test]
     fn vw_child_size_resolves_against_viewport_width() {
         let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
         let mut parent_style = Style::new();
@@ -3301,9 +3356,12 @@ mod tests {
         el.layout_transition_override_height = Some(30.0);
 
         assert!(el.has_inner_render_area());
+        let transition_inner = el.transition_inner_rect();
+        assert_eq!(transition_inner.width, 40.0);
+        assert_eq!(transition_inner.height, 30.0);
         let inner = el.inner_clip_rect();
-        assert_eq!(inner.width, 40.0);
-        assert_eq!(inner.height, 30.0);
+        assert_eq!(inner.width, 20.0);
+        assert_eq!(inner.height, 20.0);
     }
 
     #[test]
