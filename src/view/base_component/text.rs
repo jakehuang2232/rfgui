@@ -41,6 +41,8 @@ pub struct Text {
     measure_revision: u64,
     cached_intrinsic_width: Option<(u64, f32)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
+    dirty_flags: super::DirtyFlags,
+    last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
 }
 
 thread_local! {
@@ -135,6 +137,8 @@ impl Text {
             measure_revision: 0,
             cached_intrinsic_width: None,
             cached_height_for_width: None,
+            dirty_flags: super::DirtyFlags::ALL,
+            last_layout_placement: None,
         }
     }
 
@@ -142,11 +146,13 @@ impl Text {
         self.measure_revision = self.measure_revision.wrapping_add(1);
         self.cached_intrinsic_width = None;
         self.cached_height_for_width = None;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_position(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::RUNTIME);
     }
 
     pub fn set_size(&mut self, width: f32, height: f32) {
@@ -156,6 +162,7 @@ impl Text {
         self.layout_override_height = None;
         self.auto_width = false;
         self.auto_height = false;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_width(&mut self, width: f32) {
@@ -163,6 +170,7 @@ impl Text {
         self.element.set_width(width);
         self.layout_override_width = None;
         self.auto_width = false;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_height(&mut self, height: f32) {
@@ -170,6 +178,7 @@ impl Text {
         self.element.set_height(height);
         self.layout_override_height = None;
         self.auto_height = false;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_text(&mut self, content: impl Into<String>) {
@@ -182,6 +191,7 @@ impl Text {
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
     }
 
     pub fn set_font(&mut self, font_family: impl Into<String>) {
@@ -241,6 +251,7 @@ impl Text {
     pub fn set_align(&mut self, align: Align) {
         if std::mem::discriminant(&self.align) != std::mem::discriminant(&align) {
             self.align = align;
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
         }
     }
 
@@ -254,6 +265,7 @@ impl Text {
 
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
     }
 
     pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
@@ -417,6 +429,14 @@ impl ElementTrait for Text {
         self.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
         hasher.finish()
     }
+
+    fn local_dirty_flags(&self) -> super::DirtyFlags {
+        self.dirty_flags
+    }
+
+    fn clear_local_dirty_flags(&mut self, flags: super::DirtyFlags) {
+        self.dirty_flags = self.dirty_flags.without(flags);
+    }
 }
 
 impl EventTarget for Text {
@@ -555,6 +575,7 @@ impl Layoutable for Text {
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::RUNTIME);
     }
 
     fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
@@ -567,6 +588,7 @@ impl Layoutable for Text {
         }
 
         if !self.auto_width && !self.auto_height {
+            self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
             return;
         }
         if self.auto_width {
@@ -651,9 +673,17 @@ impl Layoutable for Text {
             self.size.height = measured_height.max(1.0);
             self.element.set_height(self.size.height);
         }
+        self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
     }
 
     fn place(&mut self, placement: crate::view::base_component::LayoutPlacement) {
+        if !self
+            .dirty_flags
+            .intersects(super::DirtyFlags::PLACE.union(super::DirtyFlags::BOX_MODEL).union(super::DirtyFlags::HIT_TEST))
+            && self.last_layout_placement == Some(placement)
+        {
+            return;
+        }
         let available_width = placement.available_width.max(0.0);
         let available_height = placement.available_height.max(0.0);
         let max_width = (available_width - self.position.x.max(0.0)).max(0.0);
@@ -683,6 +713,12 @@ impl Layoutable for Text {
             && self_left < parent_right
             && self_bottom > parent_top
             && self_top < parent_bottom;
+        self.last_layout_placement = Some(placement);
+        self.dirty_flags = self.dirty_flags.without(
+            super::DirtyFlags::PLACE
+                .union(super::DirtyFlags::BOX_MODEL)
+                .union(super::DirtyFlags::HIT_TEST),
+        );
     }
 }
 

@@ -135,9 +135,24 @@ impl Layoutable for Element {
 
         self.last_layout_proposal = Some(proposal);
         self.layout_dirty = false;
+        self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
     }
 
     fn place(&mut self, placement: LayoutPlacement) {
+        let child_dirty_flags = self
+            .children
+            .iter()
+            .fold(DirtyFlags::NONE, |flags, child| {
+                flags.union(crate::view::base_component::subtree_dirty_flags(child.as_ref()))
+            });
+        let runtime_dirty = self.dirty_flags.union(child_dirty_flags);
+        if !runtime_dirty.intersects(
+            DirtyFlags::PLACE.union(DirtyFlags::BOX_MODEL).union(DirtyFlags::HIT_TEST),
+        ) && self.last_layout_placement == Some(placement)
+        {
+            return;
+        }
+
         self.begin_place_scope(placement);
         LAYOUT_PLACE_PROFILE.with(|profile| {
             profile.borrow_mut().node_count += 1;
@@ -239,6 +254,10 @@ impl Layoutable for Element {
             profile.borrow_mut().place_children_ms += place_children_elapsed_ms;
         });
         self.end_place_scope();
+        self.last_layout_placement = Some(placement);
+        self.dirty_flags = self
+            .dirty_flags
+            .without(DirtyFlags::PLACE.union(DirtyFlags::BOX_MODEL).union(DirtyFlags::HIT_TEST));
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -246,11 +265,19 @@ impl Layoutable for Element {
     }
 
     fn set_layout_width(&mut self, width: f32) {
-        self.layout_assigned_width = Some(width.max(0.0));
+        let width = width.max(0.0);
+        if self.layout_assigned_width != Some(width) {
+            self.layout_assigned_width = Some(width);
+            self.mark_place_dirty();
+        }
     }
 
     fn set_layout_height(&mut self, height: f32) {
-        self.layout_assigned_height = Some(height.max(0.0));
+        let height = height.max(0.0);
+        if self.layout_assigned_height != Some(height) {
+            self.layout_assigned_height = Some(height);
+            self.mark_place_dirty();
+        }
     }
 
     fn allows_cross_stretch(&self, is_row: bool) -> bool {
@@ -349,6 +376,11 @@ impl Layoutable for Element {
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {
-        self.core.set_position(x, y);
+        if (self.core.position.x - x).abs() > f32::EPSILON
+            || (self.core.position.y - y).abs() > f32::EPSILON
+        {
+            self.core.set_position(x, y);
+            self.mark_place_dirty();
+        }
     }
 }

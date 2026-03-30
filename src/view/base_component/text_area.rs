@@ -68,6 +68,8 @@ pub struct TextArea {
     measure_revision: u64,
     cached_measure_line_widths: Option<(u64, Vec<f32>)>,
     caret_blink_started_at: Instant,
+    dirty_flags: super::DirtyFlags,
+    last_layout_placement: Option<LayoutPlacement>,
 }
 
 thread_local! {
@@ -186,6 +188,8 @@ impl TextArea {
             measure_revision: 0,
             cached_measure_line_widths: None,
             caret_blink_started_at: Instant::now(),
+            dirty_flags: super::DirtyFlags::ALL,
+            last_layout_placement: None,
         };
         text_area.set_text(content);
         text_area
@@ -202,6 +206,7 @@ impl TextArea {
                 .collect()
         };
         self.cached_measure_line_widths = Some((self.measure_revision, widths));
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     fn ensure_measure_line_widths(&mut self) -> &[f32] {
@@ -252,6 +257,7 @@ impl TextArea {
         self.position = Position { x, y };
         self.element.set_position(x, y);
         self.cached_ime_cursor_rect = None;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::RUNTIME);
     }
 
     pub fn set_size(&mut self, width: f32, height: f32) {
@@ -262,6 +268,7 @@ impl TextArea {
         self.auto_width = false;
         self.auto_height = false;
         self.invalidate_glyph_layout();
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_width(&mut self, width: f32) {
@@ -270,6 +277,7 @@ impl TextArea {
         self.layout_override_width = None;
         self.auto_width = false;
         self.invalidate_glyph_layout();
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_height(&mut self, height: f32) {
@@ -278,6 +286,7 @@ impl TextArea {
         self.layout_override_height = None;
         self.auto_height = false;
         self.cached_ime_cursor_rect = None;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_text(&mut self, content: impl Into<String>) {
@@ -296,6 +305,7 @@ impl TextArea {
         self.clamp_cursor();
         self.clamp_scroll();
         self.sync_bound_text();
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
     pub fn set_placeholder(&mut self, placeholder: impl Into<String>) {
@@ -409,6 +419,7 @@ impl TextArea {
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
     }
 
     pub fn color_rgba_f32(&self) -> [f32; 4] {
@@ -417,6 +428,7 @@ impl TextArea {
 
     pub fn set_selection_background_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.selection_background_color = Box::new(color);
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
     }
 
     pub fn selection_background_rgba_f32(&self) -> [f32; 4] {
@@ -467,6 +479,7 @@ impl TextArea {
 
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
     }
 
     pub fn set_style_width(&mut self, width: Option<Length>) {
@@ -1704,6 +1717,14 @@ impl ElementTrait for TextArea {
         self.should_draw_caret().hash(&mut hasher);
         hasher.finish()
     }
+
+    fn local_dirty_flags(&self) -> super::DirtyFlags {
+        self.dirty_flags
+    }
+
+    fn clear_local_dirty_flags(&mut self, flags: super::DirtyFlags) {
+        self.dirty_flags = self.dirty_flags.without(flags);
+    }
 }
 
 impl EventTarget for TextArea {
@@ -2003,6 +2024,7 @@ impl Layoutable for TextArea {
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::RUNTIME);
     }
 
     fn measure(&mut self, constraints: LayoutConstraints) {
@@ -2016,6 +2038,7 @@ impl Layoutable for TextArea {
         );
 
         if !self.auto_width && !self.auto_height {
+            self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
             return;
         }
 
@@ -2056,9 +2079,17 @@ impl Layoutable for TextArea {
             self.size.height = (line_px * resolved_lines as f32).max(1.0);
             self.element.set_height(self.size.height);
         }
+        self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
     }
 
     fn place(&mut self, placement: LayoutPlacement) {
+        if !self
+            .dirty_flags
+            .intersects(super::DirtyFlags::PLACE.union(super::DirtyFlags::BOX_MODEL).union(super::DirtyFlags::HIT_TEST))
+            && self.last_layout_placement == Some(placement)
+        {
+            return;
+        }
         self.sync_size_from_style(
             placement.percent_base_width,
             placement.percent_base_height,
@@ -2101,6 +2132,12 @@ impl Layoutable for TextArea {
             self.invalidate_glyph_layout();
         }
         self.clamp_scroll();
+        self.last_layout_placement = Some(placement);
+        self.dirty_flags = self.dirty_flags.without(
+            super::DirtyFlags::PLACE
+                .union(super::DirtyFlags::BOX_MODEL)
+                .union(super::DirtyFlags::HIT_TEST),
+        );
     }
 }
 

@@ -467,6 +467,8 @@ impl Element {
             focus_handlers: Vec::new(),
             blur_handlers: Vec::new(),
             layout_dirty: true,
+            dirty_flags: DirtyFlags::ALL,
+            last_layout_placement: None,
             last_layout_proposal: None,
             flex_info: None,
             has_absolute_descendant_for_hit_test: false,
@@ -493,23 +495,27 @@ impl Element {
 
     pub fn set_position(&mut self, x: f32, y: f32) {
         self.core.set_position(x, y);
+        self.mark_place_dirty();
     }
 
     pub fn set_anchor_name(&mut self, name: Option<AnchorName>) {
         self.anchor_name = name;
+        self.mark_place_dirty();
     }
 
     pub fn set_x(&mut self, x: f32) {
         self.core.set_x(x);
+        self.mark_place_dirty();
     }
 
     pub fn set_y(&mut self, y: f32) {
         self.core.set_y(y);
+        self.mark_place_dirty();
     }
 
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.core.set_size(width, height);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_scrollbar_shadow_blur_radius(&mut self, radius: f32) {
@@ -518,50 +524,68 @@ impl Element {
 
     pub fn set_width(&mut self, width: f32) {
         self.core.set_width(width);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_height(&mut self, height: f32) {
         self.core.set_height(height);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn mark_layout_dirty(&mut self) {
         self.layout_dirty = true;
+        self.mark_local_dirty(DirtyFlags::ALL);
+    }
+
+    pub(crate) fn mark_place_dirty(&mut self) {
+        self.mark_local_dirty(DirtyFlags::PLACE.union(DirtyFlags::BOX_MODEL).union(DirtyFlags::HIT_TEST).union(DirtyFlags::PAINT));
+    }
+
+    pub(crate) fn mark_paint_dirty(&mut self) {
+        self.mark_local_dirty(DirtyFlags::PAINT);
+    }
+
+    pub(crate) fn mark_local_dirty(&mut self, flags: DirtyFlags) {
+        self.dirty_flags = self.dirty_flags.union(flags);
     }
 
     pub fn set_background_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.background_color = Box::new(color);
+        self.mark_paint_dirty();
     }
 
     pub fn set_background_color_value(&mut self, color: Color) {
         self.background_color = Box::new(color);
+        self.mark_paint_dirty();
     }
 
     pub fn set_foreground_color(&mut self, color: Color) {
         self.foreground_color = color;
+        self.mark_paint_dirty();
     }
 
     pub fn set_layout_transition_x(&mut self, value: f32) {
         self.layout_transition_visual_offset_x = value;
+        self.mark_place_dirty();
     }
 
     pub fn set_layout_transition_y(&mut self, value: f32) {
         self.layout_transition_visual_offset_y = value;
+        self.mark_place_dirty();
     }
 
     pub fn set_layout_transition_width(&mut self, value: f32) {
         let value = value.max(0.0);
         self.layout_transition_override_width = Some(value);
         self.core.layout_size.width = value;
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_layout_transition_height(&mut self, value: f32) {
         let value = value.max(0.0);
         self.layout_transition_override_height = Some(value);
         self.core.layout_size.height = value;
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn seed_layout_transition_snapshot(
@@ -594,28 +618,34 @@ impl Element {
 
     pub fn set_border_top_color(&mut self, color: Color) {
         self.border_colors.top = Box::new(color);
+        self.mark_paint_dirty();
     }
 
     pub fn set_border_right_color(&mut self, color: Color) {
         self.border_colors.right = Box::new(color);
+        self.mark_paint_dirty();
     }
 
     pub fn set_border_bottom_color(&mut self, color: Color) {
         self.border_colors.bottom = Box::new(color);
+        self.mark_paint_dirty();
     }
 
     pub fn set_border_left_color(&mut self, color: Color) {
         self.border_colors.left = Box::new(color);
+        self.mark_paint_dirty();
     }
 
     pub fn set_border_radius(&mut self, radius: f32) {
         let radius = radius.max(0.0);
         self.border_radii = CornerRadii::uniform(radius);
         self.border_radius = radius;
+        self.mark_paint_dirty();
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
+        self.mark_paint_dirty();
     }
 
     pub fn set_padding(&mut self, value: f32) {
@@ -626,41 +656,41 @@ impl Element {
             top: value,
             bottom: value,
         };
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_padding_x(&mut self, value: f32) {
         let value = value.max(0.0);
         self.padding.left = value;
         self.padding.right = value;
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_padding_y(&mut self, value: f32) {
         let value = value.max(0.0);
         self.padding.top = value;
         self.padding.bottom = value;
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_padding_left(&mut self, value: f32) {
         self.padding.left = value.max(0.0);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_padding_right(&mut self, value: f32) {
         self.padding.right = value.max(0.0);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_padding_top(&mut self, value: f32) {
         self.padding.top = value.max(0.0);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub fn set_padding_bottom(&mut self, value: f32) {
         self.padding.bottom = value.max(0.0);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub(crate) fn width_is_auto(&self) -> bool {
@@ -747,7 +777,7 @@ impl Element {
             );
         }
         self.has_style_snapshot = true;
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     fn collect_style_transition_requests(
