@@ -677,10 +677,11 @@ impl Layoutable for Text {
     }
 
     fn place(&mut self, placement: crate::view::base_component::LayoutPlacement) {
-        if !self
-            .dirty_flags
-            .intersects(super::DirtyFlags::PLACE.union(super::DirtyFlags::BOX_MODEL).union(super::DirtyFlags::HIT_TEST))
-            && self.last_layout_placement == Some(placement)
+        if !self.dirty_flags.intersects(
+            super::DirtyFlags::PLACE
+                .union(super::DirtyFlags::BOX_MODEL)
+                .union(super::DirtyFlags::HIT_TEST),
+        ) && self.last_layout_placement == Some(placement)
         {
             return;
         }

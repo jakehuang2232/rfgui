@@ -664,6 +664,15 @@ pub fn find_scroll_handler_from_hit_test(
     find_scroll_handler_bubble(root, target_id, delta_x, delta_y)
 }
 
+pub fn find_scroll_handler_from_target(
+    root: &dyn ElementTrait,
+    target_id: u64,
+    delta_x: f32,
+    delta_y: f32,
+) -> Option<u64> {
+    find_scroll_handler_bubble(root, target_id, delta_x, delta_y)
+}
+
 pub fn dispatch_scroll_to_target(
     root: &mut dyn ElementTrait,
     target_id: u64,

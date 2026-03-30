@@ -1637,8 +1637,8 @@ mod tests {
         TextStylePropSchema,
     };
     use crate::{
-        Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout,
-        Length, ParsedValue, PropertyId, Style, Unit,
+        Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length,
+        ParsedValue, PropertyId, Style, Unit,
     };
     use std::sync::Arc;
 
@@ -1752,10 +1752,11 @@ mod tests {
     #[test]
     fn global_key_registry_keeps_fragment_path_without_node_id() {
         let global_key = GlobalKey::from("fragment-root");
-        let node =
-            RsxNode::fragment(vec![host_element_node().with_prop("style", empty_element_style())])
-            .with_key(global_key)
-            .with_invocation_type("Button");
+        let node = RsxNode::fragment(vec![
+            host_element_node().with_prop("style", empty_element_style()),
+        ])
+        .with_key(global_key)
+        .with_invocation_type("Button");
 
         let registry = super::collect_global_key_registry(&node).expect("registry should build");
         let entry = registry.get(&global_key).expect("global key entry");
@@ -1841,7 +1842,9 @@ mod tests {
                             .with_key(global_key)
                             .with_invocation_type("Card")
                             .with_prop("style", empty_element_style())
-                            .with_child(host_element_node().with_prop("style", empty_element_style())),
+                            .with_child(
+                                host_element_node().with_prop("style", empty_element_style()),
+                            ),
                     ),
             );
         let second_root = host_element_node()
@@ -1855,7 +1858,9 @@ mod tests {
                             .with_key(global_key)
                             .with_invocation_type("Card")
                             .with_prop("style", empty_element_style())
-                            .with_child(host_element_node().with_prop("style", empty_element_style())),
+                            .with_child(
+                                host_element_node().with_prop("style", empty_element_style()),
+                            ),
                     ),
             );
 
@@ -1897,7 +1902,11 @@ mod tests {
         assert!(converted.is_ok());
     }
 
-    fn style_bg_border(bg_hex: &str, border_hex: &str, border_width: f32) -> ElementStylePropSchema {
+    fn style_bg_border(
+        bg_hex: &str,
+        border_hex: &str,
+        border_width: f32,
+    ) -> ElementStylePropSchema {
         ElementStylePropSchema {
             background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(bg_hex)))),
             border: Some(Border::uniform(
@@ -1908,10 +1917,7 @@ mod tests {
         }
     }
 
-    fn style_with_radius(
-        style: ElementStylePropSchema,
-        radius: f32,
-    ) -> ElementStylePropSchema {
+    fn style_with_radius(style: ElementStylePropSchema, radius: f32) -> ElementStylePropSchema {
         ElementStylePropSchema {
             border_radius: Some(BorderRadius::uniform(Unit::px(radius))),
             ..style
@@ -1932,7 +1938,9 @@ mod tests {
 
     fn text_style_with_color(color_hex: &str) -> TextStylePropSchema {
         TextStylePropSchema {
-            color: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(color_hex)))),
+            color: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
+                color_hex,
+            )))),
             ..empty_text_style()
         }
     }
@@ -2074,7 +2082,10 @@ mod tests {
     #[test]
     fn element_padding_offsets_child_layout() {
         let tree = host_element_node()
-            .with_prop("style", style_with_size(empty_element_style(), 200.0, 120.0))
+            .with_prop(
+                "style",
+                style_with_size(empty_element_style(), 200.0, 120.0),
+            )
             .with_prop("padding_left", 8)
             .with_prop("padding_top", 12)
             .with_prop("padding_right", 16)
@@ -2212,7 +2223,9 @@ mod tests {
         let parent_style = ElementStylePropSchema {
             width: Some(Length::px(100.0)),
             height: Some(Length::px(100.0)),
-            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex("#101010")))),
+            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
+                "#101010",
+            )))),
             cursor: Some(Cursor::Pointer),
             ..empty_element_style()
         };
@@ -2220,7 +2233,9 @@ mod tests {
         let child_style = ElementStylePropSchema {
             width: Some(Length::px(40.0)),
             height: Some(Length::px(40.0)),
-            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex("#ff0000")))),
+            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
+                "#ff0000",
+            )))),
             ..empty_element_style()
         };
 
@@ -2261,7 +2276,9 @@ mod tests {
         let parent_style = ElementStylePropSchema {
             width: Some(Length::px(200.0)),
             height: Some(Length::px(80.0)),
-            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex("#101010")))),
+            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
+                "#101010",
+            )))),
             cursor: Some(Cursor::Pointer),
             ..empty_element_style()
         };

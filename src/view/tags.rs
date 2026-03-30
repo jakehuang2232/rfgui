@@ -8,8 +8,8 @@ use crate::ui::{
 };
 use crate::{
     Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize,
-    FontWeight, Layout, Length, Opacity, Padding, Position, ScrollDirection, SelectionStyle,
-    Style, TextAlign, TextWrap, Transitions,
+    FontWeight, Layout, Length, Opacity, Padding, Position, ScrollDirection, SelectionStyle, Style,
+    TextAlign, TextWrap, Transitions,
 };
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -505,7 +505,10 @@ fn apply_selection(selection: &Option<SelectionStylePropSchema>) -> Option<Selec
 
 fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropSchema) {
     if let Some(position) = schema.position.clone() {
-        style.insert(crate::PropertyId::Position, crate::ParsedValue::Position(position));
+        style.insert(
+            crate::PropertyId::Position,
+            crate::ParsedValue::Position(position),
+        );
     }
     if let Some(width) = schema.width {
         crate::insert_style_length(style, crate::PropertyId::Width, width);
@@ -526,7 +529,10 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
         crate::insert_style_length(style, crate::PropertyId::MaxHeight, max_height);
     }
     if let Some(layout) = schema.layout {
-        style.insert(crate::PropertyId::Layout, crate::ParsedValue::Layout(layout));
+        style.insert(
+            crate::PropertyId::Layout,
+            crate::ParsedValue::Layout(layout),
+        );
     }
     if let Some(cross_size) = schema.cross_size {
         style.insert(
@@ -550,11 +556,22 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
         );
     }
     if let Some(cursor) = schema.cursor {
-        style.insert(crate::PropertyId::Cursor, crate::ParsedValue::Cursor(cursor));
+        style.insert(
+            crate::PropertyId::Cursor,
+            crate::ParsedValue::Cursor(cursor),
+        );
     }
     apply_box_color(style, crate::PropertyId::Color, &schema.color);
-    apply_box_color(style, crate::PropertyId::BackgroundColor, &schema.background);
-    apply_box_color(style, crate::PropertyId::BackgroundColor, &schema.background_color);
+    apply_box_color(
+        style,
+        crate::PropertyId::BackgroundColor,
+        &schema.background,
+    );
+    apply_box_color(
+        style,
+        crate::PropertyId::BackgroundColor,
+        &schema.background_color,
+    );
     if let Some(border) = &schema.border {
         style.set_border(border.clone());
     }
@@ -671,17 +688,16 @@ impl HoverTextStylePropSchema {
             crate::insert_style_font_size(&mut style, crate::PropertyId::FontSize, font_size);
         }
         if let Some(font_weight) = self.font_weight {
-            crate::insert_style_font_weight(
-                &mut style,
-                crate::PropertyId::FontWeight,
-                font_weight,
-            );
+            crate::insert_style_font_weight(&mut style, crate::PropertyId::FontWeight, font_weight);
         }
         if let Some(text_wrap) = self.text_wrap {
             crate::insert_style_text_wrap(&mut style, crate::PropertyId::TextWrap, text_wrap);
         }
         if let Some(cursor) = self.cursor {
-            style.insert(crate::PropertyId::Cursor, crate::ParsedValue::Cursor(cursor));
+            style.insert(
+                crate::PropertyId::Cursor,
+                crate::ParsedValue::Cursor(cursor),
+            );
         }
         if let Some(opacity) = self.opacity {
             style.insert(

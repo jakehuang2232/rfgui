@@ -381,7 +381,10 @@ mod tests {
             },
             &mut host,
         );
-        assert!(!plugin.tracks.contains_key(&key), "finished track should be removed");
+        assert!(
+            !plugin.tracks.contains_key(&key),
+            "finished track should be removed"
+        );
 
         plugin
             .start_visual_track(&mut host, target, field, -99.0, 0.0, transition(100))
