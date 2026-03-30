@@ -2293,7 +2293,7 @@ impl Viewport {
         self.debug_options.geometry_overlay
     }
 
-    pub fn debug_overlay_enabled(&self) -> bool {
+    pub(crate) fn debug_overlay_enabled(&self) -> bool {
         self.debug_options.geometry_overlay || self.debug_options.trace_reuse_path
     }
 
@@ -2301,12 +2301,12 @@ impl Viewport {
         self.debug_options.geometry_overlay = enabled;
     }
 
-    pub fn clear_debug_overlay_geometry(&mut self) {
+    pub(crate) fn clear_debug_overlay_geometry(&mut self) {
         self.debug_overlay_vertices.clear();
         self.debug_overlay_indices.clear();
     }
 
-    pub fn push_debug_overlay_geometry(
+    pub(crate) fn push_debug_overlay_geometry(
         &mut self,
         vertices: &[super::render_pass::debug_overlay_pass::DebugOverlayVertex],
         indices: &[u32],
@@ -2320,7 +2320,7 @@ impl Viewport {
             .extend(indices.iter().map(|index| base + *index));
     }
 
-    pub fn take_debug_overlay_geometry(
+    pub(crate) fn take_debug_overlay_geometry(
         &mut self,
     ) -> (
         Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
@@ -3535,6 +3535,7 @@ impl Viewport {
         crate::view::render_pass::text_pass::clear_text_resources_cache();
         crate::view::render_pass::blur_module::clear_blur_resources_cache();
         crate::view::render_pass::composite_layer_pass::clear_composite_layer_resources_cache();
+        crate::view::render_pass::texture_composite_pass::clear_texture_composite_resources_cache();
         crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
         self.offscreen_render_target_pool.clear();
         self.sampled_texture_cache.clear();

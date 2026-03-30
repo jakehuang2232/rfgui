@@ -1,12 +1,8 @@
 use crate::view::frame_graph::ResourceCache;
-use crate::view::frame_graph::{
-    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-};
-use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_ref, render_target_sample_count,
+    render_target_ref, render_target_sample_count,
 };
-use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
+use crate::view::render_pass::GraphicsCtx;
 use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -17,50 +13,6 @@ const DEBUG_OVERLAY_RESOURCES: u64 = 402;
 pub struct DebugOverlayVertex {
     pub position: [f32; 2],
     pub color: [f32; 4],
-}
-
-pub struct DebugOverlayPass {
-    input: DebugOverlayInput,
-    output: DebugOverlayOutput,
-}
-
-#[derive(Default)]
-pub struct DebugOverlayInput {
-    pub pass_context: RenderPassContext,
-}
-
-#[derive(Default)]
-pub struct DebugOverlayOutput {
-    pub render_target: RenderTargetOut,
-}
-
-impl DebugOverlayPass {
-    pub fn new(input: DebugOverlayInput, output: DebugOverlayOutput) -> Self {
-        Self { input, output }
-    }
-}
-
-impl GraphicsPass for DebugOverlayPass {
-    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
-        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        if let Some(target) = builder.texture_target(&self.output.render_target) {
-            let _ = target;
-            builder.write_color(
-                &self.output.render_target,
-                GraphicsColorAttachmentOps::load(),
-            );
-        } else {
-            builder.write_surface_color(GraphicsColorAttachmentOps::load());
-        }
-        if self.input.pass_context.uses_depth_stencil {
-            builder.read_output_depth();
-            builder.read_output_stencil();
-        }
-    }
-
-    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        draw_debug_overlay(ctx, self.output.render_target.handle());
-    }
 }
 
 pub(crate) fn draw_debug_overlay(

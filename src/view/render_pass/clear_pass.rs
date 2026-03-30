@@ -45,6 +45,7 @@ impl ClearPass {
 impl GraphicsPass for ClearPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
+        let _ = self.input.pass_context;
         let color = [
             self.params.color[0] as f64,
             self.params.color[1] as f64,

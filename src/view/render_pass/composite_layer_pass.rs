@@ -21,7 +21,6 @@ const COMPOSITE_LAYER_RESOURCES: u64 = 201;
 #[derive(Clone, Copy)]
 pub struct LayerTag;
 pub type LayerIn = InSlot<TextureResource, LayerTag>;
-pub type LayerOut = OutSlot<TextureResource, LayerTag>;
 
 pub struct CompositeLayerPass {
     params: CompositeLayerParams,
