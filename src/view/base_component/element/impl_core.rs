@@ -551,12 +551,16 @@ impl Element {
     }
 
     pub fn set_layout_transition_width(&mut self, value: f32) {
-        self.layout_transition_override_width = Some(value.max(0.0));
+        let value = value.max(0.0);
+        self.layout_transition_override_width = Some(value);
+        self.core.layout_size.width = value;
         self.layout_dirty = true;
     }
 
     pub fn set_layout_transition_height(&mut self, value: f32) {
-        self.layout_transition_override_height = Some(value.max(0.0));
+        let value = value.max(0.0);
+        self.layout_transition_override_height = Some(value);
+        self.core.layout_size.height = value;
         self.layout_dirty = true;
     }
 

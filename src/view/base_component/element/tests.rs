@@ -8,14 +8,15 @@ mod tests {
     use super::super::core::Position as LayoutPosition;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
-    use crate::view::frame_graph::FrameGraph;
     use crate::view::base_component::{
-        reset_test_promoted_build_counts, test_promoted_build_count,
+        reset_test_promoted_build_counts, set_style_field_by_id, test_promoted_build_count,
     };
+    use crate::view::frame_graph::FrameGraph;
     use crate::Layout;
     use crate::{
-        Align, AnchorName, Border, BoxShadow, ClipMode, Collision, CollisionBoundary, Color,
-        CrossSize, JustifyContent, Length, Opacity, Operator, Position, Style,
+        Align, AnchorName, Border, BorderRadius, BoxShadow, ClipMode, Collision,
+        CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator,
+        Position, Style,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -2895,6 +2896,184 @@ mod tests {
     }
 
     #[test]
+    fn flow_cross_size_stretch_aligns_using_current_then_final_cross_size() {
+        for align in [Align::Center, Align::End] {
+            let mut parent = Element::new(0.0, 0.0, 320.0, 140.0);
+            let mut parent_style = Style::new();
+            parent_style.insert(
+                PropertyId::Layout,
+                ParsedValue::Layout(
+                    Layout::flow()
+                        .row()
+                        .no_wrap()
+                        .align(Align::Start)
+                        .cross_size(CrossSize::Fit)
+                        .into(),
+                ),
+            );
+            parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(320.0)));
+            parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(140.0)));
+            parent.apply_style(parent_style);
+
+            let mut tall = Element::new(0.0, 0.0, 120.0, 100.0);
+            let mut tall_style = Style::new();
+            tall_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
+            tall_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+            tall.apply_style(tall_style);
+
+            let mut stretched = Element::new(0.0, 0.0, 120.0, 0.0);
+            let mut stretched_style = Style::new();
+            stretched_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
+            stretched_style.insert(
+                PropertyId::Transition,
+                ParsedValue::Transition(Transition::new(TransitionProperty::Height, 180).into()),
+            );
+            stretched.apply_style(stretched_style);
+            stretched.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 40.0)));
+
+            parent.add_child(Box::new(tall));
+            parent.add_child(Box::new(stretched));
+
+            parent.measure(LayoutConstraints {
+                max_width: 320.0,
+                max_height: 140.0,
+                viewport_width: 320.0,
+                viewport_height: 140.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(140.0),
+            });
+            parent.place(LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 140.0,
+                viewport_width: 320.0,
+                viewport_height: 140.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(140.0),
+            });
+            let _ = parent.children[1]
+                .as_any_mut()
+                .downcast_mut::<Element>()
+                .expect("stretched child element")
+                .take_layout_transition_requests();
+
+            let mut next_parent_style = Style::new();
+            next_parent_style.insert(
+                PropertyId::Layout,
+                ParsedValue::Layout(
+                    Layout::flow()
+                        .row()
+                        .no_wrap()
+                        .align(align)
+                        .cross_size(CrossSize::Stretch)
+                        .into(),
+                ),
+            );
+            next_parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(320.0)));
+            next_parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(140.0)));
+            parent.apply_style(next_parent_style);
+            parent.measure(LayoutConstraints {
+                max_width: 320.0,
+                max_height: 140.0,
+                viewport_width: 320.0,
+                viewport_height: 140.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(140.0),
+            });
+            assert_eq!(parent.computed_style.layout_axis_cross_size(), CrossSize::Stretch);
+            assert!(parent.children[1].allows_cross_stretch(true));
+            parent.place(LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 140.0,
+                viewport_width: 320.0,
+                viewport_height: 140.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(140.0),
+            });
+
+            let children = parent.children().expect("children");
+            let stretched_snapshot = children[1].box_model_snapshot();
+            let expected_animated_y = match align {
+                Align::Start => 0.0,
+                Align::Center => 50.0,
+                Align::End => 100.0,
+            };
+
+            assert!(
+                (stretched_snapshot.y - expected_animated_y).abs() < 0.01,
+                "stretched child should align using current animated height for {align:?}, got y={}, expected {}",
+                stretched_snapshot.y,
+                expected_animated_y
+            );
+            assert!(
+                (stretched_snapshot.height - 40.0).abs() < 0.01,
+                "stretched child should still render previous height during animation for {align:?}, got h={}",
+                stretched_snapshot.height
+            );
+
+            let stretched = parent.children[1]
+                .as_any_mut()
+                .downcast_mut::<Element>()
+                .expect("stretched child element");
+            stretched.set_layout_transition_height(100.0);
+
+            parent.place(LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 140.0,
+                viewport_width: 320.0,
+                viewport_height: 140.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(140.0),
+            });
+
+            let stretched = parent.children[1]
+                .as_any_mut()
+                .downcast_mut::<Element>()
+                .expect("stretched child element");
+            stretched.layout_transition_override_height = None;
+            stretched.layout_transition_target_height = None;
+
+            parent.place(LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 140.0,
+                viewport_width: 320.0,
+                viewport_height: 140.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(140.0),
+            });
+
+            let children = parent.children().expect("children");
+            let stretched_snapshot = children[1].box_model_snapshot();
+            let expected_final_y = match align {
+                Align::Start => 0.0,
+                Align::Center => 20.0,
+                Align::End => 40.0,
+            };
+            assert!(
+                (stretched_snapshot.y - expected_final_y).abs() < 0.01,
+                "stretched child should align using final cross size after animation for {align:?}, got y={}, expected {}",
+                stretched_snapshot.y,
+                expected_final_y
+            );
+        }
+    }
+
+    #[test]
     fn layer_subtree_does_not_inherit_ancestor_stencil_clip_id() {
         let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         assert_eq!(
@@ -3136,6 +3315,63 @@ mod tests {
 
         assert_eq!(el.border_radius, 12.0);
         assert!(!el.layout_dirty);
+    }
+
+    #[test]
+    fn border_radius_style_sample_preserves_resolved_corner_ratios() {
+        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut style = Style::new();
+        style.set_border_radius(
+            BorderRadius::uniform(Length::px(10.0))
+                .top_right(Length::px(32.0))
+                .bottom_left(Length::percent(90.0)),
+        );
+        el.apply_style(style);
+        let node_id = el.id();
+
+        assert!(set_style_field_by_id(
+            &mut el,
+            node_id,
+            crate::transition::StyleField::BorderRadius,
+            crate::transition::StyleValue::Scalar(50.0),
+        ));
+
+        assert!((el.border_radii.top_left - 3.7037036).abs() < 0.001);
+        assert!((el.border_radii.top_right - 11.851851).abs() < 0.001);
+        assert!((el.border_radii.bottom_right - 3.7037036).abs() < 0.001);
+        assert!((el.border_radii.bottom_left - 50.0).abs() < 0.001);
+        assert!((el.border_radius - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn snapshot_restore_with_same_style_does_not_emit_spurious_border_radius_transition() {
+        let mut original = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut style = Style::new();
+        style.set_border_radius(
+            BorderRadius::uniform(Length::px(10.0))
+                .top_right(Length::px(32.0))
+                .bottom_left(Length::percent(90.0)),
+        );
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::from(vec![Transition::new(
+                TransitionProperty::All,
+                180,
+            )])),
+        );
+        original.apply_style(style.clone());
+
+        let snapshot = original.snapshot_state().expect("snapshot should exist");
+
+        let mut rebuilt = Element::new(0.0, 0.0, 0.0, 0.0);
+        rebuilt.apply_style(style);
+        assert!(rebuilt.restore_state(snapshot.as_ref()));
+
+        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        assert!(
+            requests.is_empty(),
+            "restore of identical style should not enqueue style transitions: {requests:?}"
+        );
     }
 
 }

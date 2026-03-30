@@ -261,6 +261,38 @@ impl Layoutable for Element {
         }
     }
 
+    fn cross_alignment_size(&self, is_row: bool, stretched_cross: Option<f32>) -> f32 {
+        let current_cross = if is_row {
+            self.core.layout_size.height.max(0.0)
+        } else {
+            self.core.layout_size.width.max(0.0)
+        };
+        let target_cross = if is_row {
+            self.layout_assigned_height
+        } else {
+            self.layout_assigned_width
+        };
+        let has_cross_transition = self.computed_style.transition.as_slice().iter().any(|t| {
+            if is_row {
+                matches!(t.property, TransitionProperty::All | TransitionProperty::Height)
+            } else {
+                matches!(t.property, TransitionProperty::All | TransitionProperty::Width)
+            }
+        });
+        let transition_active = if is_row {
+            self.layout_transition_override_height.is_some()
+        } else {
+            self.layout_transition_override_width.is_some()
+        };
+        let transition_will_start = has_cross_transition
+            && target_cross.is_some_and(|target| !approx_eq(target.max(0.0), current_cross));
+        if transition_active || transition_will_start {
+            current_cross
+        } else {
+            stretched_cross.unwrap_or(current_cross)
+        }
+    }
+
     fn flex_grow(&self) -> f32 {
         self.computed_style.flex_grow
     }

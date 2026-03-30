@@ -771,6 +771,10 @@ pub trait Layoutable {
     fn set_layout_width(&mut self, width: f32);
     fn set_layout_height(&mut self, height: f32);
     fn allows_cross_stretch(&self, is_row: bool) -> bool;
+    fn cross_alignment_size(&self, is_row: bool, stretched_cross: Option<f32>) -> f32 {
+        let (measured_w, measured_h) = self.measured_size();
+        stretched_cross.unwrap_or(if is_row { measured_h } else { measured_w })
+    }
     fn flex_grow(&self) -> f32 {
         0.0
     }
@@ -993,6 +997,10 @@ struct FlexItemPlan {
 struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
+    width: f32,
+    height: f32,
+    layout_width: f32,
+    layout_height: f32,
     is_hovered: bool,
     background_color: Color,
     foreground_color: Color,
@@ -1338,6 +1346,10 @@ impl ElementTrait for Element {
         Some(Box::new(ElementStyleSnapshot {
             opacity: self.opacity,
             border_radius: self.border_radius,
+            width: self.core.size.width,
+            height: self.core.size.height,
+            layout_width: self.core.layout_size.width,
+            layout_height: self.core.layout_size.height,
             is_hovered: self.is_hovered,
             background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
             foreground_color: self.foreground_color,
@@ -1370,6 +1382,12 @@ impl ElementTrait for Element {
 
         self.opacity = snapshot.opacity;
         self.border_radius = snapshot.border_radius;
+        self.core.set_width(snapshot.width);
+        self.core.set_height(snapshot.height);
+        self.core.layout_size = Size {
+            width: snapshot.layout_width,
+            height: snapshot.layout_height,
+        };
         self.is_hovered = snapshot.is_hovered;
         self.background_color = Box::new(snapshot.background_color);
         self.foreground_color = snapshot.foreground_color;
