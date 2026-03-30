@@ -648,7 +648,7 @@ impl Element {
                 || element.has_absolute_descendant_for_hit_test;
         }
         self.children.push(child);
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
     }
 
     pub(crate) fn replace_children(
@@ -666,7 +666,7 @@ impl Element {
                     || element.has_absolute_descendant_for_hit_test;
             }
         }
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
         std::mem::replace(&mut self.children, children)
     }
 

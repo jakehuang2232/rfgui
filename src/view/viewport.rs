@@ -1067,6 +1067,7 @@ pub struct Viewport {
     debug_options: ViewportDebugOptions,
     frame_stats: FrameStats,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
+    cached_root_box_models: HashMap<u64, Vec<super::base_component::BoxModelSnapshot>>,
     promotion_state: PromotionState,
     promotion_config: ViewportPromotionConfig,
     promoted_layer_updates: Vec<PromotedLayerUpdate>,
@@ -1523,6 +1524,41 @@ impl Viewport {
             }
         }
         false
+    }
+
+    fn refresh_frame_box_models(
+        &mut self,
+        roots: &mut [Box<dyn super::base_component::ElementTrait>],
+    ) {
+        self.frame_box_models.clear();
+        let mut active_root_ids = HashSet::new();
+        for root in roots.iter_mut() {
+            let root_id = root.id();
+            active_root_ids.insert(root_id);
+            let dirty = super::base_component::subtree_dirty_flags(root.as_ref());
+            let needs_refresh = dirty.intersects(
+                crate::view::base_component::DirtyFlags::LAYOUT
+                    .union(crate::view::base_component::DirtyFlags::PLACE)
+                    .union(crate::view::base_component::DirtyFlags::BOX_MODEL)
+                    .union(crate::view::base_component::DirtyFlags::HIT_TEST),
+            ) || !self.cached_root_box_models.contains_key(&root_id);
+            if needs_refresh {
+                let snapshots = super::base_component::collect_box_models(root.as_ref());
+                self.cached_root_box_models.insert(root_id, snapshots);
+            }
+            if let Some(snapshots) = self.cached_root_box_models.get(&root_id) {
+                self.frame_box_models.extend_from_slice(snapshots);
+            }
+        }
+        self.cached_root_box_models
+            .retain(|root_id, _| active_root_ids.contains(root_id));
+        for root in roots.iter_mut() {
+            super::base_component::clear_subtree_dirty_flags(
+                root.as_mut(),
+                crate::view::base_component::DirtyFlags::BOX_MODEL
+                    .union(crate::view::base_component::DirtyFlags::HIT_TEST),
+            );
+        }
     }
 
     fn transition_timing(&mut self) -> (f32, f64) {
@@ -2142,6 +2178,7 @@ impl Viewport {
             debug_options,
             frame_stats: FrameStats::new(debug_options.trace_fps),
             frame_box_models: Vec::new(),
+            cached_root_box_models: HashMap::new(),
             promotion_state: PromotionState::default(),
             promotion_config: ViewportPromotionConfig::default(),
             promoted_layer_updates: Vec::new(),
@@ -2694,10 +2731,7 @@ impl Viewport {
         let layout_place_elapsed_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;
         let layout_place_profile = super::base_component::take_layout_place_profile();
         let collect_box_models_started_at = Instant::now();
-        for root in roots.iter_mut() {
-            self.frame_box_models
-                .extend(super::base_component::collect_box_models(root.as_ref()));
-        }
+        self.refresh_frame_box_models(roots);
         let layout_collect_box_models_elapsed_ms =
             collect_box_models_started_at.elapsed().as_secs_f64() * 1000.0;
         let layout_elapsed_ms = layout_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -2748,10 +2782,7 @@ impl Viewport {
             relayout_place_elapsed_ms = relayout_place_started_at.elapsed().as_secs_f64() * 1000.0;
             relayout_place_profile = super::base_component::take_layout_place_profile();
             let relayout_collect_started_at = Instant::now();
-            for root in roots.iter_mut() {
-                self.frame_box_models
-                    .extend(super::base_component::collect_box_models(root.as_ref()));
-            }
+            self.refresh_frame_box_models(roots);
             relayout_collect_box_models_elapsed_ms =
                 relayout_collect_started_at.elapsed().as_secs_f64() * 1000.0;
         }

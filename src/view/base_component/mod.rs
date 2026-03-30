@@ -44,6 +44,25 @@ pub(crate) fn collect_box_models(root: &dyn ElementTrait) -> Vec<BoxModelSnapsho
     out
 }
 
+pub(crate) fn subtree_dirty_flags(root: &dyn ElementTrait) -> DirtyFlags {
+    let mut flags = root.local_dirty_flags();
+    if let Some(children) = root.children() {
+        for child in children {
+            flags = flags.union(subtree_dirty_flags(child.as_ref()));
+        }
+    }
+    flags
+}
+
+pub(crate) fn clear_subtree_dirty_flags(root: &mut dyn ElementTrait, flags: DirtyFlags) {
+    root.clear_local_dirty_flags(flags);
+    if let Some(children) = root.children_mut() {
+        for child in children.iter_mut() {
+            clear_subtree_dirty_flags(child.as_mut(), flags);
+        }
+    }
+}
+
 pub(crate) fn can_reuse_promoted_subtree(node: &dyn ElementTrait, _ctx: &UiBuildContext) -> bool {
     fn walk(node: &dyn ElementTrait) -> bool {
         let Some(children) = node.children() else {

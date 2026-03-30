@@ -215,6 +215,14 @@ impl ElementTrait for Image {
     fn promotion_composite_bounds(&self) -> super::PromotionCompositeBounds {
         self.element.promotion_composite_bounds()
     }
+
+    fn local_dirty_flags(&self) -> super::DirtyFlags {
+        self.element.local_dirty_flags()
+    }
+
+    fn clear_local_dirty_flags(&mut self, flags: super::DirtyFlags) {
+        self.element.clear_local_dirty_flags(flags);
+    }
 }
 
 impl EventTarget for Image {

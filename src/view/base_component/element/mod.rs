@@ -738,6 +738,42 @@ pub struct LayoutPlacement {
     pub percent_base_height: Option<f32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirtyFlags(u8);
+
+impl DirtyFlags {
+    pub const NONE: Self = Self(0);
+    pub const LAYOUT: Self = Self(1 << 0);
+    pub const PLACE: Self = Self(1 << 1);
+    pub const BOX_MODEL: Self = Self(1 << 2);
+    pub const HIT_TEST: Self = Self(1 << 3);
+    pub const PAINT: Self = Self(1 << 4);
+    pub const RUNTIME: Self =
+        Self(Self::PLACE.0 | Self::BOX_MODEL.0 | Self::HIT_TEST.0 | Self::PAINT.0);
+    pub const ALL: Self =
+        Self(Self::LAYOUT.0 | Self::PLACE.0 | Self::BOX_MODEL.0 | Self::HIT_TEST.0 | Self::PAINT.0);
+
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    pub const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+}
+
 impl LayoutConstraints {
     fn context(self) -> LayoutContext {
         LayoutContext {
@@ -929,6 +965,12 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
             corner_radii: [0.0; 4],
         }
     }
+
+    fn local_dirty_flags(&self) -> DirtyFlags {
+        DirtyFlags::ALL
+    }
+
+    fn clear_local_dirty_flags(&mut self, _flags: DirtyFlags) {}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1082,6 +1124,8 @@ pub struct Element {
     focus_handlers: Vec<FocusHandler>,
     blur_handlers: Vec<BlurHandler>,
     layout_dirty: bool,
+    dirty_flags: DirtyFlags,
+    last_layout_placement: Option<LayoutPlacement>,
     last_layout_proposal: Option<LayoutProposal>,
     flex_info: Option<FlexLayoutInfo>,
     has_absolute_descendant_for_hit_test: bool,
@@ -1335,6 +1379,14 @@ impl ElementTrait for Element {
             height: (max_y - min_y).max(0.0),
             corner_radii: [0.0; 4],
         }
+    }
+
+    fn local_dirty_flags(&self) -> DirtyFlags {
+        self.dirty_flags
+    }
+
+    fn clear_local_dirty_flags(&mut self, flags: DirtyFlags) {
+        self.dirty_flags = self.dirty_flags.without(flags);
     }
 
     fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
