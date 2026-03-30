@@ -5,10 +5,7 @@ use rfgui::ui::{
     props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{
-    Align, Cursor, JustifyContent, Layout, Length, Operator, Padding, Position, TextWrap,
-    Transition, TransitionProperty, flex,
-};
+use rfgui::{Align, Cursor, JustifyContent, Layout, Length, Operator, Padding, Position, TextWrap, Transition, TransitionProperty, flex, Border};
 
 pub struct Slider;
 
@@ -125,7 +122,7 @@ impl RsxComponent<SliderProps> for Slider {
             }}>
                 <Element style={{
                     border_radius: slider_theme.frame_radius.clone(),
-                    padding: Padding::new().x(Length::px(HORIZONTAL_PADDING)),
+                    border: theme.component.input.border.clone(),
                     flex: flex().grow(3.0).shrink(1.0),
                     min_width: Length::Zero,
                     height: Length::px(height),
@@ -156,13 +153,13 @@ impl RsxComponent<SliderProps> for Slider {
                     <Element style={{
                         position: Position::absolute()
                             .top(Length::px(grab_padding))
+                            .bottom(Length::px(grab_padding))
                             .left(Length::calc(
                                 Length::percent(thumb_left_percent),
                                 Operator::subtract,
                                 Length::px(thumb_width * 0.5),
                             )),
                         width: Length::px(thumb_width),
-                        height: Length::px(thumb_height),
                         border_radius: slider_theme.grab_radius.clone(),
                         background: grab_background,
                         transition: [
@@ -184,7 +181,6 @@ impl RsxComponent<SliderProps> for Slider {
                     <Text
                         font_size={theme.typography.size.xs}
                         line_height=1.0
-                        font={theme.typography.font_family.clone()}
                         style={{
                             color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.primary.clone() }
                         }}
