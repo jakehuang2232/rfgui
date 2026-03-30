@@ -128,6 +128,7 @@ impl EventTarget for Element {
         self.scroll_offset.y = next_y;
         if changed {
             self.note_scrollbar_interaction();
+            self.mark_place_dirty();
         }
         changed || can_scroll
     }
@@ -164,8 +165,13 @@ impl EventTarget for Element {
     }
 
     fn set_scroll_offset(&mut self, offset: (f32, f32)) {
+        let changed = !approx_eq(self.scroll_offset.x, offset.0)
+            || !approx_eq(self.scroll_offset.y, offset.1);
         self.scroll_offset.x = offset.0;
         self.scroll_offset.y = offset.1;
+        if changed {
+            self.mark_place_dirty();
+        }
     }
 
     fn cursor(&self) -> Cursor {
