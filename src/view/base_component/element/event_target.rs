@@ -130,7 +130,7 @@ impl EventTarget for Element {
             self.note_scrollbar_interaction();
             self.mark_place_dirty();
         }
-        changed || can_scroll
+        changed
     }
 
     fn can_scroll_by(&self, dx: f32, dy: f32) -> bool {
@@ -155,9 +155,7 @@ impl EventTarget for Element {
             }
             ScrollDirection::None => {}
         }
-        let changed =
-            !approx_eq(next_x, self.scroll_offset.x) || !approx_eq(next_y, self.scroll_offset.y);
-        changed || can_scroll
+        !approx_eq(next_x, self.scroll_offset.x) || !approx_eq(next_y, self.scroll_offset.y)
     }
 
     fn get_scroll_offset(&self) -> (f32, f32) {

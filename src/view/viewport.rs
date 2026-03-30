@@ -1781,7 +1781,8 @@ impl Viewport {
         let mut redraw_changed = false;
         let mut relayout_required = false;
         for sample in samples {
-            redraw_changed |= Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
+            redraw_changed |=
+                Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
         }
         let style_samples = self.style_transition_plugin.take_samples();
         for sample in style_samples {
@@ -2739,8 +2740,7 @@ impl Viewport {
         // After layout is resolved for this frame, immediately run visual/style/scroll transitions
         // so their updated endpoints are visible in the same frame.
         let post_layout_transition_started_at = Instant::now();
-        let post_layout_transition =
-            self.run_post_layout_transitions(roots, dt, now_seconds);
+        let post_layout_transition = self.run_post_layout_transitions(roots, dt, now_seconds);
         let post_layout_transition_elapsed_ms =
             post_layout_transition_started_at.elapsed().as_secs_f64() * 1000.0;
         let relayout_after_transition_started_at = Instant::now();
@@ -4105,20 +4105,16 @@ impl Viewport {
             return false;
         };
         let mut pending_scroll_track: Option<(TrackTarget, (f32, f32), (f32, f32))> = None;
-        for root in self.ui_roots.iter_mut().rev() {
-            let Some(target_id) = super::base_component::find_scroll_handler_from_hit_test(
-                root.as_ref(),
-                x,
-                y,
-                delta_x,
-                delta_y,
-            ) else {
-                continue;
-            };
+        let Some((root_index, target_id)) =
+            Self::find_scroll_handler_at_pointer(&self.ui_roots, x, y, delta_x, delta_y)
+        else {
+            return false;
+        };
+        if let Some(root) = self.ui_roots.get_mut(root_index) {
             let Some(from) =
                 super::base_component::get_scroll_offset_by_id(root.as_ref(), target_id)
             else {
-                continue;
+                return false;
             };
             let _ = super::base_component::dispatch_scroll_to_target(
                 root.as_mut(),
@@ -4128,13 +4124,12 @@ impl Viewport {
             );
             let Some(to) = super::base_component::get_scroll_offset_by_id(root.as_ref(), target_id)
             else {
-                continue;
+                return false;
             };
             let _ = super::base_component::set_scroll_offset_by_id(root.as_mut(), target_id, from);
 
             if (to.0 - from.0).abs() > 0.001 || (to.1 - from.1).abs() > 0.001 {
                 pending_scroll_track = Some((target_id, from, to));
-                break;
             }
         }
         let mut handled = false;
@@ -4170,6 +4165,48 @@ impl Viewport {
             self.request_redraw();
         }
         handled
+    }
+
+    fn find_scroll_handler_at_pointer(
+        roots: &[Box<dyn super::base_component::ElementTrait>],
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> Option<(usize, u64)> {
+        let hit_target = roots
+            .iter()
+            .rev()
+            .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y))?;
+        let mut best_match: Option<(usize, u64, usize)> = None;
+
+        for (root_index, root) in roots.iter().enumerate() {
+            let Some(target_path) =
+                super::base_component::get_node_ancestry_ids(root.as_ref(), hit_target)
+            else {
+                continue;
+            };
+            let Some(handler_id) = super::base_component::find_scroll_handler_from_target(
+                root.as_ref(),
+                hit_target,
+                delta_x,
+                delta_y,
+            ) else {
+                continue;
+            };
+            let Some(handler_path) =
+                super::base_component::get_node_ancestry_ids(root.as_ref(), handler_id)
+            else {
+                continue;
+            };
+            let ancestor_distance = target_path.len().saturating_sub(handler_path.len());
+            match best_match {
+                Some((_, _, best_distance)) if ancestor_distance >= best_distance => {}
+                _ => best_match = Some((root_index, handler_id, ancestor_distance)),
+            }
+        }
+
+        best_match.map(|(root_index, handler_id, _)| (root_index, handler_id))
     }
 
     pub fn dispatch_key_down_event(&mut self, key: String, code: String, repeat: bool) -> bool {
@@ -4727,6 +4764,34 @@ mod tests {
         is_valid_click_candidate,
     };
     use crate::view::base_component::BoxModelSnapshot;
+    use crate::view::base_component::{
+        Element, LayoutConstraints, LayoutPlacement, Layoutable, get_scroll_offset_by_id,
+        set_scroll_offset_by_id,
+    };
+    use crate::{ParsedValue, PropertyId, ScrollDirection, Style};
+
+    fn place_root(root: &mut Element, width: f32, height: f32) {
+        root.measure(LayoutConstraints {
+            max_width: width,
+            max_height: height,
+            viewport_width: width,
+            percent_base_width: Some(width),
+            percent_base_height: Some(height),
+            viewport_height: height,
+        });
+        root.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: width,
+            available_height: height,
+            viewport_width: width,
+            percent_base_width: Some(width),
+            percent_base_height: Some(height),
+            viewport_height: height,
+        });
+    }
 
     #[test]
     fn click_requires_same_button_and_target() {
@@ -4875,5 +4940,100 @@ mod tests {
 
         assert!((min_x - expected_left).abs() < 0.05);
         assert!((max_y - expected_top).abs() < 0.05);
+    }
+
+    #[test]
+    fn wheel_uses_only_topmost_hit_target_ancestry() {
+        let mut background = Element::new(0.0, 0.0, 100.0, 100.0);
+        let background_id = background.id();
+        let mut background_style = Style::new();
+        background_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        background.apply_style(background_style);
+        background.add_child(Box::new(Element::new(0.0, 0.0, 100.0, 300.0)));
+        place_root(&mut background, 100.0, 100.0);
+
+        let mut foreground = Element::new(0.0, 0.0, 100.0, 100.0);
+        foreground.add_child(Box::new(Element::new(0.0, 0.0, 100.0, 100.0)));
+        place_root(&mut foreground, 100.0, 100.0);
+
+        let mut viewport = super::Viewport::new();
+        viewport.ui_roots.push(Box::new(background));
+        viewport.ui_roots.push(Box::new(foreground));
+        viewport.set_mouse_position_viewport(50.0, 50.0);
+
+        assert_eq!(
+            super::Viewport::find_scroll_handler_at_pointer(
+                &viewport.ui_roots,
+                50.0,
+                50.0,
+                0.0,
+                24.0
+            ),
+            None
+        );
+        assert!(!viewport.dispatch_mouse_wheel_event(0.0, 24.0));
+        assert_eq!(
+            get_scroll_offset_by_id(viewport.ui_roots[0].as_ref(), background_id),
+            Some((0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn wheel_bubbles_to_ancestor_when_child_is_at_scroll_limit() {
+        let mut root = Element::new(0.0, 0.0, 100.0, 100.0);
+        let root_id = root.id();
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root.apply_style(root_style);
+
+        let mut child = Element::new(0.0, 0.0, 100.0, 300.0);
+        let child_id = child.id();
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        child.apply_style(child_style);
+        child.add_child(Box::new(Element::new(0.0, 0.0, 100.0, 500.0)));
+
+        root.add_child(Box::new(child));
+        place_root(&mut root, 100.0, 100.0);
+
+        assert_eq!(
+            set_scroll_offset_by_id(&mut root, child_id, (0.0, 200.0)),
+            true
+        );
+        assert_eq!(get_scroll_offset_by_id(&root, child_id), Some((0.0, 200.0)));
+        assert_eq!(get_scroll_offset_by_id(&root, root_id), Some((0.0, 0.0)));
+
+        let mut viewport = super::Viewport::new();
+        viewport.ui_roots.push(Box::new(root));
+        viewport.set_mouse_position_viewport(50.0, 50.0);
+
+        assert_eq!(
+            super::Viewport::find_scroll_handler_at_pointer(
+                &viewport.ui_roots,
+                50.0,
+                50.0,
+                0.0,
+                24.0
+            ),
+            Some((0, root_id))
+        );
+        assert!(viewport.dispatch_mouse_wheel_event(0.0, 24.0));
+        assert_eq!(
+            get_scroll_offset_by_id(viewport.ui_roots[0].as_ref(), child_id),
+            Some((0.0, 200.0))
+        );
+        assert_eq!(
+            get_scroll_offset_by_id(viewport.ui_roots[0].as_ref(), root_id),
+            Some((0.0, 0.0))
+        );
     }
 }

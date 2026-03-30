@@ -1412,7 +1412,6 @@ fn is_string_literal_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Lit(expr_lit) if matches!(&expr_lit.lit, Lit::Str(_)))
 }
 
-
 fn expand_node(child: &Child) -> proc_macro2::TokenStream {
     match child {
         Child::Element(element) => expand_element(element),

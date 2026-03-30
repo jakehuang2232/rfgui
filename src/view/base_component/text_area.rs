@@ -1924,7 +1924,7 @@ impl EventTarget for TextArea {
             self.cached_ime_cursor_rect = None;
             self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
         }
-        changed || max > 0.0
+        changed
     }
 
     fn can_scroll_by(&self, _dx: f32, dy: f32) -> bool {
@@ -1936,7 +1936,7 @@ impl EventTarget for TextArea {
             return false;
         }
         let next = (self.scroll_y + dy).clamp(0.0, max);
-        (next - self.scroll_y).abs() > 0.001 || max > 0.0
+        (next - self.scroll_y).abs() > 0.001
     }
 
     fn get_scroll_offset(&self) -> (f32, f32) {
@@ -2088,10 +2088,11 @@ impl Layoutable for TextArea {
     }
 
     fn place(&mut self, placement: LayoutPlacement) {
-        if !self
-            .dirty_flags
-            .intersects(super::DirtyFlags::PLACE.union(super::DirtyFlags::BOX_MODEL).union(super::DirtyFlags::HIT_TEST))
-            && self.last_layout_placement == Some(placement)
+        if !self.dirty_flags.intersects(
+            super::DirtyFlags::PLACE
+                .union(super::DirtyFlags::BOX_MODEL)
+                .union(super::DirtyFlags::HIT_TEST),
+        ) && self.last_layout_placement == Some(placement)
         {
             return;
         }
