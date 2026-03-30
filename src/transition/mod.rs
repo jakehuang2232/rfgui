@@ -1,3 +1,5 @@
+//! Transition primitives shared by style, layout, visual, and scroll animations.
+
 use std::fmt;
 
 mod layout_transition;
@@ -11,26 +13,35 @@ pub use style_transition::*;
 pub use time_function::*;
 pub use visual_transition::*;
 
+/// The default target identifier type used by built-in transition helpers.
 pub type TrackTarget = u64;
 
+/// Identifies a transition channel within a host runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChannelId(pub u32);
 
+/// A `(target, channel)` pair used to address an individual transition track.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TrackKey<TargetType> {
     pub target: TargetType,
     pub channel: ChannelId,
 }
 
+/// Identifies a transition plugin implementation within a host runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct TransitionPluginId(pub u32);
 
+/// Controls how a transition claims an existing track.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClaimMode {
     IfUnclaimed,
     Replace,
 }
 
+/// Frame timing information passed into transition execution.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransitionFrame {
     pub dt_seconds: f32,
@@ -47,6 +58,8 @@ pub(crate) fn elapsed_seconds_from_frame(
     (now - *start).max(0.0) as f32
 }
 
+/// The aggregate result of running a batch of transition tracks for one frame.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RunResult {
     pub needs_layout: bool,
@@ -54,6 +67,7 @@ pub struct RunResult {
     pub keep_running: bool,
 }
 
+#[allow(missing_docs)]
 impl RunResult {
     pub const fn none() -> Self {
         Self {
@@ -72,6 +86,8 @@ impl RunResult {
     }
 }
 
+/// Errors returned when a transition track cannot be started.
+#[allow(missing_docs)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StartTrackError<TargetType> {
     ChannelNotRegistered(ChannelId),
@@ -97,6 +113,8 @@ impl<TargetType: fmt::Debug> fmt::Display for StartTrackError<TargetType> {
 
 impl<TargetType: fmt::Debug> std::error::Error for StartTrackError<TargetType> {}
 
+/// Host callbacks required by transition plugins.
+#[allow(missing_docs)]
 pub trait TransitionHost<TargetType> {
     fn is_channel_registered(&self, channel: ChannelId) -> bool;
 
@@ -112,6 +130,8 @@ pub trait TransitionHost<TargetType> {
     fn release_all_claims(&mut self, plugin_id: TransitionPluginId);
 }
 
+/// A transition plugin that manages one or more tracks for a target type.
+#[allow(missing_docs)]
 pub trait Transition<TargetType: Copy> {
     fn plugin_id(&self) -> TransitionPluginId;
 

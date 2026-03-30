@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Layer-promotion scoring and diagnostic data exposed by the viewport.
+
 use crate::transition::{
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
     ChannelId, TrackKey, TrackTarget, TransitionPluginId,

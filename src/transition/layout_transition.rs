@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Layout transition primitives for animating retained layout fields.
+
 use std::collections::HashMap;
 
 use super::{

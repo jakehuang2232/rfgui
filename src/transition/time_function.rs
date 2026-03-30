@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Easing and timeline helpers for transition sampling.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeFunction {
     Linear,

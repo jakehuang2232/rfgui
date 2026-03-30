@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! The small runtime wrapper that mounts and updates RSX trees on a backend.
+
 use crate::ui::reconciler::{Patch, reconcile};
 use crate::ui::{RenderBackend, RsxNode};
 

@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Typed parsed-style declarations accepted by RSX and style construction APIs.
+
 use crate::style::color::{Color, ColorLike, IntoColor};
 
 use std::collections::HashMap;

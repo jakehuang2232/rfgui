@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Adapters that convert RSX trees into low-level retained host elements.
+
 use crate::Style;
 use crate::ui::{
     Binding, FromPropValue, GlobalKey, Patch, PropValue, RenderBackend, RsxElementNode, RsxKey,

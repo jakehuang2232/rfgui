@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Scroll transition primitives for animating scroll offsets.
+
 use std::collections::HashMap;
 
 use super::{

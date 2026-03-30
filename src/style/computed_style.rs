@@ -1,15 +1,21 @@
+#![allow(missing_docs)]
+
+//! Computed style data used by layout, rendering, and interaction passes.
+
 use crate::style::color::Color;
 use crate::style::parsed_style::{
     Align, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
     PropertyId, ScrollDirection, Style, TextWrap, Transitions,
 };
 
+/// A resolved size value used by computed style.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SizeValue {
     Auto,
     Length(Length),
 }
 
+/// A generic top-right-bottom-left edge container.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EdgeInsets<T> {
     pub top: T,
@@ -18,6 +24,7 @@ pub struct EdgeInsets<T> {
     pub left: T,
 }
 
+/// A generic per-corner radii container.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CornerRadii<T> {
     pub top_left: T,

@@ -1,3 +1,5 @@
+//! Low-level retained host elements and traversal helpers used to build custom elements.
+
 use crate::transition::{
     LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue, VisualField,
     VisualTrackRequest,

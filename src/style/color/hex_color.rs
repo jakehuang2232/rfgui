@@ -1,6 +1,11 @@
+#![allow(missing_docs)]
+
+//! Hex-based color literals for the typed color system.
+
 use crate::{srgb_to_linear_f32, style::color::ColorLike};
 use std::borrow::Cow;
 
+/// A deferred hexadecimal color literal.
 pub struct HexColor<'a> {
     raw: Cow<'a, str>,
     value: [f32; 4],

@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use super::{ElementCore, Position, Size};
 use crate::ColorLike;
 use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
@@ -293,6 +295,7 @@ pub(crate) struct AncestorClipContext {
     scissor_rect: Option<[u32; 4]>,
 }
 
+/// A snapshot of the viewport configuration exposed to low-level build code.
 #[derive(Clone)]
 pub struct ViewportContext {
     color_target: Option<TextureHandle>,
@@ -306,6 +309,7 @@ pub struct ViewportContext {
     promoted_composition_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
 }
 
+/// Mutable build state threaded through low-level render graph construction.
 #[derive(Clone)]
 pub struct BuildState {
     target: Option<RenderTargetOut>,
@@ -704,6 +708,7 @@ impl ViewportContext {
     }
 }
 
+/// Layout context resolved from constraints or placement.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutContext {
     pub width: f32,
@@ -714,6 +719,7 @@ pub struct LayoutContext {
     pub percent_base_height: Option<f32>,
 }
 
+/// Constraints passed to [`Layoutable::measure`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutConstraints {
     pub max_width: f32,
@@ -724,6 +730,7 @@ pub struct LayoutConstraints {
     pub percent_base_height: Option<f32>,
 }
 
+/// Placement information passed to [`Layoutable::place`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutPlacement {
     pub parent_x: f32,
@@ -738,6 +745,7 @@ pub struct LayoutPlacement {
     pub percent_base_height: Option<f32>,
 }
 
+/// Dirty bits used to decide which retained runtime work must be refreshed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DirtyFlags(u8);
 

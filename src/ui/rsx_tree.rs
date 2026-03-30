@@ -1,3 +1,7 @@
+#![allow(missing_docs)]
+
+//! Core RSX node and prop data structures.
+
 use crate::FontSize;
 use crate::TextAlign;
 use crate::ui::{
