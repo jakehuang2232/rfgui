@@ -18,7 +18,9 @@ mod tests {
         take_state_dirty,
     };
     use rfgui::view::{Element, ElementPropSchema, Image, Text, TextArea, TextPropSchema};
-    use rfgui::{Border, BorderRadius, Color, Length, Padding, ParsedValue, PropertyId};
+    use rfgui::{
+        Border, BorderRadius, Color, Length, Padding, ParsedValue, PropertyId, StyleColor,
+    };
 
     fn select_label(item: &String, _: usize) -> String {
         item.clone()
@@ -305,7 +307,7 @@ mod tests {
         let root_style = find_style(root);
         assert_eq!(
             root_style.get(PropertyId::BackgroundColor),
-            Some(&ParsedValue::Color(Color::rgb(4, 5, 6)))
+            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(4, 5, 6))))
         );
         assert_eq!(
             root_style.get(PropertyId::PaddingTop),
@@ -321,7 +323,7 @@ mod tests {
         );
         assert_eq!(
             root_style.get(PropertyId::BorderTopColor),
-            Some(&ParsedValue::Color(Color::rgb(7, 8, 9)))
+            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(7, 8, 9))))
         );
         assert_eq!(
             root_style.get(PropertyId::BorderTopLeftRadius),
@@ -331,7 +333,9 @@ mod tests {
         let root_hover = root_style.hover().expect("button root hover style");
         assert_eq!(
             root_hover.get(PropertyId::BackgroundColor),
-            Some(&ParsedValue::Color(Color::rgb(13, 14, 15)))
+            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(
+                13, 14, 15
+            ))))
         );
         assert_eq!(
             root_hover.get(PropertyId::BorderTopWidth),
@@ -339,7 +343,9 @@ mod tests {
         );
         assert_eq!(
             root_hover.get(PropertyId::BorderTopColor),
-            Some(&ParsedValue::Color(Color::rgb(16, 17, 18)))
+            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(
+                16, 17, 18
+            ))))
         );
 
         let Some(RsxNode::Element(text)) = root.children.first() else {
@@ -348,12 +354,14 @@ mod tests {
         let text_style = find_style(text);
         assert_eq!(
             text_style.get(PropertyId::Color),
-            Some(&ParsedValue::Color(Color::rgb(1, 2, 3)))
+            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(1, 2, 3))))
         );
         let text_hover = text_style.hover().expect("button text hover style");
         assert_eq!(
             text_hover.get(PropertyId::Color),
-            Some(&ParsedValue::Color(Color::rgb(10, 11, 12)))
+            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(
+                10, 11, 12
+            ))))
         );
     }
 

@@ -732,15 +732,7 @@ impl Element {
     }
 
     fn recompute_style(&mut self) {
-        let prev_opacity = self.opacity;
-        let prev_border_radius = self.border_radius;
-        let prev_background_color = self.background_color.as_ref().to_rgba_u8();
-        let prev_foreground_color = self.foreground_color;
-        let prev_border_top_color = self.border_colors.top.as_ref().to_rgba_u8();
-        let prev_border_right_color = self.border_colors.right.as_ref().to_rgba_u8();
-        let prev_border_bottom_color = self.border_colors.bottom.as_ref().to_rgba_u8();
-        let prev_border_left_color = self.border_colors.left.as_ref().to_rgba_u8();
-        let had_snapshot = self.has_style_snapshot;
+        let previous_snapshot = self.has_style_snapshot.then(|| self.capture_style_snapshot());
         let effective_style = if self.is_hovered {
             match self.parsed_style.hover() {
                 Some(hover_style) => self.parsed_style.clone() + hover_style.clone(),
@@ -750,72 +742,16 @@ impl Element {
             self.parsed_style.clone()
         };
         self.computed_style = compute_style(&effective_style, None);
-        self.sync_props_from_computed_style();
-        if had_snapshot {
-            self.collect_style_transition_requests(
-                prev_opacity,
-                prev_border_radius,
-                Color::rgba(
-                    prev_background_color[0],
-                    prev_background_color[1],
-                    prev_background_color[2],
-                    prev_background_color[3],
-                ),
-                prev_foreground_color,
-                Color::rgba(
-                    prev_border_top_color[0],
-                    prev_border_top_color[1],
-                    prev_border_top_color[2],
-                    prev_border_top_color[3],
-                ),
-                Color::rgba(
-                    prev_border_right_color[0],
-                    prev_border_right_color[1],
-                    prev_border_right_color[2],
-                    prev_border_right_color[3],
-                ),
-                Color::rgba(
-                    prev_border_bottom_color[0],
-                    prev_border_bottom_color[1],
-                    prev_border_bottom_color[2],
-                    prev_border_bottom_color[3],
-                ),
-                Color::rgba(
-                    prev_border_left_color[0],
-                    prev_border_left_color[1],
-                    prev_border_left_color[2],
-                    prev_border_left_color[3],
-                ),
-            );
+        if let Some(previous_snapshot) = previous_snapshot {
+            self.collect_style_transition_requests(&previous_snapshot);
         }
+        self.sync_props_from_computed_style();
         self.has_style_snapshot = true;
         self.mark_layout_dirty();
     }
 
-    fn collect_style_transition_requests(
-        &mut self,
-        prev_opacity: f32,
-        prev_border_radius: f32,
-        prev_background_color: Color,
-        prev_foreground_color: Color,
-        prev_border_top_color: Color,
-        prev_border_right_color: Color,
-        prev_border_bottom_color: Color,
-        prev_border_left_color: Color,
-    ) {
-        let next_opacity = self.opacity;
-        let next_border_radius = self.border_radius;
-        let [bg_r, bg_g, bg_b, bg_a] = self.background_color.as_ref().to_rgba_u8();
-        let next_background_color = Color::rgba(bg_r, bg_g, bg_b, bg_a);
-        let next_foreground_color = self.foreground_color;
-        let [bt_r, bt_g, bt_b, bt_a] = self.border_colors.top.as_ref().to_rgba_u8();
-        let [br_r, br_g, br_b, br_a] = self.border_colors.right.as_ref().to_rgba_u8();
-        let [bb_r, bb_g, bb_b, bb_a] = self.border_colors.bottom.as_ref().to_rgba_u8();
-        let [bl_r, bl_g, bl_b, bl_a] = self.border_colors.left.as_ref().to_rgba_u8();
-        let next_border_top_color = Color::rgba(bt_r, bt_g, bt_b, bt_a);
-        let next_border_right_color = Color::rgba(br_r, br_g, br_b, br_a);
-        let next_border_bottom_color = Color::rgba(bb_r, bb_g, bb_b, bb_a);
-        let next_border_left_color = Color::rgba(bl_r, bl_g, bl_b, bl_a);
+    fn collect_style_transition_requests(&mut self, previous: &ElementStyleSnapshot) {
+        let changed_fields = previous.diff(&self.computed_style);
         for transition in self.computed_style.transition.as_slice() {
             let runtime = RuntimeStyleTransition {
                 duration_ms: transition.duration_ms,
@@ -824,173 +760,126 @@ impl Element {
             };
             match transition.property {
                 TransitionProperty::All => {
-                    if !approx_eq(prev_opacity, next_opacity) {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::Opacity,
-                                from: StyleValue::Scalar(prev_opacity),
-                                to: StyleValue::Scalar(next_opacity),
-                                transition: runtime,
-                            });
-                    }
-                    if !approx_eq(prev_border_radius, next_border_radius) {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderRadius,
-                                from: StyleValue::Scalar(prev_border_radius),
-                                to: StyleValue::Scalar(next_border_radius),
-                                transition: runtime,
-                            });
-                    }
-                    if prev_background_color != next_background_color {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BackgroundColor,
-                                from: StyleValue::Color(prev_background_color),
-                                to: StyleValue::Color(next_background_color),
-                                transition: runtime,
-                            });
-                    }
-                    if prev_foreground_color != next_foreground_color {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::Color,
-                                from: StyleValue::Color(prev_foreground_color),
-                                to: StyleValue::Color(next_foreground_color),
-                                transition: runtime,
-                            });
-                    }
-                    if prev_border_top_color != next_border_top_color {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderTopColor,
-                                from: StyleValue::Color(prev_border_top_color),
-                                to: StyleValue::Color(next_border_top_color),
-                                transition: runtime,
-                            });
-                    }
-                    if prev_border_right_color != next_border_right_color {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderRightColor,
-                                from: StyleValue::Color(prev_border_right_color),
-                                to: StyleValue::Color(next_border_right_color),
-                                transition: runtime,
-                            });
-                    }
-                    if prev_border_bottom_color != next_border_bottom_color {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderBottomColor,
-                                from: StyleValue::Color(prev_border_bottom_color),
-                                to: StyleValue::Color(next_border_bottom_color),
-                                transition: runtime,
-                            });
-                    }
-                    if prev_border_left_color != next_border_left_color {
-                        self.pending_style_transition_requests
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderLeftColor,
-                                from: StyleValue::Color(prev_border_left_color),
-                                to: StyleValue::Color(next_border_left_color),
-                                transition: runtime,
-                            });
+                    for field in &changed_fields {
+                        self.pending_style_transition_requests.push(StyleTrackRequest {
+                            target: self.core.id,
+                            field: *field,
+                            from: previous.value_for(*field),
+                            to: previous.current_value_for(&self.computed_style, *field),
+                            transition: runtime,
+                        });
                     }
                 }
                 TransitionProperty::Opacity => {
-                    if !approx_eq(prev_opacity, next_opacity) {
+                    if changed_fields.contains(&StyleField::Opacity) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Opacity,
-                                from: StyleValue::Scalar(prev_opacity),
-                                to: StyleValue::Scalar(next_opacity),
+                                from: previous.value_for(StyleField::Opacity),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::Opacity,
+                                ),
                                 transition: runtime,
                             });
                     }
                 }
                 TransitionProperty::BorderRadius => {
-                    if !approx_eq(prev_border_radius, next_border_radius) {
+                    if changed_fields.contains(&StyleField::BorderRadius) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderRadius,
-                                from: StyleValue::Scalar(prev_border_radius),
-                                to: StyleValue::Scalar(next_border_radius),
+                                from: previous.value_for(StyleField::BorderRadius),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BorderRadius,
+                                ),
                                 transition: runtime,
                             });
                     }
                 }
                 TransitionProperty::BackgroundColor => {
-                    if prev_background_color != next_background_color {
+                    if changed_fields.contains(&StyleField::BackgroundColor) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BackgroundColor,
-                                from: StyleValue::Color(prev_background_color),
-                                to: StyleValue::Color(next_background_color),
+                                from: previous.value_for(StyleField::BackgroundColor),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BackgroundColor,
+                                ),
                                 transition: runtime,
                             });
                     }
                 }
                 TransitionProperty::Color => {
-                    if prev_foreground_color != next_foreground_color {
+                    if changed_fields.contains(&StyleField::Color) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Color,
-                                from: StyleValue::Color(prev_foreground_color),
-                                to: StyleValue::Color(next_foreground_color),
+                                from: previous.value_for(StyleField::Color),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::Color,
+                                ),
                                 transition: runtime,
                             });
                     }
                 }
                 TransitionProperty::BorderColor => {
-                    if prev_border_top_color != next_border_top_color {
+                    if changed_fields.contains(&StyleField::BorderTopColor) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderTopColor,
-                                from: StyleValue::Color(prev_border_top_color),
-                                to: StyleValue::Color(next_border_top_color),
+                                from: previous.value_for(StyleField::BorderTopColor),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BorderTopColor,
+                                ),
                                 transition: runtime,
                             });
                     }
-                    if prev_border_right_color != next_border_right_color {
+                    if changed_fields.contains(&StyleField::BorderRightColor) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderRightColor,
-                                from: StyleValue::Color(prev_border_right_color),
-                                to: StyleValue::Color(next_border_right_color),
+                                from: previous.value_for(StyleField::BorderRightColor),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BorderRightColor,
+                                ),
                                 transition: runtime,
                             });
                     }
-                    if prev_border_bottom_color != next_border_bottom_color {
+                    if changed_fields.contains(&StyleField::BorderBottomColor) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderBottomColor,
-                                from: StyleValue::Color(prev_border_bottom_color),
-                                to: StyleValue::Color(next_border_bottom_color),
+                                from: previous.value_for(StyleField::BorderBottomColor),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BorderBottomColor,
+                                ),
                                 transition: runtime,
                             });
                     }
-                    if prev_border_left_color != next_border_left_color {
+                    if changed_fields.contains(&StyleField::BorderLeftColor) {
                         self.pending_style_transition_requests
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderLeftColor,
-                                from: StyleValue::Color(prev_border_left_color),
-                                to: StyleValue::Color(next_border_left_color),
+                                from: previous.value_for(StyleField::BorderLeftColor),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BorderLeftColor,
+                                ),
                                 transition: runtime,
                             });
                     }

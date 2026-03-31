@@ -41,10 +41,34 @@ impl Color {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StyleColor {
+    Srgb(Color),
+    Oklch(OklchColor),
+}
+
+impl StyleColor {
+    pub fn to_color(&self) -> Color {
+        let [r, g, b, a] = self.to_rgba_u8();
+        Color::rgba(r, g, b, a)
+    }
+}
+
 /// A trait implemented by color values that can be resolved into RGBA output.
 pub trait ColorLike {
     fn box_clone(&self) -> Box<dyn ColorLike>;
     fn to_rgba_f32(&self) -> [f32; 4];
+    fn as_oklch(&self) -> Option<&OklchColor> {
+        None
+    }
+    fn to_style_color(&self) -> StyleColor {
+        if let Some(oklch) = self.as_oklch() {
+            StyleColor::Oklch(oklch.clone())
+        } else {
+            let [r, g, b, a] = self.to_rgba_u8();
+            StyleColor::Srgb(Color::rgba(r, g, b, a))
+        }
+    }
     fn to_rgba_u8(&self) -> [u8; 4] {
         let rgba_f32 = self.to_rgba_f32();
         [
@@ -83,6 +107,10 @@ impl ColorLike for Box<dyn ColorLike> {
     fn to_rgba_f32(&self) -> [f32; 4] {
         (**self).to_rgba_f32()
     }
+
+    fn as_oklch(&self) -> Option<&OklchColor> {
+        (**self).as_oklch()
+    }
 }
 
 impl ColorLike for Color {
@@ -97,6 +125,30 @@ impl ColorLike for Color {
             srgb_to_linear(self.b),
             self.a as f32 / 255.0,
         ]
+    }
+}
+
+impl ColorLike for StyleColor {
+    fn box_clone(&self) -> Box<dyn ColorLike> {
+        Box::new(self.clone())
+    }
+
+    fn to_rgba_f32(&self) -> [f32; 4] {
+        match self {
+            Self::Srgb(color) => color.to_rgba_f32(),
+            Self::Oklch(color) => color.to_rgba_f32(),
+        }
+    }
+
+    fn as_oklch(&self) -> Option<&OklchColor> {
+        match self {
+            Self::Oklch(color) => Some(color),
+            Self::Srgb(_) => None,
+        }
+    }
+
+    fn to_style_color(&self) -> StyleColor {
+        self.clone()
     }
 }
 
@@ -143,6 +195,18 @@ where
     fn into_color(self) -> Color {
         let [r, g, b, a] = self.to_rgba_u8();
         Color::rgba(r, g, b, a)
+    }
+}
+
+impl From<Color> for StyleColor {
+    fn from(value: Color) -> Self {
+        Self::Srgb(value)
+    }
+}
+
+impl From<OklchColor> for StyleColor {
+    fn from(value: OklchColor) -> Self {
+        Self::Oklch(value)
     }
 }
 

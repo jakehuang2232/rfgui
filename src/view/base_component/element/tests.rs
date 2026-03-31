@@ -3533,4 +3533,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn snapshot_restore_emits_background_transition_when_current_style_differs() {
+        let mut original = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut original_style = Style::new();
+        original_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#112233")),
+        );
+        original.apply_style(original_style);
+        let snapshot = original.snapshot_state().expect("snapshot should exist");
+
+        let mut rebuilt = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut rebuilt_style = Style::new();
+        rebuilt_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#445566")),
+        );
+        rebuilt_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::from(vec![Transition::new(
+                TransitionProperty::BackgroundColor,
+                180,
+            )])),
+        );
+        rebuilt.apply_style(rebuilt_style);
+
+        assert!(rebuilt.restore_state(snapshot.as_ref()));
+
+        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        assert_eq!(requests.len(), 1, "expected one background transition request");
+        assert_eq!(requests[0].field, crate::transition::StyleField::BackgroundColor);
+        assert_eq!(
+            requests[0].from,
+            crate::transition::StyleValue::Color(Color::rgba(0x11, 0x22, 0x33, 0xff))
+        );
+        assert_eq!(
+            requests[0].to,
+            crate::transition::StyleValue::Color(Color::rgba(0x44, 0x55, 0x66, 0xff))
+        );
+    }
+
 }

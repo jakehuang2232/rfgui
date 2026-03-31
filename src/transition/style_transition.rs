@@ -9,7 +9,7 @@ use super::{
     Transition, TransitionFrame, TransitionHost, TransitionPluginId, elapsed_seconds_from_frame,
     normalized_timeline_progress,
 };
-use crate::style::Color;
+use crate::style::{Color, Interpolate};
 
 pub const CHANNEL_STYLE_OPACITY: ChannelId = ChannelId(30_001);
 pub const CHANNEL_STYLE_BORDER_RADIUS: ChannelId = ChannelId(30_002);
@@ -43,6 +43,40 @@ impl StyleField {
             Self::BorderRightColor => CHANNEL_STYLE_BORDER_RIGHT_COLOR,
             Self::BorderBottomColor => CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
             Self::BorderLeftColor => CHANNEL_STYLE_BORDER_LEFT_COLOR,
+        }
+    }
+
+    pub const fn default_value(self) -> StyleValue {
+        match self {
+            Self::Opacity | Self::BorderRadius => StyleValue::Scalar(0.0),
+            Self::BackgroundColor
+            | Self::Color
+            | Self::BorderTopColor
+            | Self::BorderRightColor
+            | Self::BorderBottomColor
+            | Self::BorderLeftColor => StyleValue::Color(Color::rgba(0, 0, 0, 0)),
+        }
+    }
+
+    pub fn interpolate_value(self, from: StyleValue, to: StyleValue, t: f32) -> StyleValue {
+        match self {
+            Self::Opacity | Self::BorderRadius => match (from, to) {
+                (StyleValue::Scalar(from), StyleValue::Scalar(to)) => {
+                    StyleValue::Scalar(f32::interpolate(&from, &to, t))
+                }
+                _ => to,
+            },
+            Self::BackgroundColor
+            | Self::Color
+            | Self::BorderTopColor
+            | Self::BorderRightColor
+            | Self::BorderBottomColor
+            | Self::BorderLeftColor => match (from, to) {
+                (StyleValue::Color(from), StyleValue::Color(to)) => {
+                    StyleValue::Color(Color::interpolate(&from, &to, t))
+                }
+                _ => to,
+            },
         }
     }
 }
@@ -211,8 +245,8 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
             host,
             key.target,
             field,
-            StyleValue::Scalar(0.0),
-            StyleValue::Scalar(0.0),
+            field.default_value(),
+            field.default_value(),
             StyleTransition::new(0),
         )
     }
@@ -243,7 +277,6 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
                 continue;
             };
             let eased = state.transition.timing.sample(progress);
-            let value = interpolate_style_value(state.from, state.to, eased);
             let field = match key.channel {
                 CHANNEL_STYLE_OPACITY => StyleField::Opacity,
                 CHANNEL_STYLE_BORDER_RADIUS => StyleField::BorderRadius,
@@ -255,6 +288,7 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
                 CHANNEL_STYLE_BORDER_LEFT_COLOR => StyleField::BorderLeftColor,
                 _ => continue,
             };
+            let value = field.interpolate_value(state.from, state.to, eased);
             self.frame_samples.push(StyleSample {
                 target: key.target,
                 field,
@@ -278,23 +312,40 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
     }
 }
 
-fn interpolate_style_value(from: StyleValue, to: StyleValue, t: f32) -> StyleValue {
-    match (from, to) {
-        (StyleValue::Scalar(from), StyleValue::Scalar(to)) => {
-            StyleValue::Scalar(from + (to - from) * t)
-        }
-        (StyleValue::Color(from), StyleValue::Color(to)) => {
-            let [fr, fg, fb, fa] = from.to_rgba_u8();
-            let [tr, tg, tb, ta] = to.to_rgba_u8();
-            let lerp_u8 =
-                |a: u8, b: u8| -> u8 { (a as f32 + ((b as f32) - (a as f32)) * t).round() as u8 };
-            StyleValue::Color(Color::rgba(
-                lerp_u8(fr, tr),
-                lerp_u8(fg, tg),
-                lerp_u8(fb, tb),
-                lerp_u8(fa, ta),
-            ))
-        }
-        _ => to,
+#[cfg(test)]
+mod tests {
+    use super::{StyleField, StyleValue};
+    use crate::style::Color;
+
+    #[test]
+    fn color_fields_delegate_interpolation_to_color_type() {
+        let value = StyleField::BackgroundColor.interpolate_value(
+            StyleValue::Color(Color::rgba(0, 0, 0, 0)),
+            StyleValue::Color(Color::rgba(255, 255, 255, 255)),
+            0.5,
+        );
+        assert_eq!(value, StyleValue::Color(Color::rgba(99, 99, 99, 128)));
+    }
+
+    #[test]
+    fn scalar_fields_delegate_interpolation_to_scalar_type() {
+        let value = StyleField::Opacity.interpolate_value(
+            StyleValue::Scalar(0.2),
+            StyleValue::Scalar(0.8),
+            0.25,
+        );
+        let StyleValue::Scalar(value) = value else {
+            panic!("expected scalar value");
+        };
+        assert!((value - 0.35).abs() < 0.0001);
+    }
+
+    #[test]
+    fn field_default_values_match_property_kind() {
+        assert_eq!(StyleField::Opacity.default_value(), StyleValue::Scalar(0.0));
+        assert_eq!(
+            StyleField::Color.default_value(),
+            StyleValue::Color(Color::transparent())
+        );
     }
 }
