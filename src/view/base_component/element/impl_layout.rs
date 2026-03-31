@@ -333,19 +333,18 @@ impl Element {
             .iter()
             .enumerate()
             .any(|(idx, _)| !self.child_is_absolute(idx));
-        if !has_in_flow_children {
-            return;
-        }
 
         let mut max_w = 0.0_f32;
         let mut max_h = 0.0_f32;
-        for (idx, child) in self.children.iter().enumerate() {
-            if self.child_is_absolute(idx) {
-                continue;
+        if has_in_flow_children {
+            for (idx, child) in self.children.iter().enumerate() {
+                if self.child_is_absolute(idx) {
+                    continue;
+                }
+                let (w, h) = child.measured_size();
+                max_w = max_w.max(w);
+                max_h = max_h.max(h);
             }
-            let (w, h) = child.measured_size();
-            max_w = max_w.max(w);
-            max_h = max_h.max(h);
         }
 
         let proposal = self.last_layout_proposal.unwrap_or(LayoutProposal {
@@ -714,10 +713,11 @@ impl Element {
         } else {
             self.current_parent_child_clip_rect().unwrap_or(parent_rect)
         };
-        let intersects_parent_clip = Self::frame_intersects_rect(frame, cull_rect);
+        let transformed_frame_bounds = self.transformed_frame_bounding_rect(frame);
+        let intersects_parent_clip = transformed_frame_bounds.intersects(cull_rect);
         let intersects_absolute_clip = self
             .absolute_clip_rect
-            .is_none_or(|clip| Self::frame_intersects_rect(frame, clip));
+            .is_none_or(|clip| transformed_frame_bounds.intersects(clip));
         let max_bw = (frame.width.min(frame.height)) * 0.5;
         let border_left = self.border_widths.left.clamp(0.0, max_bw);
         let border_right = self.border_widths.right.clamp(0.0, max_bw);

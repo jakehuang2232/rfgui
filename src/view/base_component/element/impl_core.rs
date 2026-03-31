@@ -78,15 +78,6 @@ impl Element {
         inner.width > 0.0 && inner.height > 0.0
     }
 
-    fn frame_intersects_rect(frame: LayoutFrame, clip: Rect) -> bool {
-        frame.width > 0.0
-            && frame.height > 0.0
-            && frame.x + frame.width > clip.x
-            && frame.x < clip.x + clip.width
-            && frame.y + frame.height > clip.y
-            && frame.y < clip.y + clip.height
-    }
-
     pub(crate) fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         if self.computed_style.position.mode() != PositionMode::Absolute {
             return None;

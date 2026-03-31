@@ -14,9 +14,9 @@ mod tests {
     use crate::view::frame_graph::FrameGraph;
     use crate::Layout;
     use crate::{
-        Align, AnchorName, Border, BorderRadius, BoxShadow, ClipMode, Collision,
+        Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision,
         CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator,
-        Position, Style,
+        Position, Rotate, Transform, TransformOrigin, Translate, Style,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -3152,6 +3152,24 @@ mod tests {
     }
 
     #[test]
+    fn transformed_layer_subtree_starts_without_ancestor_scissor_rect() {
+        let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let previous = ctx.push_scissor_rect(Some([10, 10, 40, 40]));
+        assert_eq!(previous, None);
+        assert_eq!(ctx.graphics_pass_context().scissor_rect, Some([10, 10, 40, 40]));
+
+        let layer_state =
+            super::BuildState::for_layer_subtree_with_ancestor_clip(super::AncestorClipContext::default());
+        let layer_ctx = UiBuildContext::from_parts(ctx.viewport(), layer_state);
+
+        assert_eq!(
+            layer_ctx.graphics_pass_context().scissor_rect,
+            None,
+            "transformed offscreen subtree should rasterize from viewport clip, not ancestor scissor"
+        );
+    }
+
+    #[test]
     fn non_promoted_container_with_promoted_child_is_not_built_twice_during_compose() {
         let mut root = Element::new(0.0, 0.0, 200.0, 200.0);
         let mut root_style = Style::new();
@@ -3263,6 +3281,89 @@ mod tests {
 
         assert!(el.core.should_render);
         assert!(!el.core.should_paint);
+    }
+
+    #[test]
+    fn transformed_bounds_are_used_for_clip_culling() {
+        let mut el = Element::new(120.0, 0.0, 40.0, 40.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(40.0)));
+        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        style.set_transform(Transform::new([Translate::x(Length::px(-80.0))]));
+        style.set_transform_origin(TransformOrigin::center());
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 100.0,
+            viewport_width: 200.0,
+            viewport_height: 100.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(100.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 100.0,
+            available_height: 100.0,
+            viewport_width: 200.0,
+            viewport_height: 100.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(100.0),
+        });
+
+        let transformed = el.transformed_frame_bounding_rect(super::LayoutFrame {
+            x: el.core.layout_position.x,
+            y: el.core.layout_position.y,
+            width: el.core.layout_size.width,
+            height: el.core.layout_size.height,
+        });
+        assert!((transformed.x - 40.0).abs() < 0.01, "{transformed:?}");
+        assert!((transformed.width - 40.0).abs() < 0.01, "{transformed:?}");
+        assert!(
+            el.core.should_render,
+            "translate 後的 bounding box 已進入 parent clip，不應被提前剔除"
+        );
+    }
+
+    #[test]
+    fn promotion_composite_bounds_follow_transformed_bounding_box() {
+        let mut el = Element::new(40.0, 20.0, 30.0, 20.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(30.0)));
+        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        style.set_transform(Transform::new([Rotate::z(Angle::deg(90.0))]));
+        style.set_transform_origin(TransformOrigin::center());
+        el.apply_style(style);
+
+        el.measure(LayoutConstraints {
+            max_width: 120.0,
+            max_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+        el.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 120.0,
+            viewport_width: 120.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let bounds = el.promotion_composite_bounds();
+        assert!((bounds.x - 45.0).abs() < 0.01);
+        assert!((bounds.y - 15.0).abs() < 0.01);
+        assert!((bounds.width - 20.0).abs() < 0.01);
+        assert!((bounds.height - 30.0).abs() < 0.01);
     }
 
     #[test]
