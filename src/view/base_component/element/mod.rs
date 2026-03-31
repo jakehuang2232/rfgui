@@ -7,13 +7,15 @@ use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
     CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
     ScrollDirection, SizeValue, Style, Transform, TransformKind, TransformOrigin,
-    TransitionProperty, TransitionTiming, compute_style,
+    TransitionProperty, TransitionTiming, compute_style, interpolate_transform_with_reference_box,
 };
 use crate::transition::{
+    AnimationRequest,
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
     CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
+    CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
+    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
     LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
     StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue,
     TimeFunction, VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
@@ -939,6 +941,9 @@ pub trait EventTarget {
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
         Vec::new()
     }
+    fn take_animation_requests(&mut self) -> Vec<AnimationRequest> {
+        Vec::new()
+    }
     fn take_layout_transition_requests(&mut self) -> Vec<LayoutTrackRequest> {
         Vec::new()
     }
@@ -1070,7 +1075,7 @@ struct FlexItemPlan {
     cross: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
@@ -1085,6 +1090,9 @@ struct ElementStyleSnapshot {
     border_right_color: Color,
     border_bottom_color: Color,
     border_left_color: Color,
+    box_shadows: Vec<BoxShadow>,
+    transform: Transform,
+    transform_origin: TransformOrigin,
     transition_snapshot: Option<TransitionSnapshot>,
 }
 
@@ -1135,8 +1143,10 @@ pub struct Element {
     last_scrollbar_interaction: Option<Instant>,
     scrollbar_shadow_blur_radius: f32,
     pending_style_transition_requests: Vec<StyleTrackRequest>,
+    pending_animation_requests: Vec<AnimationRequest>,
     pending_layout_transition_requests: Vec<LayoutTrackRequest>,
     pending_visual_transition_requests: Vec<VisualTrackRequest>,
+    last_started_animator: Option<crate::Animator>,
     has_style_snapshot: bool,
     has_layout_snapshot: bool,
     layout_transition_visual_offset_x: f32,
@@ -1195,6 +1205,9 @@ impl Element {
             border_right_color: Color::rgba(br_r, br_g, br_b, br_a),
             border_bottom_color: Color::rgba(bb_r, bb_g, bb_b, bb_a),
             border_left_color: Color::rgba(bl_r, bl_g, bl_b, bl_a),
+            box_shadows: self.box_shadows.clone(),
+            transform: self.transform.clone(),
+            transform_origin: self.transform_origin,
             transition_snapshot: Some(TransitionSnapshot {
                 has_layout_snapshot: self.has_layout_snapshot,
                 layout_transition_visual_offset_x: self.layout_transition_visual_offset_x,
@@ -1277,6 +1290,36 @@ impl Element {
         })
     }
 
+    fn untransformed_paint_bounds(&self) -> PromotionCompositeBounds {
+        let snapshot = self.box_model_snapshot();
+        let mut min_x = snapshot.x;
+        let mut min_y = snapshot.y;
+        let mut max_x = snapshot.x + snapshot.width.max(0.0);
+        let mut max_y = snapshot.y + snapshot.height.max(0.0);
+        for shadow in &self.box_shadows {
+            if shadow.inset {
+                continue;
+            }
+            let blur_padding = shadow.blur.max(0.0) * 1.5;
+            let spread = shadow.spread.max(0.0);
+            min_x = min_x.min(snapshot.x + shadow.offset_x - spread - blur_padding);
+            min_y = min_y.min(snapshot.y + shadow.offset_y - spread - blur_padding);
+            max_x = max_x.max(
+                snapshot.x + snapshot.width.max(0.0) + shadow.offset_x + spread + blur_padding,
+            );
+            max_y = max_y.max(
+                snapshot.y + snapshot.height.max(0.0) + shadow.offset_y + spread + blur_padding,
+            );
+        }
+        PromotionCompositeBounds {
+            x: min_x,
+            y: min_y,
+            width: (max_x - min_x).max(0.0),
+            height: (max_y - min_y).max(0.0),
+            corner_radii: [0.0; 4],
+        }
+    }
+
     fn union_promotion_bounds(
         current: PromotionCompositeBounds,
         next: PromotionCompositeBounds,
@@ -1295,7 +1338,7 @@ impl Element {
     }
 
     fn transform_subtree_raster_bounds(&self) -> PromotionCompositeBounds {
-        let mut bounds = self.promotion_composite_bounds();
+        let mut bounds = self.untransformed_paint_bounds();
         for child in &self.children {
             let child_bounds = if let Some(element) = child.as_any().downcast_ref::<Element>() {
                 element.transform_subtree_raster_bounds()
@@ -1334,6 +1377,9 @@ impl ElementStyleSnapshot {
             StyleField::BorderRightColor => StyleValue::Color(current.border_colors.right),
             StyleField::BorderBottomColor => StyleValue::Color(current.border_colors.bottom),
             StyleField::BorderLeftColor => StyleValue::Color(current.border_colors.left),
+            StyleField::BoxShadow => StyleValue::BoxShadow(current.box_shadow.clone()),
+            StyleField::Transform => StyleValue::Transform(current.transform.clone()),
+            StyleField::TransformOrigin => StyleValue::TransformOrigin(current.transform_origin),
         }
     }
 
@@ -1347,11 +1393,14 @@ impl ElementStyleSnapshot {
             StyleField::BorderRightColor => StyleValue::Color(self.border_right_color),
             StyleField::BorderBottomColor => StyleValue::Color(self.border_bottom_color),
             StyleField::BorderLeftColor => StyleValue::Color(self.border_left_color),
+            StyleField::BoxShadow => StyleValue::BoxShadow(self.box_shadows.clone()),
+            StyleField::Transform => StyleValue::Transform(self.transform.clone()),
+            StyleField::TransformOrigin => StyleValue::TransformOrigin(self.transform_origin),
         }
     }
 
     fn diff(&self, current: &ComputedStyle) -> Vec<StyleField> {
-        const FIELDS: [StyleField; 8] = [
+        const FIELDS: [StyleField; 11] = [
             StyleField::Opacity,
             StyleField::BorderRadius,
             StyleField::BackgroundColor,
@@ -1360,6 +1409,9 @@ impl ElementStyleSnapshot {
             StyleField::BorderRightColor,
             StyleField::BorderBottomColor,
             StyleField::BorderLeftColor,
+            StyleField::BoxShadow,
+            StyleField::Transform,
+            StyleField::TransformOrigin,
         ];
         let mut out = Vec::new();
         for field in FIELDS {
@@ -1368,6 +1420,9 @@ impl ElementStyleSnapshot {
             let changed = match (previous, next) {
                 (StyleValue::Scalar(lhs), StyleValue::Scalar(rhs)) => !approx_eq(lhs, rhs),
                 (StyleValue::Color(lhs), StyleValue::Color(rhs)) => lhs != rhs,
+                (StyleValue::BoxShadow(lhs), StyleValue::BoxShadow(rhs)) => lhs != rhs,
+                (StyleValue::Transform(lhs), StyleValue::Transform(rhs)) => lhs != rhs,
+                (StyleValue::TransformOrigin(lhs), StyleValue::TransformOrigin(rhs)) => lhs != rhs,
                 _ => true,
             };
             if changed {
@@ -1483,6 +1538,12 @@ impl ElementTrait for Element {
         self.layout_transition_override_height
             .map(f32::to_bits)
             .hash(&mut hasher);
+        self.resolved_transform.is_some().hash(&mut hasher);
+        if let Some(matrix) = self.resolved_transform {
+            for value in matrix.to_cols_array() {
+                hash_f32(&mut hasher, value);
+            }
+        }
         self.background_color
             .as_ref()
             .to_rgba_u8()
@@ -1522,6 +1583,7 @@ impl ElementTrait for Element {
             hash_f32(&mut hasher, shadow.offset_y);
             hash_f32(&mut hasher, shadow.blur);
             hash_f32(&mut hasher, shadow.spread);
+            shadow.inset.hash(&mut hasher);
         }
         let scrollbar_alpha =
             (self.scrollbar_visibility_alpha().clamp(0.0, 1.0) * 255.0).round() as u16;
@@ -1598,28 +1660,12 @@ impl ElementTrait for Element {
     }
 
     fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {
-        let snapshot = self.box_model_snapshot();
-        let mut min_x = snapshot.x;
-        let mut min_y = snapshot.y;
-        let mut max_x = snapshot.x + snapshot.width.max(0.0);
-        let mut max_y = snapshot.y + snapshot.height.max(0.0);
-        for shadow in &self.box_shadows {
-            let blur_padding = shadow.blur.max(0.0) * 1.5;
-            let spread = shadow.spread.max(0.0);
-            min_x = min_x.min(snapshot.x + shadow.offset_x - spread - blur_padding);
-            min_y = min_y.min(snapshot.y + shadow.offset_y - spread - blur_padding);
-            max_x = max_x.max(
-                snapshot.x + snapshot.width.max(0.0) + shadow.offset_x + spread + blur_padding,
-            );
-            max_y = max_y.max(
-                snapshot.y + snapshot.height.max(0.0) + shadow.offset_y + spread + blur_padding,
-            );
-        }
+        let paint_bounds = self.untransformed_paint_bounds();
         let transformed = self.transformed_bounding_rect_for_rect(Rect {
-            x: min_x,
-            y: min_y,
-            width: (max_x - min_x).max(0.0),
-            height: (max_y - min_y).max(0.0),
+            x: paint_bounds.x,
+            y: paint_bounds.y,
+            width: paint_bounds.width,
+            height: paint_bounds.height,
         });
         PromotionCompositeBounds {
             x: transformed.x,
@@ -1662,6 +1708,10 @@ impl ElementTrait for Element {
         self.border_colors.right = Box::new(snapshot.border_right_color);
         self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
         self.border_colors.left = Box::new(snapshot.border_left_color);
+        self.box_shadows = snapshot.box_shadows.clone();
+        self.transform = snapshot.transform.clone();
+        self.transform_origin = snapshot.transform_origin;
+        self.update_resolved_transform();
         if let Some(transition_snapshot) = snapshot.transition_snapshot {
             self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
             self.layout_transition_visual_offset_x =
@@ -1697,5 +1747,10 @@ impl Element {
             opacity: self.opacity,
             border_radius: self.border_radius,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_transform(&self) -> &Transform {
+        &self.transform
     }
 }

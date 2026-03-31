@@ -4,8 +4,9 @@
 
 use crate::style::color::Color;
 use crate::style::parsed_style::{
-    Align, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
-    PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin, Transitions,
+    Align, Animator, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue,
+    Position, PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin,
+    Transitions,
 };
 
 /// A resolved size value used by computed style.
@@ -72,6 +73,7 @@ pub struct ComputedStyle {
     pub transform: Transform,
     pub transform_origin: TransformOrigin,
     pub transition: Transitions,
+    pub animator: Option<Animator>,
 }
 
 impl Default for ComputedStyle {
@@ -139,6 +141,7 @@ impl Default for ComputedStyle {
             transform: Transform::default(),
             transform_origin: TransformOrigin::center(),
             transition: Transitions::default(),
+            animator: None,
         }
     }
 }
@@ -459,6 +462,11 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             PropertyId::Transition => {
                 if let ParsedValue::Transition(value) = &declaration.value {
                     computed.transition = value.clone();
+                }
+            }
+            PropertyId::Animator => {
+                if let ParsedValue::Animator(value) = &declaration.value {
+                    computed.animator = Some(value.clone());
                 }
             }
         }

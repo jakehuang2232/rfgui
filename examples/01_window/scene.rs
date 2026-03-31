@@ -41,6 +41,8 @@ pub fn MainScene() -> RsxNode {
     let cross_size = use_state(|| CrossSize::Fit);
     let style_transition_enabled = use_state(|| true);
     let style_target_alt = use_state(|| false);
+    let transform_transition_enabled = use_state(|| true);
+    let transform_target_alt = use_state(|| false);
     let layout_transition_enabled = use_state(|| true);
     let layout_expanded = use_state(|| false);
     let visual_transition_enabled = use_state(|| true);
@@ -62,6 +64,8 @@ pub fn MainScene() -> RsxNode {
     let enable_layer_promotion_value = enable_layer_promotion.get();
     let style_transition_enabled_value = style_transition_enabled.get();
     let style_target_alt_value = style_target_alt.get();
+    let transform_transition_enabled_value = transform_transition_enabled.get();
+    let transform_target_alt_value = transform_target_alt.get();
     let layout_transition_enabled_value = layout_transition_enabled.get();
     let layout_expanded_value = layout_expanded.get();
     let visual_transition_enabled_value = visual_transition_enabled.get();
@@ -151,6 +155,8 @@ pub fn MainScene() -> RsxNode {
             TransitionLabBindings {
                 style_enabled: style_transition_enabled.binding(),
                 style_target_alt: style_target_alt.binding(),
+                transform_enabled: transform_transition_enabled.binding(),
+                transform_target_alt: transform_target_alt.binding(),
                 layout_enabled: layout_transition_enabled.binding(),
                 layout_expanded: layout_expanded.binding(),
                 visual_enabled: visual_transition_enabled.binding(),
@@ -159,6 +165,8 @@ pub fn MainScene() -> RsxNode {
             TransitionLabValues {
                 style_enabled: style_transition_enabled_value,
                 style_target_alt: style_target_alt_value,
+                transform_enabled: transform_transition_enabled_value,
+                transform_target_alt: transform_target_alt_value,
                 layout_enabled: layout_transition_enabled_value,
                 layout_expanded: layout_expanded_value,
                 visual_enabled: visual_transition_enabled_value,

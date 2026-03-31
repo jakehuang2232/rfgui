@@ -2551,8 +2551,10 @@ mod tests {
         assert_eq!(el.box_shadows[0].offset_y, 5.0);
         assert_eq!(el.box_shadows[0].blur, 8.0);
         assert_eq!(el.box_shadows[0].spread, 2.0);
+        assert!(!el.box_shadows[0].inset);
         assert_eq!(el.box_shadows[1].offset_x, -1.0);
         assert_eq!(el.box_shadows[1].offset_y, -1.0);
+        assert!(!el.box_shadows[1].inset);
     }
 
     #[test]
@@ -3572,6 +3574,199 @@ mod tests {
             requests[0].to,
             crate::transition::StyleValue::Color(Color::rgba(0x44, 0x55, 0x66, 0xff))
         );
+    }
+
+    #[test]
+    fn snapshot_restore_emits_transform_transition_when_current_style_differs() {
+        let mut original = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut original_style = Style::new();
+        original_style.set_transform(Transform::new([Translate::x(Length::px(10.0))]));
+        original.apply_style(original_style);
+        let snapshot = original.snapshot_state().expect("snapshot should exist");
+
+        let mut rebuilt = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut rebuilt_style = Style::new();
+        rebuilt_style.set_transform(Transform::new([Translate::x(Length::px(40.0))]));
+        rebuilt_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::from(vec![Transition::new(
+                TransitionProperty::Transform,
+                180,
+            )])),
+        );
+        rebuilt.apply_style(rebuilt_style);
+
+        assert!(rebuilt.restore_state(snapshot.as_ref()));
+
+        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        assert_eq!(requests.len(), 1, "expected one transform transition request");
+        assert_eq!(requests[0].field, crate::transition::StyleField::Transform);
+        assert_eq!(
+            requests[0].from,
+            crate::transition::StyleValue::Transform(Transform::new([Translate::x(
+                Length::px(10.0)
+            )]))
+        );
+        assert_eq!(
+            requests[0].to,
+            crate::transition::StyleValue::Transform(Transform::new([Translate::x(
+                Length::px(40.0)
+            )]))
+        );
+    }
+
+    #[test]
+    fn transform_style_sample_updates_element_transform_matrix() {
+        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let node_id = el.id();
+        let transform = Transform::new([Translate::xy(Length::px(12.0), Length::px(18.0))]);
+
+        assert!(set_style_field_by_id(
+            &mut el,
+            node_id,
+            crate::transition::StyleField::Transform,
+            crate::transition::StyleValue::Transform(transform.clone()),
+        ));
+
+        assert_eq!(el.transform, transform);
+        assert!(el.resolved_transform.is_some());
+    }
+
+    #[test]
+    fn snapshot_restore_emits_transform_origin_transition_when_current_style_differs() {
+        let mut original = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut original_style = Style::new();
+        original_style.set_transform_origin(TransformOrigin::percent(50.0, 50.0));
+        original.apply_style(original_style);
+        let snapshot = original.snapshot_state().expect("snapshot should exist");
+
+        let mut rebuilt = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut rebuilt_style = Style::new();
+        rebuilt_style.set_transform_origin(TransformOrigin::px(10.0, 20.0));
+        rebuilt_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::from(vec![Transition::new(
+                TransitionProperty::TransformOrigin,
+                180,
+            )])),
+        );
+        rebuilt.apply_style(rebuilt_style);
+
+        assert!(rebuilt.restore_state(snapshot.as_ref()));
+
+        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].field, crate::transition::StyleField::TransformOrigin);
+    }
+
+    #[test]
+    fn snapshot_restore_emits_box_shadow_transition_when_current_style_differs() {
+        let mut original = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut original_style = Style::new();
+        original_style.set_box_shadow(vec![BoxShadow::new().offset_x(2.0).blur(4.0)]);
+        original.apply_style(original_style);
+        let snapshot = original.snapshot_state().expect("snapshot should exist");
+
+        let mut rebuilt = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut rebuilt_style = Style::new();
+        rebuilt_style.set_box_shadow(vec![BoxShadow::new().offset_x(12.0).blur(10.0)]);
+        rebuilt_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::from(vec![Transition::new(
+                TransitionProperty::BoxShadow,
+                180,
+            )])),
+        );
+        rebuilt.apply_style(rebuilt_style);
+
+        assert!(rebuilt.restore_state(snapshot.as_ref()));
+
+        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].field, crate::transition::StyleField::BoxShadow);
+    }
+
+    #[test]
+    fn box_shadow_style_sample_updates_element_shadows() {
+        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let node_id = el.id();
+        let shadows = vec![
+            BoxShadow::new()
+                .color(Color::hex("#223344"))
+                .offset_x(6.0)
+                .offset_y(8.0)
+                .blur(12.0)
+                .spread(4.0)
+                .inset(true),
+        ];
+
+        assert!(set_style_field_by_id(
+            &mut el,
+            node_id,
+            crate::transition::StyleField::BoxShadow,
+            crate::transition::StyleValue::BoxShadow(shadows.clone()),
+        ));
+
+        assert_eq!(el.box_shadows, shadows);
+    }
+
+    #[test]
+    fn transform_origin_style_sample_updates_element_transform_matrix() {
+        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let node_id = el.id();
+
+        assert!(set_style_field_by_id(
+            &mut el,
+            node_id,
+            crate::transition::StyleField::TransformOrigin,
+            crate::transition::StyleValue::TransformOriginProgress {
+                from: TransformOrigin::percent(50.0, 50.0),
+                to: TransformOrigin::px(10.0, 20.0),
+                progress: 0.5,
+            },
+        ));
+
+        assert!(el.resolved_transform.is_none());
+        assert!((el.transform_origin.x().resolve_without_percent_base(0.0, 0.0) - 55.0).abs() < 0.0001);
+        assert!((el.transform_origin.y().resolve_without_percent_base(0.0, 0.0) - 47.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn transform_transition_baseline_preserves_start_then_progress_updates_live_transform() {
+        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let from = Transform::new([Translate::x(Length::px(0.0))]);
+        let to = Transform::new([Translate::x(Length::px(40.0))]);
+        let mut style = Style::new();
+        style.set_transform(from.clone());
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::from(vec![Transition::new(
+                TransitionProperty::Transform,
+                180,
+            )])),
+        );
+        let mut hover_style = Style::new();
+        hover_style.set_transform(to.clone());
+        style.set_hover(hover_style);
+        el.apply_style(style);
+
+        let _ = el.set_hovered(true);
+        assert_eq!(el.transform, from);
+
+        let node_id = el.id();
+        assert!(set_style_field_by_id(
+            &mut el,
+            node_id,
+            crate::transition::StyleField::Transform,
+            crate::transition::StyleValue::TransformProgress {
+                from: from.clone(),
+                to: to.clone(),
+                progress: 0.5,
+            },
+        ));
+
+        assert_ne!(el.transform, from);
+        assert_ne!(el.transform, to);
     }
 
 }

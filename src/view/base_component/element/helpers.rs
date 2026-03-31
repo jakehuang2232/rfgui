@@ -332,6 +332,9 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
                 CHANNEL_STYLE_BORDER_RIGHT_COLOR,
                 CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
                 CHANNEL_STYLE_BORDER_LEFT_COLOR,
+                CHANNEL_STYLE_BOX_SHADOW,
+                CHANNEL_STYLE_TRANSFORM,
+                CHANNEL_STYLE_TRANSFORM_ORIGIN,
             ]);
         }
         TransitionProperty::Position => {
@@ -345,6 +348,9 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
         TransitionProperty::BorderRadius => out.push(CHANNEL_STYLE_BORDER_RADIUS),
         TransitionProperty::BackgroundColor => out.push(CHANNEL_STYLE_BACKGROUND_COLOR),
         TransitionProperty::Color => out.push(CHANNEL_STYLE_COLOR),
+        TransitionProperty::BoxShadow => out.push(CHANNEL_STYLE_BOX_SHADOW),
+        TransitionProperty::Transform => out.push(CHANNEL_STYLE_TRANSFORM),
+        TransitionProperty::TransformOrigin => out.push(CHANNEL_STYLE_TRANSFORM_ORIGIN),
         TransitionProperty::BorderColor => out.extend([
             CHANNEL_STYLE_BORDER_TOP_COLOR,
             CHANNEL_STYLE_BORDER_RIGHT_COLOR,

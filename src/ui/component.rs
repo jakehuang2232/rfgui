@@ -242,6 +242,24 @@ impl<const N: usize> IntoOptionalProp<crate::Transitions> for [crate::Transition
     }
 }
 
+impl IntoOptionalProp<crate::Animator> for crate::Animation {
+    fn into_optional_prop(self) -> Option<crate::Animator> {
+        Some(crate::Animator::new([self]))
+    }
+}
+
+impl IntoOptionalProp<crate::Animator> for Vec<crate::Animation> {
+    fn into_optional_prop(self) -> Option<crate::Animator> {
+        Some(crate::Animator::from_vec(self))
+    }
+}
+
+impl<const N: usize> IntoOptionalProp<crate::Animator> for [crate::Animation; N] {
+    fn into_optional_prop(self) -> Option<crate::Animator> {
+        Some(crate::Animator::new(self))
+    }
+}
+
 impl IntoOptionalProp<f64> for i32 {
     fn into_optional_prop(self) -> Option<f64> {
         Some(self as f64)

@@ -450,8 +450,10 @@ impl Element {
             last_scrollbar_interaction: None,
             scrollbar_shadow_blur_radius: 3.0,
             pending_style_transition_requests: Vec::new(),
+            pending_animation_requests: Vec::new(),
             pending_layout_transition_requests: Vec::new(),
             pending_visual_transition_requests: Vec::new(),
+            last_started_animator: None,
             has_style_snapshot: false,
             has_layout_snapshot: false,
             layout_transition_visual_offset_x: 0.0,
@@ -573,6 +575,56 @@ impl Element {
     pub fn set_foreground_color(&mut self, color: Color) {
         self.foreground_color = color;
         self.mark_paint_dirty();
+    }
+
+    pub fn set_box_shadows(&mut self, box_shadows: Vec<BoxShadow>) {
+        self.box_shadows = box_shadows;
+        self.mark_paint_dirty();
+    }
+
+    pub fn set_transform_value(&mut self, transform: Transform) {
+        self.transform = transform;
+        self.update_resolved_transform();
+        self.mark_place_dirty();
+    }
+
+    pub fn set_transform_progress_value(&mut self, from: Transform, to: Transform, progress: f32) {
+        self.transform = interpolate_transform_with_reference_box(
+            &from,
+            &to,
+            progress,
+            glam::Vec2::new(
+                self.core.layout_size.width.max(0.0),
+                self.core.layout_size.height.max(0.0),
+            ),
+        );
+        self.update_resolved_transform();
+        self.mark_place_dirty();
+    }
+
+    pub fn set_transform_origin_value(&mut self, transform_origin: TransformOrigin) {
+        self.transform_origin = transform_origin;
+        self.update_resolved_transform();
+        self.mark_place_dirty();
+    }
+
+    pub fn set_transform_origin_progress_value(
+        &mut self,
+        from: TransformOrigin,
+        to: TransformOrigin,
+        progress: f32,
+    ) {
+        self.transform_origin = crate::interpolate_transform_origin_with_reference_box(
+            from,
+            to,
+            progress,
+            glam::Vec2::new(
+                self.core.layout_size.width.max(0.0),
+                self.core.layout_size.height.max(0.0),
+            ),
+        );
+        self.update_resolved_transform();
+        self.mark_place_dirty();
     }
 
     pub fn set_layout_transition_x(&mut self, value: f32) {
@@ -742,12 +794,53 @@ impl Element {
             self.parsed_style.clone()
         };
         self.computed_style = compute_style(&effective_style, None);
-        if let Some(previous_snapshot) = previous_snapshot {
+        if let Some(previous_snapshot) = previous_snapshot.as_ref() {
             self.collect_style_transition_requests(&previous_snapshot);
         }
         self.sync_props_from_computed_style();
+        if let Some(previous_snapshot) = previous_snapshot.as_ref() {
+            self.preserve_transform_transition_baseline(previous_snapshot);
+        }
+        self.sync_animator_requests();
         self.has_style_snapshot = true;
         self.mark_layout_dirty();
+    }
+
+    fn sync_animator_requests(&mut self) {
+        let next_animator = self.computed_style.animator.clone();
+        if self.last_started_animator == next_animator {
+            return;
+        }
+        let animator = next_animator
+            .clone()
+            .unwrap_or_else(|| crate::Animator::from_vec(Vec::new()));
+        self.pending_animation_requests
+            .push(crate::transition::AnimationRequest {
+                target: self.core.id,
+                animator,
+            });
+        self.last_started_animator = next_animator;
+    }
+
+    fn preserve_transform_transition_baseline(&mut self, previous: &ElementStyleSnapshot) {
+        let preserve_transform = self
+            .pending_style_transition_requests
+            .iter()
+            .any(|request| request.field == StyleField::Transform);
+        let preserve_transform_origin = self
+            .pending_style_transition_requests
+            .iter()
+            .any(|request| request.field == StyleField::TransformOrigin);
+
+        if preserve_transform {
+            self.transform = previous.transform.clone();
+        }
+        if preserve_transform_origin {
+            self.transform_origin = previous.transform_origin;
+        }
+        if preserve_transform || preserve_transform_origin {
+            self.update_resolved_transform();
+        }
     }
 
     fn collect_style_transition_requests(&mut self, previous: &ElementStyleSnapshot) {
@@ -825,6 +918,51 @@ impl Element {
                                 to: previous.current_value_for(
                                     &self.computed_style,
                                     StyleField::Color,
+                                ),
+                                transition: runtime,
+                            });
+                    }
+                }
+                TransitionProperty::BoxShadow => {
+                    if changed_fields.contains(&StyleField::BoxShadow) {
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::BoxShadow,
+                                from: previous.value_for(StyleField::BoxShadow),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BoxShadow,
+                                ),
+                                transition: runtime,
+                            });
+                    }
+                }
+                TransitionProperty::Transform => {
+                    if changed_fields.contains(&StyleField::Transform) {
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::Transform,
+                                from: previous.value_for(StyleField::Transform),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::Transform,
+                                ),
+                                transition: runtime,
+                            });
+                    }
+                }
+                TransitionProperty::TransformOrigin => {
+                    if changed_fields.contains(&StyleField::TransformOrigin) {
+                        self.pending_style_transition_requests
+                            .push(StyleTrackRequest {
+                                target: self.core.id,
+                                field: StyleField::TransformOrigin,
+                                from: previous.value_for(StyleField::TransformOrigin),
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::TransformOrigin,
                                 ),
                                 transition: runtime,
                             });

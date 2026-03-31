@@ -886,6 +886,7 @@ impl Element {
                         * Mat4::from_rotation_z(z.to_radians())
                 }
                 TransformKind::Perspective { depth } => css_perspective_matrix(depth.max(0.0001)),
+                TransformKind::Matrix { matrix } => Mat4::from_cols_array(&matrix),
             };
             transform *= next;
         }
@@ -937,7 +938,7 @@ impl Element {
                 color: shadow.color.to_rgba_f32(),
                 opacity: opacity.clamp(0.0, 1.0),
                 spread: 0.0,
-                clip_to_geometry: false,
+                clip_to_geometry: shadow.inset,
             };
             let next_state = self.push_shadow_pass(
                 mesh,
@@ -1018,7 +1019,7 @@ impl Element {
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
-        let bounds = self.transform_subtree_raster_bounds();
+        let source_bounds = self.transform_subtree_raster_bounds();
         let mut layer_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
             BuildState::for_layer_subtree_with_ancestor_clip(AncestorClipContext::default()),
@@ -1026,7 +1027,7 @@ impl Element {
         let layer_target = layer_ctx.allocate_persistent_target_with_key(
             graph,
             crate::view::base_component::transformed_layer_stable_key(self.id()),
-            bounds,
+            source_bounds,
         );
         layer_ctx.set_current_target(layer_target);
         graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
@@ -1051,9 +1052,19 @@ impl Element {
         ctx.set_current_target(parent_target);
         graph.add_graphics_pass(crate::view::render_pass::TextureCompositePass::new(
             crate::view::render_pass::TextureCompositeParams {
-                bounds: [bounds.x, bounds.y, bounds.width, bounds.height],
-                quad_positions: Some(self.transformed_quad_positions(bounds)),
-                uv_bounds: Some([bounds.x, bounds.y, bounds.width, bounds.height]),
+                bounds: [
+                    source_bounds.x,
+                    source_bounds.y,
+                    source_bounds.width,
+                    source_bounds.height,
+                ],
+                quad_positions: Some(self.transformed_quad_positions(source_bounds)),
+                uv_bounds: Some([
+                    source_bounds.x,
+                    source_bounds.y,
+                    source_bounds.width,
+                    source_bounds.height,
+                ]),
                 mask_uv_bounds: None,
                 use_mask: false,
                 source_is_premultiplied: true,

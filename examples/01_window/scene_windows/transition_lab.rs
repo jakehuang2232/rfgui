@@ -1,14 +1,17 @@
 use crate::rfgui::ui::{Binding, RsxNode, rsx};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{
-    Border, Color, JustifyContent, Layout, Length, Padding, ScrollDirection, Transition,
-    TransitionProperty,
+    Angle, Border, Color, JustifyContent, Layout, Length, Padding, Rotate, Scale,
+    Perspective, ScrollDirection, Transform, TransformOrigin, Transition, TransitionProperty,
+    Translate,
 };
 use crate::rfgui_components::{Button, Theme};
 
 pub struct TransitionLabBindings {
     pub style_enabled: Binding<bool>,
     pub style_target_alt: Binding<bool>,
+    pub transform_enabled: Binding<bool>,
+    pub transform_target_alt: Binding<bool>,
     pub layout_enabled: Binding<bool>,
     pub layout_expanded: Binding<bool>,
     pub visual_enabled: Binding<bool>,
@@ -18,6 +21,8 @@ pub struct TransitionLabBindings {
 pub struct TransitionLabValues {
     pub style_enabled: bool,
     pub style_target_alt: bool,
+    pub transform_enabled: bool,
+    pub transform_target_alt: bool,
     pub layout_enabled: bool,
     pub layout_expanded: bool,
     pub visual_enabled: bool,
@@ -34,6 +39,13 @@ pub fn build(
     let style_remove = bindings.style_enabled.clone();
     let style_reset_enable = bindings.style_enabled.clone();
     let style_reset_target = bindings.style_target_alt.clone();
+    let transform_start = bindings.transform_enabled.clone();
+    let transform_toggle_target = bindings.transform_target_alt.clone();
+    let transform_remove = bindings.transform_enabled.clone();
+    let transform_reset_enable = bindings.transform_enabled.clone();
+    let transform_reset_target = bindings.transform_target_alt.clone();
+    let transform_idle_border = Color::hex("#334155");
+    let transform_active_border = Color::hex("#67e8f9");
     let layout_start_enable = bindings.layout_enabled.clone();
     let layout_toggle_size = bindings.layout_expanded.clone();
     let layout_remove = bindings.layout_enabled.clone();
@@ -93,6 +105,110 @@ pub fn build(
                         <Button label="Start Animation" on_click={move |_| { style_start.set(true); style_toggle_target.update(|value| *value = !*value); }} />
                         <Button label="Remove Transition" on_click={move |_| { style_remove.set(false); }} />
                         <Button label="Reset" on_click={move |_| { style_reset_enable.set(true); style_reset_target.set(false); }} />
+                    </Element>
+                </Element>
+                <Element style={{
+                    width: Length::px(220.0),
+                    background: theme.color.layer.surface.clone(),
+                    border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                    border_radius: theme.radius.md,
+                    padding: Padding::uniform(theme.spacing.sm),
+                    layout: Layout::flow().column().no_wrap(),
+                    gap: theme.spacing.xs,
+                }}>
+                    <Text>TransformTransitionPlugin</Text>
+                    <Text>
+                        {format!("transition={} target={}", values.transform_enabled, values.transform_target_alt)}
+                    </Text>
+                    <Element style={{
+                        width: Length::px(180.0),
+                        height: Length::px(116.0),
+                        background: Color::hex("#08111f"),
+                        border: Border::uniform(Length::px(1.0), &Color::hex("#1e293b")),
+                        border_radius: theme.radius.md,
+                        layout: Layout::flow().row().no_wrap().justify_content(JustifyContent::Center),
+                        padding: Padding::uniform(theme.spacing.xs),
+                    }}>
+                        <Element style={{
+                            width: Length::px(124.0),
+                            height: Length::px(82.0),
+                            background: if values.transform_target_alt { Color::hex("#0f172a") } else { Color::hex("#020617") },
+                            border: Border::uniform(
+                                Length::px(1.0),
+                                if values.transform_target_alt { &transform_active_border } else { &transform_idle_border }
+                            ),
+                            border_radius: theme.radius.md,
+                            box_shadow: vec![
+                                if values.transform_target_alt {
+                                    theme.shadow.level_3
+                                        .color(Color::rgba(34, 211, 238, 110))
+                                        .offset_x(-10.0)
+                                        .offset_y(26.0)
+                                        .blur(42.0)
+                                        .spread(2.0)
+                                } else {
+                                    theme.shadow.level_3
+                                        .color(Color::rgba(15, 23, 42, 180))
+                                        .offset_x(0.0)
+                                        .offset_y(12.0)
+                                        .blur(26.0)
+                                        .spread(0.0)
+                                },
+                            ],
+                            transform_origin: if values.transform_target_alt {
+                                TransformOrigin::percent(84.0, 12.0).with_z(48.0)
+                            } else {
+                                TransformOrigin::percent(16.0, 82.0).with_z(18.0)
+                            },
+                            transform: if values.transform_target_alt {
+                                Transform::new([
+                                    Perspective::px(960.0),
+                                    Translate::x(Length::px(26.0)).with_y(Length::px(-10.0)),
+                                    Rotate::x(Angle::deg(24.0)).y(Angle::deg(-30.0)).z(Angle::deg(-10.0)),
+                                    Scale::xy(1.14, 1.14),
+                                ])
+                            } else {
+                                Transform::new([
+                                    Perspective::px(960.0),
+                                    Translate::x(Length::px(-8.0)).with_y(Length::px(6.0)),
+                                    Rotate::x(Angle::deg(-10.0)).y(Angle::deg(14.0)).z(Angle::deg(6.0)),
+                                    Scale::xy(0.96, 0.96),
+                                ])
+                            },
+                            transition: if values.transform_enabled {
+                                vec![
+                                    Transition::new(TransitionProperty::Transform, theme.motion.duration.slow).ease_in_out(),
+                                    Transition::new(TransitionProperty::BoxShadow, theme.motion.duration.slow).ease_in_out(),
+                                ]
+                            } else {
+                                Vec::<Transition>::new()
+                            },
+                            layout: Layout::flow().column().no_wrap(),
+                            gap: theme.spacing.xs,
+                            padding: Padding::uniform(Length::px(10.0)),
+                        }}>
+                            <Element style={{
+                                width: Length::percent(100.0),
+                                height: Length::px(8.0),
+                                background: if values.transform_target_alt { Color::hex("#67e8f9") } else { Color::hex("#2563eb") },
+                                border_radius: theme.radius.md,
+                            }} />
+                            <Element style={{
+                                width: Length::percent(100.0),
+                                layout: Layout::flow().row().no_wrap().justify_content(JustifyContent::SpaceBetween),
+                            }}>
+                                <Text style={{ color: Color::hex("#e2e8f0") }}>Transform</Text>
+                                <Text style={{ color: Color::hex("#7dd3fc") }}>3D</Text>
+                            </Element>
+                            <Text style={{ color: Color::hex("#94a3b8") }}>
+                                {if values.transform_target_alt { "tilt / lift / spin" } else { "armed / waiting" }}
+                            </Text>
+                        </Element>
+                    </Element>
+                    <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
+                        <Button label="Start Animation" on_click={move |_| { transform_start.set(true); transform_toggle_target.update(|value| *value = !*value); }} />
+                        <Button label="Remove Transition" on_click={move |_| { transform_remove.set(false); }} />
+                        <Button label="Reset" on_click={move |_| { transform_reset_enable.set(true); transform_reset_target.set(false); }} />
                     </Element>
                 </Element>
                 <Element style={{

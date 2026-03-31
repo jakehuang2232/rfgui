@@ -405,7 +405,7 @@ fn rect_distance(a: Rect, b: Rect) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::{BoxShadow, Color, ParsedValue, PropertyId, Style};
+    use crate::style::{BoxShadow, Color, Length, ParsedValue, PropertyId, Style, Transform, Translate};
     use crate::transition::{
         CHANNEL_STYLE_BACKGROUND_COLOR, ClaimMode, StyleField, StyleTransition,
         StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition, TransitionFrame,
@@ -739,7 +739,37 @@ mod tests {
             roots[0].as_mut(),
             samples[0].target,
             samples[0].field,
-            samples[0].value,
+            samples[0].value.clone(),
+        ));
+
+        let (updates, _, _) = collect_promoted_layer_updates(
+            &roots,
+            &promoted,
+            &first_base_signatures,
+            &first_composition_signatures,
+        );
+        assert_eq!(updates.len(), 1);
+        let root_update = &updates[0];
+        assert_eq!(root_update.node_id, 1);
+        assert_eq!(root_update.kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn style_transform_sample_dirty_promoted_root_in_lab_like_structure() {
+        let mut roots = build_style_transition_lab_like_tree();
+        let promoted = HashSet::from([1_u64]);
+        let (_, first_base_signatures, first_composition_signatures) =
+            collect_promoted_layer_updates(&roots, &promoted, &HashMap::new(), &HashMap::new());
+
+        assert!(set_style_field_by_id(
+            roots[0].as_mut(),
+            7,
+            StyleField::Transform,
+            StyleValue::TransformProgress {
+                from: Transform::default(),
+                to: Transform::new([Translate::x(Length::px(36.0))]),
+                progress: 0.5,
+            },
         ));
 
         let (updates, _, _) = collect_promoted_layer_updates(
