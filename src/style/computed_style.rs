@@ -231,7 +231,7 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
     if let Some(selection) = parsed.selection()
         && let Some(background) = selection.background_color()
     {
-        computed.selection_background_color = background;
+        computed.selection_background_color = background.to_color();
     }
 
     for declaration in parsed.declarations() {
@@ -509,7 +509,7 @@ fn parse_color(input: &ParsedValue) -> Option<Color> {
     let ParsedValue::Color(raw) = input else {
         return None;
     };
-    Some(*raw)
+    Some(raw.to_color())
 }
 
 fn resolve_length_px(length: Length) -> f32 {

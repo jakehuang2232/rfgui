@@ -200,7 +200,7 @@ impl InheritedTextStyle {
             inherited.font_weight = Some(font_weight.value());
         }
         if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-            inherited.color = Some(*color);
+            inherited.color = Some(color.to_color());
         }
         if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
             inherited.cursor = Some(*cursor);
@@ -659,7 +659,7 @@ fn convert_container_element(
                 child_inherited_text_style.font_weight = Some(font_weight.value());
             }
             if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-                child_inherited_text_style.color = Some(*color);
+                child_inherited_text_style.color = Some(color.to_color());
             }
             if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
                 child_inherited_text_style.cursor = Some(*cursor);
@@ -883,7 +883,7 @@ fn convert_text_element(
             has_explicit_font_weight = true;
         }
         if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-            text.set_color(*color);
+            text.set_color(color.clone());
             has_explicit_color = true;
         }
         if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
@@ -1102,13 +1102,13 @@ fn convert_text_area_element(
             height = size_length_from_parsed_value(value, "TextArea style.height")?;
         }
         if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-            text_area.set_color(*color);
+            text_area.set_color(color.clone());
             has_explicit_color = true;
         }
         if let Some(selection) = style.selection()
             && let Some(background) = selection.background_color()
         {
-            text_area.set_selection_background_color(background);
+            text_area.set_selection_background_color(background.clone());
         }
     }
 

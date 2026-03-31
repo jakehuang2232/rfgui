@@ -317,7 +317,7 @@ impl Theme {
                 duration: DurationScale {
                     fast: 120,
                     normal: 180,
-                    slow: 280,
+                    slow: 1000,
                 },
                 easing: EasingTheme {
                     standard: TransitionTiming::EaseInOut,
@@ -484,7 +484,7 @@ impl Theme {
                 duration: DurationScale {
                     fast: 120,
                     normal: 180,
-                    slow: 280,
+                    slow: 1000,
                 },
                 easing: EasingTheme {
                     standard: TransitionTiming::EaseInOut,

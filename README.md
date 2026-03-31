@@ -154,10 +154,10 @@ impl RsxChildrenPolicy for Card {
 
 ## Key Semantics
 
-RSX 的 `key` 目前分成兩種：
+RSX currently supports two kinds of `key`:
 
-- local key：只影響同層 sibling 的 identity
-- global key：要求同一輪 build 全域唯一，並可在跨 parent 搬移時保留 component state
+- local key: only affects sibling identity within the same parent
+- global key: must be globally unique within the same build pass and can preserve component state when moving across parents
 
 ```rust
 use rfgui::ui::{GlobalKey, rsx};
@@ -171,12 +171,12 @@ let tree = rsx! {
 };
 ```
 
-注意：
+Notes:
 
-- 字串或數字 `key` 會走 local key，例如 `key="item-1"`
-- `GlobalKey` 必須寫成 Rust expression，所以要用 `key={GlobalKey::from("dialog-root")}`
-- `GlobalKey` 若在同一輪 build 重複出現，會直接報錯
-- reconciliation identity 以 `type + key` 為準；`<Button key={...} />` 與 `<Element key={...} />` 不會視為同一個節點
+- String and numeric `key` values are treated as local keys, for example `key="item-1"`.
+- `GlobalKey` must be written as a Rust expression, so use `key={GlobalKey::from("dialog-root")}`.
+- Reusing the same `GlobalKey` in a single build pass is an error.
+- Reconciliation identity is based on `type + key`; `<Button key={...} />` and `<Element key={...} />` are not treated as the same node.
 
 ## Development
 

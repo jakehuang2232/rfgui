@@ -908,11 +908,11 @@ mod tests {
         let style = extract_element_style(&node);
         assert_eq!(
             style.get(PropertyId::Color),
-            Some(&ParsedValue::Color(Color::rgba(17, 34, 51, 255)))
+            Some(&ParsedValue::Color(Color::rgba(17, 34, 51, 255).into()))
         );
         assert_eq!(
             style.get(PropertyId::BackgroundColor),
-            Some(&ParsedValue::Color(Color::rgba(1, 2, 3, 255)))
+            Some(&ParsedValue::Color(Color::rgba(1, 2, 3, 255).into()))
         );
     }
 
@@ -972,7 +972,7 @@ mod tests {
         let selection = style.selection().expect("missing selection style");
         assert_eq!(
             selection.background_color(),
-            Some(Color::rgba(255, 255, 255, 255))
+            Some(&Color::rgba(255, 255, 255, 255).into())
         );
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
         let selection = style.selection().expect("missing selection style");
         assert_eq!(
             selection.background_color(),
-            Some(Color::rgba(171, 205, 239, 255))
+            Some(&Color::rgba(171, 205, 239, 255).into())
         );
     }
 

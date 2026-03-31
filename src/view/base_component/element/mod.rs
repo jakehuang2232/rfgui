@@ -1074,6 +1074,10 @@ struct FlexItemPlan {
 struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
+    width: f32,
+    height: f32,
+    layout_width: f32,
+    layout_height: f32,
     is_hovered: bool,
     background_color: Color,
     foreground_color: Color,
@@ -1081,6 +1085,24 @@ struct ElementStyleSnapshot {
     border_right_color: Color,
     border_bottom_color: Color,
     border_left_color: Color,
+    transition_snapshot: Option<TransitionSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TransitionSnapshot {
+    has_layout_snapshot: bool,
+    layout_transition_visual_offset_x: f32,
+    layout_transition_visual_offset_y: f32,
+    layout_transition_override_width: Option<f32>,
+    layout_transition_override_height: Option<f32>,
+    layout_transition_target_x: Option<f32>,
+    layout_transition_target_y: Option<f32>,
+    layout_transition_target_width: Option<f32>,
+    layout_transition_target_height: Option<f32>,
+    last_parent_layout_x: f32,
+    last_parent_layout_y: f32,
+    layout_assigned_width: Option<f32>,
+    layout_assigned_height: Option<f32>,
 }
 
 pub struct Element {
@@ -1153,6 +1175,44 @@ pub struct Element {
 }
 
 impl Element {
+    fn capture_style_snapshot(&self) -> ElementStyleSnapshot {
+        let [bg_r, bg_g, bg_b, bg_a] = self.background_color.as_ref().to_rgba_u8();
+        let [bt_r, bt_g, bt_b, bt_a] = self.border_colors.top.as_ref().to_rgba_u8();
+        let [br_r, br_g, br_b, br_a] = self.border_colors.right.as_ref().to_rgba_u8();
+        let [bb_r, bb_g, bb_b, bb_a] = self.border_colors.bottom.as_ref().to_rgba_u8();
+        let [bl_r, bl_g, bl_b, bl_a] = self.border_colors.left.as_ref().to_rgba_u8();
+        ElementStyleSnapshot {
+            opacity: self.opacity,
+            border_radius: self.border_radius,
+            width: self.core.size.width,
+            height: self.core.size.height,
+            layout_width: self.core.layout_size.width,
+            layout_height: self.core.layout_size.height,
+            is_hovered: self.is_hovered,
+            background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
+            foreground_color: self.foreground_color,
+            border_top_color: Color::rgba(bt_r, bt_g, bt_b, bt_a),
+            border_right_color: Color::rgba(br_r, br_g, br_b, br_a),
+            border_bottom_color: Color::rgba(bb_r, bb_g, bb_b, bb_a),
+            border_left_color: Color::rgba(bl_r, bl_g, bl_b, bl_a),
+            transition_snapshot: Some(TransitionSnapshot {
+                has_layout_snapshot: self.has_layout_snapshot,
+                layout_transition_visual_offset_x: self.layout_transition_visual_offset_x,
+                layout_transition_visual_offset_y: self.layout_transition_visual_offset_y,
+                layout_transition_override_width: self.layout_transition_override_width,
+                layout_transition_override_height: self.layout_transition_override_height,
+                layout_transition_target_x: self.layout_transition_target_x,
+                layout_transition_target_y: self.layout_transition_target_y,
+                layout_transition_target_width: self.layout_transition_target_width,
+                layout_transition_target_height: self.layout_transition_target_height,
+                last_parent_layout_x: self.last_parent_layout_x,
+                last_parent_layout_y: self.last_parent_layout_y,
+                layout_assigned_width: self.layout_assigned_width,
+                layout_assigned_height: self.layout_assigned_height,
+            }),
+        }
+    }
+
     pub(crate) fn map_viewport_to_paint_space(
         &self,
         viewport_x: f32,
@@ -1245,6 +1305,76 @@ impl Element {
             bounds = Self::union_promotion_bounds(bounds, child_bounds);
         }
         bounds
+    }
+}
+
+impl ElementStyleSnapshot {
+    fn current_value_for(&self, current: &ComputedStyle, field: StyleField) -> StyleValue {
+        match field {
+            StyleField::Opacity => StyleValue::Scalar(current.opacity.clamp(0.0, 1.0)),
+            StyleField::BorderRadius => {
+                let radius_base = self.width.min(self.height).max(0.0);
+                let top_left = resolve_px(current.border_radii.top_left, radius_base, 0.0, 0.0);
+                let top_right = resolve_px(current.border_radii.top_right, radius_base, 0.0, 0.0);
+                let bottom_right =
+                    resolve_px(current.border_radii.bottom_right, radius_base, 0.0, 0.0);
+                let bottom_left =
+                    resolve_px(current.border_radii.bottom_left, radius_base, 0.0, 0.0);
+                StyleValue::Scalar(
+                    top_left
+                        .max(top_right)
+                        .max(bottom_right)
+                        .max(bottom_left)
+                        .max(0.0),
+                )
+            }
+            StyleField::BackgroundColor => StyleValue::Color(current.background_color),
+            StyleField::Color => StyleValue::Color(current.color),
+            StyleField::BorderTopColor => StyleValue::Color(current.border_colors.top),
+            StyleField::BorderRightColor => StyleValue::Color(current.border_colors.right),
+            StyleField::BorderBottomColor => StyleValue::Color(current.border_colors.bottom),
+            StyleField::BorderLeftColor => StyleValue::Color(current.border_colors.left),
+        }
+    }
+
+    fn value_for(&self, field: StyleField) -> StyleValue {
+        match field {
+            StyleField::Opacity => StyleValue::Scalar(self.opacity),
+            StyleField::BorderRadius => StyleValue::Scalar(self.border_radius),
+            StyleField::BackgroundColor => StyleValue::Color(self.background_color),
+            StyleField::Color => StyleValue::Color(self.foreground_color),
+            StyleField::BorderTopColor => StyleValue::Color(self.border_top_color),
+            StyleField::BorderRightColor => StyleValue::Color(self.border_right_color),
+            StyleField::BorderBottomColor => StyleValue::Color(self.border_bottom_color),
+            StyleField::BorderLeftColor => StyleValue::Color(self.border_left_color),
+        }
+    }
+
+    fn diff(&self, current: &ComputedStyle) -> Vec<StyleField> {
+        const FIELDS: [StyleField; 8] = [
+            StyleField::Opacity,
+            StyleField::BorderRadius,
+            StyleField::BackgroundColor,
+            StyleField::Color,
+            StyleField::BorderTopColor,
+            StyleField::BorderRightColor,
+            StyleField::BorderBottomColor,
+            StyleField::BorderLeftColor,
+        ];
+        let mut out = Vec::new();
+        for field in FIELDS {
+            let previous = self.value_for(field);
+            let next = self.current_value_for(current, field);
+            let changed = match (previous, next) {
+                (StyleValue::Scalar(lhs), StyleValue::Scalar(rhs)) => !approx_eq(lhs, rhs),
+                (StyleValue::Color(lhs), StyleValue::Color(rhs)) => lhs != rhs,
+                _ => true,
+            };
+            if changed {
+                out.push(field);
+            }
+        }
+        out
     }
 }
 
@@ -1509,22 +1639,7 @@ impl ElementTrait for Element {
     }
 
     fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        let [bg_r, bg_g, bg_b, bg_a] = self.background_color.as_ref().to_rgba_u8();
-        let [bt_r, bt_g, bt_b, bt_a] = self.border_colors.top.as_ref().to_rgba_u8();
-        let [br_r, br_g, br_b, br_a] = self.border_colors.right.as_ref().to_rgba_u8();
-        let [bb_r, bb_g, bb_b, bb_a] = self.border_colors.bottom.as_ref().to_rgba_u8();
-        let [bl_r, bl_g, bl_b, bl_a] = self.border_colors.left.as_ref().to_rgba_u8();
-        Some(Box::new(ElementStyleSnapshot {
-            opacity: self.opacity,
-            border_radius: self.border_radius,
-            is_hovered: self.is_hovered,
-            background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
-            foreground_color: self.foreground_color,
-            border_top_color: Color::rgba(bt_r, bt_g, bt_b, bt_a),
-            border_right_color: Color::rgba(br_r, br_g, br_b, br_a),
-            border_bottom_color: Color::rgba(bb_r, bb_g, bb_b, bb_a),
-            border_left_color: Color::rgba(bl_r, bl_g, bl_b, bl_a),
-        }))
+        Some(Box::new(self.capture_style_snapshot()))
     }
 
     fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
@@ -1532,21 +1647,44 @@ impl ElementTrait for Element {
             return false;
         };
 
+        self.core.set_width(snapshot.width);
+        self.core.set_height(snapshot.height);
+        self.core.layout_size = Size {
+            width: snapshot.layout_width,
+            height: snapshot.layout_height,
+        };
         self.is_hovered = snapshot.is_hovered;
-        // Refresh computed style against current parsed style, but do not enqueue new
-        // style transitions during restore. In-flight tracks are owned by the viewport
-        // transition plugins and their current sampled values come from the snapshot.
-        self.has_style_snapshot = false;
-        self.recompute_style();
         self.opacity = snapshot.opacity;
-        self.set_border_radius_transition_sample(snapshot.border_radius);
+        self.border_radius = snapshot.border_radius;
         self.background_color = Box::new(snapshot.background_color);
         self.foreground_color = snapshot.foreground_color;
         self.border_colors.top = Box::new(snapshot.border_top_color);
         self.border_colors.right = Box::new(snapshot.border_right_color);
         self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
         self.border_colors.left = Box::new(snapshot.border_left_color);
+        if let Some(transition_snapshot) = snapshot.transition_snapshot {
+            self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
+            self.layout_transition_visual_offset_x =
+                transition_snapshot.layout_transition_visual_offset_x;
+            self.layout_transition_visual_offset_y =
+                transition_snapshot.layout_transition_visual_offset_y;
+            self.layout_transition_override_width =
+                transition_snapshot.layout_transition_override_width;
+            self.layout_transition_override_height =
+                transition_snapshot.layout_transition_override_height;
+            self.layout_transition_target_x = transition_snapshot.layout_transition_target_x;
+            self.layout_transition_target_y = transition_snapshot.layout_transition_target_y;
+            self.layout_transition_target_width =
+                transition_snapshot.layout_transition_target_width;
+            self.layout_transition_target_height =
+                transition_snapshot.layout_transition_target_height;
+            self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
+            self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
+            self.layout_assigned_width = transition_snapshot.layout_assigned_width;
+            self.layout_assigned_height = transition_snapshot.layout_assigned_height;
+        }
         self.has_style_snapshot = true;
+        self.recompute_style();
         true
     }
 }

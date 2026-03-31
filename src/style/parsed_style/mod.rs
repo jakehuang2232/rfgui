@@ -2,7 +2,7 @@
 
 //! Typed parsed-style declarations accepted by RSX and style construction APIs.
 
-use crate::style::color::{Color, ColorLike, IntoColor};
+use crate::style::color::{Color, ColorLike, IntoColor, OklchColor, StyleColor};
 
 use std::collections::HashMap;
 use std::ops::Add;
@@ -1380,7 +1380,7 @@ pub struct Border {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoxShadow {
-    pub color: Color,
+    pub color: StyleColor,
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
@@ -1396,7 +1396,7 @@ impl Default for BoxShadow {
 impl BoxShadow {
     pub const fn new() -> Self {
         Self {
-            color: Color::rgb(0, 0, 0),
+            color: StyleColor::Srgb(Color::rgb(0, 0, 0)),
             offset_x: 0.0,
             offset_y: 0.0,
             blur: 0.0,
@@ -1405,8 +1405,7 @@ impl BoxShadow {
     }
 
     pub fn color<T: ColorLike>(mut self, color: T) -> Self {
-        let [r, g, b, a] = color.to_rgba_u8();
-        self.color = Color::rgba(r, g, b, a);
+        self.color = color.to_style_color();
         self
     }
 
@@ -1931,13 +1930,12 @@ pub enum ParsedValue {
     Transform(Transform),
     TransformOrigin(TransformOrigin),
     Transition(Transitions),
-    Color(Color),
+    Color(StyleColor),
 }
 
 impl ParsedValue {
     pub fn color_like<T: ColorLike>(color: T) -> Self {
-        let [r, g, b, a] = color.to_rgba_u8();
-        Self::Color(Color::rgba(r, g, b, a))
+        Self::Color(color.to_style_color())
     }
 }
 
@@ -1949,7 +1947,7 @@ pub struct Declaration {
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SelectionStyle {
-    background: Option<Color>,
+    background: Option<StyleColor>,
 }
 
 impl SelectionStyle {
@@ -1958,18 +1956,16 @@ impl SelectionStyle {
     }
 
     pub fn background<T: ColorLike>(mut self, color: T) -> Self {
-        let [r, g, b, a] = color.to_rgba_u8();
-        self.background = Some(Color::rgba(r, g, b, a));
+        self.background = Some(color.to_style_color());
         self
     }
 
-    pub const fn background_color(&self) -> Option<Color> {
-        self.background
+    pub fn background_color(&self) -> Option<&StyleColor> {
+        self.background.as_ref()
     }
 
     pub fn set_background<T: ColorLike>(&mut self, color: T) {
-        let [r, g, b, a] = color.to_rgba_u8();
-        self.background = Some(Color::rgba(r, g, b, a));
+        self.background = Some(color.to_style_color());
     }
 
     pub fn merge(self, rhs: Self) -> Self {
@@ -2075,12 +2071,39 @@ impl IntoStyleFieldValue<FontSize> for usize {
     }
 }
 
-impl<T> IntoStyleFieldValue<Color> for T
-where
-    T: IntoColor<Color>,
-{
-    fn into_style_field_value(self) -> Color {
-        self.into_color()
+impl IntoStyleFieldValue<StyleColor> for Color {
+    fn into_style_field_value(self) -> StyleColor {
+        self.into()
+    }
+}
+
+impl IntoStyleFieldValue<StyleColor> for OklchColor {
+    fn into_style_field_value(self) -> StyleColor {
+        self.into()
+    }
+}
+
+impl<'a> IntoStyleFieldValue<StyleColor> for crate::style::HexColor<'a> {
+    fn into_style_field_value(self) -> StyleColor {
+        self.to_style_color()
+    }
+}
+
+impl IntoStyleFieldValue<StyleColor> for &str {
+    fn into_style_field_value(self) -> StyleColor {
+        StyleColor::Srgb(self.into_color())
+    }
+}
+
+impl IntoStyleFieldValue<StyleColor> for String {
+    fn into_style_field_value(self) -> StyleColor {
+        StyleColor::Srgb(self.into_color())
+    }
+}
+
+impl IntoStyleFieldValue<StyleColor> for Box<dyn ColorLike> {
+    fn into_style_field_value(self) -> StyleColor {
+        self.to_style_color()
     }
 }
 
@@ -2154,7 +2177,7 @@ where
 
 pub fn style_color_value<V>(value: V) -> ParsedValue
 where
-    V: IntoStyleFieldValue<Color>,
+    V: IntoStyleFieldValue<StyleColor>,
 {
     ParsedValue::Color(value.into_style_field_value())
 }
@@ -2352,19 +2375,19 @@ impl Style {
         );
         self.insert(
             PropertyId::BorderTopColor,
-            ParsedValue::Color(Color::rgba(top_r, top_g, top_b, top_a)),
+            ParsedValue::Color(Color::rgba(top_r, top_g, top_b, top_a).into()),
         );
         self.insert(
             PropertyId::BorderRightColor,
-            ParsedValue::Color(Color::rgba(right_r, right_g, right_b, right_a)),
+            ParsedValue::Color(Color::rgba(right_r, right_g, right_b, right_a).into()),
         );
         self.insert(
             PropertyId::BorderBottomColor,
-            ParsedValue::Color(Color::rgba(bottom_r, bottom_g, bottom_b, bottom_a)),
+            ParsedValue::Color(Color::rgba(bottom_r, bottom_g, bottom_b, bottom_a).into()),
         );
         self.insert(
             PropertyId::BorderLeftColor,
-            ParsedValue::Color(Color::rgba(left_r, left_g, left_b, left_a)),
+            ParsedValue::Color(Color::rgba(left_r, left_g, left_b, left_a).into()),
         );
     }
 
