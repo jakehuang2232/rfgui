@@ -177,6 +177,15 @@ impl Rect {
     fn contains(self, px: f32, py: f32) -> bool {
         px >= self.x && py >= self.y && px <= self.x + self.width && py <= self.y + self.height
     }
+
+    fn intersects(self, other: Rect) -> bool {
+        self.width > 0.0
+            && self.height > 0.0
+            && self.x + self.width > other.x
+            && self.x < other.x + other.width
+            && self.y + self.height > other.y
+            && self.y < other.y + other.height
+    }
 }
 
 fn intersect_rect(a: Rect, b: Rect) -> Rect {
@@ -1065,10 +1074,6 @@ struct FlexItemPlan {
 struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
-    width: f32,
-    height: f32,
-    layout_width: f32,
-    layout_height: f32,
     is_hovered: bool,
     background_color: Color,
     foreground_color: Color,
@@ -1076,24 +1081,6 @@ struct ElementStyleSnapshot {
     border_right_color: Color,
     border_bottom_color: Color,
     border_left_color: Color,
-    transition_snapshot: Option<TransitionSnapshot>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TransitionSnapshot {
-    has_layout_snapshot: bool,
-    layout_transition_visual_offset_x: f32,
-    layout_transition_visual_offset_y: f32,
-    layout_transition_override_width: Option<f32>,
-    layout_transition_override_height: Option<f32>,
-    layout_transition_target_x: Option<f32>,
-    layout_transition_target_y: Option<f32>,
-    layout_transition_target_width: Option<f32>,
-    layout_transition_target_height: Option<f32>,
-    last_parent_layout_x: f32,
-    last_parent_layout_y: f32,
-    layout_assigned_width: Option<f32>,
-    layout_assigned_height: Option<f32>,
 }
 
 pub struct Element {
@@ -1179,6 +1166,85 @@ impl Element {
             mapped.w
         };
         Some((mapped.x / w, mapped.y / w))
+    }
+
+    fn transformed_bounding_rect_for_rect(&self, rect: Rect) -> Rect {
+        let Some(matrix) = self.resolved_transform else {
+            return rect;
+        };
+        let corners = [
+            Vec3::new(rect.x, rect.y, 0.0),
+            Vec3::new(rect.x + rect.width.max(0.0), rect.y, 0.0),
+            Vec3::new(
+                rect.x + rect.width.max(0.0),
+                rect.y + rect.height.max(0.0),
+                0.0,
+            ),
+            Vec3::new(rect.x, rect.y + rect.height.max(0.0), 0.0),
+        ];
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for corner in corners {
+            let transformed = matrix * corner.extend(1.0);
+            let w = if transformed.w.abs() <= 0.000_001 {
+                1.0
+            } else {
+                transformed.w
+            };
+            let x = transformed.x / w;
+            let y = transformed.y / w;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        Rect {
+            x: min_x,
+            y: min_y,
+            width: (max_x - min_x).max(0.0),
+            height: (max_y - min_y).max(0.0),
+        }
+    }
+
+    fn transformed_frame_bounding_rect(&self, frame: LayoutFrame) -> Rect {
+        self.transformed_bounding_rect_for_rect(Rect {
+            x: frame.x,
+            y: frame.y,
+            width: frame.width.max(0.0),
+            height: frame.height.max(0.0),
+        })
+    }
+
+    fn union_promotion_bounds(
+        current: PromotionCompositeBounds,
+        next: PromotionCompositeBounds,
+    ) -> PromotionCompositeBounds {
+        let min_x = current.x.min(next.x);
+        let min_y = current.y.min(next.y);
+        let max_x = (current.x + current.width.max(0.0)).max(next.x + next.width.max(0.0));
+        let max_y = (current.y + current.height.max(0.0)).max(next.y + next.height.max(0.0));
+        PromotionCompositeBounds {
+            x: min_x,
+            y: min_y,
+            width: (max_x - min_x).max(0.0),
+            height: (max_y - min_y).max(0.0),
+            corner_radii: [0.0; 4],
+        }
+    }
+
+    fn transform_subtree_raster_bounds(&self) -> PromotionCompositeBounds {
+        let mut bounds = self.promotion_composite_bounds();
+        for child in &self.children {
+            let child_bounds = if let Some(element) = child.as_any().downcast_ref::<Element>() {
+                element.transform_subtree_raster_bounds()
+            } else {
+                child.promotion_composite_bounds()
+            };
+            bounds = Self::union_promotion_bounds(bounds, child_bounds);
+        }
+        bounds
     }
 }
 
@@ -1419,11 +1485,17 @@ impl ElementTrait for Element {
                 snapshot.y + snapshot.height.max(0.0) + shadow.offset_y + spread + blur_padding,
             );
         }
-        PromotionCompositeBounds {
+        let transformed = self.transformed_bounding_rect_for_rect(Rect {
             x: min_x,
             y: min_y,
             width: (max_x - min_x).max(0.0),
             height: (max_y - min_y).max(0.0),
+        });
+        PromotionCompositeBounds {
+            x: transformed.x,
+            y: transformed.y,
+            width: transformed.width,
+            height: transformed.height,
             corner_radii: [0.0; 4],
         }
     }
@@ -1445,10 +1517,6 @@ impl ElementTrait for Element {
         Some(Box::new(ElementStyleSnapshot {
             opacity: self.opacity,
             border_radius: self.border_radius,
-            width: self.core.size.width,
-            height: self.core.size.height,
-            layout_width: self.core.layout_size.width,
-            layout_height: self.core.layout_size.height,
             is_hovered: self.is_hovered,
             background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
             foreground_color: self.foreground_color,
@@ -1456,21 +1524,6 @@ impl ElementTrait for Element {
             border_right_color: Color::rgba(br_r, br_g, br_b, br_a),
             border_bottom_color: Color::rgba(bb_r, bb_g, bb_b, bb_a),
             border_left_color: Color::rgba(bl_r, bl_g, bl_b, bl_a),
-            transition_snapshot: Some(TransitionSnapshot {
-                has_layout_snapshot: self.has_layout_snapshot,
-                layout_transition_visual_offset_x: self.layout_transition_visual_offset_x,
-                layout_transition_visual_offset_y: self.layout_transition_visual_offset_y,
-                layout_transition_override_width: self.layout_transition_override_width,
-                layout_transition_override_height: self.layout_transition_override_height,
-                layout_transition_target_x: self.layout_transition_target_x,
-                layout_transition_target_y: self.layout_transition_target_y,
-                layout_transition_target_width: self.layout_transition_target_width,
-                layout_transition_target_height: self.layout_transition_target_height,
-                last_parent_layout_x: self.last_parent_layout_x,
-                last_parent_layout_y: self.last_parent_layout_y,
-                layout_assigned_width: self.layout_assigned_width,
-                layout_assigned_height: self.layout_assigned_height,
-            }),
         }))
     }
 
@@ -1479,15 +1532,14 @@ impl ElementTrait for Element {
             return false;
         };
 
-        self.opacity = snapshot.opacity;
-        self.border_radius = snapshot.border_radius;
-        self.core.set_width(snapshot.width);
-        self.core.set_height(snapshot.height);
-        self.core.layout_size = Size {
-            width: snapshot.layout_width,
-            height: snapshot.layout_height,
-        };
         self.is_hovered = snapshot.is_hovered;
+        // Refresh computed style against current parsed style, but do not enqueue new
+        // style transitions during restore. In-flight tracks are owned by the viewport
+        // transition plugins and their current sampled values come from the snapshot.
+        self.has_style_snapshot = false;
+        self.recompute_style();
+        self.opacity = snapshot.opacity;
+        self.set_border_radius_transition_sample(snapshot.border_radius);
         self.background_color = Box::new(snapshot.background_color);
         self.foreground_color = snapshot.foreground_color;
         self.border_colors.top = Box::new(snapshot.border_top_color);
@@ -1495,30 +1547,6 @@ impl ElementTrait for Element {
         self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
         self.border_colors.left = Box::new(snapshot.border_left_color);
         self.has_style_snapshot = true;
-        if let Some(transition_snapshot) = snapshot.transition_snapshot {
-            self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
-            self.layout_transition_visual_offset_x =
-                transition_snapshot.layout_transition_visual_offset_x;
-            self.layout_transition_visual_offset_y =
-                transition_snapshot.layout_transition_visual_offset_y;
-            self.layout_transition_override_width =
-                transition_snapshot.layout_transition_override_width;
-            self.layout_transition_override_height =
-                transition_snapshot.layout_transition_override_height;
-            self.layout_transition_target_x = transition_snapshot.layout_transition_target_x;
-            self.layout_transition_target_y = transition_snapshot.layout_transition_target_y;
-            self.layout_transition_target_width =
-                transition_snapshot.layout_transition_target_width;
-            self.layout_transition_target_height =
-                transition_snapshot.layout_transition_target_height;
-            self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
-            self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
-            self.layout_assigned_width = transition_snapshot.layout_assigned_width;
-            self.layout_assigned_height = transition_snapshot.layout_assigned_height;
-        }
-
-        // Recompute against current parsed_style so transitions can bridge from old -> new style.
-        self.recompute_style();
         true
     }
 }

@@ -853,26 +853,30 @@ impl Element {
         }
         let size = self.core.layout_size;
         let origin = Vec3::new(
-            resolve_px(
+            resolve_signed_px_with_base(
                 self.transform_origin.x(),
-                size.width.max(0.0),
+                Some(size.width.max(0.0)),
                 0.0,
                 0.0,
-            ),
-            resolve_px(
+            )
+            .unwrap_or(0.0),
+            resolve_signed_px_with_base(
                 self.transform_origin.y(),
-                size.height.max(0.0),
+                Some(size.height.max(0.0)),
                 0.0,
                 0.0,
-            ),
+            )
+            .unwrap_or(0.0),
             self.transform_origin.z(),
         );
         let mut transform = Mat4::IDENTITY;
         for entry in self.transform.as_slice() {
             let next = match entry.kind() {
                 TransformKind::Translate { x, y, z } => Mat4::from_translation(Vec3::new(
-                    resolve_px(x, size.width.max(0.0), 0.0, 0.0),
-                    resolve_px(y, size.height.max(0.0), 0.0, 0.0),
+                    resolve_signed_px_with_base(x, Some(size.width.max(0.0)), 0.0, 0.0)
+                        .unwrap_or(0.0),
+                    resolve_signed_px_with_base(y, Some(size.height.max(0.0)), 0.0, 0.0)
+                        .unwrap_or(0.0),
                     z,
                 )),
                 TransformKind::Scale { x, y, z } => Mat4::from_scale(Vec3::new(x, y, z)),
@@ -1014,10 +1018,10 @@ impl Element {
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
-        let bounds = self.promotion_composite_bounds();
+        let bounds = self.transform_subtree_raster_bounds();
         let mut layer_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
-            BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
+            BuildState::for_layer_subtree_with_ancestor_clip(AncestorClipContext::default()),
         );
         let layer_target = layer_ctx.allocate_persistent_target_with_key(
             graph,
