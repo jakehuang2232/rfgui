@@ -5,31 +5,6 @@
 - Keep the RSX authoring experience consistent while preserving stable interactive state such as hover, scroll, and node identity.
 - Move forward through verifiable milestones, with tests and examples for every item.
 
-## Recent Progress (2026-03)
-
-### Promoted Layer / Reuse Status
-- The promoted layer pipeline now has three distinct signatures: `base_signature`, `composition_signature`, and `output_signature`.
-- `output_signature` now propagates correctly through the entire subtree instead of only applying to `self_is_promoted` nodes.
-- In `Transition Plugin Lab`, `StyleTransitionPlugin` changes on non-promoted children inside a promoted root now correctly dirty the promoted root.
-- `foreground_color` is now included in `promotion_self_signature()`, preventing false `Reuse` results for `TransitionProperty::Color`.
-
-### Clip / Child Composition Status
-- The incorrect optimization that used scissor-only clipping for non-rounded child clip scopes has been reverted; stencil child clip is the correct path again.
-- Promoted layer reuse is no longer permanently blocked by `absolute clip` or `child stencil clip` categories; reuse now depends on the final clip geometry result.
-- Absolute clip and child clip state are now part of promotion invalidation and are compared using the final geometry actually consumed by rendering.
-
-### Final Layer Reuse / Frame Graph Status
-- Promoted layers can now reuse final layer output, not just base textures.
-- `compose_promoted_descendants_only(...)` now exits early when a subtree has no promoted or deferred work, avoiding unnecessary descendant composition work every frame.
-- The frame graph compiler can now absorb leading clears by merging `ClearPass -> first writer` into a single physical pass, reducing same-target `Clear -> Load` fragmentation.
-- `TextPass` attachment declarations now align with other 2D passes on the same target, reducing unnecessary pass splits.
-
-### Debugging / Verification Support
-- `Debug Reuse Path` can now be enabled independently, without requiring `Debug Render Time`.
-- A reuse overlay and Inspector legend are now available to visualize `actual reuse`, `actual reraster`, and inline fallback categories directly on screen.
-- Style sample and promotion walk traces were added to verify that style transition samples are applied to the live tree and correctly dirty the owning promoted root.
-- Regression tests were added for `StyleTransitionPlugin` and lab-like nested structures to verify that promoted roots reraster when nested non-promoted children change style.
-
 ## Milestone M1 (Near Term)
 
 ### 1. Add `:focus` State Styling
