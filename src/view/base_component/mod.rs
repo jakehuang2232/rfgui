@@ -1,8 +1,8 @@
 //! Low-level retained host elements and traversal helpers used to build custom elements.
 
 use crate::transition::{
-    LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue, VisualField,
-    VisualTrackRequest,
+    AnimationRequest, LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue,
+    VisualField, VisualTrackRequest,
 };
 use crate::transition::{TrackKey, TrackTarget};
 use crate::ui::{
@@ -729,6 +729,15 @@ pub(crate) fn take_style_transition_requests(
     out.extend(root.take_style_transition_requests());
 }
 
+pub(crate) fn take_animation_requests(root: &mut dyn ElementTrait, out: &mut Vec<AnimationRequest>) {
+    if let Some(children) = root.children_mut() {
+        for child in children.iter_mut().rev() {
+            take_animation_requests(child.as_mut(), out);
+        }
+    }
+    out.extend(root.take_animation_requests());
+}
+
 pub(crate) fn take_layout_transition_requests(
     root: &mut dyn ElementTrait,
     out: &mut Vec<LayoutTrackRequest>,
@@ -767,6 +776,25 @@ pub(crate) fn collect_transition_track_allowlist(
                 });
             }
         }
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child.as_ref(), out);
+            }
+        }
+    }
+
+    for root in roots {
+        walk(root.as_ref(), &mut out);
+    }
+
+    out
+}
+
+pub(crate) fn collect_node_id_allowlist(roots: &[Box<dyn ElementTrait>]) -> HashSet<u64> {
+    let mut out = HashSet::new();
+
+    fn walk(node: &dyn ElementTrait, out: &mut HashSet<u64>) {
+        out.insert(node.id());
         if let Some(children) = node.children() {
             for child in children {
                 walk(child.as_ref(), out);
@@ -846,6 +874,37 @@ pub(crate) fn set_style_field_by_id(
                         return false;
                     }
                 }
+                StyleField::BoxShadow => {
+                    if let StyleValue::BoxShadow(box_shadows) = value {
+                        element.set_box_shadows(box_shadows);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::Transform => {
+                    match value {
+                        StyleValue::Transform(transform) => {
+                            element.set_transform_value(transform);
+                        }
+                        StyleValue::TransformProgress { from, to, progress } => {
+                            element.set_transform_progress_value(from, to, progress);
+                        }
+                        _ => {
+                            return false;
+                        }
+                    }
+                }
+                StyleField::TransformOrigin => {
+                    match value {
+                        StyleValue::TransformOrigin(transform_origin) => {
+                            element.set_transform_origin_value(transform_origin);
+                        }
+                        StyleValue::TransformOriginProgress { from, to, progress } => {
+                            element.set_transform_origin_progress_value(from, to, progress);
+                        }
+                        _ => return false,
+                    }
+                }
             }
             return true;
         }
@@ -853,7 +912,7 @@ pub(crate) fn set_style_field_by_id(
     }
     if let Some(children) = root.children_mut() {
         for child in children.iter_mut() {
-            if set_style_field_by_id(child.as_mut(), node_id, field, value) {
+            if set_style_field_by_id(child.as_mut(), node_id, field, value.clone()) {
                 return true;
             }
         }

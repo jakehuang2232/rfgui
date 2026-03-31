@@ -58,6 +58,7 @@ pub enum PropertyId {
     Transform,
     TransformOrigin,
     Transition,
+    Animator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +79,9 @@ pub enum TransitionProperty {
     Opacity,
     BackgroundColor,
     Color,
+    BoxShadow,
+    Transform,
+    TransformOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +90,333 @@ pub enum TransitionTiming {
     EaseIn,
     EaseOut,
     EaseInOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    Count(u32),
+    Infinite,
+}
+
+impl Repeat {
+    pub const fn once() -> Self {
+        Self::Count(1)
+    }
+
+    pub const fn times(count: u32) -> Self {
+        Self::Count(count)
+    }
+
+    pub const fn infinite() -> Self {
+        Self::Infinite
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillMode {
+    None,
+    Forwards,
+    Backwards,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayState {
+    Running,
+    Paused,
+}
+
+pub trait IntoAnimationStyle {
+    fn into_animation_style(self) -> Style;
+}
+
+impl IntoAnimationStyle for Style {
+    fn into_animation_style(self) -> Style {
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keyframe {
+    progress: f32,
+    style: Style,
+}
+
+impl Keyframe {
+    pub fn new<T>(progress: f32, style: T) -> Self
+    where
+        T: IntoAnimationStyle,
+    {
+        assert!(
+            (0.0..=1.0).contains(&progress),
+            "animation keyframe progress must be within 0.0..=1.0"
+        );
+        Self {
+            progress,
+            style: style.into_animation_style(),
+        }
+    }
+
+    pub const fn progress(&self) -> f32 {
+        self.progress
+    }
+
+    pub fn style(&self) -> &Style {
+        &self.style
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Animation {
+    keyframes: Vec<Keyframe>,
+    duration_ms: Option<u32>,
+    delay_ms: Option<i32>,
+    timing: Option<TransitionTiming>,
+    repeat: Option<Repeat>,
+    direction: Option<Direction>,
+    fill_mode: Option<FillMode>,
+    play_state: Option<PlayState>,
+}
+
+impl Animation {
+    pub fn new<const N: usize>(keyframes: [Keyframe; N]) -> Self {
+        let mut keyframes = keyframes.to_vec();
+        keyframes.sort_by(|lhs, rhs| lhs.progress.total_cmp(&rhs.progress));
+        Self {
+            keyframes,
+            duration_ms: None,
+            delay_ms: None,
+            timing: None,
+            repeat: None,
+            direction: None,
+            fill_mode: None,
+            play_state: None,
+        }
+    }
+
+    pub fn keyframes(&self) -> &[Keyframe] {
+        &self.keyframes
+    }
+
+    pub const fn duration(mut self, duration_ms: u32) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub const fn delay(mut self, delay_ms: i32) -> Self {
+        self.delay_ms = Some(delay_ms);
+        self
+    }
+
+    pub const fn timing(mut self, timing: TransitionTiming) -> Self {
+        self.timing = Some(timing);
+        self
+    }
+
+    pub const fn linear(self) -> Self {
+        self.timing(TransitionTiming::Linear)
+    }
+
+    pub const fn ease_in(self) -> Self {
+        self.timing(TransitionTiming::EaseIn)
+    }
+
+    pub const fn ease_out(self) -> Self {
+        self.timing(TransitionTiming::EaseOut)
+    }
+
+    pub const fn ease_in_out(self) -> Self {
+        self.timing(TransitionTiming::EaseInOut)
+    }
+
+    pub const fn repeat(mut self, repeat: Repeat) -> Self {
+        self.repeat = Some(repeat);
+        self
+    }
+
+    pub const fn direction(mut self, direction: Direction) -> Self {
+        self.direction = Some(direction);
+        self
+    }
+
+    pub const fn fill_mode(mut self, fill_mode: FillMode) -> Self {
+        self.fill_mode = Some(fill_mode);
+        self
+    }
+
+    pub const fn play_state(mut self, play_state: PlayState) -> Self {
+        self.play_state = Some(play_state);
+        self
+    }
+
+    pub const fn duration_ms(&self) -> Option<u32> {
+        self.duration_ms
+    }
+
+    pub const fn delay_ms(&self) -> Option<i32> {
+        self.delay_ms
+    }
+
+    pub const fn timing_value(&self) -> Option<TransitionTiming> {
+        self.timing
+    }
+
+    pub const fn repeat_value(&self) -> Option<Repeat> {
+        self.repeat
+    }
+
+    pub const fn direction_value(&self) -> Option<Direction> {
+        self.direction
+    }
+
+    pub const fn fill_mode_value(&self) -> Option<FillMode> {
+        self.fill_mode
+    }
+
+    pub const fn play_state_value(&self) -> Option<PlayState> {
+        self.play_state
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Animator {
+    animations: Vec<Animation>,
+    duration_ms: Option<u32>,
+    delay_ms: Option<i32>,
+    timing: Option<TransitionTiming>,
+    repeat: Option<Repeat>,
+    direction: Option<Direction>,
+    fill_mode: Option<FillMode>,
+    play_state: Option<PlayState>,
+}
+
+impl Animator {
+    pub fn new<const N: usize>(animations: [Animation; N]) -> Self {
+        Self {
+            animations: animations.to_vec(),
+            duration_ms: None,
+            delay_ms: None,
+            timing: None,
+            repeat: None,
+            direction: None,
+            fill_mode: None,
+            play_state: None,
+        }
+    }
+
+    pub fn animations(&self) -> &[Animation] {
+        &self.animations
+    }
+
+    pub fn from_vec(animations: Vec<Animation>) -> Self {
+        Self {
+            animations,
+            duration_ms: None,
+            delay_ms: None,
+            timing: None,
+            repeat: None,
+            direction: None,
+            fill_mode: None,
+            play_state: None,
+        }
+    }
+
+    pub const fn duration(mut self, duration_ms: u32) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub const fn delay(mut self, delay_ms: i32) -> Self {
+        self.delay_ms = Some(delay_ms);
+        self
+    }
+
+    pub const fn timing(mut self, timing: TransitionTiming) -> Self {
+        self.timing = Some(timing);
+        self
+    }
+
+    pub const fn repeat(mut self, repeat: Repeat) -> Self {
+        self.repeat = Some(repeat);
+        self
+    }
+
+    pub const fn direction(mut self, direction: Direction) -> Self {
+        self.direction = Some(direction);
+        self
+    }
+
+    pub const fn fill_mode(mut self, fill_mode: FillMode) -> Self {
+        self.fill_mode = Some(fill_mode);
+        self
+    }
+
+    pub const fn play_state(mut self, play_state: PlayState) -> Self {
+        self.play_state = Some(play_state);
+        self
+    }
+
+    pub const fn linear(self) -> Self {
+        self.timing(TransitionTiming::Linear)
+    }
+
+    pub const fn ease_in(self) -> Self {
+        self.timing(TransitionTiming::EaseIn)
+    }
+
+    pub const fn ease_out(self) -> Self {
+        self.timing(TransitionTiming::EaseOut)
+    }
+
+    pub const fn ease_in_out(self) -> Self {
+        self.timing(TransitionTiming::EaseInOut)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.animations.is_empty()
+    }
+
+    pub fn resolved_duration_ms(&self, animation: &Animation) -> u32 {
+        animation.duration_ms.unwrap_or(self.duration_ms.unwrap_or(0))
+    }
+
+    pub fn resolved_delay_ms(&self, animation: &Animation) -> i32 {
+        animation.delay_ms.unwrap_or(self.delay_ms.unwrap_or(0))
+    }
+
+    pub fn resolved_timing(&self, animation: &Animation) -> TransitionTiming {
+        animation.timing.unwrap_or(self.timing.unwrap_or(TransitionTiming::EaseInOut))
+    }
+
+    pub fn resolved_repeat(&self, animation: &Animation) -> Repeat {
+        animation.repeat.unwrap_or(self.repeat.unwrap_or(Repeat::once()))
+    }
+
+    pub fn resolved_direction(&self, animation: &Animation) -> Direction {
+        animation
+            .direction
+            .unwrap_or(self.direction.unwrap_or(Direction::Normal))
+    }
+
+    pub fn resolved_fill_mode(&self, animation: &Animation) -> FillMode {
+        animation
+            .fill_mode
+            .unwrap_or(self.fill_mode.unwrap_or(FillMode::None))
+    }
+
+    pub fn resolved_play_state(&self, animation: &Animation) -> PlayState {
+        animation
+            .play_state
+            .unwrap_or(self.play_state.unwrap_or(PlayState::Running))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -629,6 +960,7 @@ pub(crate) enum TransformKind {
     Scale { x: f32, y: f32, z: f32 },
     Rotate { x: Angle, y: Angle, z: Angle },
     Perspective { depth: f32 },
+    Matrix { matrix: [f32; 16] },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -687,6 +1019,26 @@ impl TransformEntry {
 
     pub(crate) const fn kind(self) -> TransformKind {
         self.kind
+    }
+
+    pub(crate) const fn from_matrix(matrix: [f32; 16]) -> Self {
+        Self {
+            kind: TransformKind::Matrix { matrix },
+        }
+    }
+
+    pub(crate) const fn identity_like(kind: TransformKind) -> Self {
+        match kind {
+            TransformKind::Translate { .. } => Translate::xy(Length::Zero, Length::Zero),
+            TransformKind::Scale { .. } => Scale::xy(1.0, 1.0).with_z(1.0),
+            TransformKind::Rotate { .. } => Rotate::x(Angle::deg(0.0))
+                .y(Angle::deg(0.0))
+                .z(Angle::deg(0.0)),
+            TransformKind::Perspective { .. } => Perspective::px(f32::INFINITY),
+            TransformKind::Matrix { .. } => Self::from_matrix([
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ]),
+        }
     }
 }
 
@@ -774,6 +1126,10 @@ pub struct Transform(Vec<TransformEntry>);
 impl Transform {
     pub fn new<const N: usize>(entries: [TransformEntry; N]) -> Self {
         Self(entries.to_vec())
+    }
+
+    pub(crate) fn from_vec(entries: Vec<TransformEntry>) -> Self {
+        Self(entries)
     }
 
     pub fn as_slice(&self) -> &[TransformEntry] {
@@ -1385,6 +1741,7 @@ pub struct BoxShadow {
     pub offset_y: f32,
     pub blur: f32,
     pub spread: f32,
+    pub inset: bool,
 }
 
 impl Default for BoxShadow {
@@ -1401,6 +1758,7 @@ impl BoxShadow {
             offset_y: 0.0,
             blur: 0.0,
             spread: 0.0,
+            inset: false,
         }
     }
 
@@ -1432,6 +1790,11 @@ impl BoxShadow {
 
     pub const fn spread(mut self, value: f32) -> Self {
         self.spread = value;
+        self
+    }
+
+    pub const fn inset(mut self, value: bool) -> Self {
+        self.inset = value;
         self
     }
 }
@@ -1930,6 +2293,7 @@ pub enum ParsedValue {
     Transform(Transform),
     TransformOrigin(TransformOrigin),
     Transition(Transitions),
+    Animator(Animator),
     Color(StyleColor),
 }
 

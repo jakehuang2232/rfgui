@@ -2,11 +2,13 @@
 
 use std::fmt;
 
+mod animation;
 mod layout_transition;
 mod scroll_transition;
 mod style_transition;
 mod time_function;
 mod visual_transition;
+pub use animation::*;
 pub use layout_transition::*;
 pub use scroll_transition::*;
 pub use style_transition::*;

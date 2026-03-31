@@ -11,9 +11,10 @@ use crate::ui::{
     TextChangeHandlerProp, props,
 };
 use crate::{
-    Align, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize,
-    FontWeight, Layout, Length, Opacity, Padding, Position, ScrollDirection, SelectionStyle, Style,
-    TextAlign, TextWrap, Transform, TransformOrigin, Transitions,
+    Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
+    FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position,
+    ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin,
+    Transitions,
 };
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -113,6 +114,7 @@ pub struct ElementStylePropSchema {
     pub transform: Option<Transform>,
     pub transform_origin: Option<TransformOrigin>,
     pub transition: Option<Transitions>,
+    pub animator: Option<Animator>,
 }
 
 #[derive(Clone)]
@@ -148,6 +150,7 @@ pub struct HoverElementStylePropSchema {
     pub transform: Option<Transform>,
     pub transform_origin: Option<TransformOrigin>,
     pub transition: Option<Transitions>,
+    pub animator: Option<Animator>,
 }
 
 #[derive(Clone)]
@@ -693,8 +696,20 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
             crate::ParsedValue::Transition(transition.clone()),
         );
     }
+    if let Some(animator) = &schema.animator {
+        style.insert(
+            crate::PropertyId::Animator,
+            crate::ParsedValue::Animator(animator.clone()),
+        );
+    }
     if let Some(selection) = apply_selection(&schema.selection) {
         style.set_selection(selection);
+    }
+}
+
+impl IntoAnimationStyle for ElementStylePropSchema {
+    fn into_animation_style(self) -> Style {
+        self.to_style()
     }
 }
 
@@ -740,6 +755,7 @@ impl ElementStylePropSchema {
             transform: self.transform.clone(),
             transform_origin: self.transform_origin,
             transition: self.transition.clone(),
+            animator: self.animator.clone(),
         };
         apply_element_style_fields(&mut style, &hover_view);
         if let Some(hover) = &self.hover {

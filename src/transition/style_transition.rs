@@ -9,7 +9,7 @@ use super::{
     Transition, TransitionFrame, TransitionHost, TransitionPluginId, elapsed_seconds_from_frame,
     normalized_timeline_progress,
 };
-use crate::style::{Color, Interpolate};
+use crate::style::{BoxShadow, Color, Interpolate, Transform, TransformOrigin};
 
 pub const CHANNEL_STYLE_OPACITY: ChannelId = ChannelId(30_001);
 pub const CHANNEL_STYLE_BORDER_RADIUS: ChannelId = ChannelId(30_002);
@@ -19,6 +19,9 @@ pub const CHANNEL_STYLE_BORDER_TOP_COLOR: ChannelId = ChannelId(30_005);
 pub const CHANNEL_STYLE_BORDER_RIGHT_COLOR: ChannelId = ChannelId(30_006);
 pub const CHANNEL_STYLE_BORDER_BOTTOM_COLOR: ChannelId = ChannelId(30_007);
 pub const CHANNEL_STYLE_BORDER_LEFT_COLOR: ChannelId = ChannelId(30_008);
+pub const CHANNEL_STYLE_TRANSFORM: ChannelId = ChannelId(30_009);
+pub const CHANNEL_STYLE_TRANSFORM_ORIGIN: ChannelId = ChannelId(30_010);
+pub const CHANNEL_STYLE_BOX_SHADOW: ChannelId = ChannelId(30_011);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StyleField {
@@ -30,6 +33,9 @@ pub enum StyleField {
     BorderRightColor,
     BorderBottomColor,
     BorderLeftColor,
+    Transform,
+    TransformOrigin,
+    BoxShadow,
 }
 
 impl StyleField {
@@ -43,10 +49,13 @@ impl StyleField {
             Self::BorderRightColor => CHANNEL_STYLE_BORDER_RIGHT_COLOR,
             Self::BorderBottomColor => CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
             Self::BorderLeftColor => CHANNEL_STYLE_BORDER_LEFT_COLOR,
+            Self::Transform => CHANNEL_STYLE_TRANSFORM,
+            Self::TransformOrigin => CHANNEL_STYLE_TRANSFORM_ORIGIN,
+            Self::BoxShadow => CHANNEL_STYLE_BOX_SHADOW,
         }
     }
 
-    pub const fn default_value(self) -> StyleValue {
+    pub fn default_value(self) -> StyleValue {
         match self {
             Self::Opacity | Self::BorderRadius => StyleValue::Scalar(0.0),
             Self::BackgroundColor
@@ -55,6 +64,9 @@ impl StyleField {
             | Self::BorderRightColor
             | Self::BorderBottomColor
             | Self::BorderLeftColor => StyleValue::Color(Color::rgba(0, 0, 0, 0)),
+            Self::Transform => StyleValue::Transform(Transform::default()),
+            Self::TransformOrigin => StyleValue::TransformOrigin(TransformOrigin::center()),
+            Self::BoxShadow => StyleValue::BoxShadow(Vec::new()),
         }
     }
 
@@ -64,7 +76,7 @@ impl StyleField {
                 (StyleValue::Scalar(from), StyleValue::Scalar(to)) => {
                     StyleValue::Scalar(f32::interpolate(&from, &to, t))
                 }
-                _ => to,
+                (_, to) => to,
             },
             Self::BackgroundColor
             | Self::Color
@@ -75,7 +87,65 @@ impl StyleField {
                 (StyleValue::Color(from), StyleValue::Color(to)) => {
                     StyleValue::Color(Color::interpolate(&from, &to, t))
                 }
-                _ => to,
+                (_, to) => to,
+            },
+            Self::Transform => match (from, to) {
+                (StyleValue::Transform(from), StyleValue::Transform(to)) => {
+                    StyleValue::TransformProgress {
+                        from,
+                        to,
+                        progress: t.clamp(0.0, 1.0),
+                    }
+                }
+                (
+                    StyleValue::TransformProgress { from, to, .. },
+                    StyleValue::Transform(_),
+                )
+                | (
+                    StyleValue::Transform(_),
+                    StyleValue::TransformProgress { from, to, .. },
+                )
+                | (
+                    StyleValue::TransformProgress { from, to, .. },
+                    StyleValue::TransformProgress { .. },
+                ) => StyleValue::TransformProgress {
+                    from,
+                    to,
+                    progress: t.clamp(0.0, 1.0),
+                },
+                (_, to) => to,
+            },
+            Self::TransformOrigin => match (from, to) {
+                (StyleValue::TransformOrigin(from), StyleValue::TransformOrigin(to)) => {
+                    StyleValue::TransformOriginProgress {
+                        from,
+                        to,
+                        progress: t.clamp(0.0, 1.0),
+                    }
+                }
+                (
+                    StyleValue::TransformOriginProgress { from, to, .. },
+                    StyleValue::TransformOrigin(_),
+                )
+                | (
+                    StyleValue::TransformOrigin(_),
+                    StyleValue::TransformOriginProgress { from, to, .. },
+                )
+                | (
+                    StyleValue::TransformOriginProgress { from, to, .. },
+                    StyleValue::TransformOriginProgress { .. },
+                ) => StyleValue::TransformOriginProgress {
+                    from,
+                    to,
+                    progress: t.clamp(0.0, 1.0),
+                },
+                (_, to) => to,
+            },
+            Self::BoxShadow => match (from, to) {
+                (StyleValue::BoxShadow(from), StyleValue::BoxShadow(to)) => {
+                    StyleValue::BoxShadow(Vec::<BoxShadow>::interpolate(&from, &to, t))
+                }
+                (_, to) => to,
             },
         }
     }
@@ -108,20 +178,33 @@ impl StyleTransition {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum StyleValue {
     Scalar(f32),
     Color(Color),
+    Transform(Transform),
+    TransformProgress {
+        from: Transform,
+        to: Transform,
+        progress: f32,
+    },
+    TransformOrigin(TransformOrigin),
+    TransformOriginProgress {
+        from: TransformOrigin,
+        to: TransformOrigin,
+        progress: f32,
+    },
+    BoxShadow(Vec<BoxShadow>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StyleSample {
     pub target: TrackTarget,
     pub field: StyleField,
     pub value: StyleValue,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StyleTrackRequest {
     pub target: TrackTarget,
     pub field: StyleField,
@@ -130,7 +213,7 @@ pub struct StyleTrackRequest {
     pub transition: StyleTransition,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct StyleTrackState {
     from: StyleValue,
     to: StyleValue,
@@ -222,6 +305,9 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
             CHANNEL_STYLE_BORDER_RIGHT_COLOR,
             CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
             CHANNEL_STYLE_BORDER_LEFT_COLOR,
+            CHANNEL_STYLE_TRANSFORM,
+            CHANNEL_STYLE_TRANSFORM_ORIGIN,
+            CHANNEL_STYLE_BOX_SHADOW,
         ]
     }
 
@@ -239,6 +325,9 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
             CHANNEL_STYLE_BORDER_RIGHT_COLOR => StyleField::BorderRightColor,
             CHANNEL_STYLE_BORDER_BOTTOM_COLOR => StyleField::BorderBottomColor,
             CHANNEL_STYLE_BORDER_LEFT_COLOR => StyleField::BorderLeftColor,
+            CHANNEL_STYLE_TRANSFORM => StyleField::Transform,
+            CHANNEL_STYLE_TRANSFORM_ORIGIN => StyleField::TransformOrigin,
+            CHANNEL_STYLE_BOX_SHADOW => StyleField::BoxShadow,
             _ => return Err(StartTrackError::ChannelNotRegistered(key.channel)),
         };
         self.start_style_track(
@@ -286,9 +375,12 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
                 CHANNEL_STYLE_BORDER_RIGHT_COLOR => StyleField::BorderRightColor,
                 CHANNEL_STYLE_BORDER_BOTTOM_COLOR => StyleField::BorderBottomColor,
                 CHANNEL_STYLE_BORDER_LEFT_COLOR => StyleField::BorderLeftColor,
+                CHANNEL_STYLE_TRANSFORM => StyleField::Transform,
+                CHANNEL_STYLE_TRANSFORM_ORIGIN => StyleField::TransformOrigin,
+                CHANNEL_STYLE_BOX_SHADOW => StyleField::BoxShadow,
                 _ => continue,
             };
-            let value = field.interpolate_value(state.from, state.to, eased);
+            let value = field.interpolate_value(state.from.clone(), state.to.clone(), eased);
             self.frame_samples.push(StyleSample {
                 target: key.target,
                 field,
@@ -315,7 +407,7 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
 #[cfg(test)]
 mod tests {
     use super::{StyleField, StyleValue};
-    use crate::style::Color;
+    use crate::style::{Angle, BoxShadow, Color, Rotate, Transform, TransformOrigin};
 
     #[test]
     fn color_fields_delegate_interpolation_to_color_type() {
@@ -347,5 +439,65 @@ mod tests {
             StyleField::Color.default_value(),
             StyleValue::Color(Color::transparent())
         );
+        assert_eq!(
+            StyleField::Transform.default_value(),
+            StyleValue::Transform(Transform::default())
+        );
+        assert_eq!(
+            StyleField::TransformOrigin.default_value(),
+            StyleValue::TransformOrigin(TransformOrigin::center())
+        );
+        assert_eq!(
+            StyleField::BoxShadow.default_value(),
+            StyleValue::BoxShadow(Vec::new())
+        );
+    }
+
+    #[test]
+    fn transform_fields_delegate_interpolation_to_transform_type() {
+        let value = StyleField::Transform.interpolate_value(
+            StyleValue::Transform(Transform::new([Rotate::z(Angle::deg(0.0))])),
+            StyleValue::Transform(Transform::new([Rotate::z(Angle::deg(180.0))])),
+            0.5,
+        );
+        let StyleValue::TransformProgress {
+            from,
+            to,
+            progress,
+        } = value
+        else {
+            panic!("expected transform progress value");
+        };
+        assert_eq!(from.as_slice().len(), 1);
+        assert_eq!(to.as_slice().len(), 1);
+        assert!((progress - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn transform_origin_fields_delegate_to_progress_value() {
+        let value = StyleField::TransformOrigin.interpolate_value(
+            StyleValue::TransformOrigin(TransformOrigin::percent(50.0, 50.0)),
+            StyleValue::TransformOrigin(TransformOrigin::px(10.0, 20.0)),
+            0.25,
+        );
+        let StyleValue::TransformOriginProgress { progress, .. } = value else {
+            panic!("expected transform-origin progress value");
+        };
+        assert!((progress - 0.25).abs() < 0.0001);
+    }
+
+    #[test]
+    fn box_shadow_field_delegates_to_shadow_list_interpolation() {
+        let value = StyleField::BoxShadow.interpolate_value(
+            StyleValue::BoxShadow(vec![BoxShadow::new().offset_x(0.0).blur(0.0)]),
+            StyleValue::BoxShadow(vec![BoxShadow::new().offset_x(10.0).blur(8.0)]),
+            0.5,
+        );
+        let StyleValue::BoxShadow(value) = value else {
+            panic!("expected box-shadow value");
+        };
+        assert_eq!(value.len(), 1);
+        assert_eq!(value[0].offset_x, 5.0);
+        assert_eq!(value[0].blur, 4.0);
     }
 }

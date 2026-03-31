@@ -1,14 +1,16 @@
 #![allow(missing_docs)]
 
 use crate::transition::{
+    AnimationPlugin,
     CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y,
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
     CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
-    ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin,
-    StyleField, StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition,
-    TransitionFrame, TransitionHost, TransitionPluginId, VisualTransitionPlugin,
+    CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
+    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId, ClaimMode,
+    LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleField,
+    StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition, TransitionFrame,
+    TransitionHost, TransitionPluginId, VisualTransitionPlugin,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, EventMeta, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyEventData,
@@ -576,6 +578,9 @@ fn format_style_field(field: StyleField) -> &'static str {
         StyleField::BorderRightColor => "border_right_color",
         StyleField::BorderBottomColor => "border_bottom_color",
         StyleField::BorderLeftColor => "border_left_color",
+        StyleField::BoxShadow => "box_shadow",
+        StyleField::Transform => "transform",
+        StyleField::TransformOrigin => "transform_origin",
     }
 }
 
@@ -588,16 +593,31 @@ fn style_field_requires_relayout(field: StyleField) -> bool {
         | StyleField::BorderTopColor
         | StyleField::BorderRightColor
         | StyleField::BorderBottomColor
-        | StyleField::BorderLeftColor => false,
+        | StyleField::BorderLeftColor
+        | StyleField::BoxShadow
+        | StyleField::Transform
+        | StyleField::TransformOrigin => false,
     }
 }
 
-fn format_style_value(value: StyleValue) -> String {
+fn format_style_value(value: &StyleValue) -> String {
     match value {
         StyleValue::Scalar(value) => format!("{value:.3}"),
         StyleValue::Color(color) => {
             let [r, g, b, a] = color.to_rgba_u8();
             format!("rgba({r},{g},{b},{a})")
+        }
+        StyleValue::Transform(transform) => format!("transform({} entries)", transform.as_slice().len()),
+        StyleValue::TransformProgress { progress, .. } => format!("transform(progress={progress:.3})"),
+        StyleValue::BoxShadow(shadows) => format!("box-shadow({} layers)", shadows.len()),
+        StyleValue::TransformOrigin(origin) => format!(
+            "transform-origin(x={}, y={}, z={:.3})",
+            origin.x().resolve_without_percent_base(0.0, 0.0),
+            origin.y().resolve_without_percent_base(0.0, 0.0),
+            origin.z()
+        ),
+        StyleValue::TransformOriginProgress { progress, .. } => {
+            format!("transform-origin(progress={progress:.3})")
         }
     }
 }
@@ -1091,6 +1111,7 @@ pub struct Viewport {
     layout_transition_plugin: LayoutTransitionPlugin,
     visual_transition_plugin: VisualTransitionPlugin,
     style_transition_plugin: StyleTransitionPlugin,
+    animation_plugin: AnimationPlugin,
     scroll_transition: ScrollTransition,
     last_transition_tick: Option<Instant>,
     transition_epoch: Option<Instant>,
@@ -1361,7 +1382,7 @@ impl Viewport {
             "node={} field={} sample={} applied={} {} {} {} {}",
             target,
             format_style_field(field),
-            format_style_value(value),
+            format_style_value(&value),
             applied,
             promoted_root_desc,
             ancestry_desc,
@@ -1626,7 +1647,7 @@ impl Viewport {
                     root.as_mut(),
                     sample.target,
                     sample.field,
-                    sample.value,
+                    sample.value.clone(),
                 ) {
                     changed = true;
                     break;
@@ -1645,6 +1666,12 @@ impl Viewport {
         dt: f32,
         now_seconds: f64,
     ) -> PostLayoutTransitionResult {
+        let live_node_ids = super::base_component::collect_node_id_allowlist(roots);
+        self.animation_plugin.prune_targets(&live_node_ids);
+        let mut animation_requests = Vec::new();
+        for root in roots.iter_mut() {
+            super::base_component::take_animation_requests(root.as_mut(), &mut animation_requests);
+        }
         let mut style_requests = Vec::new();
         for root in roots.iter_mut() {
             super::base_component::take_style_transition_requests(
@@ -1666,6 +1693,9 @@ impl Viewport {
                 &mut visual_requests,
             );
         }
+        for request in animation_requests {
+            self.animation_plugin.start_animator(request);
+        }
         if !style_requests.is_empty() {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transition_channels,
@@ -1677,8 +1707,8 @@ impl Viewport {
                         "target={} field={} from={} to={} duration_ms={} delay_ms={}",
                         request.target,
                         format_style_field(request.field),
-                        format_style_value(request.from),
-                        format_style_value(request.to),
+                        format_style_value(&request.from),
+                        format_style_value(&request.to),
                         request.transition.duration_ms,
                         request.transition.delay_ms,
                     ));
@@ -1752,6 +1782,7 @@ impl Viewport {
                 &mut host,
             )
         };
+        let animation_result = self.animation_plugin.run_animations(dt, now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transition_channels,
@@ -1800,7 +1831,7 @@ impl Viewport {
                     root.as_mut(),
                     sample.target,
                     sample.field,
-                    sample.value,
+                    sample.value.clone(),
                 ) {
                     redraw_changed = true;
                     if style_field_requires_relayout(sample.field) {
@@ -1819,6 +1850,23 @@ impl Viewport {
                 before_signatures,
             );
         }
+        let animation_style_samples = self.animation_plugin.take_style_samples();
+        for sample in animation_style_samples {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_style_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value.clone(),
+                ) {
+                    redraw_changed = true;
+                    if style_field_requires_relayout(sample.field) {
+                        relayout_required = true;
+                    }
+                    break;
+                }
+            }
+        }
         let visual_samples = self.visual_transition_plugin.take_samples();
         for sample in visual_samples {
             for root in roots.iter_mut().rev() {
@@ -1826,7 +1874,7 @@ impl Viewport {
                     root.as_mut(),
                     sample.target,
                     sample.field,
-                    sample.value,
+                    sample.value.clone(),
                 ) {
                     redraw_changed = true;
                     break;
@@ -1848,8 +1896,24 @@ impl Viewport {
                 }
             }
         }
+        let animation_layout_samples = self.animation_plugin.take_layout_samples();
+        for sample in animation_layout_samples {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_layout_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value,
+                ) {
+                    redraw_changed = true;
+                    relayout_required = true;
+                    break;
+                }
+            }
+        }
         if scroll_result.keep_running
             || style_result.keep_running
+            || animation_result.keep_running
             || visual_result.keep_running
             || layout_result.keep_running
         {
@@ -1859,6 +1923,7 @@ impl Viewport {
             redraw_changed: redraw_changed
                 || scroll_result.keep_running
                 || style_result.keep_running
+                || animation_result.keep_running
                 || visual_result.keep_running
                 || layout_result.keep_running,
             relayout_required,
@@ -1869,6 +1934,8 @@ impl Viewport {
         &mut self,
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
     ) -> bool {
+        let live_node_ids = super::base_component::collect_node_id_allowlist(roots);
+        self.animation_plugin.prune_targets(&live_node_ids);
         let now = Instant::now();
         let epoch = self.transition_epoch.get_or_insert(now);
         let frame = TransitionFrame {
@@ -1889,6 +1956,7 @@ impl Viewport {
             };
             self.style_transition_plugin.run_tracks(frame, &mut host)
         };
+        let animation_result = self.animation_plugin.run_animations(0.0, frame.now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transition_channels,
@@ -1922,7 +1990,7 @@ impl Viewport {
                     root.as_mut(),
                     sample.target,
                     sample.field,
-                    sample.value,
+                    sample.value.clone(),
                 ) {
                     changed = true;
                     applied = true;
@@ -1937,6 +2005,19 @@ impl Viewport {
                 applied,
                 before_signatures,
             );
+        }
+        for sample in self.animation_plugin.take_style_samples() {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_style_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value.clone(),
+                ) {
+                    changed = true;
+                    break;
+                }
+            }
         }
         for sample in self.visual_transition_plugin.take_samples() {
             for root in roots.iter_mut().rev() {
@@ -1964,10 +2045,24 @@ impl Viewport {
                 }
             }
         }
+        for sample in self.animation_plugin.take_layout_samples() {
+            for root in roots.iter_mut().rev() {
+                if super::base_component::set_layout_field_by_id(
+                    root.as_mut(),
+                    sample.target,
+                    sample.field,
+                    sample.value,
+                ) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
 
         changed
             || scroll_result.keep_running
             || style_result.keep_running
+            || animation_result.keep_running
             || visual_result.keep_running
             || layout_result.keep_running
     }
@@ -2214,12 +2309,16 @@ impl Viewport {
                 CHANNEL_STYLE_BORDER_RIGHT_COLOR,
                 CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
                 CHANNEL_STYLE_BORDER_LEFT_COLOR,
+                CHANNEL_STYLE_BOX_SHADOW,
+                CHANNEL_STYLE_TRANSFORM,
+                CHANNEL_STYLE_TRANSFORM_ORIGIN,
             ]),
             transition_claims: HashMap::new(),
             scroll_transition_plugin: ScrollTransitionPlugin::new(),
             layout_transition_plugin: LayoutTransitionPlugin::new(),
             visual_transition_plugin: VisualTransitionPlugin::new(),
             style_transition_plugin: StyleTransitionPlugin::new(),
+            animation_plugin: AnimationPlugin::new(),
             scroll_transition: ScrollTransition::new(250).ease_out(),
             last_transition_tick: None,
             transition_epoch: None,
@@ -4765,12 +4864,13 @@ mod tests {
         MouseButton, PendingClick, append_overlay_label_geometry, build_reuse_overlay_geometry,
         is_valid_click_candidate,
     };
+    use crate::transition::CHANNEL_STYLE_BOX_SHADOW;
     use crate::view::base_component::BoxModelSnapshot;
     use crate::view::base_component::{
         Element, LayoutConstraints, LayoutPlacement, Layoutable, get_scroll_offset_by_id,
         set_scroll_offset_by_id,
     };
-    use crate::{ParsedValue, PropertyId, ScrollDirection, Style};
+    use crate::{Length, ParsedValue, PropertyId, ScrollDirection, Style, Transform, Transition, TransitionProperty, Transitions, Translate};
 
     fn place_root(root: &mut Element, width: f32, height: f32) {
         root.measure(LayoutConstraints {
@@ -4793,6 +4893,20 @@ mod tests {
             percent_base_height: Some(height),
             viewport_height: height,
         });
+    }
+
+    fn element_by_id_mut(root: &mut dyn crate::view::base_component::ElementTrait, node_id: u64) -> Option<&mut Element> {
+        if root.id() == node_id {
+            return root.as_any_mut().downcast_mut::<Element>();
+        }
+        if let Some(children) = root.children_mut() {
+            for child in children.iter_mut() {
+                if let Some(found) = element_by_id_mut(child.as_mut(), node_id) {
+                    return Some(found);
+                }
+            }
+        }
+        None
     }
 
     #[test]
@@ -5037,5 +5151,58 @@ mod tests {
             get_scroll_offset_by_id(viewport.ui_roots[0].as_ref(), root_id),
             Some((0.0, 0.0))
         );
+    }
+
+    #[test]
+    fn hover_transform_transition_updates_live_element_in_viewport_flow() {
+        let mut root = Element::new(0.0, 0.0, 240.0, 240.0);
+        let mut child = Element::new(24.0, 24.0, 120.0, 80.0);
+        let child_id = child.id();
+
+        let mut style = Style::new();
+        style.set_transform(Transform::default());
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::from(vec![Transition::new(
+                TransitionProperty::Transform,
+                1000,
+            )])),
+        );
+        let mut hover = Style::new();
+        hover.set_transform(Transform::new([Translate::x(Length::px(40.0))]));
+        style.set_hover(hover);
+        child.apply_style(style);
+        root.add_child(Box::new(child));
+        place_root(&mut root, 240.0, 240.0);
+
+        let mut viewport = super::Viewport::new();
+        viewport.ui_roots.push(Box::new(root));
+
+        let hover_changed = super::Viewport::sync_hover_visual_only(
+            &mut viewport.ui_roots,
+            &mut viewport.input_state.hovered_node_id,
+            Some(child_id),
+        );
+        assert!(hover_changed);
+
+        let mut roots = std::mem::take(&mut viewport.ui_roots);
+        let result = viewport.run_post_layout_transitions(&mut roots, 0.5, 0.5);
+        assert!(result.redraw_changed);
+
+        let child = element_by_id_mut(roots[0].as_mut(), child_id).expect("child should exist");
+        assert_ne!(child.debug_transform(), &Transform::default());
+        assert_ne!(
+            child.debug_transform(),
+            &Transform::new([Translate::x(Length::px(40.0))])
+        );
+        viewport.ui_roots = roots;
+    }
+
+    #[test]
+    fn viewport_registers_box_shadow_transition_channel() {
+        let viewport = super::Viewport::new();
+        assert!(viewport
+            .transition_channels
+            .contains(&CHANNEL_STYLE_BOX_SHADOW));
     }
 }

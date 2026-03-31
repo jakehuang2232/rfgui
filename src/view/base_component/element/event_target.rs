@@ -180,6 +180,10 @@ impl EventTarget for Element {
         std::mem::take(&mut self.pending_style_transition_requests)
     }
 
+    fn take_animation_requests(&mut self) -> Vec<crate::transition::AnimationRequest> {
+        std::mem::take(&mut self.pending_animation_requests)
+    }
+
     fn take_layout_transition_requests(&mut self) -> Vec<LayoutTrackRequest> {
         std::mem::take(&mut self.pending_layout_transition_requests)
     }
