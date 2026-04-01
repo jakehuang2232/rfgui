@@ -385,7 +385,9 @@ impl Animator {
     }
 
     pub fn resolved_duration_ms(&self, animation: &Animation) -> u32 {
-        animation.duration_ms.unwrap_or(self.duration_ms.unwrap_or(0))
+        animation
+            .duration_ms
+            .unwrap_or(self.duration_ms.unwrap_or(0))
     }
 
     pub fn resolved_delay_ms(&self, animation: &Animation) -> i32 {
@@ -393,11 +395,15 @@ impl Animator {
     }
 
     pub fn resolved_timing(&self, animation: &Animation) -> TransitionTiming {
-        animation.timing.unwrap_or(self.timing.unwrap_or(TransitionTiming::EaseInOut))
+        animation
+            .timing
+            .unwrap_or(self.timing.unwrap_or(TransitionTiming::EaseInOut))
     }
 
     pub fn resolved_repeat(&self, animation: &Animation) -> Repeat {
-        animation.repeat.unwrap_or(self.repeat.unwrap_or(Repeat::once()))
+        animation
+            .repeat
+            .unwrap_or(self.repeat.unwrap_or(Repeat::once()))
     }
 
     pub fn resolved_direction(&self, animation: &Animation) -> Direction {
@@ -2611,6 +2617,26 @@ impl Style {
 
     pub fn declarations(&self) -> &[Declaration] {
         &self.declarations
+    }
+
+    pub fn remove(&mut self, property: PropertyId) -> Option<ParsedValue> {
+        let idx = self.index.remove(&property)?;
+        let declaration = self.declarations.swap_remove(idx);
+        if idx < self.declarations.len() {
+            let moved_property = self.declarations[idx].property;
+            self.index.insert(moved_property, idx);
+        }
+        Some(declaration.value)
+    }
+
+    pub fn without_properties_recursive(mut self, properties: &[PropertyId]) -> Self {
+        for property in properties {
+            let _ = self.remove(*property);
+        }
+        if let Some(hover) = self.hover.take() {
+            self.hover = Some(Box::new(hover.without_properties_recursive(properties)));
+        }
+        self
     }
 
     pub fn hover(&self) -> Option<&Style> {

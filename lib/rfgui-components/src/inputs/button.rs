@@ -86,7 +86,7 @@ impl RsxChildrenPolicy for Button {
     const ACCEPTS_CHILDREN: bool = false;
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 struct ButtonRepeatState {
     pressed: bool,
     hovered: bool,
@@ -95,7 +95,7 @@ struct ButtonRepeatState {
     trigger: Option<ButtonRepeatTrigger>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ButtonRepeatTrigger {
     target_id: u64,
     mouse: MouseEventData,

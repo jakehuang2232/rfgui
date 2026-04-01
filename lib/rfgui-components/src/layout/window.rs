@@ -125,7 +125,7 @@ fn next_move_handler_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum WindowInteraction {
     Idle,
     Dragging {
@@ -145,7 +145,7 @@ enum WindowInteraction {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum ResizeEdge {
     Left,
     Right,
@@ -170,7 +170,7 @@ impl ResizeEdge {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct WindowViewportListenerState {
     move_listener: Option<ViewportListenerHandle>,
     up_listener: Option<ViewportListenerHandle>,

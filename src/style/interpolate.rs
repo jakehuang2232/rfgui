@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
 use crate::style::{
-    Angle, BoxShadow, Color, ColorLike, Length, OklchColor, StyleColor, Transform,
-    TransformEntry, TransformKind, TransformOrigin, linear_to_srgb_f32,
+    Angle, BoxShadow, Color, ColorLike, Length, OklchColor, StyleColor, Transform, TransformEntry,
+    TransformKind, TransformOrigin, linear_to_srgb_f32,
 };
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 
@@ -62,8 +62,16 @@ pub fn interpolate_transform_origin_with_reference_box(
             .unwrap_or_else(|| value.resolve_without_percent_base(0.0, 0.0))
     };
     TransformOrigin::px(
-        f32::interpolate(&resolve(from.x(), reference_box.x), &resolve(to.x(), reference_box.x), t),
-        f32::interpolate(&resolve(from.y(), reference_box.y), &resolve(to.y(), reference_box.y), t),
+        f32::interpolate(
+            &resolve(from.x(), reference_box.x),
+            &resolve(to.x(), reference_box.x),
+            t,
+        ),
+        f32::interpolate(
+            &resolve(from.y(), reference_box.y),
+            &resolve(to.y(), reference_box.y),
+            t,
+        ),
     )
     .with_z(f32::interpolate(&from.z(), &to.z(), t))
 }
@@ -122,9 +130,13 @@ impl Interpolate for TransformEntry {
                 TransformKind::Perspective { depth: to_depth },
             ) => crate::Perspective::px(f32::interpolate(&from_depth, &to_depth, t)),
             (
-                TransformKind::Matrix { matrix: from_matrix },
+                TransformKind::Matrix {
+                    matrix: from_matrix,
+                },
                 TransformKind::Matrix { matrix: to_matrix },
-            ) => TransformEntry::from_matrix(interpolate_matrix_arrays(&from_matrix, &to_matrix, t)),
+            ) => {
+                TransformEntry::from_matrix(interpolate_matrix_arrays(&from_matrix, &to_matrix, t))
+            }
             _ => {
                 if t.clamp(0.0, 1.0) < 0.5 {
                     *from
@@ -301,9 +313,9 @@ fn requires_matrix_fallback(from: &[TransformEntry], to: &[TransformEntry]) -> b
     if from.len() != to.len() {
         return true;
     }
-    from.iter()
-        .zip(to.iter())
-        .any(|(left, right)| std::mem::discriminant(&left.kind()) != std::mem::discriminant(&right.kind()))
+    from.iter().zip(to.iter()).any(|(left, right)| {
+        std::mem::discriminant(&left.kind()) != std::mem::discriminant(&right.kind())
+    })
 }
 
 fn interpolate_transform_lists_via_matrix(
@@ -315,11 +327,9 @@ fn interpolate_transform_lists_via_matrix(
     let from_matrix = transform_list_to_matrix(from, reference_box);
     let to_matrix = transform_list_to_matrix(to, reference_box);
     if !is_affine_matrix(from_matrix) || !is_affine_matrix(to_matrix) {
-        return Some(vec![TransformEntry::from_matrix(interpolate_matrix_arrays(
-            &from_matrix.to_cols_array(),
-            &to_matrix.to_cols_array(),
-            t,
-        ))]);
+        return Some(vec![TransformEntry::from_matrix(
+            interpolate_matrix_arrays(&from_matrix.to_cols_array(), &to_matrix.to_cols_array(), t),
+        )]);
     }
 
     let (from_scale, from_rotation, from_translation) = decompose_transform_matrix(from_matrix)?;
@@ -656,14 +666,8 @@ mod tests {
 
     #[test]
     fn transform_order_mismatch_falls_back_to_matrix_decomposition() {
-        let from = Transform::new([
-            Translate::x(Length::px(20.0)),
-            Rotate::z(Angle::deg(30.0)),
-        ]);
-        let to = Transform::new([
-            Rotate::z(Angle::deg(30.0)),
-            Translate::x(Length::px(20.0)),
-        ]);
+        let from = Transform::new([Translate::x(Length::px(20.0)), Rotate::z(Angle::deg(30.0))]);
+        let to = Transform::new([Rotate::z(Angle::deg(30.0)), Translate::x(Length::px(20.0))]);
 
         let value = Transform::interpolate(&from, &to, 0.5);
         assert!(!value.as_slice().is_empty());

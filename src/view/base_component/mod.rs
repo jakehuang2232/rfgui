@@ -729,7 +729,10 @@ pub(crate) fn take_style_transition_requests(
     out.extend(root.take_style_transition_requests());
 }
 
-pub(crate) fn take_animation_requests(root: &mut dyn ElementTrait, out: &mut Vec<AnimationRequest>) {
+pub(crate) fn take_animation_requests(
+    root: &mut dyn ElementTrait,
+    out: &mut Vec<AnimationRequest>,
+) {
     if let Some(children) = root.children_mut() {
         for child in children.iter_mut().rev() {
             take_animation_requests(child.as_mut(), out);
@@ -881,30 +884,26 @@ pub(crate) fn set_style_field_by_id(
                         return false;
                     }
                 }
-                StyleField::Transform => {
-                    match value {
-                        StyleValue::Transform(transform) => {
-                            element.set_transform_value(transform);
-                        }
-                        StyleValue::TransformProgress { from, to, progress } => {
-                            element.set_transform_progress_value(from, to, progress);
-                        }
-                        _ => {
-                            return false;
-                        }
+                StyleField::Transform => match value {
+                    StyleValue::Transform(transform) => {
+                        element.set_transform_value(transform);
                     }
-                }
-                StyleField::TransformOrigin => {
-                    match value {
-                        StyleValue::TransformOrigin(transform_origin) => {
-                            element.set_transform_origin_value(transform_origin);
-                        }
-                        StyleValue::TransformOriginProgress { from, to, progress } => {
-                            element.set_transform_origin_progress_value(from, to, progress);
-                        }
-                        _ => return false,
+                    StyleValue::TransformProgress { from, to, progress } => {
+                        element.set_transform_progress_value(from, to, progress);
                     }
-                }
+                    _ => {
+                        return false;
+                    }
+                },
+                StyleField::TransformOrigin => match value {
+                    StyleValue::TransformOrigin(transform_origin) => {
+                        element.set_transform_origin_value(transform_origin);
+                    }
+                    StyleValue::TransformOriginProgress { from, to, progress } => {
+                        element.set_transform_origin_progress_value(from, to, progress);
+                    }
+                    _ => return false,
+                },
             }
             return true;
         }

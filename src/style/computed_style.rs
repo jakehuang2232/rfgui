@@ -4,9 +4,8 @@
 
 use crate::style::color::Color;
 use crate::style::parsed_style::{
-    Align, Animator, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue,
-    Position, PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin,
-    Transitions,
+    Align, Animator, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
+    PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin, Transitions,
 };
 
 /// A resolved size value used by computed style.
