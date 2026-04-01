@@ -1,8 +1,8 @@
 use crate::platform::{key_to_string, map_cursor_icon, map_device_button, map_mouse_button};
 use crate::rfgui::promotion::ViewportPromotionConfig;
 use crate::rfgui::ui::{
-    RsxNode, clear_redraw_callback, next_timer_deadline, rsx, run_due_timers, set_redraw_callback,
-    take_state_dirty,
+    RsxNode, UiDirtyState, clear_redraw_callback, next_timer_deadline, rsx, run_due_timers,
+    set_redraw_callback, take_state_dirty,
 };
 use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::{Theme, init_theme};
@@ -58,6 +58,7 @@ pub struct App {
     background_color: Box<dyn ColorLike>,
     applied_theme_dark: Option<bool>,
     wheel_normalization: WheelNormalization,
+    pending_ui_dirty: UiDirtyState,
 }
 
 impl App {
@@ -225,6 +226,7 @@ impl ApplicationHandler for App {
         self.cursor_in_window = false;
         self.last_mouse_position_viewport = None;
         self.applied_theme_dark = None;
+        self.pending_ui_dirty = UiDirtyState::NONE;
         self.sync_theme_visuals();
         self.rebuild_app();
     }
@@ -258,9 +260,11 @@ impl ApplicationHandler for App {
                 self.mark_ime_dirty();
             }
             WindowEvent::RedrawRequested => {
-                if self.app_dirty || take_state_dirty() {
+                let pending_ui_dirty = std::mem::take(&mut self.pending_ui_dirty);
+                if self.app_dirty || pending_ui_dirty.has_any() {
                     self.rebuild_app();
                     self.app_dirty = false;
+                    let _ = take_state_dirty();
                 }
                 self.sync_theme_visuals();
                 if let (Some(viewport), Some(app)) = (&mut self.viewport, &self.app) {
@@ -277,7 +281,7 @@ impl ApplicationHandler for App {
                         1000
                     };
                     viewport.set_promotion_config(promotion_config);
-                    let _ = viewport.render_rsx(app);
+                    let _ = viewport.render_rsx_with_dirty(app, pending_ui_dirty);
                 }
                 if REQUEST_DUMP_FRAME_GRAPH_DOT.swap(false, Ordering::AcqRel) {
                     self.dump_frame_graph_dot_with_dialog();
@@ -376,8 +380,12 @@ impl ApplicationHandler for App {
             _ => (),
         }
 
-        if take_state_dirty() {
+        let state_dirty = take_state_dirty();
+        self.pending_ui_dirty = self.pending_ui_dirty.union(state_dirty);
+        if state_dirty.needs_rebuild() {
             self.app_dirty = true;
+        }
+        if self.pending_ui_dirty.needs_redraw() {
             if let Some(viewport) = &mut self.viewport {
                 viewport.request_redraw();
             }

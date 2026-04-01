@@ -1,9 +1,8 @@
 use crate::rfgui::ui::{Binding, RsxNode, rsx};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{
-    Angle, Border, Color, JustifyContent, Layout, Length, Padding, Rotate, Scale,
-    Perspective, ScrollDirection, Transform, TransformOrigin, Transition, TransitionProperty,
-    Translate,
+    Angle, Border, Color, JustifyContent, Layout, Length, Padding, Perspective, Rotate, Scale,
+    ScrollDirection, Transform, TransformOrigin, Transition, TransitionProperty, Translate,
 };
 use crate::rfgui_components::{Button, Theme};
 

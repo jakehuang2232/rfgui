@@ -13,6 +13,12 @@ pub struct Theme {
     pub component: ComponentTheme,
 }
 
+impl PartialEq for Theme {
+    fn eq(&self, other: &Self) -> bool {
+        return std::ptr::eq(self, other);
+    }
+}
+
 #[derive(Clone)]
 pub struct ColorTheme {
     pub primary: ColorSet,

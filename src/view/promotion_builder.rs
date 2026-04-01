@@ -405,7 +405,9 @@ fn rect_distance(a: Rect, b: Rect) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::{BoxShadow, Color, Length, ParsedValue, PropertyId, Style, Transform, Translate};
+    use crate::style::{
+        BoxShadow, Color, Length, ParsedValue, PropertyId, Style, Transform, Translate,
+    };
     use crate::transition::{
         CHANNEL_STYLE_BACKGROUND_COLOR, ClaimMode, StyleField, StyleTransition,
         StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition, TransitionFrame,

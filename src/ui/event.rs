@@ -18,7 +18,7 @@ pub enum MouseButton {
     Other(u16),
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct KeyModifiers {
     pub alt: bool,
     pub ctrl: bool,
@@ -26,7 +26,7 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MouseButtons {
     pub left: bool,
     pub right: bool,
@@ -267,7 +267,7 @@ impl EventViewport {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MouseEventData {
     pub viewport_x: f32,
     pub viewport_y: f32,

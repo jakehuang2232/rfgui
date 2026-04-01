@@ -5,12 +5,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::style::{
-    Animator, Direction, FillMode, ParsedValue, PlayState, PropertyId, Repeat,
-    Style,
+use super::{
+    LayoutField, LayoutSample, RunResult, StyleField, StyleSample, StyleValue, TimeFunction,
 };
 use crate::TransitionTiming;
-use super::{LayoutField, LayoutSample, RunResult, StyleField, StyleSample, StyleValue, TimeFunction};
+use crate::style::{
+    Animator, Direction, FillMode, ParsedValue, PlayState, PropertyId, Repeat, Style,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationRequest {
@@ -114,7 +115,8 @@ impl AnimationPlugin {
     }
 
     pub fn prune_targets(&mut self, keep_targets: &HashSet<u64>) {
-        self.animators.retain(|target, _| keep_targets.contains(target));
+        self.animators
+            .retain(|target, _| keep_targets.contains(target));
         self.completed_animators
             .retain(|target, _| keep_targets.contains(target));
     }
@@ -131,11 +133,9 @@ impl AnimationPlugin {
         for (&target, animator) in &mut self.animators {
             let mut target_keep_running = false;
             for animation in &mut animator.animations {
-                let Some(sample_progress) = sample_animation_progress(
-                    animation,
-                    dt_seconds,
-                    now_seconds,
-                ) else {
+                let Some(sample_progress) =
+                    sample_animation_progress(animation, dt_seconds, now_seconds)
+                else {
                     continue;
                 };
                 target_keep_running |= sample_progress.keep_running;
@@ -226,7 +226,10 @@ fn compile_style_fields(style: &Style) -> HashMap<StyleField, StyleValue> {
             }
             PropertyId::BackgroundColor => {
                 if let ParsedValue::Color(value) = &declaration.value {
-                    out.insert(StyleField::BackgroundColor, StyleValue::Color(value.to_color()));
+                    out.insert(
+                        StyleField::BackgroundColor,
+                        StyleValue::Color(value.to_color()),
+                    );
                 }
             }
             PropertyId::Color => {
@@ -236,22 +239,34 @@ fn compile_style_fields(style: &Style) -> HashMap<StyleField, StyleValue> {
             }
             PropertyId::BorderTopColor => {
                 if let ParsedValue::Color(value) = &declaration.value {
-                    out.insert(StyleField::BorderTopColor, StyleValue::Color(value.to_color()));
+                    out.insert(
+                        StyleField::BorderTopColor,
+                        StyleValue::Color(value.to_color()),
+                    );
                 }
             }
             PropertyId::BorderRightColor => {
                 if let ParsedValue::Color(value) = &declaration.value {
-                    out.insert(StyleField::BorderRightColor, StyleValue::Color(value.to_color()));
+                    out.insert(
+                        StyleField::BorderRightColor,
+                        StyleValue::Color(value.to_color()),
+                    );
                 }
             }
             PropertyId::BorderBottomColor => {
                 if let ParsedValue::Color(value) = &declaration.value {
-                    out.insert(StyleField::BorderBottomColor, StyleValue::Color(value.to_color()));
+                    out.insert(
+                        StyleField::BorderBottomColor,
+                        StyleValue::Color(value.to_color()),
+                    );
                 }
             }
             PropertyId::BorderLeftColor => {
                 if let ParsedValue::Color(value) = &declaration.value {
-                    out.insert(StyleField::BorderLeftColor, StyleValue::Color(value.to_color()));
+                    out.insert(
+                        StyleField::BorderLeftColor,
+                        StyleValue::Color(value.to_color()),
+                    );
                 }
             }
             PropertyId::BoxShadow => {
@@ -279,7 +294,10 @@ fn compile_style_fields(style: &Style) -> HashMap<StyleField, StyleValue> {
             | PropertyId::BorderRadius => {
                 if let ParsedValue::Length(value) = &declaration.value {
                     if let Some(radius) = resolve_numeric_length(*value) {
-                        out.insert(StyleField::BorderRadius, StyleValue::Scalar(radius.max(0.0)));
+                        out.insert(
+                            StyleField::BorderRadius,
+                            StyleValue::Scalar(radius.max(0.0)),
+                        );
                     }
                 }
             }
@@ -405,8 +423,11 @@ fn sample_animation_progress(
 
     let iteration_index = overall_progress.floor().max(0.0) as u32;
     let iteration_progress = overall_progress.fract();
-    let directed_progress =
-        directed_progress(animation.direction, iteration_index, animation.timing.sample(iteration_progress));
+    let directed_progress = directed_progress(
+        animation.direction,
+        iteration_index,
+        animation.timing.sample(iteration_progress),
+    );
     Some(ProgressSample {
         progress: directed_progress,
         keep_running: true,
@@ -500,13 +521,12 @@ fn sample_style_field(
     })
 }
 
-fn sample_layout_fields(
-    animation: &ActiveAnimation,
-    progress: f32,
-) -> Vec<(LayoutField, f32)> {
+fn sample_layout_fields(animation: &ActiveAnimation, progress: f32) -> Vec<(LayoutField, f32)> {
     [LayoutField::Width, LayoutField::Height]
         .into_iter()
-        .filter_map(|field| sample_layout_field(animation, field, progress).map(|value| (field, value)))
+        .filter_map(|field| {
+            sample_layout_field(animation, field, progress).map(|value| (field, value))
+        })
         .collect()
 }
 
@@ -529,7 +549,9 @@ fn sample_layout_field(
             break;
         }
     }
-    sample_segment_value(previous, next, progress, |from, to, t| from + (to - from) * t)
+    sample_segment_value(previous, next, progress, |from, to, t| {
+        from + (to - from) * t
+    })
 }
 
 fn sample_segment_value<T, F>(
@@ -548,7 +570,8 @@ where
             if (to_progress - from_progress).abs() <= f32::EPSILON {
                 return Some(to);
             }
-            let segment_t = ((progress - from_progress) / (to_progress - from_progress)).clamp(0.0, 1.0);
+            let segment_t =
+                ((progress - from_progress) / (to_progress - from_progress)).clamp(0.0, 1.0);
             Some(interpolate(from, to, segment_t))
         }
         (None, None) => None,
@@ -558,11 +581,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Animation, Animator, Color, Keyframe, Opacity, ParsedValue, PropertyId, Repeat, Style};
+    use crate::{
+        Animation, Animator, Color, Keyframe, Opacity, ParsedValue, PropertyId, Repeat, Style,
+    };
 
     fn opacity_style(value: f32) -> Style {
         let mut style = Style::new();
-        style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(value)));
+        style.insert(
+            PropertyId::Opacity,
+            ParsedValue::Opacity(Opacity::new(value)),
+        );
         style
     }
 

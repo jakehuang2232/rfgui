@@ -97,14 +97,8 @@ impl StyleField {
                         progress: t.clamp(0.0, 1.0),
                     }
                 }
-                (
-                    StyleValue::TransformProgress { from, to, .. },
-                    StyleValue::Transform(_),
-                )
-                | (
-                    StyleValue::Transform(_),
-                    StyleValue::TransformProgress { from, to, .. },
-                )
+                (StyleValue::TransformProgress { from, to, .. }, StyleValue::Transform(_))
+                | (StyleValue::Transform(_), StyleValue::TransformProgress { from, to, .. })
                 | (
                     StyleValue::TransformProgress { from, to, .. },
                     StyleValue::TransformProgress { .. },
@@ -460,12 +454,7 @@ mod tests {
             StyleValue::Transform(Transform::new([Rotate::z(Angle::deg(180.0))])),
             0.5,
         );
-        let StyleValue::TransformProgress {
-            from,
-            to,
-            progress,
-        } = value
-        else {
+        let StyleValue::TransformProgress { from, to, progress } = value else {
             panic!("expected transform progress value");
         };
         assert_eq!(from.as_slice().len(), 1);

@@ -10,15 +10,14 @@ use crate::style::{
     TransitionProperty, TransitionTiming, compute_style, interpolate_transform_with_reference_box,
 };
 use crate::transition::{
-    AnimationRequest,
-    CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
+    AnimationRequest, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
     CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
     CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
     CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
-    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId,
-    LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis,
-    StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue,
-    TimeFunction, VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
+    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId, LayoutField,
+    LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis, StyleField,
+    StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue, TimeFunction,
+    VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,

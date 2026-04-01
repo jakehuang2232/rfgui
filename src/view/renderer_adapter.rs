@@ -407,6 +407,14 @@ fn append_nodes(
     append_nodes_with_path(node, out, &mut path, global_path, &inherited)
 }
 
+pub(crate) fn rendered_node_id_by_index_path(
+    root: &RsxNode,
+    index_path: &[usize],
+) -> Result<Option<u64>, String> {
+    let mut token_path = Vec::new();
+    rendered_node_id_by_index_path_impl(root, index_path, &mut token_path, None)
+}
+
 fn collect_global_key_registry(
     root: &RsxNode,
 ) -> Result<HashMap<GlobalKey, RenderedGlobalKeyEntry>, String> {
@@ -449,6 +457,47 @@ fn collect_global_key_registry_with_path(
     }
 
     Ok(())
+}
+
+fn rendered_node_id_by_index_path_impl(
+    node: &RsxNode,
+    index_path: &[usize],
+    token_path: &mut Vec<u64>,
+    global_path: Option<GlobalNodePath>,
+) -> Result<Option<u64>, String> {
+    if index_path.is_empty() {
+        return Ok(rendered_node_id(node, token_path, global_path.as_ref()));
+    }
+
+    let Some(children) = node.children() else {
+        return Err("path traverses through a leaf node".to_string());
+    };
+    let index = index_path[0];
+    let child = children
+        .get(index)
+        .ok_or_else(|| format!("invalid node path index: {index}"))?;
+
+    let current_global_path = current_global_node_path(node, global_path.as_ref());
+    let mut ordinals = HashMap::<String, usize>::new();
+    for (child_index, candidate) in children.iter().enumerate() {
+        let ordinal = next_identity_ordinal(&mut ordinals, candidate.identity());
+        let token = child_identity_token(candidate, ordinal);
+        if child_index == index {
+            token_path.push(token);
+            let child_global_path =
+                child_global_node_path(current_global_path.as_ref(), child, token);
+            let rendered = rendered_node_id_by_index_path_impl(
+                child,
+                &index_path[1..],
+                token_path,
+                child_global_path,
+            );
+            token_path.pop();
+            return rendered;
+        }
+    }
+
+    Err(format!("invalid node path index: {index}"))
 }
 
 fn rendered_node_id(

@@ -1,4 +1,4 @@
-use crate::rfgui::ui::{RsxNode, component, globalState, on_click, use_state};
+use crate::rfgui::ui::{RsxNode, component, globalState, on_click, use_redraw_state, use_state};
 use crate::rfgui::{Align, CrossSize, JustifyContent};
 use crate::rfgui_components::{Theme, set_theme, use_theme};
 use crate::scene_windows::about_panel::build as build_about_panel;
@@ -41,8 +41,8 @@ pub fn MainScene() -> RsxNode {
     let cross_size = use_state(|| CrossSize::Fit);
     let style_transition_enabled = use_state(|| true);
     let style_target_alt = use_state(|| false);
-    let transform_transition_enabled = use_state(|| true);
-    let transform_target_alt = use_state(|| false);
+    let transform_transition_enabled = use_redraw_state(|| true);
+    let transform_target_alt = use_redraw_state(|| false);
     let layout_transition_enabled = use_state(|| true);
     let layout_expanded = use_state(|| false);
     let visual_transition_enabled = use_state(|| true);
