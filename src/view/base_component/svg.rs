@@ -1,3 +1,4 @@
+use crate::time::{Duration, Instant};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::ImageSnapshot;
 use crate::view::render_pass::TextureCompositePass;
@@ -11,7 +12,6 @@ use crate::view::svg_resource::{
 };
 use crate::view::{ImageFit, ImageSampling, SvgSource};
 use crate::{ParsedValue, PropertyId, Style};
-use std::time::{Duration, Instant};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -588,9 +588,9 @@ impl Renderable for Svg {
 mod tests {
     use super::Svg;
     use crate::Style;
+    use crate::time::{Duration, Instant};
     use crate::view::SvgSource;
     use crate::view::base_component::{LayoutConstraints, Layoutable};
-    use std::time::{Duration, Instant};
 
     fn simple_svg() -> SvgSource {
         SvgSource::Content(

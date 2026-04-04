@@ -42,6 +42,13 @@ impl Element {
         force_self_opaque: bool,
         allow_transform: bool,
     ) -> BuildState {
+        let accumulated_render_transform = self
+            .resolved_transform
+            .map(|transform| match ctx.current_render_transform() {
+                Some(parent) => parent * transform,
+                None => transform,
+            });
+        ctx.set_current_render_transform(accumulated_render_transform);
         trace_promoted_build(
             "base",
             self.id(),
@@ -1024,6 +1031,7 @@ impl Element {
             ctx.viewport(),
             BuildState::for_layer_subtree_with_ancestor_clip(AncestorClipContext::default()),
         );
+        layer_ctx.set_current_render_transform(ctx.current_render_transform());
         let layer_target = layer_ctx.allocate_persistent_target_with_key(
             graph,
             crate::view::base_component::transformed_layer_stable_key(self.id()),

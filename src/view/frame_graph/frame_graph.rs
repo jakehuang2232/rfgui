@@ -1,7 +1,7 @@
+use crate::time::Instant;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use super::buffer_resource::{BufferDesc, BufferHandle};
 use super::builder::PassBuilderState;

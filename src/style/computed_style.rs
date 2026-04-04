@@ -78,7 +78,7 @@ pub struct ComputedStyle {
 impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
-            layout: Layout::Block,
+            layout: Layout::Inline,
             cross_size: CrossSize::Fit,
             align: Align::Start,
             flex_grow: 0.0,
@@ -149,6 +149,7 @@ impl ComputedStyle {
     pub const fn layout_axis_direction(&self) -> crate::FlowDirection {
         match self.layout {
             Layout::Flex { direction, .. } | Layout::Flow { direction, .. } => direction,
+            Layout::Inline => crate::FlowDirection::Row,
             _ => crate::FlowDirection::Row,
         }
     }
@@ -156,6 +157,7 @@ impl ComputedStyle {
     pub const fn layout_flow_direction(&self) -> crate::FlowDirection {
         match self.layout {
             Layout::Flow { direction, .. } => direction,
+            Layout::Inline => crate::FlowDirection::Row,
             _ => crate::FlowDirection::Row,
         }
     }
@@ -163,6 +165,7 @@ impl ComputedStyle {
     pub const fn layout_flow_wrap(&self) -> crate::FlowWrap {
         match self.layout {
             Layout::Flow { wrap, .. } => wrap,
+            Layout::Inline => crate::FlowWrap::Wrap,
             _ => crate::FlowWrap::NoWrap,
         }
     }
@@ -175,6 +178,7 @@ impl ComputedStyle {
             | Layout::Flow {
                 justify_content, ..
             } => justify_content,
+            Layout::Inline => crate::JustifyContent::Start,
             _ => crate::JustifyContent::Start,
         }
     }
@@ -184,6 +188,7 @@ impl ComputedStyle {
             Layout::Flow {
                 justify_content, ..
             } => justify_content,
+            Layout::Inline => crate::JustifyContent::Start,
             _ => crate::JustifyContent::Start,
         }
     }
@@ -191,6 +196,7 @@ impl ComputedStyle {
     pub const fn layout_axis_cross_size(&self) -> crate::CrossSize {
         match self.layout {
             Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.size,
+            Layout::Inline => crate::CrossSize::Fit,
             _ => self.cross_size,
         }
     }
@@ -198,6 +204,7 @@ impl ComputedStyle {
     pub const fn layout_flow_cross_size(&self) -> crate::CrossSize {
         match self.layout {
             Layout::Flow { cross_axis, .. } => cross_axis.size,
+            Layout::Inline => crate::CrossSize::Fit,
             _ => self.cross_size,
         }
     }
@@ -205,6 +212,7 @@ impl ComputedStyle {
     pub const fn layout_axis_align(&self) -> crate::Align {
         match self.layout {
             Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.align,
+            Layout::Inline => crate::Align::Start,
             _ => self.align,
         }
     }
@@ -212,6 +220,7 @@ impl ComputedStyle {
     pub const fn layout_flow_align(&self) -> crate::Align {
         match self.layout {
             Layout::Flow { cross_axis, .. } => cross_axis.align,
+            Layout::Inline => crate::Align::Start,
             _ => self.align,
         }
     }
@@ -677,5 +686,17 @@ mod tests {
         assert_eq!(computed.flex_grow, 2.0);
         assert_eq!(computed.flex_shrink, 0.0);
         assert_eq!(computed.flex_basis, SizeValue::Length(Length::px(80.0)));
+    }
+
+    #[test]
+    fn inline_layout_uses_row_wrap_defaults() {
+        let mut style = Style::new();
+        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+
+        let computed = compute_style(&style, None);
+        assert_eq!(computed.layout_axis_direction(), FlowDirection::Row);
+        assert_eq!(computed.layout_flow_wrap(), FlowWrap::Wrap);
+        assert_eq!(computed.layout_axis_align(), Align::Start);
+        assert_eq!(computed.layout_axis_cross_size(), CrossSize::Fit);
     }
 }

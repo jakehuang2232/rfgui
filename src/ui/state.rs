@@ -2,6 +2,8 @@
 
 //! Stateful hooks and global state helpers used by typed RSX components.
 
+use crate::time::{Duration, Instant};
+use crate::ui::{FromPropValue, GlobalKey, IntoPropValue, PropValue, RsxKey, SharedPropValue};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
@@ -9,9 +11,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
-
-use crate::ui::{FromPropValue, GlobalKey, IntoPropValue, PropValue, RsxKey, SharedPropValue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UiDirtyState(u8);
@@ -657,10 +656,10 @@ mod tests {
         UiDirtyState, build_scope, next_timer_deadline, run_due_timers, take_state_dirty,
         use_interval, use_redraw_state, use_state, use_timeout, with_component_key,
     };
+    use crate::time::{Duration, Instant};
     use crate::ui::{GlobalKey, RsxKey, RsxNode};
     use std::cell::Cell;
     use std::rc::Rc;
-    use std::time::{Duration, Instant};
 
     fn clear_test_timers() {
         build_scope(|| {

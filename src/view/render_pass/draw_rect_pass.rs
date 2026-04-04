@@ -8,9 +8,9 @@ use crate::view::render_pass::render_target::{
     render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::num::NonZeroU64;
-use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -386,48 +386,48 @@ impl DrawRectPass {
             self.color_write_enabled,
             self.render_mode,
         );
-        let cache = draw_rect_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(cache_key, || {
-            create_draw_rect_resources(
-                &device,
-                format,
-                sample_count,
-                variant,
-                stencil_class,
-                self.color_write_enabled,
-                self.render_mode,
-            )
+        with_draw_rect_resources_cache(|cache| {
+            let resources = cache.get_or_insert_with(cache_key, || {
+                create_draw_rect_resources(
+                    &device,
+                    format,
+                    sample_count,
+                    variant,
+                    stencil_class,
+                    self.color_write_enabled,
+                    self.render_mode,
+                )
+            });
+            if resources.pipeline_format != format
+                || resources.pipeline_sample_count != sample_count
+                || resources.variant != variant
+                || resources.stencil_class != stencil_class
+                || resources.color_write_enabled != self.color_write_enabled
+                || resources.render_mode != self.render_mode
+            {
+                *resources = create_draw_rect_resources(
+                    &device,
+                    format,
+                    sample_count,
+                    variant,
+                    stencil_class,
+                    self.color_write_enabled,
+                    self.render_mode,
+                );
+            }
+            self.prepared_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("DrawRect Bind Group (Prepared)"),
+                layout: &resources.bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: Some(NonZeroU64::new(RECT_UNIFORM_SLOT_SIZE).unwrap()),
+                    }),
+                }],
+            }));
         });
-        if resources.pipeline_format != format
-            || resources.pipeline_sample_count != sample_count
-            || resources.variant != variant
-            || resources.stencil_class != stencil_class
-            || resources.color_write_enabled != self.color_write_enabled
-            || resources.render_mode != self.render_mode
-        {
-            *resources = create_draw_rect_resources(
-                &device,
-                format,
-                sample_count,
-                variant,
-                stencil_class,
-                self.color_write_enabled,
-                self.render_mode,
-            );
-        }
-        self.prepared_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("DrawRect Bind Group (Prepared)"),
-            layout: &resources.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &buffer,
-                    offset: 0,
-                    size: Some(NonZeroU64::new(RECT_UNIFORM_SLOT_SIZE).unwrap()),
-                }),
-            }],
-        }));
         self.prepared_dynamic_offset = dynamic_offset;
     }
 }
@@ -743,43 +743,43 @@ fn encode_draw_rect_into_existing_pass(
         draw.render_mode,
     );
     let (pipeline, bind_group_layout, vertex_buffer, index_buffer, index_count) = {
-        let cache = draw_rect_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(cache_key, || {
-            create_draw_rect_resources(
-                &device,
-                format,
-                sample_count,
-                variant,
-                stencil_class,
-                draw.color_write_enabled,
-                draw.render_mode,
+        with_draw_rect_resources_cache(|cache| {
+            let resources = cache.get_or_insert_with(cache_key, || {
+                create_draw_rect_resources(
+                    &device,
+                    format,
+                    sample_count,
+                    variant,
+                    stencil_class,
+                    draw.color_write_enabled,
+                    draw.render_mode,
+                )
+            });
+            if resources.pipeline_format != format
+                || resources.pipeline_sample_count != sample_count
+                || resources.variant != variant
+                || resources.stencil_class != stencil_class
+                || resources.color_write_enabled != draw.color_write_enabled
+                || resources.render_mode != draw.render_mode
+            {
+                *resources = create_draw_rect_resources(
+                    &device,
+                    format,
+                    sample_count,
+                    variant,
+                    stencil_class,
+                    draw.color_write_enabled,
+                    draw.render_mode,
+                );
+            }
+            (
+                resources.pipeline.clone(),
+                resources.bind_group_layout.clone(),
+                resources.vertex_buffer.clone(),
+                resources.index_buffer.clone(),
+                resources.index_count,
             )
-        });
-        if resources.pipeline_format != format
-            || resources.pipeline_sample_count != sample_count
-            || resources.variant != variant
-            || resources.stencil_class != stencil_class
-            || resources.color_write_enabled != draw.color_write_enabled
-            || resources.render_mode != draw.render_mode
-        {
-            *resources = create_draw_rect_resources(
-                &device,
-                format,
-                sample_count,
-                variant,
-                stencil_class,
-                draw.color_write_enabled,
-                draw.render_mode,
-            );
-        }
-        (
-            resources.pipeline.clone(),
-            resources.bind_group_layout.clone(),
-            resources.vertex_buffer.clone(),
-            resources.index_buffer.clone(),
-            resources.index_count,
-        )
+        })
     };
     let bind_group = if let Some(bind_group) = pass_def.prepared_bind_group.clone() {
         bind_group
@@ -1269,21 +1269,29 @@ impl<T> DrawRectResourcesCache<T> {
     }
 }
 
-fn draw_rect_resources_cache() -> &'static Mutex<DrawRectResourcesCache<DrawRectResources>> {
-    static CACHE: OnceLock<Mutex<DrawRectResourcesCache<DrawRectResources>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(DrawRectResourcesCache::new()))
+fn with_draw_rect_resources_cache<R>(
+    f: impl FnOnce(&mut DrawRectResourcesCache<DrawRectResources>) -> R,
+) -> R {
+    thread_local! {
+        static CACHE: RefCell<DrawRectResourcesCache<DrawRectResources>> =
+            RefCell::new(DrawRectResourcesCache::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        f(&mut cache)
+    })
 }
 
 pub fn begin_draw_rect_resources_frame() {
-    let cache = draw_rect_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    cache.begin_frame();
+    with_draw_rect_resources_cache(|cache| {
+        cache.begin_frame();
+    });
 }
 
 pub fn clear_draw_rect_resources_cache() {
-    let cache = draw_rect_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    cache.clear();
+    with_draw_rect_resources_cache(|cache| {
+        cache.clear();
+    });
 }
 
 type CornerRadii = [[f32; 2]; 4]; // TL, TR, BR, BL

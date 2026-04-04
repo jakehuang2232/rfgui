@@ -14,8 +14,8 @@ mod tests {
     };
     use rfgui::ui::{
         EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
-        RsxNode, RsxTagDescriptor, TextChangeEvent, create_tag_element, global_state, rsx,
-        take_state_dirty,
+        RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, create_tag_element, global_state,
+        rsx, take_state_dirty,
     };
     use rfgui::view::{Element, ElementPropSchema, Image, Text, TextArea, TextPropSchema};
     use rfgui::{
@@ -109,7 +109,7 @@ mod tests {
         let mut viewport = rfgui::view::Viewport::new();
         click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
         assert_eq!(selected.get(), "Option A");
-        assert!(take_state_dirty());
+        assert_ne!(take_state_dirty(), UiDirtyState::NONE);
     }
 
     #[test]
@@ -134,7 +134,7 @@ mod tests {
         let mut roots = rfgui::rsx_to_elements(&first_tree).expect("convert select");
         let mut viewport = rfgui::view::Viewport::new();
         click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
-        assert!(take_state_dirty());
+        assert_ne!(take_state_dirty(), UiDirtyState::NONE);
 
         let second_tree = build_tree();
         let RsxNode::Element(root) = second_tree else {
@@ -169,7 +169,7 @@ mod tests {
         let mut roots = rfgui::rsx_to_elements(&first_tree).expect("convert select");
         let mut viewport = rfgui::view::Viewport::new();
         click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
-        assert!(take_state_dirty());
+        assert_ne!(take_state_dirty(), UiDirtyState::NONE);
 
         let second_tree = build_tree();
         let mut roots = rfgui::rsx_to_elements(&second_tree).expect("convert open select");

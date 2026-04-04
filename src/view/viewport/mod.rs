@@ -6,6 +6,7 @@ mod input;
 #[cfg(test)]
 mod tests;
 
+use crate::time::Instant;
 use crate::transition::{
     AnimationPlugin, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X,
     CHANNEL_LAYOUT_Y, CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -38,16 +39,23 @@ use crate::{
     ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style, Transform,
     TransformOrigin,
 };
-use arboard::Clipboard;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::ops::Sub;
 use std::sync::Arc;
-use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
+#[cfg(target_arch = "wasm32")]
+use web_sys::HtmlCanvasElement;
 use wgpu::util::StagingBelt;
 use wgpu::{
     Instance, Queue, TextureUsages,
     rwh::{HasDisplayHandle, HasWindowHandle},
+};
+#[cfg(target_arch = "wasm32")]
+use wgpu::rwh::{
+    DisplayHandle as BorrowedDisplayHandle, HandleError, RawDisplayHandle, RawWindowHandle,
+    WebCanvasWindowHandle, WebDisplayHandle, WindowHandle as BorrowedWindowHandle,
 };
 
 pub(crate) use self::debug::{
@@ -55,14 +63,13 @@ pub(crate) use self::debug::{
     record_debug_reuse_path,
 };
 use self::debug::{
-    DebugStyleSampleRecord, PostLayoutTransitionResult, TraceRenderNode,
-    build_compile_trace_nodes, build_execute_detail_trace_nodes,
-    build_layout_place_trace_nodes, build_reuse_overlay_geometry, format_promotion_trace,
-    format_reuse_path_trace, format_style_field, format_style_promotion_trace,
-    format_style_request_trace, format_style_sample_trace, format_style_value,
-    format_trace_render_tree, record_debug_style_promotion, record_debug_style_request,
-    record_debug_style_sample, record_debug_style_sample_record, snapshot_debug_reuse_path,
-    snapshot_debug_style_sample_records, style_field_requires_relayout,
+    DebugStyleSampleRecord, PostLayoutTransitionResult, TraceRenderNode, build_compile_trace_nodes,
+    build_execute_detail_trace_nodes, build_layout_place_trace_nodes, build_reuse_overlay_geometry,
+    format_promotion_trace, format_reuse_path_trace, format_style_field,
+    format_style_promotion_trace, format_style_request_trace, format_style_sample_trace,
+    format_style_value, format_trace_render_tree, record_debug_style_promotion,
+    record_debug_style_request, record_debug_style_sample, record_debug_style_sample_record,
+    snapshot_debug_reuse_path, snapshot_debug_style_sample_records, style_field_requires_relayout,
     trace_promoted_build_frame_marker,
 };
 pub use self::frame::FrameParts;
@@ -77,6 +84,43 @@ impl<T: HasWindowHandle + HasDisplayHandle> WindowHandle for T {}
 
 pub type Window = Arc<dyn WindowHandle + Send + Sync>;
 type CursorHandler = Box<dyn FnMut(Cursor)>;
+
+enum SurfaceInitTarget {
+    #[cfg(not(target_arch = "wasm32"))]
+    Window(Window),
+    #[cfg(target_arch = "wasm32")]
+    Canvas(HtmlCanvasElement),
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WebCanvasSurfaceTarget {
+    canvas: HtmlCanvasElement,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl HasWindowHandle for WebCanvasSurfaceTarget {
+    fn window_handle(&self) -> Result<BorrowedWindowHandle<'_>, HandleError> {
+        let value: &JsValue = self.canvas.as_ref();
+        let raw = RawWindowHandle::WebCanvas(WebCanvasWindowHandle::new(
+            std::ptr::NonNull::from(value).cast(),
+        ));
+        Ok(unsafe { BorrowedWindowHandle::borrow_raw(raw) })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl HasDisplayHandle for WebCanvasSurfaceTarget {
+    fn display_handle(&self) -> Result<BorrowedDisplayHandle<'_>, HandleError> {
+        Ok(unsafe {
+            BorrowedDisplayHandle::borrow_raw(RawDisplayHandle::Web(WebDisplayHandle::new()))
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type ClipboardBackend = arboard::Clipboard;
+#[cfg(target_arch = "wasm32")]
+type ClipboardBackend = ();
 
 pub struct ViewportControl<'a> {
     viewport: &'a mut Viewport,
@@ -216,6 +260,8 @@ pub struct Viewport {
     device: Option<wgpu::Device>,
     instance: Option<Instance>,
     window: Option<Window>,
+    #[cfg(target_arch = "wasm32")]
+    web_canvas: Option<HtmlCanvasElement>,
     queue: Option<Queue>,
     msaa_sample_count: u32,
     surface_msaa_texture: Option<wgpu::Texture>,
@@ -245,7 +291,8 @@ pub struct Viewport {
     debug_previous_subtree_signatures: HashMap<u64, (u64, u64, u64, bool)>,
     promoted_reuse_cooldown_frames: u8,
     input_state: InputState,
-    clipboard: Option<Clipboard>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    clipboard: Option<ClipboardBackend>,
     clipboard_fallback: Option<String>,
     dispatched_focus_node_id: Option<u64>,
     ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
@@ -300,6 +347,16 @@ impl Viewport {
     const PROMOTED_REUSE_COOLDOWN_FRAMES: u8 = 2;
     const SAMPLED_TEXTURE_PRESSURE_BYTES: u64 = 128 * 1024 * 1024;
     const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 96 * 1024 * 1024;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn create_clipboard() -> Option<ClipboardBackend> {
+        ClipboardBackend::new().ok()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn create_clipboard() -> Option<ClipboardBackend> {
+        None
+    }
 
     fn invalidate_promoted_layer_reuse(&mut self) {
         self.promoted_base_signatures.clear();
@@ -1539,6 +1596,8 @@ impl Viewport {
             device: None,
             instance: None,
             window: None,
+            #[cfg(target_arch = "wasm32")]
+            web_canvas: None,
             queue: None,
             msaa_sample_count: Self::DEFAULT_MSAA_SAMPLE_COUNT,
             surface_msaa_texture: None,
@@ -1568,7 +1627,7 @@ impl Viewport {
             debug_previous_subtree_signatures: HashMap::new(),
             promoted_reuse_cooldown_frames: 0,
             input_state: InputState::default(),
-            clipboard: Clipboard::new().ok(),
+            clipboard: Self::create_clipboard(),
             clipboard_fallback: None,
             dispatched_focus_node_id: None,
             ui_roots: Vec::new(),
@@ -1781,6 +1840,14 @@ impl Viewport {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub async fn set_canvas(&mut self, canvas: HtmlCanvasElement) {
+        self.web_canvas = Some(canvas);
+        if self.device.is_some() {
+            self.create_surface().await;
+        }
+    }
+
     pub fn set_size(&mut self, mut width: u32, mut height: u32) {
         if width == 0 {
             width = 1;
@@ -1898,7 +1965,12 @@ impl Viewport {
     }
 
     pub async fn create_surface(&mut self) {
-        if let Some(window) = &self.window {
+        #[cfg(target_arch = "wasm32")]
+        let surface_target = self.web_canvas.clone().map(|canvas| SurfaceInitTarget::Canvas(canvas));
+        #[cfg(not(target_arch = "wasm32"))]
+        let surface_target = self.window.clone().map(SurfaceInitTarget::Window);
+
+        if let Some(surface_target) = surface_target {
             let backends = wgpu::Backends::all();
 
             let instance = Instance::new(&wgpu::InstanceDescriptor {
@@ -1908,8 +1980,26 @@ impl Viewport {
                 backend_options: wgpu::BackendOptions::default(),
             });
 
-            let mut adapters = instance.enumerate_adapters(backends).await;
-            let adapter = adapters.remove(0);
+            let surface = match surface_target {
+                #[cfg(target_arch = "wasm32")]
+                SurfaceInitTarget::Canvas(canvas) => instance
+                    .create_surface(WebCanvasSurfaceTarget { canvas })
+                    .unwrap(),
+                #[cfg(not(target_arch = "wasm32"))]
+                SurfaceInitTarget::Window(window) => instance.create_surface(window).unwrap(),
+            };
+
+            let Ok(adapter) = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::default(),
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+            else {
+                eprintln!("[warn] failed to acquire a GPU adapter");
+                return;
+            };
 
             let (device, queue) = adapter
                 .request_device(&wgpu::DeviceDescriptor {
@@ -1923,16 +2013,57 @@ impl Viewport {
                 .await
                 .unwrap();
 
-            let surface = instance.create_surface(window.clone()).unwrap();
             let caps = surface.get_capabilities(&adapter);
+            #[cfg(target_arch = "wasm32")]
+            {
+                web_sys::console::log_1(
+                    &format!("[rfgui] web surface formats: {:?}", caps.formats).into(),
+                );
+                web_sys::console::log_1(
+                    &format!("[rfgui] web surface alpha modes: {:?}", caps.alpha_modes).into(),
+                );
+            }
+            #[cfg(target_arch = "wasm32")]
+            let preferred_format = self.surface_config.format;
+            #[cfg(target_arch = "wasm32")]
+            let format = caps
+                .formats
+                .iter()
+                .copied()
+                .find(|f| *f == preferred_format)
+                .or_else(|| caps.formats.iter().copied().find(|f| !f.is_srgb()))
+                .or_else(|| caps.formats.iter().copied().find(|f| f.is_srgb()))
+                .or_else(|| caps.formats.first().copied());
+            #[cfg(not(target_arch = "wasm32"))]
             let format = caps
                 .formats
                 .iter()
                 .copied()
                 .find(|f| f.is_srgb())
-                .unwrap_or(caps.formats[0]);
+                .or_else(|| caps.formats.first().copied());
+            let Some(format) = format
+            else {
+                eprintln!("[warn] surface reported no supported formats");
+                return;
+            };
+            #[cfg(target_arch = "wasm32")]
+            {
+                web_sys::console::log_1(
+                    &format!("[rfgui] web selected surface format: {:?}", format).into(),
+                );
+            }
             self.surface_config.format = format;
             self.surface_config.alpha_mode = Self::alpha_mode_from_capabilities(&caps.alpha_modes);
+            #[cfg(target_arch = "wasm32")]
+            {
+                web_sys::console::log_1(
+                    &format!(
+                        "[rfgui] web selected alpha mode: {:?}",
+                        self.surface_config.alpha_mode
+                    )
+                    .into(),
+                );
+            }
             self.surface_config.view_formats = vec![self.surface_config.format];
             if let Some((width, height)) = self.pending_size.take() {
                 self.surface_config.width = width;
@@ -1949,6 +2080,7 @@ impl Viewport {
             self.invalidate_promoted_layer_reuse();
             self.create_frame_attachments();
             self.needs_reconfigure = false;
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(device) = self.device.as_ref() {
                 if let Some(queue) = self.queue.as_ref() {
                     crate::view::render_pass::prewarm_text_pipeline(
@@ -1983,6 +2115,7 @@ impl Viewport {
         self.release_render_resource_caches();
         self.invalidate_promoted_layer_reuse();
         self.create_frame_attachments();
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(queue) = self.queue.as_ref() {
             crate::view::render_pass::prewarm_text_pipeline(
                 &device_for_prewarm,
@@ -3138,12 +3271,14 @@ impl Viewport {
     pub fn set_clipboard_text(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.clipboard_fallback = Some(text.clone());
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(clipboard) = self.clipboard.as_mut() {
             let _ = clipboard.set_text(text);
         }
     }
 
     pub fn clipboard_text(&mut self) -> Option<String> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(clipboard) = self.clipboard.as_mut() {
             if let Ok(text) = clipboard.get_text() {
                 self.clipboard_fallback = Some(text.clone());

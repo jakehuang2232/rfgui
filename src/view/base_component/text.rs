@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::view::font_system::create_font_system;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
 use crate::view::render_pass::text_pass::TextPassParams;
@@ -41,12 +42,14 @@ pub struct Text {
     measure_revision: u64,
     cached_intrinsic_width: Option<(u64, f32)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
+    layout_buffer: Option<Buffer>,
+    layout_buffer_signature: Option<TextLayoutBufferSignature>,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
 }
 
 thread_local! {
-    static MEASURE_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(FontSystem::new());
+    static MEASURE_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(create_font_system());
     static MEASURE_TEXT_CACHE: RefCell<HashMap<TextMeasureCacheKey, (f32, f32)>> =
         RefCell::new(HashMap::new());
 }
@@ -58,11 +61,79 @@ struct TextMeasureCacheKey {
     font_size_milli: i32,
     line_height_milli: i32,
     font_weight: u16,
+    align: u8,
     font_families: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TextLayoutBufferSignature {
+    revision: u64,
+    width_milli: i32,
+    height_milli: i32,
+    allow_wrap: bool,
 }
 
 fn quantize_milli(value: f32) -> i32 {
     (value * 1000.0).round() as i32
+}
+
+fn build_text_buffer(
+    font_system: &mut FontSystem,
+    content: &str,
+    width: Option<f32>,
+    height: Option<f32>,
+    allow_wrap: bool,
+    font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+    align: Align,
+    font_families: &[String],
+) -> Buffer {
+    let mut buffer = Buffer::new(
+        font_system,
+        Metrics::new(
+            font_size.max(1.0),
+            (font_size * line_height.max(0.8)).max(1.0),
+        ),
+    );
+    buffer.set_wrap(
+        font_system,
+        if allow_wrap {
+            Wrap::WordOrGlyph
+        } else {
+            Wrap::None
+        },
+    );
+    buffer.set_size(font_system, width.map(|w| w.max(1.0)), height.map(|h| h.max(1.0)));
+
+    let attrs = if let Some(first) = font_families.first() {
+        Attrs::new()
+            .family(Family::Name(first.as_str()))
+            .weight(Weight(font_weight))
+    } else {
+        Attrs::new().weight(Weight(font_weight))
+    };
+
+    let content = if content.is_empty() { " " } else { content };
+    buffer.set_text(font_system, content, &attrs, Shaping::Advanced, Some(align));
+    buffer.shape_until_scroll(font_system, false);
+    buffer
+}
+
+fn measure_buffer_size(buffer: &Buffer) -> (f32, f32) {
+    let mut max_line_width = 0.0_f32;
+    let mut line_count = 0_usize;
+    for run in buffer.layout_runs() {
+        line_count += 1;
+        let mut max_glyph_right = 0.0_f32;
+        for glyph in run.glyphs.iter() {
+            max_glyph_right = max_glyph_right.max(glyph.x + glyph.w.max(0.0));
+        }
+        max_line_width = max_line_width.max(run.line_w.max(max_glyph_right));
+    }
+    let resolved_lines = line_count.max(1);
+    let resolved_height = resolved_lines as f32 * buffer.metrics().line_height;
+    (max_line_width.max(1.0), resolved_height.max(1.0))
 }
 
 fn make_measure_cache_key(
@@ -71,6 +142,7 @@ fn make_measure_cache_key(
     font_size: f32,
     line_height: f32,
     font_weight: u16,
+    align: Align,
     font_families: &[String],
 ) -> TextMeasureCacheKey {
     TextMeasureCacheKey {
@@ -79,6 +151,13 @@ fn make_measure_cache_key(
         font_size_milli: quantize_milli(font_size),
         line_height_milli: quantize_milli(line_height),
         font_weight,
+        align: match align {
+            Align::Left => 0,
+            Align::Center => 1,
+            Align::Right => 2,
+            Align::Justified => 3,
+            Align::End => 4,
+        },
         font_families: font_families.to_vec(),
     }
 }
@@ -137,6 +216,8 @@ impl Text {
             measure_revision: 0,
             cached_intrinsic_width: None,
             cached_height_for_width: None,
+            layout_buffer: None,
+            layout_buffer_signature: None,
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
         }
@@ -146,6 +227,8 @@ impl Text {
         self.measure_revision = self.measure_revision.wrapping_add(1);
         self.cached_intrinsic_width = None;
         self.cached_height_for_width = None;
+        self.layout_buffer = None;
+        self.layout_buffer_signature = None;
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
@@ -296,6 +379,7 @@ fn measure_text_size(
     font_size: f32,
     line_height: f32,
     font_weight: u16,
+    align: Align,
     font_families: &[String],
 ) -> (f32, f32) {
     let cache_key = make_measure_cache_key(
@@ -304,6 +388,7 @@ fn measure_text_size(
         font_size,
         line_height,
         font_weight,
+        align,
         font_families,
     );
     if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied()) {
@@ -312,45 +397,19 @@ fn measure_text_size(
 
     MEASURE_FONT_SYSTEM.with(|slot| {
         let mut font_system = slot.borrow_mut();
-        let mut buffer = Buffer::new(
+        let buffer = build_text_buffer(
             &mut font_system,
-            Metrics::new(
-                font_size.max(1.0),
-                (font_size * line_height.max(0.8)).max(1.0),
-            ),
+            content,
+            max_width,
+            None,
+            allow_wrap,
+            font_size,
+            line_height,
+            font_weight,
+            align,
+            font_families,
         );
-        buffer.set_wrap(
-            &mut font_system,
-            if allow_wrap {
-                Wrap::WordOrGlyph
-            } else {
-                Wrap::None
-            },
-        );
-        buffer.set_size(&mut font_system, max_width.map(|w| w.max(1.0)), None);
-
-        let attrs = if let Some(first) = font_families.first() {
-            Attrs::new()
-                .family(Family::Name(first.as_str()))
-                .weight(Weight(font_weight))
-        } else {
-            Attrs::new().weight(Weight(font_weight))
-        };
-
-        // Keep one visible line box for empty text to match previous layout semantics.
-        let content = if content.is_empty() { " " } else { content };
-        buffer.set_text(&mut font_system, content, &attrs, Shaping::Advanced, None);
-        buffer.shape_until_scroll(&mut font_system, false);
-
-        let mut max_line_width = 0.0_f32;
-        let mut line_count = 0_usize;
-        for run in buffer.layout_runs() {
-            line_count += 1;
-            max_line_width = max_line_width.max(run.line_w);
-        }
-        let resolved_lines = line_count.max(1);
-        let resolved_height = resolved_lines as f32 * buffer.metrics().line_height;
-        let measured = (max_line_width.max(1.0), resolved_height.max(1.0));
+        let measured = measure_buffer_size(&buffer);
         MEASURE_TEXT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
             cache.insert(cache_key, measured);
@@ -360,6 +419,38 @@ fn measure_text_size(
         });
         measured
     })
+}
+
+impl Text {
+    fn ensure_layout_buffer(&mut self, width: f32, height: f32) {
+        let signature = TextLayoutBufferSignature {
+            revision: self.measure_revision,
+            width_milli: quantize_milli(width.max(1.0)),
+            height_milli: quantize_milli(height.max(1.0)),
+            allow_wrap: self.allow_wrap,
+        };
+        if self.layout_buffer_signature == Some(signature) && self.layout_buffer.is_some() {
+            return;
+        }
+
+        let buffer = MEASURE_FONT_SYSTEM.with(|slot| {
+            let mut font_system = slot.borrow_mut();
+            build_text_buffer(
+                &mut font_system,
+                self.content.as_str(),
+                Some(width),
+                Some(height),
+                self.allow_wrap,
+                self.font_size,
+                self.line_height,
+                self.font_weight,
+                self.align,
+                self.font_families.as_slice(),
+            )
+        });
+        self.layout_buffer = Some(buffer);
+        self.layout_buffer_signature = Some(signature);
+    }
 }
 
 impl ElementTrait for Text {
@@ -603,6 +694,7 @@ impl Layoutable for Text {
                         self.font_size,
                         self.line_height,
                         self.font_weight,
+                        self.align,
                         self.font_families.as_slice(),
                     );
                     self.cached_intrinsic_width = Some((self.measure_revision, width));
@@ -616,6 +708,7 @@ impl Layoutable for Text {
                     self.font_size,
                     self.line_height,
                     self.font_weight,
+                    self.align,
                     self.font_families.as_slice(),
                 );
                 self.cached_intrinsic_width = Some((self.measure_revision, width));
@@ -650,6 +743,7 @@ impl Layoutable for Text {
                         self.font_size,
                         self.line_height,
                         self.font_weight,
+                        self.align,
                         self.font_families.as_slice(),
                     );
                     self.cached_height_for_width =
@@ -664,6 +758,7 @@ impl Layoutable for Text {
                     self.font_size,
                     self.line_height,
                     self.font_weight,
+                    self.align,
                     self.font_families.as_slice(),
                 );
                 self.cached_height_for_width =
@@ -673,6 +768,7 @@ impl Layoutable for Text {
             self.size.height = measured_height.max(1.0);
             self.element.set_height(self.size.height);
         }
+        self.ensure_layout_buffer(self.size.width, self.size.height);
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
     }
 
@@ -741,6 +837,7 @@ impl Renderable for Text {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
+        self.ensure_layout_buffer(self.layout_size.width, self.layout_size.height);
         let pass = TextPass::new(
             TextPassParams {
                 content: self.content.clone(),
@@ -756,7 +853,7 @@ impl Renderable for Text {
                 font_families: self.font_families.clone(),
                 align: self.align,
                 allow_wrap: self.allow_wrap,
-                layout_buffer: None,
+                layout_buffer: self.layout_buffer.clone(),
                 scissor_rect: None,
                 stencil_clip_id: None,
             },

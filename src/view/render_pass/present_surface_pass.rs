@@ -8,7 +8,7 @@ use crate::view::frame_graph::{
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::{render_target_ref, render_target_view};
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 
 const PRESENT_SURFACE_RESOURCES: u64 = 401;
 
@@ -106,37 +106,37 @@ impl GraphicsPass for PresentSurfacePass {
             return;
         };
         let format = ctx.viewport().surface_format();
-        let cache = present_surface_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(PRESENT_SURFACE_RESOURCES, || {
-            PresentSurfaceResources::new(&device, format)
-        });
-        if resources.pipeline_format != format {
-            *resources = PresentSurfaceResources::new(&device, format);
-        }
+        with_present_surface_resources_cache(|cache| {
+            let resources = cache.get_or_insert_with(PRESENT_SURFACE_RESOURCES, || {
+                PresentSurfaceResources::new(&device, format)
+            });
+            if resources.pipeline_format != format {
+                *resources = PresentSurfaceResources::new(&device, format);
+            }
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Present Surface Bind Group"),
-            layout: &resources.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&src_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&resources.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Present Surface Bind Group"),
+                layout: &resources.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&src_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&resources.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            ctx.set_pipeline(&resources.pipeline);
+            ctx.set_bind_group(0, &bind_group, &[]);
+            ctx.draw(0..3, 0..1);
+            crate::view::render_pass::debug_overlay_pass::draw_debug_overlay(ctx, None);
         });
-        ctx.set_pipeline(&resources.pipeline);
-        ctx.set_bind_group(0, &bind_group, &[]);
-        ctx.draw(0..3, 0..1);
-        crate::view::render_pass::debug_overlay_pass::draw_debug_overlay(ctx, None);
     }
 }
 
@@ -151,9 +151,7 @@ impl PresentSurfaceResources {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Present Surface Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../../shader/present_surface.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(present_surface_shader_source().into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -248,13 +246,31 @@ impl PresentSurfaceResources {
     }
 }
 
-fn present_surface_resources_cache() -> &'static Mutex<ResourceCache<PresentSurfaceResources>> {
-    static CACHE: OnceLock<Mutex<ResourceCache<PresentSurfaceResources>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+#[cfg(target_arch = "wasm32")]
+fn present_surface_shader_source() -> &'static str {
+    include_str!("../../shader/present_surface_web.wgsl")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn present_surface_shader_source() -> &'static str {
+    include_str!("../../shader/present_surface.wgsl")
+}
+
+fn with_present_surface_resources_cache<R>(
+    f: impl FnOnce(&mut ResourceCache<PresentSurfaceResources>) -> R,
+) -> R {
+    thread_local! {
+        static CACHE: RefCell<ResourceCache<PresentSurfaceResources>> =
+            RefCell::new(ResourceCache::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        f(&mut cache)
+    })
 }
 
 pub fn clear_present_surface_resources_cache() {
-    let cache = present_surface_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    cache.clear();
+    with_present_surface_resources_cache(|cache| {
+        cache.clear();
+    });
 }

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RFGUI Example</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #0f1115;
+      }
+
+      body {
+        overflow: hidden;
+      }
+
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app-canvas" tabindex="0"></canvas>
+    <script>
+      if (typeof GPUCanvasContext !== "undefined") {
+        const originalConfigure = GPUCanvasContext.prototype.configure;
+        GPUCanvasContext.prototype.configure = function(config) {
+          const nextConfig = { ...config };
+          if (!("colorSpace" in nextConfig) || nextConfig.colorSpace == null) {
+            nextConfig.colorSpace = "srgb";
+          }
+          console.log("[rfgui] intercepted webgpu configure:", nextConfig);
+          return originalConfigure.call(this, nextConfig);
+        };
+      }
+    </script>
+    <link data-trunk rel="rust" data-cargo-profile="web-debug" data-keep-debug data-no-demangle />
+    <script>
+      window.addEventListener("TrunkApplicationStarted", () => {
+        const canvas = document.getElementById("app-canvas");
+        const webgpu = canvas?.getContext?.("webgpu");
+        const config = webgpu?.getConfiguration?.() ?? null;
+        console.log("[rfgui] webgpu canvas config:", config);
+        console.log("[rfgui] webgpu canvas colorSpace:", config?.colorSpace ?? null);
+      });
+    </script>
+  </body>
+</html>

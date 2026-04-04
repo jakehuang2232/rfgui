@@ -297,11 +297,12 @@ pub fn acquire_svg_document(source: &SvgSource) -> u64 {
 
     if spawn_loader {
         let source = source.clone();
-        std::thread::spawn(move || {
+        #[cfg(target_arch = "wasm32")]
+        {
             let loaded = load_svg_source(&source);
             let mut entries = svg_documents().lock().unwrap();
             let Some(entry) = entries.get_mut(&key) else {
-                return;
+                return key;
             };
             entry.state = match loaded {
                 Ok((tree, intrinsic_width, intrinsic_height)) => SvgDocumentState::Ready {
@@ -312,7 +313,26 @@ pub fn acquire_svg_document(source: &SvgSource) -> u64 {
                 Err(message) => SvgDocumentState::Error { message },
             };
             mark_redraw_dirty();
-        });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn(move || {
+                let loaded = load_svg_source(&source);
+                let mut entries = svg_documents().lock().unwrap();
+                let Some(entry) = entries.get_mut(&key) else {
+                    return;
+                };
+                entry.state = match loaded {
+                    Ok((tree, intrinsic_width, intrinsic_height)) => SvgDocumentState::Ready {
+                        tree,
+                        intrinsic_width,
+                        intrinsic_height,
+                    },
+                    Err(message) => SvgDocumentState::Error { message },
+                };
+                mark_redraw_dirty();
+            });
+        }
     }
 
     key
@@ -401,11 +421,12 @@ pub fn acquire_svg_raster(document_key: u64, width: u32, height: u32) -> u64 {
     if let Some(tree) = tree
         && spawn_raster
     {
-        std::thread::spawn(move || {
+        #[cfg(target_arch = "wasm32")]
+        {
             let rasterized = rasterize_svg(tree.as_ref(), width, height);
             let mut rasters = svg_rasters().lock().unwrap();
             let Some(entry) = rasters.get_mut(&key) else {
-                return;
+                return key;
             };
             entry.state = match rasterized {
                 Ok(pixels) => SvgRasterState::Ready {
@@ -420,7 +441,30 @@ pub fn acquire_svg_raster(document_key: u64, width: u32, height: u32) -> u64 {
             entry.last_access_tick = next_access_tick();
             evict_svg_rasters_under_pressure(&mut rasters);
             mark_redraw_dirty();
-        });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn(move || {
+                let rasterized = rasterize_svg(tree.as_ref(), width, height);
+                let mut rasters = svg_rasters().lock().unwrap();
+                let Some(entry) = rasters.get_mut(&key) else {
+                    return;
+                };
+                entry.state = match rasterized {
+                    Ok(pixels) => SvgRasterState::Ready {
+                        width,
+                        height,
+                        pixels,
+                        generation: next_generation(),
+                        uploaded_generation: None,
+                    },
+                    Err(message) => SvgRasterState::Error { message },
+                };
+                entry.last_access_tick = next_access_tick();
+                evict_svg_rasters_under_pressure(&mut rasters);
+                mark_redraw_dirty();
+            });
+        }
     }
 
     key

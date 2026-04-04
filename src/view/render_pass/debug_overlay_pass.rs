@@ -1,7 +1,7 @@
 use crate::view::frame_graph::ResourceCache;
 use crate::view::render_pass::GraphicsCtx;
 use crate::view::render_pass::render_target::{render_target_ref, render_target_sample_count};
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 use wgpu::util::DeviceExt;
 
 const DEBUG_OVERLAY_RESOURCES: u64 = 402;
@@ -35,41 +35,42 @@ pub(crate) fn draw_debug_overlay(
         None => 1,
     };
     let uses_depth_stencil = target_handle.is_some();
-    let cache = debug_overlay_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    let resources = cache.get_or_insert_with(DEBUG_OVERLAY_RESOURCES, || {
-        DebugOverlayResources::new(&device, format, sample_count, uses_depth_stencil)
-    });
-    if resources.pipeline_format != format
-        || resources.pipeline_sample_count != sample_count
-        || resources.uses_depth_stencil != uses_depth_stencil
-    {
-        *resources = DebugOverlayResources::new(&device, format, sample_count, uses_depth_stencil);
-    }
+    with_debug_overlay_resources_cache(|cache| {
+        let resources = cache.get_or_insert_with(DEBUG_OVERLAY_RESOURCES, || {
+            DebugOverlayResources::new(&device, format, sample_count, uses_depth_stencil)
+        });
+        if resources.pipeline_format != format
+            || resources.pipeline_sample_count != sample_count
+            || resources.uses_depth_stencil != uses_depth_stencil
+        {
+            *resources =
+                DebugOverlayResources::new(&device, format, sample_count, uses_depth_stencil);
+        }
 
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Frame Debug Overlay Vertex Buffer"),
-        contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Frame Debug Overlay Index Buffer"),
-        contents: bytemuck::cast_slice(&indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Frame Debug Overlay Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Frame Debug Overlay Index Buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
 
-    let surface_size = ctx.viewport().surface_size();
-    let (target_w, target_h) = match target_handle {
-        Some(handle) => render_target_ref(ctx.frame_resources(), handle)
-            .map(|texture_ref| texture_ref.physical_size())
-            .unwrap_or(surface_size),
-        None => surface_size,
-    };
-    ctx.set_pipeline(&resources.pipeline);
-    ctx.set_scissor_rect(0, 0, target_w, target_h);
-    ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
-    ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-    ctx.draw_indexed(0..indices.len() as u32, 0, 0..1);
+        let surface_size = ctx.viewport().surface_size();
+        let (target_w, target_h) = match target_handle {
+            Some(handle) => render_target_ref(ctx.frame_resources(), handle)
+                .map(|texture_ref| texture_ref.physical_size())
+                .unwrap_or(surface_size),
+            None => surface_size,
+        };
+        ctx.set_pipeline(&resources.pipeline);
+        ctx.set_scissor_rect(0, 0, target_w, target_h);
+        ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+        ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        ctx.draw_indexed(0..indices.len() as u32, 0, 0..1);
+    });
 }
 
 struct DebugOverlayResources {
@@ -159,7 +160,15 @@ impl DebugOverlayResources {
     }
 }
 
-fn debug_overlay_resources_cache() -> &'static Mutex<ResourceCache<DebugOverlayResources>> {
-    static CACHE: OnceLock<Mutex<ResourceCache<DebugOverlayResources>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+fn with_debug_overlay_resources_cache<R>(
+    f: impl FnOnce(&mut ResourceCache<DebugOverlayResources>) -> R,
+) -> R {
+    thread_local! {
+        static CACHE: RefCell<ResourceCache<DebugOverlayResources>> =
+            RefCell::new(ResourceCache::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        f(&mut cache)
+    })
 }

@@ -1126,7 +1126,7 @@ impl Element {
         });
         let is_axis_layout = matches!(
             self.computed_style.layout,
-            Layout::Flex { .. } | Layout::Flow { .. } | Layout::InlineFlex
+            Layout::Inline | Layout::Flex { .. } | Layout::Flow { .. }
         );
         if is_axis_layout {
             let place_flex_started_at = Instant::now();
@@ -1146,12 +1146,10 @@ impl Element {
                 let mut profile = profile.borrow_mut();
                 profile.place_flex_children_ms += place_flex_elapsed_ms;
                 match self.computed_style.layout {
+                    Layout::Inline => profile.place_layout_inline_ms += place_flex_elapsed_ms,
                     Layout::Flex { .. } => profile.place_layout_flex_ms += place_flex_elapsed_ms,
                     Layout::Flow { .. } => profile.place_layout_flow_ms += place_flex_elapsed_ms,
-                    Layout::InlineFlex => {
-                        profile.place_layout_inline_flex_ms += place_flex_elapsed_ms
-                    }
-                    Layout::Block | Layout::Inline | Layout::Grid | Layout::None => {}
+                    Layout::Grid => {}
                 }
             });
         } else {

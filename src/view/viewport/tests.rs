@@ -1,7 +1,5 @@
-use crate::viewport::debug::append_overlay_label_geometry;
 use super::{
-    MouseButton, PendingClick, Viewport,
-    build_reuse_overlay_geometry, is_valid_click_candidate,
+    MouseButton, PendingClick, Viewport, build_reuse_overlay_geometry, is_valid_click_candidate,
 };
 use crate::transition::CHANNEL_STYLE_BOX_SHADOW;
 use crate::ui::{Binding, RsxNode, UiDirtyState};
@@ -11,6 +9,7 @@ use crate::view::base_component::{
     Element, LayoutConstraints, LayoutPlacement, Layoutable, get_scroll_offset_by_id,
     set_scroll_offset_by_id,
 };
+use crate::viewport::debug::append_overlay_label_geometry;
 use crate::{
     Length, ParsedValue, PropertyId, ScrollDirection, Style, Transform, Transition,
     TransitionProperty, Transitions, Translate,
