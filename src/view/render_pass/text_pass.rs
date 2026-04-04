@@ -1,17 +1,18 @@
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
-use crate::view::font_system::create_font_system;
+use crate::view::font_system::with_shared_font_system;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
     render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
+use crate::view::text_layout::build_text_buffer;
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use glyphon::cosmic_text::{Align, Weight};
+use glyphon::cosmic_text::Align;
 use glyphon::{
-    Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
-    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport as GlyphonViewport,
+    Buffer, Cache, Color as GlyphonColor, Resolution, SwashCache, TextArea, TextAtlas,
+    TextBounds, TextRenderer, Viewport as GlyphonViewport,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -116,13 +117,13 @@ impl TextPass {
         hasher.finish()
     }
 
-    fn layout_signature(&self, scale: f32) -> u64 {
+    fn layout_signature(&self, _scale: f32) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.params.content.hash(&mut hasher);
-        (self.params.width * scale).to_bits().hash(&mut hasher);
-        (self.params.height * scale).to_bits().hash(&mut hasher);
-        (self.params.font_size * scale).to_bits().hash(&mut hasher);
+        self.params.width.to_bits().hash(&mut hasher);
+        self.params.height.to_bits().hash(&mut hasher);
+        self.params.font_size.to_bits().hash(&mut hasher);
         self.params.line_height.to_bits().hash(&mut hasher);
         self.params.font_weight.hash(&mut hasher);
         self.params.font_families.hash(&mut hasher);
@@ -232,9 +233,9 @@ impl GraphicsPass for TextPass {
                 owned_buffer = resources.prepare_buffer_cached(
                     layout_signature,
                     self.params.content.as_str(),
-                    self.params.width * scale,
-                    self.params.height * scale,
-                    self.params.font_size * scale,
+                    self.params.width,
+                    self.params.height,
+                    self.params.font_size,
                     self.params.line_height,
                     self.params.font_weight,
                     self.params.font_families.as_slice(),
@@ -326,15 +327,17 @@ impl GraphicsPass for TextPass {
                 }
                 None => resources.take_renderer(&device, renderer_key),
             };
-            let prepare_result = renderer.prepare(
-                &device,
-                &queue,
-                &mut resources.font_system,
-                &mut resources.atlas,
-                &glyphon_viewport,
-                vec![text_area],
-                &mut resources.swash_cache,
-            );
+            let prepare_result = with_shared_font_system(|font_system| {
+                renderer.prepare(
+                    &device,
+                    &queue,
+                    font_system,
+                    &mut resources.atlas,
+                    &glyphon_viewport,
+                    vec![text_area],
+                    &mut resources.swash_cache,
+                )
+            });
             resources.put_viewport(resolution, glyphon_viewport);
             if prepare_result.is_err() {
                 resources.put_renderer(renderer_key, renderer);
@@ -533,7 +536,6 @@ fn build_text_area<'a>(
 
 struct TextResources {
     cache: Cache,
-    font_system: FontSystem,
     swash_cache: SwashCache,
     atlas: TextAtlas,
     format: wgpu::TextureFormat,
@@ -545,14 +547,12 @@ struct TextResources {
 
 impl TextResources {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let font_system = create_font_system();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let atlas = TextAtlas::new(device, queue, &cache, format);
 
         Self {
             cache,
-            font_system,
             swash_cache,
             atlas,
             format,
@@ -643,43 +643,20 @@ impl TextResources {
         if let Some(buffer) = self.layout_buffers.get(&signature) {
             return buffer.clone();
         }
-        let mut buffer = Buffer::new(
-            &mut self.font_system,
-            Metrics::new(
-                font_size.max(1.0),
-                (font_size * line_height.max(0.8)).max(1.0),
-            ),
-        );
-        buffer.set_wrap(
-            &mut self.font_system,
-            if allow_wrap {
-                glyphon::Wrap::WordOrGlyph
-            } else {
-                glyphon::Wrap::None
-            },
-        );
-        buffer.set_size(
-            &mut self.font_system,
-            Some(width.max(1.0)),
-            Some(height.max(1.0)),
-        );
-
-        let attrs = if let Some(first) = font_families.first() {
-            Attrs::new()
-                .family(Family::Name(first.as_str()))
-                .weight(Weight(font_weight))
-        } else {
-            Attrs::new().weight(Weight(font_weight))
-        };
-
-        buffer.set_text(
-            &mut self.font_system,
-            content,
-            &attrs,
-            Shaping::Advanced,
-            Some(align),
-        );
-        buffer.shape_until_scroll(&mut self.font_system, false);
+        let buffer = with_shared_font_system(|font_system| {
+            build_text_buffer(
+                font_system,
+                content,
+                Some(width),
+                Some(height),
+                allow_wrap,
+                font_size,
+                line_height,
+                font_weight,
+                align,
+                font_families,
+            )
+        });
         self.layout_buffers.insert(signature, buffer.clone());
         if self.layout_buffers.len() > 4096 {
             self.layout_buffers.clear();

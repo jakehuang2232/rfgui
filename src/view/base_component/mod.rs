@@ -347,24 +347,31 @@ pub(crate) fn collect_layout_transition_snapshots(
         out: &mut HashMap<u64, LayoutTransitionSnapshotSeed>,
     ) {
         let snapshot = node.box_model_snapshot();
+        let can_seed_snapshot = node
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::can_seed_layout_transition_snapshot)
+            .unwrap_or(true);
         let (flow_x, flow_y) = node
             .as_any()
             .downcast_ref::<Element>()
             .map(Element::layout_flow_origin)
             .unwrap_or((snapshot.x, snapshot.y));
-        out.insert(
-            node.id(),
-            LayoutTransitionSnapshotSeed {
-                layout_x: snapshot.x,
-                layout_y: snapshot.y,
-                flow_x,
-                flow_y,
-                layout_width: snapshot.width,
-                layout_height: snapshot.height,
-                parent_layout_x,
-                parent_layout_y,
-            },
-        );
+        if can_seed_snapshot {
+            out.insert(
+                node.id(),
+                LayoutTransitionSnapshotSeed {
+                    layout_x: snapshot.x,
+                    layout_y: snapshot.y,
+                    flow_x,
+                    flow_y,
+                    layout_width: snapshot.width,
+                    layout_height: snapshot.height,
+                    parent_layout_x,
+                    parent_layout_y,
+                },
+            );
+        }
 
         let (next_parent_x, next_parent_y) = node
             .as_any()

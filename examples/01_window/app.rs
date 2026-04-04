@@ -6,6 +6,8 @@ use crate::rfgui::ui::{
     set_redraw_callback, take_state_dirty,
 };
 use crate::rfgui::{ColorLike, Viewport};
+#[cfg(target_arch = "wasm32")]
+use crate::rfgui::view::load_default_web_cjk_font;
 use crate::rfgui_components::{Theme, init_theme};
 use crate::scene::MainScene;
 use crate::state::{
@@ -716,7 +718,6 @@ fn run_web() {
     let mut app = App::default();
     app.background_color = app_background_color(true);
     app.applied_theme_dark = Some(true);
-    app.rebuild_app();
 
     let app = Rc::new(RefCell::new(app));
     let raf_pending = Rc::new(Cell::new(false));
@@ -783,6 +784,7 @@ fn run_web() {
         let raf_pending = raf_pending.clone();
         let raf_callback_ref = raf_callback.clone();
         spawn_local(async move {
+            let _ = load_default_web_cjk_font().await;
             let mut viewport = {
                 let app = app.borrow_mut();
                 app.viewport.borrow_mut().take().expect("viewport should exist")
@@ -791,7 +793,8 @@ fn run_web() {
             viewport.create_surface().await;
             viewport.request_redraw();
             {
-                let app = app.borrow_mut();
+                let mut app = app.borrow_mut();
+                app.rebuild_app();
                 app.viewport.borrow_mut().replace(viewport);
             }
             web_schedule_redraw(&window, &raf_pending, &raf_callback_ref);

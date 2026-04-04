@@ -12,9 +12,7 @@ use rfgui::view::{Image, ImageFit, ImageSampling};
 
 #[cfg(target_arch = "wasm32")]
 const ABOUT_LICENSES_WEB_NOTE: &str = "Third Party Licenses\n\n\
-這個 example 的原生版會直接把完整第三方授權文字展開成巨大的 RSX 樹。\n\
-在 wasm 端，該結構會在初始化建樹階段造成 runtime crash，因此 web 版先改成精簡摘要。\n\n\
-如果需要完整授權內容，請先使用原生版 example 檢視，或後續再改成從外部文字資源載入。\
+Use desktop version to see third party licenses.\n\n\
 ";
 
 #[cfg(target_arch = "wasm32")]
@@ -26,6 +24,7 @@ pub fn build(theme: &Theme) -> RsxNode {
             layout: Layout::flow().column().no_wrap().align(Align::Center),
             padding: Padding::uniform(theme.spacing.md),
             gap: theme.spacing.sm,
+            scroll_direction: ScrollDirection::Vertical,
         }}>
             <Image style={{
                     width: Length::px(100.0),
@@ -56,7 +55,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                 <Text style={{
                     font_size: theme.typography.size.sm,
                 }}>
-                    {"Web 版目前使用精簡內容，避免初始化時建立過大的 RSX 樹。"}
+                    {"Web version of RFGUI has some gliches, please use desktop version for better experience."}
                 </Text>
                 <TextArea
                     multiline={true}
