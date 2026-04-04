@@ -36,7 +36,7 @@ jobs:
 
       - name: Build Web Example
         working-directory: examples/01_window
-        run: trunk build --release --config Trunk.toml
+        run: trunk build --config Trunk.toml
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
