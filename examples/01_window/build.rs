@@ -22,12 +22,13 @@ fn main() {
 
 fn target_profile_dir() -> PathBuf {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is not set"));
-    let profile = env::var("PROFILE").expect("PROFILE is not set");
-
     let mut current = out_dir.as_path();
     loop {
-        if current.file_name().and_then(|name| name.to_str()) == Some(profile.as_str()) {
-            return current.to_path_buf();
+        if current.file_name().and_then(|name| name.to_str()) == Some("build") {
+            return current
+                .parent()
+                .expect("build directory should have a profile parent")
+                .to_path_buf();
         }
         current = current.parent().unwrap_or_else(|| {
             panic!(

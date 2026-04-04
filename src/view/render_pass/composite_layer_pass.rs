@@ -12,8 +12,8 @@ use crate::view::render_pass::render_target::{
     render_target_origin, render_target_sample_count, render_target_view, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
+use std::cell::RefCell;
 use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
 const COMPOSITE_LAYER_RESOURCES: u64 = 201;
@@ -245,113 +245,115 @@ impl GraphicsPass for CompositeLayerPass {
             .handle()
             .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
             .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
-        let cache = composite_layer_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(COMPOSITE_LAYER_RESOURCES, || {
-            create_resources(&device, format, sample_count)
-        });
-        if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
-            *resources = create_resources(&device, format, sample_count);
-        }
-
-        if self.prepared_vertices.is_empty() || self.prepared_indices.is_empty() {
-            return;
-        }
-        let Some(vertex_buffer) = self
-            .vertex_buffer
-            .handle()
-            .and_then(|h| ctx.frame_resources().acquire_buffer(h))
-        else {
-            return;
-        };
-        let Some(index_buffer) = self
-            .index_buffer
-            .handle()
-            .and_then(|h| ctx.frame_resources().acquire_buffer(h))
-        else {
-            return;
-        };
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("CompositeLayer Bind Group"),
-            layout: &resources.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&layer_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&resources.sampler),
-                },
-            ],
-        });
-        let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            logical_scissor_to_target_physical(
-                ctx.viewport(),
-                scissor_rect,
-                target_origin,
-                (target_w, target_h),
-            )
-        });
-
-        let debug_geometry_overlay = ctx.viewport().debug_geometry_overlay();
-        let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
-            &resources.pipeline_stencil_test
-        } else {
-            &resources.pipeline_no_stencil
-        };
-        if let Some([x, y, width, height]) = scissor_rect_physical {
-            ctx.set_scissor_rect(x, y, width, height);
-        } else {
-            ctx.set_scissor_rect(0, 0, target_w, target_h);
-        }
-        if let Some(clip_id) = self.input.pass_context.stencil_clip_id {
-            ctx.set_stencil_reference(clip_id as u32);
-        } else {
-            ctx.set_stencil_reference(0);
-        }
-        ctx.set_pipeline(pipeline);
-        ctx.set_bind_group(0, &bind_group, &[]);
-        ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
-        ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        ctx.draw_indexed(0..self.prepared_indices.len() as u32, 0, 0..1);
-
-        if debug_geometry_overlay {
-            let (overlay_w, overlay_h) = ctx.viewport().surface_size();
-            let (debug_vertices, debug_indices) = build_debug_overlay_geometry(
-                &self.prepared_vertices,
-                &self.prepared_indices,
-                [target_origin.0 as f32, target_origin.1 as f32],
-                overlay_w as f32,
-                overlay_h as f32,
-                [0.2, 1.0, 0.95, 0.95],
-                [0.2, 1.0, 0.35, 0.95],
-            );
-            if !debug_vertices.is_empty() && !debug_indices.is_empty() {
-                let debug_vertex_buffer =
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Composite Debug Vertex Buffer"),
-                        contents: bytemuck::cast_slice(&debug_vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
-                let debug_index_buffer =
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Composite Debug Index Buffer"),
-                        contents: bytemuck::cast_slice(&debug_indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
-                let debug_pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
-                    &resources.debug_pipeline_stencil_test
-                } else {
-                    &resources.debug_pipeline_no_stencil
-                };
-                ctx.set_pipeline(debug_pipeline);
-                ctx.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
-                ctx.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                ctx.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
+        with_composite_layer_resources_cache(|cache| {
+            let resources = cache.get_or_insert_with(COMPOSITE_LAYER_RESOURCES, || {
+                create_resources(&device, format, sample_count)
+            });
+            if resources.pipeline_format != format
+                || resources.pipeline_sample_count != sample_count
+            {
+                *resources = create_resources(&device, format, sample_count);
             }
-        }
+
+            if self.prepared_vertices.is_empty() || self.prepared_indices.is_empty() {
+                return;
+            }
+            let Some(vertex_buffer) = self
+                .vertex_buffer
+                .handle()
+                .and_then(|h| ctx.frame_resources().acquire_buffer(h))
+            else {
+                return;
+            };
+            let Some(index_buffer) = self
+                .index_buffer
+                .handle()
+                .and_then(|h| ctx.frame_resources().acquire_buffer(h))
+            else {
+                return;
+            };
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("CompositeLayer Bind Group"),
+                layout: &resources.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&layer_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&resources.sampler),
+                    },
+                ],
+            });
+            let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
+                logical_scissor_to_target_physical(
+                    ctx.viewport(),
+                    scissor_rect,
+                    target_origin,
+                    (target_w, target_h),
+                )
+            });
+
+            let debug_geometry_overlay = ctx.viewport().debug_geometry_overlay();
+            let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
+                &resources.pipeline_stencil_test
+            } else {
+                &resources.pipeline_no_stencil
+            };
+            if let Some([x, y, width, height]) = scissor_rect_physical {
+                ctx.set_scissor_rect(x, y, width, height);
+            } else {
+                ctx.set_scissor_rect(0, 0, target_w, target_h);
+            }
+            if let Some(clip_id) = self.input.pass_context.stencil_clip_id {
+                ctx.set_stencil_reference(clip_id as u32);
+            } else {
+                ctx.set_stencil_reference(0);
+            }
+            ctx.set_pipeline(pipeline);
+            ctx.set_bind_group(0, &bind_group, &[]);
+            ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
+            ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            ctx.draw_indexed(0..self.prepared_indices.len() as u32, 0, 0..1);
+
+            if debug_geometry_overlay {
+                let (overlay_w, overlay_h) = ctx.viewport().surface_size();
+                let (debug_vertices, debug_indices) = build_debug_overlay_geometry(
+                    &self.prepared_vertices,
+                    &self.prepared_indices,
+                    [target_origin.0 as f32, target_origin.1 as f32],
+                    overlay_w as f32,
+                    overlay_h as f32,
+                    [0.2, 1.0, 0.95, 0.95],
+                    [0.2, 1.0, 0.35, 0.95],
+                );
+                if !debug_vertices.is_empty() && !debug_indices.is_empty() {
+                    let debug_vertex_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Composite Debug Vertex Buffer"),
+                            contents: bytemuck::cast_slice(&debug_vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                    let debug_index_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Composite Debug Index Buffer"),
+                            contents: bytemuck::cast_slice(&debug_indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+                    let debug_pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
+                        &resources.debug_pipeline_stencil_test
+                    } else {
+                        &resources.debug_pipeline_no_stencil
+                    };
+                    ctx.set_pipeline(debug_pipeline);
+                    ctx.set_vertex_buffer(0, debug_vertex_buffer.slice(..));
+                    ctx.set_index_buffer(debug_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    ctx.draw_indexed(0..debug_indices.len() as u32, 0, 0..1);
+                }
+            }
+        });
     }
 }
 
@@ -624,15 +626,23 @@ fn composite_layer_depth_stencil_state(mode: CompositeLayerStencilMode) -> wgpu:
     }
 }
 
-fn composite_layer_resources_cache() -> &'static Mutex<ResourceCache<CompositeLayerResources>> {
-    static CACHE: OnceLock<Mutex<ResourceCache<CompositeLayerResources>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+fn with_composite_layer_resources_cache<R>(
+    f: impl FnOnce(&mut ResourceCache<CompositeLayerResources>) -> R,
+) -> R {
+    thread_local! {
+        static CACHE: RefCell<ResourceCache<CompositeLayerResources>> =
+            RefCell::new(ResourceCache::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        f(&mut cache)
+    })
 }
 
 pub fn clear_composite_layer_resources_cache() {
-    let cache = composite_layer_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    cache.clear();
+    with_composite_layer_resources_cache(|cache| {
+        cache.clear();
+    });
 }
 
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {

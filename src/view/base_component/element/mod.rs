@@ -50,7 +50,7 @@ include!("impl_layout.rs");
 include!("helpers.rs");
 include!("tests.rs");
 
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 trait DrawRectIoPass {
     fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput;
@@ -263,9 +263,9 @@ pub(crate) struct LayoutPlaceProfile {
     pub place_self_ms: f64,
     pub place_children_ms: f64,
     pub place_flex_children_ms: f64,
+    pub place_layout_inline_ms: f64,
     pub place_layout_flex_ms: f64,
     pub place_layout_flow_ms: f64,
-    pub place_layout_inline_flex_ms: f64,
     pub non_axis_child_place_ms: f64,
     pub absolute_child_place_ms: f64,
     pub child_place_calls: usize,
@@ -332,6 +332,7 @@ pub struct ViewportContext {
     target_height: u32,
     target_format: wgpu::TextureFormat,
     scale_factor: f32,
+    render_transform: Option<Mat4>,
     promoted_node_ids: Arc<std::collections::HashSet<u64>>,
     promoted_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
     promoted_composition_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
@@ -387,6 +388,7 @@ pub struct UiBuildContext {
 fn texture_desc_for_logical_bounds(
     bounds: PromotionCompositeBounds,
     scale_factor: f32,
+    _render_transform: Option<Mat4>,
     target_format: wgpu::TextureFormat,
 ) -> TextureDesc {
     let scale = scale_factor.max(0.0001);
@@ -446,6 +448,7 @@ impl UiBuildContext {
                 target_height: viewport_height.max(1),
                 target_format: viewport_format,
                 scale_factor: scale_factor.max(0.0001),
+                render_transform: None,
                 promoted_node_ids: Arc::new(std::collections::HashSet::new()),
                 promoted_update_kinds: Arc::new(HashMap::new()),
                 promoted_composition_update_kinds: Arc::new(HashMap::new()),
@@ -497,6 +500,7 @@ impl UiBuildContext {
             texture_desc_for_logical_bounds(
                 bounds,
                 self.viewport.scale_factor,
+                self.viewport.render_transform,
                 self.viewport.target_format,
             )
             .with_label(promoted_layer_label(node_id)),
@@ -515,6 +519,7 @@ impl UiBuildContext {
             texture_desc_for_logical_bounds(
                 bounds,
                 self.viewport.scale_factor,
+                self.viewport.render_transform,
                 self.viewport.target_format,
             ),
             stable_key,
@@ -628,6 +633,14 @@ impl UiBuildContext {
 
     pub(crate) fn set_color_target(&mut self, color_target: Option<TextureHandle>) {
         self.viewport.color_target = color_target;
+    }
+
+    pub(crate) fn current_render_transform(&self) -> Option<Mat4> {
+        self.viewport.render_transform
+    }
+
+    pub(crate) fn set_current_render_transform(&mut self, render_transform: Option<Mat4>) {
+        self.viewport.render_transform = render_transform;
     }
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {

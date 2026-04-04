@@ -14,7 +14,7 @@ use crate::view::render_pass::texture_composite_pass::{
     TextureCompositePass, TextureCompositeSourceIn,
 };
 use crate::view::render_pass::{ClearPass, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 use wgpu::util::DeviceExt;
 
 const SHADOW_RESOURCES: u64 = 203;
@@ -241,13 +241,11 @@ impl GraphicsPass for ShadowFillPass {
         if target_w == 0 || target_h == 0 {
             return;
         }
-        let pipeline = {
-            let cache = shadow_resources_cache();
-            let mut cache = cache.lock().unwrap();
+        let pipeline = with_shadow_resources_cache(|cache| {
             let resources =
                 cache.get_or_insert_with(SHADOW_RESOURCES, || create_resources(&device));
             resources.fill_pipeline.clone()
-        };
+        });
         encode_mesh_fill_into_pass(
             &device,
             &pipeline,
@@ -469,15 +467,20 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
     true
 }
 
-fn shadow_resources_cache() -> &'static Mutex<ResourceCache<ShadowResources>> {
-    static CACHE: OnceLock<Mutex<ResourceCache<ShadowResources>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+fn with_shadow_resources_cache<R>(f: impl FnOnce(&mut ResourceCache<ShadowResources>) -> R) -> R {
+    thread_local! {
+        static CACHE: RefCell<ResourceCache<ShadowResources>> = RefCell::new(ResourceCache::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        f(&mut cache)
+    })
 }
 
 pub fn clear_shadow_resources_cache() {
-    let cache = shadow_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    cache.clear();
+    with_shadow_resources_cache(|cache| {
+        cache.clear();
+    });
 }
 
 pub fn begin_shadow_resources_frame() {}

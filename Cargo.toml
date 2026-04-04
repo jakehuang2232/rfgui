@@ -18,11 +18,18 @@ wgpu = "28.0.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 once_cell = "1.21.3"
 glyphon = "0.10"
-arboard = "3.6.1"
 image = { version = "0.25", default-features = false, features = ["default-formats"] }
 resvg = "0.45.1"
 rfgui-rsx = { version = "0.1.0-alpha.1", path = "rsx-macro" }
 glam = "0.30.5"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = "3.6.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-time = "1"
+web-sys = { version = "0.3.85", features = ["HtmlCanvasElement"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26.1"
@@ -30,3 +37,8 @@ objc = "0.2"
 
 [profile.dev]
 opt-level = 1
+
+[profile.web-debug]
+inherits = "dev"
+debug = 2
+strip = "none"

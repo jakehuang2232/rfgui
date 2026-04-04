@@ -1,4 +1,6 @@
+use crate::time::{Duration, Instant};
 use crate::ui::MouseButton as UiMouseButton;
+use crate::view::font_system::create_font_system;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, RectPassParams};
 use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPassParams};
@@ -9,7 +11,6 @@ use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
 
 use crate::ui::Binding;
 use crate::view::promotion::PromotionNodeInfo;
@@ -73,7 +74,7 @@ pub struct TextArea {
 }
 
 thread_local! {
-    static SHARED_TEXT_AREA_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(FontSystem::new());
+    static SHARED_TEXT_AREA_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(create_font_system());
 }
 
 #[derive(Clone, Debug)]

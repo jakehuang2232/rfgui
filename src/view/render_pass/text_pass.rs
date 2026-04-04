@@ -1,6 +1,7 @@
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
+use crate::view::font_system::create_font_system;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
@@ -12,8 +13,8 @@ use glyphon::{
     Attrs, Buffer, Cache, Color as GlyphonColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport as GlyphonViewport,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 pub struct TextPass {
     params: TextPassParams,
     prepared: Option<TextPreparedState>,
@@ -195,64 +196,150 @@ impl GraphicsPass for TextPass {
             width: screen_w,
             height: screen_h,
         };
-        let mut global = text_resources(&device, &queue, format);
-        let resources = global.resources.as_mut().unwrap();
-        let glyphon_viewport = resources.take_viewport(&device, &queue, resolution);
+        with_text_resources(&device, &queue, format, |resources| {
+            let glyphon_viewport = resources.take_viewport(&device, &queue, resolution);
 
-        let bounds = match resolve_text_bounds(
-            self.params.x * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
-            self.params.y * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
-            self.params.width * scale,
-            self.params.height * scale,
-            screen_w,
-            screen_h,
-            self.params.scissor_rect.and_then(|scissor_rect| {
-                logical_scissor_to_target_physical(
-                    viewport,
-                    scissor_rect,
-                    target_origin,
-                    (screen_w, screen_h),
-                )
-            }),
-        ) {
-            Some(bounds) => bounds,
-            None => {
+            let bounds = match resolve_text_bounds(
+                self.params.x * scale - target_origin.0 as f32
+                    + target_meta.logical_origin.0 as f32,
+                self.params.y * scale - target_origin.1 as f32
+                    + target_meta.logical_origin.1 as f32,
+                self.params.width * scale,
+                self.params.height * scale,
+                screen_w,
+                screen_h,
+                self.params.scissor_rect.and_then(|scissor_rect| {
+                    logical_scissor_to_target_physical(
+                        viewport,
+                        scissor_rect,
+                        target_origin,
+                        (screen_w, screen_h),
+                    )
+                }),
+            ) {
+                Some(bounds) => bounds,
+                None => {
+                    resources.put_viewport(resolution, glyphon_viewport);
+                    return;
+                }
+            };
+            let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
+            let layout_signature = self.layout_signature(scale);
+            let owned_buffer;
+            let buffer = if let Some(buffer) = self.params.layout_buffer.as_ref() {
+                buffer
+            } else {
+                owned_buffer = resources.prepare_buffer_cached(
+                    layout_signature,
+                    self.params.content.as_str(),
+                    self.params.width * scale,
+                    self.params.height * scale,
+                    self.params.font_size * scale,
+                    self.params.line_height,
+                    self.params.font_weight,
+                    self.params.font_families.as_slice(),
+                    self.params.align,
+                    self.params.allow_wrap,
+                );
+                &owned_buffer
+            };
+            let text_area = build_text_area(
+                buffer,
+                self.params.x * scale - target_origin.0 as f32
+                    + target_meta.logical_origin.0 as f32,
+                self.params.y * scale - target_origin.1 as f32
+                    + target_meta.logical_origin.1 as f32,
+                bounds,
+                to_glyphon_color(self.params.color, self.params.opacity),
+            );
+            let renderer_key = TextRendererKey {
+                sample_count: output_sample_count,
+                stencil_enabled: self.input.pass_context.uses_depth_stencil,
+            };
+            if let Some(renderer) =
+                resources.take_prepared_renderer(renderer_key, prepare_signature)
+            {
+                self.prepared = Some(TextPreparedState {
+                    renderer_key,
+                    renderer: Some(renderer),
+                    prepare_signature,
+                    stencil_clip_id: self.params.stencil_clip_id,
+                    resolution,
+                });
                 resources.put_viewport(resolution, glyphon_viewport);
                 return;
             }
-        };
-        let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
-        let layout_signature = self.layout_signature(scale);
-        let owned_buffer;
-        let buffer = if let Some(buffer) = self.params.layout_buffer.as_ref() {
-            buffer
-        } else {
-            owned_buffer = resources.prepare_buffer_cached(
-                layout_signature,
-                self.params.content.as_str(),
-                self.params.width * scale,
-                self.params.height * scale,
-                self.params.font_size * scale,
-                self.params.line_height,
-                self.params.font_weight,
-                self.params.font_families.as_slice(),
-                self.params.align,
-                self.params.allow_wrap,
+            if let Some(prepared) = self.prepared.as_mut() {
+                if prepared.renderer_key == renderer_key
+                    && prepared.prepare_signature == prepare_signature
+                {
+                    prepared.stencil_clip_id = self.params.stencil_clip_id;
+                    resources.put_viewport(resolution, glyphon_viewport);
+                    return;
+                }
+            }
+            if viewport.debug_geometry_overlay() {
+                let (overlay_w, overlay_h) = viewport.surface_size();
+                let overlay = build_text_debug_overlay(
+                    &buffer,
+                    self.params.x * scale - target_origin.0 as f32
+                        + target_meta.logical_origin.0 as f32,
+                    self.params.y * scale - target_origin.1 as f32
+                        + target_meta.logical_origin.1 as f32,
+                    bounds,
+                    [
+                        target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
+                        target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
+                    ],
+                    overlay_w as f32,
+                    overlay_h as f32,
+                );
+                if !overlay.vertices.is_empty() && !overlay.indices.is_empty() {
+                    let overlay_vertices: Vec<
+                        crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex,
+                    > = overlay
+                        .vertices
+                        .iter()
+                        .map(|vertex| {
+                            crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
+                                position: vertex.position,
+                                color: vertex.color,
+                            }
+                        })
+                        .collect();
+                    viewport.push_debug_overlay_geometry(&overlay_vertices, &overlay.indices);
+                }
+            }
+            let mut renderer = match self.prepared.take() {
+                Some(mut previous) => {
+                    if previous.renderer_key == renderer_key {
+                        previous
+                            .renderer
+                            .take()
+                            .unwrap_or_else(|| resources.take_renderer(&device, renderer_key))
+                    } else {
+                        if let Some(old_renderer) = previous.renderer.take() {
+                            resources.put_renderer(previous.renderer_key, old_renderer);
+                        }
+                        resources.take_renderer(&device, renderer_key)
+                    }
+                }
+                None => resources.take_renderer(&device, renderer_key),
+            };
+            let prepare_result = renderer.prepare(
+                &device,
+                &queue,
+                &mut resources.font_system,
+                &mut resources.atlas,
+                &glyphon_viewport,
+                vec![text_area],
+                &mut resources.swash_cache,
             );
-            &owned_buffer
-        };
-        let text_area = build_text_area(
-            buffer,
-            self.params.x * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
-            self.params.y * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
-            bounds,
-            to_glyphon_color(self.params.color, self.params.opacity),
-        );
-        let renderer_key = TextRendererKey {
-            sample_count: output_sample_count,
-            stencil_enabled: self.input.pass_context.uses_depth_stencil,
-        };
-        if let Some(renderer) = resources.take_prepared_renderer(renderer_key, prepare_signature) {
+            resources.put_viewport(resolution, glyphon_viewport);
+            if prepare_result.is_err() {
+                resources.put_renderer(renderer_key, renderer);
+                return;
+            }
             self.prepared = Some(TextPreparedState {
                 renderer_key,
                 renderer: Some(renderer),
@@ -260,86 +347,6 @@ impl GraphicsPass for TextPass {
                 stencil_clip_id: self.params.stencil_clip_id,
                 resolution,
             });
-            resources.put_viewport(resolution, glyphon_viewport);
-            return;
-        }
-        if let Some(prepared) = self.prepared.as_mut() {
-            if prepared.renderer_key == renderer_key
-                && prepared.prepare_signature == prepare_signature
-            {
-                prepared.stencil_clip_id = self.params.stencil_clip_id;
-                resources.put_viewport(resolution, glyphon_viewport);
-                return;
-            }
-        }
-        if viewport.debug_geometry_overlay() {
-            let (overlay_w, overlay_h) = viewport.surface_size();
-            let overlay = build_text_debug_overlay(
-                &buffer,
-                self.params.x * scale - target_origin.0 as f32
-                    + target_meta.logical_origin.0 as f32,
-                self.params.y * scale - target_origin.1 as f32
-                    + target_meta.logical_origin.1 as f32,
-                bounds,
-                [
-                    target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
-                    target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
-                ],
-                overlay_w as f32,
-                overlay_h as f32,
-            );
-            if !overlay.vertices.is_empty() && !overlay.indices.is_empty() {
-                let overlay_vertices: Vec<
-                    crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex,
-                > = overlay
-                    .vertices
-                    .iter()
-                    .map(|vertex| {
-                        crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
-                            position: vertex.position,
-                            color: vertex.color,
-                        }
-                    })
-                    .collect();
-                viewport.push_debug_overlay_geometry(&overlay_vertices, &overlay.indices);
-            }
-        }
-        let mut renderer = match self.prepared.take() {
-            Some(mut previous) => {
-                if previous.renderer_key == renderer_key {
-                    previous
-                        .renderer
-                        .take()
-                        .unwrap_or_else(|| resources.take_renderer(&device, renderer_key))
-                } else {
-                    if let Some(old_renderer) = previous.renderer.take() {
-                        resources.put_renderer(previous.renderer_key, old_renderer);
-                    }
-                    resources.take_renderer(&device, renderer_key)
-                }
-            }
-            None => resources.take_renderer(&device, renderer_key),
-        };
-        let prepare_result = renderer.prepare(
-            &device,
-            &queue,
-            &mut resources.font_system,
-            &mut resources.atlas,
-            &glyphon_viewport,
-            vec![text_area],
-            &mut resources.swash_cache,
-        );
-        resources.put_viewport(resolution, glyphon_viewport);
-        if prepare_result.is_err() {
-            resources.put_renderer(renderer_key, renderer);
-            return;
-        }
-        self.prepared = Some(TextPreparedState {
-            renderer_key,
-            renderer: Some(renderer),
-            prepare_signature,
-            stencil_clip_id: self.params.stencil_clip_id,
-            resolution,
         });
     }
 
@@ -356,49 +363,49 @@ impl GraphicsPass for TextPass {
             None => return,
         };
         let format = ctx.viewport().surface_format();
-        let mut global = text_resources(&device, &queue, format);
-        let resources = global.resources.as_mut().unwrap();
-        let Some(glyphon_viewport) = resources.viewport(prepared.resolution) else {
-            return;
-        };
-        let fallback_surface_size = ctx.viewport().surface_size();
-        let target_meta = resolve_texture_ref(
-            self.output.render_target.handle(),
-            ctx.frame_resources(),
-            fallback_surface_size,
-            None,
-        );
-        let target_size = target_meta.physical_size;
-        let target_origin = self
-            .output
-            .render_target
-            .handle()
-            .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-            .unwrap_or((0, 0));
-        let scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
-            logical_scissor_to_target_physical(
-                ctx.viewport(),
-                scissor_rect,
-                target_origin,
-                target_size,
-            )
+        with_text_resources(&device, &queue, format, |resources| {
+            let Some(glyphon_viewport) = resources.viewport(prepared.resolution) else {
+                return;
+            };
+            let fallback_surface_size = ctx.viewport().surface_size();
+            let target_meta = resolve_texture_ref(
+                self.output.render_target.handle(),
+                ctx.frame_resources(),
+                fallback_surface_size,
+                None,
+            );
+            let target_size = target_meta.physical_size;
+            let target_origin = self
+                .output
+                .render_target
+                .handle()
+                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+                .unwrap_or((0, 0));
+            let scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
+                logical_scissor_to_target_physical(
+                    ctx.viewport(),
+                    scissor_rect,
+                    target_origin,
+                    target_size,
+                )
+            });
+            let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
+            let Some(renderer) = prepared.renderer.take() else {
+                return;
+            };
+            if let Some([x, y, width, height]) = scissor_rect {
+                ctx.set_scissor_rect(x, y, width, height);
+            } else {
+                ctx.set_scissor_rect(0, 0, target_size.0, target_size.1);
+            }
+            ctx.set_stencil_reference(stencil_reference);
+            let _ = renderer.render(&resources.atlas, glyphon_viewport, ctx.raw_render_pass());
+            resources.put_prepared_renderer(
+                prepared.renderer_key,
+                prepared.prepare_signature,
+                renderer,
+            );
         });
-        let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
-        let Some(renderer) = prepared.renderer.take() else {
-            return;
-        };
-        if let Some([x, y, width, height]) = scissor_rect {
-            ctx.set_scissor_rect(x, y, width, height);
-        } else {
-            ctx.set_scissor_rect(0, 0, target_size.0, target_size.1);
-        }
-        ctx.set_stencil_reference(stencil_reference);
-        let _ = renderer.render(&resources.atlas, glyphon_viewport, ctx.raw_render_pass());
-        resources.put_prepared_renderer(
-            prepared.renderer_key,
-            prepared.prepare_signature,
-            renderer,
-        );
     }
 }
 
@@ -538,7 +545,7 @@ struct TextResources {
 
 impl TextResources {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let font_system = FontSystem::new();
+        let font_system = create_font_system();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let atlas = TextAtlas::new(device, queue, &cache, format);
@@ -685,9 +692,9 @@ struct TextGlobalCache {
     resources: Option<TextResources>,
 }
 
-fn text_global_cache() -> &'static Mutex<TextGlobalCache> {
-    static CACHE: OnceLock<Mutex<TextGlobalCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(TextGlobalCache { resources: None }))
+thread_local! {
+    static TEXT_GLOBAL_CACHE: RefCell<TextGlobalCache> =
+        const { RefCell::new(TextGlobalCache { resources: None }) };
 }
 
 fn build_text_debug_overlay(
@@ -835,24 +842,27 @@ fn text_pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
     [nx * 2.0 - 1.0, 1.0 - ny * 2.0]
 }
 
-fn text_resources<'a>(
+fn with_text_resources<R>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     format: wgpu::TextureFormat,
-) -> std::sync::MutexGuard<'a, TextGlobalCache> {
-    let cache = text_global_cache();
-    let mut guard = cache.lock().unwrap();
-    let rebuild = guard
-        .resources
-        .as_ref()
-        .map(|r| r.format != format)
-        .unwrap_or(true);
+    f: impl FnOnce(&mut TextResources) -> R,
+) -> R {
+    TEXT_GLOBAL_CACHE.with(|cache| {
+        let mut guard = cache.borrow_mut();
+        let rebuild = guard
+            .resources
+            .as_ref()
+            .map(|r| r.format != format)
+            .unwrap_or(true);
 
-    if rebuild {
-        guard.resources = Some(TextResources::new(device, queue, format));
-    }
+        if rebuild {
+            guard.resources = Some(TextResources::new(device, queue, format));
+        }
 
-    guard
+        let resources = guard.resources.as_mut().expect("text resources must exist");
+        f(resources)
+    })
 }
 
 fn text_depth_stencil_state() -> wgpu::DepthStencilState {
@@ -886,29 +896,26 @@ pub fn prewarm_text_pipeline(
     format: wgpu::TextureFormat,
     sample_count: u32,
 ) {
-    let mut global = text_resources(device, queue, format);
-    let resources = global
-        .resources
-        .as_mut()
-        .expect("text resources must exist");
-    let regular_key = TextRendererKey {
-        sample_count,
-        stencil_enabled: false,
-    };
-    let stencil_key = TextRendererKey {
-        sample_count,
-        stencil_enabled: true,
-    };
-    let renderer_regular = resources.take_renderer(device, regular_key);
-    resources.put_renderer(regular_key, renderer_regular);
-    let renderer_stencil = resources.take_renderer(device, stencil_key);
-    resources.put_renderer(stencil_key, renderer_stencil);
+    with_text_resources(device, queue, format, |resources| {
+        let regular_key = TextRendererKey {
+            sample_count,
+            stencil_enabled: false,
+        };
+        let stencil_key = TextRendererKey {
+            sample_count,
+            stencil_enabled: true,
+        };
+        let renderer_regular = resources.take_renderer(device, regular_key);
+        resources.put_renderer(regular_key, renderer_regular);
+        let renderer_stencil = resources.take_renderer(device, stencil_key);
+        resources.put_renderer(stencil_key, renderer_stencil);
+    });
 }
 
 pub fn clear_text_resources_cache() {
-    let cache = text_global_cache();
-    let mut guard = cache.lock().unwrap();
-    guard.resources = None;
+    TEXT_GLOBAL_CACHE.with(|cache| {
+        cache.borrow_mut().resources = None;
+    });
 }
 
 #[cfg(test)]

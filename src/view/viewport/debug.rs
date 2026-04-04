@@ -228,12 +228,9 @@ pub(super) fn build_layout_place_trace_nodes(
         ),
         TraceRenderNode::new("place_children", profile.place_children_ms),
         TraceRenderNode::new("place_flex_children", profile.place_flex_children_ms),
+        TraceRenderNode::new("place_layout_inline", profile.place_layout_inline_ms),
         TraceRenderNode::new("place_layout_flex", profile.place_layout_flex_ms),
         TraceRenderNode::new("place_layout_flow", profile.place_layout_flow_ms),
-        TraceRenderNode::new(
-            "place_layout_inline_flex",
-            profile.place_layout_inline_flex_ms,
-        ),
         TraceRenderNode::new(
             format!("child_place (calls={})", profile.child_place_calls),
             profile.non_axis_child_place_ms,

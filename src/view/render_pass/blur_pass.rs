@@ -12,7 +12,7 @@ use crate::view::render_pass::render_target::{
     render_target_ref, render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 use wgpu::util::DeviceExt;
 
 const BLUR_RESOURCES: u64 = 202;
@@ -165,54 +165,54 @@ impl GraphicsPass for BlurPass {
             }
             None => ctx.viewport().surface_format(),
         };
-        let cache = blur_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources =
-            cache.get_or_insert_with(BLUR_RESOURCES, || create_resources(device, format));
-        if resources.pipeline_format != format {
-            *resources = create_resources(device, format);
-        }
+        with_blur_resources_cache(|cache| {
+            let resources =
+                cache.get_or_insert_with(BLUR_RESOURCES, || create_resources(device, format));
+            if resources.pipeline_format != format {
+                *resources = create_resources(device, format);
+            }
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blur Bind Group"),
-            layout: &resources.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&layer_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&resources.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Blur Bind Group"),
+                layout: &resources.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&layer_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&resources.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+
+            let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
+                logical_scissor_to_target_physical(
+                    ctx.viewport(),
+                    scissor_rect,
+                    self.output
+                        .render_target
+                        .handle()
+                        .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+                        .unwrap_or((0, 0)),
+                    (target_w, target_h),
+                )
+            });
+
+            if let Some([x, y, width, height]) = scissor_rect_physical {
+                ctx.set_scissor_rect(x, y, width, height);
+            }
+            ctx.set_pipeline(&resources.pipeline);
+            ctx.set_bind_group(0, &bind_group, &[]);
+            ctx.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
+            ctx.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            ctx.draw_indexed(0..resources.index_count, 0, 0..1);
         });
-
-        let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            logical_scissor_to_target_physical(
-                ctx.viewport(),
-                scissor_rect,
-                self.output
-                    .render_target
-                    .handle()
-                    .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-                    .unwrap_or((0, 0)),
-                (target_w, target_h),
-            )
-        });
-
-        if let Some([x, y, width, height]) = scissor_rect_physical {
-            ctx.set_scissor_rect(x, y, width, height);
-        }
-        ctx.set_pipeline(&resources.pipeline);
-        ctx.set_bind_group(0, &bind_group, &[]);
-        ctx.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
-        ctx.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        ctx.draw_indexed(0..resources.index_count, 0, 0..1);
     }
 }
 
@@ -370,15 +370,20 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
     }
 }
 
-fn blur_resources_cache() -> &'static Mutex<ResourceCache<BlurResources>> {
-    static CACHE: OnceLock<Mutex<ResourceCache<BlurResources>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+fn with_blur_resources_cache<R>(f: impl FnOnce(&mut ResourceCache<BlurResources>) -> R) -> R {
+    thread_local! {
+        static CACHE: RefCell<ResourceCache<BlurResources>> = RefCell::new(ResourceCache::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        f(&mut cache)
+    })
 }
 
 pub fn clear_blur_resources_cache() {
-    let cache = blur_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    cache.clear();
+    with_blur_resources_cache(|cache| {
+        cache.clear();
+    });
 }
 
 fn fullscreen_quad_vertices() -> [BlurVertex; 4] {

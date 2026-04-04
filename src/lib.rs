@@ -6,6 +6,13 @@
 extern crate self as rfgui;
 
 mod style;
+pub mod time {
+    pub use std::time::Duration;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use std::time::Instant;
+    #[cfg(target_arch = "wasm32")]
+    pub use web_time::Instant;
+}
 /// Transition and animation primitives used by the retained UI runtime.
 pub mod transition;
 /// RSX authoring, component, state, event, and reconciliation APIs.

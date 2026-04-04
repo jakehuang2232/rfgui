@@ -3,10 +3,10 @@ use crate::rfgui::ui::{Binding, ClickHandlerProp, RsxNode, rsx};
 use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text, TextArea};
 use crate::rfgui::{
     Align, Angle, Animation, Animator, Border, BorderRadius, ClipMode, Collision,
-    CollisionBoundary, Color, CrossSize, Direction, FontFamily, JustifyContent, Keyframe, Layout,
-    Length, Opacity, Padding, ParsedValue, Perspective, Position, PropertyId, Repeat, Rotate,
-    Scale, ScrollDirection, Style, Transform, TransformOrigin, Transition, TransitionProperty,
-    Translate,
+    CollisionBoundary, Color, ColorLike, CrossSize, Direction, FontFamily, JustifyContent,
+    Keyframe, Layout, Length, Opacity, Padding, ParsedValue, Perspective, Position, PropertyId,
+    Repeat, Rotate, Scale, ScrollDirection, Style, Transform, TransformOrigin, Transition,
+    TransitionProperty, Translate,
 };
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
 use crate::utils::output_image_source;

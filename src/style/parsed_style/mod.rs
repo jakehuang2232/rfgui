@@ -511,7 +511,6 @@ impl<const N: usize> From<[Transition; N]> for Transitions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
-    Block,
     Inline,
     Flex {
         direction: FlowDirection,
@@ -524,9 +523,7 @@ pub enum Layout {
         justify_content: JustifyContent,
         cross_axis: CrossAxis,
     },
-    InlineFlex,
     Grid,
-    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

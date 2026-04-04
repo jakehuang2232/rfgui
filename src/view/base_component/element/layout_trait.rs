@@ -23,7 +23,7 @@ impl Layoutable for Element {
         // that depend on our inner size.
         let is_axis_layout = matches!(
             self.computed_style.layout,
-            Layout::Flex { .. } | Layout::Flow { .. } | Layout::InlineFlex
+            Layout::Inline | Layout::Flex { .. } | Layout::Flow { .. }
         );
         if is_axis_layout {
             self.measure_flex_children(proposal);
@@ -210,7 +210,7 @@ impl Layoutable for Element {
 
         let is_axis_layout = matches!(
             self.computed_style.layout,
-            Layout::Flex { .. } | Layout::Flow { .. } | Layout::InlineFlex
+            Layout::Inline | Layout::Flex { .. } | Layout::Flow { .. }
         );
         let child_layout_inner_size = if is_axis_layout {
             let (target_w, target_h) = self.current_layout_target_size();

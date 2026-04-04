@@ -18,6 +18,7 @@ mod tests {
         CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator,
         Position, Rotate, Transform, TransformOrigin, Translate, Style,
     };
+    use glam::{Mat4, Vec3};
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
@@ -3131,6 +3132,56 @@ mod tests {
     }
 
     #[test]
+    fn texture_desc_for_logical_bounds_keeps_logical_scale_mapping() {
+        let bounds = super::PromotionCompositeBounds {
+            x: 10.0,
+            y: 20.0,
+            width: 30.0,
+            height: 40.0,
+            corner_radii: [0.0; 4],
+        };
+
+        let unscaled = super::texture_desc_for_logical_bounds(
+            bounds,
+            1.0,
+            None,
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
+        let scaled = super::texture_desc_for_logical_bounds(
+            bounds,
+            1.0,
+            Some(Mat4::from_scale(Vec3::new(2.0, 2.0, 1.0))),
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
+
+        assert_eq!(unscaled.width(), 30);
+        assert_eq!(unscaled.height(), 40);
+        assert_eq!(scaled.width(), 30);
+        assert_eq!(scaled.height(), 40);
+    }
+
+    #[test]
+    fn build_context_render_transform_propagates_to_child_without_leaking_back() {
+        let mut parent_ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let parent_transform = Mat4::from_scale(Vec3::new(2.0, 1.5, 1.0));
+        parent_ctx.set_current_render_transform(Some(parent_transform));
+
+        let parent_viewport = parent_ctx.viewport();
+        let mut child_ctx =
+            UiBuildContext::from_parts(parent_viewport.clone(), parent_ctx.state_clone());
+        assert_eq!(child_ctx.current_render_transform(), Some(parent_transform));
+
+        let child_transform = Mat4::from_scale(Vec3::new(3.0, 3.0, 1.0));
+        child_ctx.set_current_render_transform(Some(child_transform));
+
+        let restored_parent = UiBuildContext::from_parts(parent_viewport, child_ctx.into_state());
+        assert_eq!(
+            restored_parent.current_render_transform(),
+            Some(parent_transform)
+        );
+    }
+
+    #[test]
     fn layer_subtree_does_not_inherit_ancestor_stencil_clip_id() {
         let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         assert_eq!(
@@ -3767,6 +3818,54 @@ mod tests {
 
         assert_ne!(el.transform, from);
         assert_ne!(el.transform, to);
+    }
+
+    #[test]
+    fn inline_layout_wraps_children_into_multiple_line_boxes() {
+        let mut parent = Element::new(0.0, 0.0, 100.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+        parent.apply_style(parent_style);
+
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 60.0, 10.0)));
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 40.0, 15.0)));
+
+        parent.measure(LayoutConstraints {
+            max_width: 100.0,
+            max_height: 200.0,
+            viewport_width: 100.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 100.0,
+            available_height: 200.0,
+            viewport_width: 100.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let children = parent.children().expect("children");
+        let first = children[0].box_model_snapshot();
+        let second = children[1].box_model_snapshot();
+        let third = children[2].box_model_snapshot();
+
+        assert_eq!(first.x, 0.0);
+        assert_eq!(first.y, 0.0);
+        assert_eq!(second.x, 0.0);
+        assert_eq!(second.y, 10.0);
+        assert_eq!(third.x, 50.0);
+        assert_eq!(third.y, 10.0);
+        assert!((parent.box_model_snapshot().height - 30.0).abs() < 0.01);
+        assert!((parent.content_size.height - 30.0).abs() < 0.01);
     }
 
 }

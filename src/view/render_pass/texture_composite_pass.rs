@@ -13,7 +13,8 @@ use crate::view::render_pass::render_target::{
     resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::cell::RefCell;
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 const TEXTURE_COMPOSITE_RESOURCES: u64 = 205;
@@ -325,90 +326,161 @@ impl GraphicsPass for TextureCompositePass {
             .handle()
             .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
             .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
-        let cache = texture_composite_resources_cache();
-        let mut cache = cache.lock().unwrap();
-        let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
-            create_resources(&device, format, sample_count)
-        });
-        if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
-            *resources = create_resources(&device, format, sample_count);
-        }
+        with_texture_composite_resources_cache(|cache| {
+            let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
+                create_resources(&device, format, sample_count)
+            });
+            if resources.pipeline_format != format
+                || resources.pipeline_sample_count != sample_count
+            {
+                *resources = create_resources(&device, format, sample_count);
+            }
 
-        let acquired_uniform_buffer = self
-            .uniform_buffer
-            .handle()
-            .and_then(|h| ctx.frame_resources().acquire_buffer(h));
-        let fallback_uniform_buffer;
-        let uniform_binding = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
-            buffer.as_entire_binding()
-        } else {
-            fallback_uniform_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("TextureComposite Uniform (Fallback)"),
-                    contents: bytemuck::bytes_of(&TextureCompositeUniform {
-                        use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
-                        source_is_premultiplied: if self.params.source_is_premultiplied {
-                            1.0
-                        } else {
-                            0.0
-                        },
-                        opacity: self.params.opacity.clamp(0.0, 1.0),
-                        _pad: 0.0,
-                    }),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-            fallback_uniform_buffer.as_entire_binding()
-        };
+            let acquired_uniform_buffer = self
+                .uniform_buffer
+                .handle()
+                .and_then(|h| ctx.frame_resources().acquire_buffer(h));
+            let fallback_uniform_buffer;
+            let uniform_binding = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
+                buffer.as_entire_binding()
+            } else {
+                fallback_uniform_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("TextureComposite Uniform (Fallback)"),
+                        contents: bytemuck::bytes_of(&TextureCompositeUniform {
+                            use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
+                            source_is_premultiplied: if self.params.source_is_premultiplied {
+                                1.0
+                            } else {
+                                0.0
+                            },
+                            opacity: self.params.opacity.clamp(0.0, 1.0),
+                            _pad: 0.0,
+                        }),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+                fallback_uniform_buffer.as_entire_binding()
+            };
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("TextureComposite Bind Group"),
-            layout: &resources.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&source_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        mask_view.as_ref().unwrap_or(&source_view),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(
-                        match self.input.sampled_source_sampling {
-                            Some(ImageSampling::Nearest) => &resources.nearest_sampler,
-                            _ => &resources.linear_sampler,
-                        },
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: uniform_binding,
-                },
-            ],
-        });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("TextureComposite Bind Group"),
+                layout: &resources.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&source_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            mask_view.as_ref().unwrap_or(&source_view),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(
+                            match self.input.sampled_source_sampling {
+                                Some(ImageSampling::Nearest) => &resources.nearest_sampler,
+                                _ => &resources.linear_sampler,
+                            },
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: uniform_binding,
+                    },
+                ],
+            });
 
-        let acquired_vertex_buffer = self
-            .vertex_buffer
-            .handle()
-            .and_then(|h| ctx.frame_resources().acquire_buffer(h));
-        let acquired_index_buffer = self
-            .index_buffer
-            .handle()
-            .and_then(|h| ctx.frame_resources().acquire_buffer(h));
-        let fallback_vertex_buffer;
-        let fallback_index_buffer;
-        let (vertex_buffer, index_buffer): (&wgpu::Buffer, &wgpu::Buffer) = if let (
-            Some(vb),
-            Some(ib),
-        ) = (
-            acquired_vertex_buffer.as_ref(),
-            acquired_index_buffer.as_ref(),
-        ) {
-            (vb, ib)
-        } else {
+            let acquired_vertex_buffer = self
+                .vertex_buffer
+                .handle()
+                .and_then(|h| ctx.frame_resources().acquire_buffer(h));
+            let acquired_index_buffer = self
+                .index_buffer
+                .handle()
+                .and_then(|h| ctx.frame_resources().acquire_buffer(h));
+            let fallback_vertex_buffer;
+            let fallback_index_buffer;
+            let (vertex_buffer, index_buffer): (&wgpu::Buffer, &wgpu::Buffer) =
+                if let (Some(vb), Some(ib)) = (
+                    acquired_vertex_buffer.as_ref(),
+                    acquired_index_buffer.as_ref(),
+                ) {
+                    (vb, ib)
+                } else {
+                    let surface_size = ctx.viewport().surface_size();
+                    let target_meta = resolve_target_meta(
+                        self.output.render_target.handle(),
+                        ctx.frame_resources(),
+                        surface_size,
+                        None,
+                    );
+                    let scale = ctx.viewport().scale_factor();
+                    let bounds = resolve_bounds(
+                        self.params.bounds,
+                        scale,
+                        target_meta.physical_size.0 as f32,
+                        target_meta.physical_size.1 as f32,
+                        target_meta.global_origin_f32(),
+                        target_meta.logical_origin_f32(),
+                    );
+                    let source_meta = resolve_target_meta(
+                        self.input.source.handle(),
+                        ctx.frame_resources(),
+                        surface_size,
+                        None,
+                    );
+                    let mask_meta = resolve_target_meta(
+                        self.input.mask.handle(),
+                        ctx.frame_resources(),
+                        source_meta.physical_size,
+                        None,
+                    )
+                    .with_fallback_origin(source_meta.global_origin)
+                    .with_fallback_logical_origin(source_meta.logical_origin);
+                    let source_uv_bounds = resolve_uv_bounds(
+                        self.params.uv_bounds,
+                        scale,
+                        source_meta.physical_size.0 as f32,
+                        source_meta.physical_size.1 as f32,
+                        source_meta.global_origin_f32(),
+                        source_meta.logical_origin_f32(),
+                    );
+                    let mask_uv_bounds = resolve_uv_bounds(
+                        self.params.mask_uv_bounds.or(self.params.uv_bounds),
+                        scale,
+                        mask_meta.physical_size.0 as f32,
+                        mask_meta.physical_size.1 as f32,
+                        mask_meta.global_origin_f32(),
+                        mask_meta.logical_origin_f32(),
+                    );
+                    let (vertices, indices) = texture_composite_geometry(
+                        self.params.quad_positions,
+                        bounds,
+                        scale,
+                        target_meta.physical_size.0 as f32,
+                        target_meta.physical_size.1 as f32,
+                        target_meta.global_origin_f32(),
+                        target_meta.logical_origin_f32(),
+                        source_uv_bounds,
+                        mask_uv_bounds,
+                    );
+                    fallback_vertex_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("TextureComposite Vertex (Fallback)"),
+                            contents: bytemuck::cast_slice(&vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                    fallback_index_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("TextureComposite Index (Fallback)"),
+                            contents: bytemuck::cast_slice(&indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+                    (&fallback_vertex_buffer, &fallback_index_buffer)
+                };
+
             let surface_size = ctx.viewport().surface_size();
             let target_meta = resolve_target_meta(
                 self.output.render_target.handle(),
@@ -416,103 +488,34 @@ impl GraphicsPass for TextureCompositePass {
                 surface_size,
                 None,
             );
-            let scale = ctx.viewport().scale_factor();
-            let bounds = resolve_bounds(
-                self.params.bounds,
-                scale,
-                target_meta.physical_size.0 as f32,
-                target_meta.physical_size.1 as f32,
-                target_meta.global_origin_f32(),
-                target_meta.logical_origin_f32(),
-            );
-            let source_meta = resolve_target_meta(
-                self.input.source.handle(),
-                ctx.frame_resources(),
-                surface_size,
-                None,
-            );
-            let mask_meta = resolve_target_meta(
-                self.input.mask.handle(),
-                ctx.frame_resources(),
-                source_meta.physical_size,
-                None,
-            )
-            .with_fallback_origin(source_meta.global_origin)
-            .with_fallback_logical_origin(source_meta.logical_origin);
-            let source_uv_bounds = resolve_uv_bounds(
-                self.params.uv_bounds,
-                scale,
-                source_meta.physical_size.0 as f32,
-                source_meta.physical_size.1 as f32,
-                source_meta.global_origin_f32(),
-                source_meta.logical_origin_f32(),
-            );
-            let mask_uv_bounds = resolve_uv_bounds(
-                self.params.mask_uv_bounds.or(self.params.uv_bounds),
-                scale,
-                mask_meta.physical_size.0 as f32,
-                mask_meta.physical_size.1 as f32,
-                mask_meta.global_origin_f32(),
-                mask_meta.logical_origin_f32(),
-            );
-            let (vertices, indices) = texture_composite_geometry(
-                self.params.quad_positions,
-                bounds,
-                scale,
-                target_meta.physical_size.0 as f32,
-                target_meta.physical_size.1 as f32,
-                target_meta.global_origin_f32(),
-                target_meta.logical_origin_f32(),
-                source_uv_bounds,
-                mask_uv_bounds,
-            );
-            fallback_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("TextureComposite Vertex (Fallback)"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
+            let (target_w, target_h) = target_meta.physical_size;
+            let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
+                logical_scissor_to_target_physical(
+                    ctx.viewport(),
+                    scissor_rect,
+                    target_meta.global_origin,
+                    (target_w, target_h),
+                )
             });
-            fallback_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("TextureComposite Index (Fallback)"),
-                contents: bytemuck::cast_slice(&indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-            (&fallback_vertex_buffer, &fallback_index_buffer)
-        };
-
-        let surface_size = ctx.viewport().surface_size();
-        let target_meta = resolve_target_meta(
-            self.output.render_target.handle(),
-            ctx.frame_resources(),
-            surface_size,
-            None,
-        );
-        let (target_w, target_h) = target_meta.physical_size;
-        let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-            logical_scissor_to_target_physical(
-                ctx.viewport(),
-                scissor_rect,
-                target_meta.global_origin,
+            let pipeline = match (
+                self.input.pass_context.uses_depth_stencil,
+                self.input.pass_context.stencil_clip_id.is_some(),
+            ) {
+                (true, true) => &resources.pipeline_stencil_test,
+                (true, false) => &resources.pipeline_depth_no_stencil,
+                (false, _) => &resources.pipeline_no_depth,
+            };
+            encode_pass(
+                ctx,
+                pipeline,
+                &bind_group,
+                vertex_buffer,
+                index_buffer,
                 (target_w, target_h),
-            )
+                scissor_rect_physical,
+                self.input.pass_context.stencil_clip_id,
+            );
         });
-        let pipeline = match (
-            self.input.pass_context.uses_depth_stencil,
-            self.input.pass_context.stencil_clip_id.is_some(),
-        ) {
-            (true, true) => &resources.pipeline_stencil_test,
-            (true, false) => &resources.pipeline_depth_no_stencil,
-            (false, _) => &resources.pipeline_no_depth,
-        };
-        encode_pass(
-            ctx,
-            pipeline,
-            &bind_group,
-            vertex_buffer,
-            index_buffer,
-            (target_w, target_h),
-            scissor_rect_physical,
-            self.input.pass_context.stencil_clip_id,
-        );
     }
 }
 
@@ -548,106 +551,106 @@ pub(crate) fn composite_immediate(
     } else {
         1
     };
-    let cache = texture_composite_resources_cache();
-    let mut cache = cache.lock().unwrap();
-    let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
-        create_resources(&device, format, sample_count)
-    });
-    if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
-        *resources = create_resources(&device, format, sample_count);
-    }
-
-    let uniform = TextureCompositeUniform {
-        use_mask: if use_mask { 1.0 } else { 0.0 },
-        source_is_premultiplied: 0.0,
-        opacity: opacity.clamp(0.0, 1.0),
-        _pad: 0.0,
-    };
-    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("TextureComposite Immediate Uniform"),
-        contents: bytemuck::bytes_of(&uniform),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let (vertices, indices) = quad_for_bounds(
-        bounds,
-        target_size.0 as f32,
-        target_size.1 as f32,
-        [0.0, 0.0, 1.0, 1.0],
-        [0.0, 0.0, 1.0, 1.0],
-    );
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("TextureComposite Immediate Vertex"),
-        contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("TextureComposite Immediate Index"),
-        contents: bytemuck::cast_slice(&indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("TextureComposite Immediate Bind Group"),
-        layout: &resources.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(source_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(mask_view.unwrap_or(source_view)),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&resources.linear_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-        ],
-    });
-
-    let msaa_enabled = sample_count > 1;
-    let Some(parts) = ctx.viewport.frame_parts() else {
-        return;
-    };
-    let surface_resolve = if msaa_enabled {
-        parts.resolve_view
-    } else {
-        None
-    };
-    let (color_view, resolve_target) = match (offscreen_view, offscreen_msaa_view) {
-        (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
-        (Some(resolve_view), None) => (resolve_view, None),
-        (None, _) => (parts.view, surface_resolve),
-    };
-    let mut pass = parts
-        .encoder
-        .begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("TextureComposite Immediate"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-                resolve_target,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
+    with_texture_composite_resources_cache(|cache| {
+        let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
+            create_resources(&device, format, sample_count)
         });
-    encode_raw_pass(
-        &mut pass,
-        &resources.pipeline_no_depth,
-        &bind_group,
-        &vertex_buffer,
-        &index_buffer,
-        target_size,
-        scissor_rect_physical,
-        None,
-    );
+        if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
+            *resources = create_resources(&device, format, sample_count);
+        }
+
+        let uniform = TextureCompositeUniform {
+            use_mask: if use_mask { 1.0 } else { 0.0 },
+            source_is_premultiplied: 0.0,
+            opacity: opacity.clamp(0.0, 1.0),
+            _pad: 0.0,
+        };
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("TextureComposite Immediate Uniform"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let (vertices, indices) = quad_for_bounds(
+            bounds,
+            target_size.0 as f32,
+            target_size.1 as f32,
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("TextureComposite Immediate Vertex"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("TextureComposite Immediate Index"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TextureComposite Immediate Bind Group"),
+            layout: &resources.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(mask_view.unwrap_or(source_view)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&resources.linear_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let msaa_enabled = sample_count > 1;
+        let Some(parts) = ctx.viewport.frame_parts() else {
+            return;
+        };
+        let surface_resolve = if msaa_enabled {
+            parts.resolve_view
+        } else {
+            None
+        };
+        let (color_view, resolve_target) = match (offscreen_view, offscreen_msaa_view) {
+            (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
+            (Some(resolve_view), None) => (resolve_view, None),
+            (None, _) => (parts.view, surface_resolve),
+        };
+        let mut pass = parts
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("TextureComposite Immediate"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                    resolve_target,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+        encode_raw_pass(
+            &mut pass,
+            &resources.pipeline_no_depth,
+            &bind_group,
+            &vertex_buffer,
+            &index_buffer,
+            target_size,
+            scissor_rect_physical,
+            None,
+        );
+    });
 }
 
 fn encode_raw_pass(
@@ -1130,13 +1133,23 @@ fn resolve_uv_bounds(
     ]
 }
 
-fn texture_composite_resources_cache() -> &'static Mutex<ResourceCache<TextureCompositeResources>> {
-    static CACHE: OnceLock<Mutex<ResourceCache<TextureCompositeResources>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(ResourceCache::new()))
+fn with_texture_composite_resources_cache<R>(
+    f: impl FnOnce(&mut ResourceCache<TextureCompositeResources>) -> R,
+) -> R {
+    thread_local! {
+        static CACHE: RefCell<ResourceCache<TextureCompositeResources>> =
+            RefCell::new(ResourceCache::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        f(&mut cache)
+    })
 }
 
 pub(crate) fn clear_texture_composite_resources_cache() {
-    texture_composite_resources_cache().lock().unwrap().clear();
+    with_texture_composite_resources_cache(|cache| {
+        cache.clear();
+    });
 }
 
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {

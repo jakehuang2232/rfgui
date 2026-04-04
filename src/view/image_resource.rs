@@ -169,11 +169,12 @@ pub fn acquire_image_resource(source: &ImageSource) -> u64 {
                 }
             }
             if spawn_loader {
-                std::thread::spawn(move || {
+                #[cfg(target_arch = "wasm32")]
+                {
                     let decoded = decode_path_image(Path::new(normalized_path.as_ref()));
                     let mut entries = image_entries().lock().unwrap();
                     let Some(entry) = entries.get_mut(&key) else {
-                        return;
+                        return key;
                     };
                     match decoded {
                         Ok((width, height, pixels)) => {
@@ -191,7 +192,33 @@ pub fn acquire_image_resource(source: &ImageSource) -> u64 {
                         }
                     }
                     mark_redraw_dirty();
-                });
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    std::thread::spawn(move || {
+                        let decoded = decode_path_image(Path::new(normalized_path.as_ref()));
+                        let mut entries = image_entries().lock().unwrap();
+                        let Some(entry) = entries.get_mut(&key) else {
+                            return;
+                        };
+                        match decoded {
+                            Ok((width, height, pixels)) => {
+                                let generation = next_generation();
+                                entry.state = ImageState::Ready {
+                                    width,
+                                    height,
+                                    pixels,
+                                    generation,
+                                    uploaded_generation: None,
+                                };
+                            }
+                            Err(message) => {
+                                entry.state = ImageState::Error { message };
+                            }
+                        }
+                        mark_redraw_dirty();
+                    });
+                }
             }
             key
         }

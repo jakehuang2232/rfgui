@@ -12,6 +12,29 @@ path = "src/main.rs"
 rfgui = { path = "../.." }
 rfgui-components = { path = "../../lib/rfgui-components" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-winit = "0.30.12"
+winit = "0.30.13"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.3"
 rfd = "0.17.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-time = "1"
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3.85", features = [
+    "console",
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "Event",
+    "EventTarget",
+    "FocusEvent",
+    "HtmlCanvasElement",
+    "KeyboardEvent",
+    "MouseEvent",
+    "PointerEvent",
+    "WheelEvent",
+    "Window",
+] }
