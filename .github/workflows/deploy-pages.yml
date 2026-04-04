@@ -30,8 +30,28 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            examples/01_window -> target
+
+      - name: Cache Trunk Binary
+        id: cache-trunk
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/trunk
+          key: ${{ runner.os }}-trunk-bin-0.21.14
+
+      - name: Cache Trunk Tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trunk
+          key: ${{ runner.os }}-trunk-tools-${{ hashFiles('examples/01_window/Trunk.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-trunk-tools-
 
       - name: Install Trunk
+        if: steps.cache-trunk.outputs.cache-hit != 'true'
         run: cargo install trunk --locked
 
       - name: Build Web Example

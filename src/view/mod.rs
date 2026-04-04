@@ -5,6 +5,7 @@ pub mod base_component;
 pub(crate) mod frame_graph;
 pub(crate) mod font_system;
 pub(crate) mod image_resource;
+pub(crate) mod text_layout;
 /// Layer promotion analysis and configuration APIs.
 pub mod promotion;
 mod promotion_builder;
@@ -18,3 +19,5 @@ pub mod viewport;
 pub use renderer_adapter::*;
 pub use tags::*;
 pub use viewport::*;
+#[cfg(target_arch = "wasm32")]
+pub use font_system::load_default_web_cjk_font;

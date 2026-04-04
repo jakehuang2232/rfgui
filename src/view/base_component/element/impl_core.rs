@@ -680,6 +680,10 @@ impl Element {
         self.has_layout_snapshot = true;
     }
 
+    pub(crate) fn can_seed_layout_transition_snapshot(&self) -> bool {
+        self.has_layout_snapshot && self.last_layout_placement.is_some()
+    }
+
     pub fn set_border_top_color(&mut self, color: Color) {
         self.border_colors.top = Box::new(color);
         self.mark_paint_dirty();
