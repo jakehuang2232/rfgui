@@ -1,5 +1,12 @@
 # 🧩 RFGUI
 
+<div align="center">
+    <h3>
+        <a href="https://jakehuang2232.github.io/rfgui/">Demo</a>
+    </h3>
+    <abbr>(Web version is a little glitchy, use desktop for best experience)</abbr>
+</div>
+
 ![example](https://github.com/user-attachments/assets/5274eb04-0329-46c2-9e14-424fd0dd3791)
 
 **RFGUI** is a **🦀 Rust-based retained-mode GUI framework** built on top of a **🧠 frame graph–driven rendering architecture**.
