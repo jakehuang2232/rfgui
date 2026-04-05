@@ -126,10 +126,10 @@
   <body>
     <div id="boot-overlay" class="boot-overlay" aria-live="polite">
       <div class="boot-card">
-        <h1 class="boot-title">正在載入 Web 版範例</h1>
-        <p class="boot-subtitle">首次開啟會下載 Wasm 與相關資產，時間可能稍久。</p>
+        <h1 class="boot-title">Loading Web Example</h1>
+        <p class="boot-subtitle">The first launch may take a little longer while Wasm and related assets are downloaded.</p>
         <div class="boot-progress"></div>
-        <div id="boot-status" class="boot-status">下載與初始化中…</div>
+        <div id="boot-status" class="boot-status">Downloading and initializing…</div>
       </div>
     </div>
     <canvas id="app-canvas" tabindex="0"></canvas>
@@ -153,35 +153,40 @@
         bootStatus.classList.add("is-error");
       }
 
-      if (typeof GPUCanvasContext !== "undefined") {
-        const originalConfigure = GPUCanvasContext.prototype.configure;
-        GPUCanvasContext.prototype.configure = function(config) {
-          const nextConfig = { ...config };
-          if (!("colorSpace" in nextConfig) || nextConfig.colorSpace == null) {
-            nextConfig.colorSpace = "srgb";
-          }
-          console.log("[rfgui] intercepted webgpu configure:", nextConfig);
-          return originalConfigure.call(this, nextConfig);
-        };
+      function formatBootError(error, fallbackMessage) {
+        if (typeof error === "string" && error.trim()) {
+          return error;
+        }
+        if (error && typeof error.message === "string" && error.message.trim()) {
+          return error.message;
+        }
+        if (error && typeof error.reason === "string" && error.reason.trim()) {
+          return error.reason;
+        }
+        if (error && error.reason && typeof error.reason.message === "string" && error.reason.message.trim()) {
+          return error.reason.message;
+        }
+        return fallbackMessage;
       }
+
+      window.__RFGUI_BOOT__ = {
+        hideBootOverlay,
+        setBootError,
+        formatBootError,
+      };
     </script>
-    <link data-trunk rel="rust" />
+    <link data-trunk rel="rust" data-initializer="bootstrap.js" />
     <script>
       window.addEventListener("TrunkApplicationStarted", () => {
-        const canvas = document.getElementById("app-canvas");
-        const webgpu = canvas?.getContext?.("webgpu");
-        const config = webgpu?.getConfiguration?.() ?? null;
-        console.log("[rfgui] webgpu canvas config:", config);
-        console.log("[rfgui] webgpu canvas colorSpace:", config?.colorSpace ?? null);
         hideBootOverlay();
       });
 
       window.addEventListener("error", () => {
-        setBootError("載入失敗，請重新整理頁面。");
+        setBootError("Loading failed. Please refresh the page.");
       });
 
-      window.addEventListener("unhandledrejection", () => {
-        setBootError("初始化失敗，請查看瀏覽器 console。");
+      window.addEventListener("unhandledrejection", (event) => {
+        setBootError(formatBootError(event, "Initialization failed."));
       });
     </script>
   </body>
