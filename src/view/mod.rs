@@ -18,6 +18,7 @@ pub mod viewport;
 
 #[cfg(target_arch = "wasm32")]
 pub use font_system::load_default_web_cjk_font;
+pub use font_system::register_font_bytes;
 pub use renderer_adapter::*;
 pub use tags::*;
 pub use viewport::*;

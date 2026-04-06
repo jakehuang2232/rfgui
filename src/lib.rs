@@ -21,4 +21,5 @@ pub mod ui;
 pub mod view;
 
 pub use style::*;
+pub use view::register_font_bytes;
 pub use view::*;

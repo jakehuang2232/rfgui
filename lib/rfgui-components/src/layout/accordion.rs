@@ -1,11 +1,11 @@
-use crate::use_theme;
+use crate::{ExpandMoreIcon, use_theme};
 use rfgui::ui::{
     Binding, RsxChildrenPolicy, RsxComponent, RsxNode, component, on_click, props, rsx, use_state,
 };
-use rfgui::view::{Element, Text};
+use rfgui::view::Element;
 use rfgui::{
-    Align, Border, ClipMode, Color, Cursor, Layout, Length, Position, Transition,
-    TransitionProperty, flex,
+    Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform,
+    Transition, TransitionProperty, flex,
 };
 
 pub struct Accordion;
@@ -117,22 +117,34 @@ fn AccordionView(
                 </Element>
                 <Element
                     style={{
-                        font_size: theme.typography.size.sm,
                         flex: flex().grow(0.0).shrink(0.0),
                         color: if disabled {
                             theme.color.text.disabled.clone()
                         } else {
                             theme.color.text.secondary.clone()
                         },
+                        transition: [
+                            Transition::new(
+                                TransitionProperty::Transform,
+                                theme.motion.duration.normal,
+                            )
+                            .ease_in_out(),
+                        ],
+                        transform: if is_expanded {
+                            Transform::new([Rotate::z(Angle::deg(180.0))])
+                        } else {
+                            Transform::default()
+                        },
                     }}
                 >
-                    <Text style={{}}>
-                        {if is_expanded {
-                            String::from("v")
+                    <ExpandMoreIcon style={{
+                        font_size: theme.typography.size.md,
+                        color: if disabled {
+                            theme.color.text.disabled.clone()
                         } else {
-                            String::from(">")
-                        }}
-                    </Text>
+                            theme.color.text.secondary.clone()
+                        },
+                    }} />
                 </Element>
             </Element>
             <Element

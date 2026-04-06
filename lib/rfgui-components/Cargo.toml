@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/jakehuang2232/rfgui"
 license = "MIT"
+build = "build.rs"
 
 [dependencies]
 rfgui = { path = "../.." }
