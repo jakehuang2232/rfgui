@@ -1,5 +1,5 @@
 use crate::components::GlobalKeyRenderTestBlock;
-use crate::rfgui::ui::{Binding, ClickHandlerProp, RsxNode, rsx};
+use crate::rfgui::ui::{RsxNode, component, on_click, rsx, use_state};
 use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text, TextArea};
 use crate::rfgui::{
     Align, Angle, Animation, Animator, Border, BorderRadius, ClipMode, Collision,
@@ -11,20 +11,6 @@ use crate::rfgui::{
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
 use crate::utils::output_image_source;
 use rfgui::FillMode;
-
-pub struct RenderTestBindings {
-    pub justify_content: Binding<JustifyContent>,
-    pub align: Binding<Align>,
-    pub cross_size: Binding<CrossSize>,
-    pub message: Binding<String>,
-    pub transform_event_status: Binding<String>,
-}
-
-pub struct RenderTestValues {
-    pub click_count: i32,
-    pub message: String,
-    pub transform_event_status: String,
-}
 
 fn animator_demo_keyframe<T: crate::rfgui::ColorLike>(
     background: T,
@@ -55,30 +41,39 @@ fn animator_demo_keyframe<T: crate::rfgui::ColorLike>(
     style
 }
 
-pub fn build(
-    theme: &Theme,
-    bindings: RenderTestBindings,
-    values: RenderTestValues,
-    increment: ClickHandlerProp,
-) -> RsxNode {
-    let justify_content_start = bindings.justify_content.clone();
-    let justify_content_center = bindings.justify_content.clone();
-    let justify_content_end = bindings.justify_content.clone();
-    let justify_content_space_between = bindings.justify_content.clone();
-    let justify_content_space_around = bindings.justify_content.clone();
-    let justify_content_space_evenly = bindings.justify_content.clone();
+#[component]
+pub fn RenderTest(theme: Theme) -> RsxNode {
+    let click_count = use_state(|| 0_i32);
+    let message =
+        use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
+    let transform_event_status = use_state(|| String::from("Move over the transform cards"));
+    let justify_content = use_state(|| JustifyContent::Start);
+    let align = use_state(|| Align::Start);
+    let cross_size = use_state(|| CrossSize::Fit);
 
-    let align_start = bindings.align.clone();
-    let align_center = bindings.align.clone();
-    let align_end = bindings.align.clone();
-    let cross_size_fit = bindings.cross_size.clone();
-    let cross_size_stretch = bindings.cross_size.clone();
-    let transform_enter = bindings.transform_event_status.clone();
-    let transform_leave = bindings.transform_event_status.clone();
-    let transform_move = bindings.transform_event_status.clone();
-    let transform_down = bindings.transform_event_status.clone();
-    let transform_up = bindings.transform_event_status.clone();
-    let transform_click = bindings.transform_event_status.clone();
+    let justify_content_start = justify_content.binding();
+    let justify_content_center = justify_content.binding();
+    let justify_content_end = justify_content.binding();
+    let justify_content_space_between = justify_content.binding();
+    let justify_content_space_around = justify_content.binding();
+    let justify_content_space_evenly = justify_content.binding();
+
+    let align_start = align.binding();
+    let align_center = align.binding();
+    let align_end = align.binding();
+    let cross_size_fit = cross_size.binding();
+    let cross_size_stretch = cross_size.binding();
+    let transform_enter = transform_event_status.binding();
+    let transform_leave = transform_event_status.binding();
+    let transform_move = transform_event_status.binding();
+    let transform_down = transform_event_status.binding();
+    let transform_up = transform_event_status.binding();
+    let transform_click = transform_event_status.binding();
+    let increment_state = click_count.clone();
+    let increment = on_click(move |event| {
+        increment_state.update(|value| *value += 1);
+        event.meta.stop_propagation();
+    });
     rsx! {
         <Element style={{
             width: Length::percent(100.0),
@@ -87,9 +82,9 @@ pub fn build(
             layout: Layout::flow()
                 .row()
                 .wrap()
-                .justify_content(bindings.justify_content.get())
-                .align(bindings.align.get())
-                .cross_size(bindings.cross_size.get()),
+                .justify_content(justify_content.get())
+                .align(align.get())
+                .cross_size(cross_size.get()),
             gap: theme.spacing.md,
             padding: Padding::uniform(theme.spacing.xl),
             scroll_direction: ScrollDirection::Vertical,
@@ -395,7 +390,7 @@ pub fn build(
                 <Text>
                     Button Test
                 </Text>
-                <Text>{format!("Click Count: {}", values.click_count)}</Text>
+                <Text>{format!("Click Count: {}", click_count.get())}</Text>
                 <Button
                     label="Click\nMe"
                     variant={Some(ButtonVariant::Contained)}
@@ -481,9 +476,9 @@ pub fn build(
             }}>
                 <Text>TextArea Test</Text>
                 <Text>
-                    {format!("Bound chars: {}", values.message.chars().count())}
+                    {format!("Bound chars: {}", message.get().chars().count())}
                 </Text>
-                <TextArea x=12 y=34 style={{ width: Length::px(296.0), height: Length::px(78.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=true placeholder="Please enter multiline content..." binding={bindings.message} />
+                <TextArea x=12 y=34 style={{ width: Length::px(296.0), height: Length::px(78.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
                 <TextArea x=12 y=98 style={{ width: Length::px(296.0), height: Length::px(26.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=false read_only=true>
                     multiline=false
                     Line breaks should become spaces
@@ -649,7 +644,7 @@ pub fn build(
                 color: theme.color.text.primary.clone(),
             }}>
                 <Text>Transform Test</Text>
-                <Text>{values.transform_event_status.clone()}</Text>
+                <Text>{transform_event_status.get()}</Text>
                 <Element style={{
                     width: Length::percent(100.0),
                     layout: Layout::flow().row().wrap(),

@@ -91,7 +91,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             badge test test test test test test test
                         </Element>
                         <Text>then more text continues after the badge,</Text>
-                        {inline_chip("note", Length::px(68.0), Length::px(28.0), Box::new(Color::hex("#065f46")), Box::new(Color::hex("#ecfdf5")), theme.radius.sm)}
+                        {inline_chip("note", Length::px(68.0), Length::px(50.0), Box::new(Color::hex("#065f46")), Box::new(Color::hex("#ecfdf5")), theme.radius.sm)}
                         <Text>{"最後接一段中文，確認混排時也能一起換行。"}</Text>
                     </Element>
                 },

@@ -327,7 +327,7 @@ impl App {
         if normalized.0.abs() <= f32::EPSILON && normalized.1.abs() <= f32::EPSILON {
             return None;
         }
-        Some((-normalized.0, -normalized.1))
+        Some(normalized)
     }
 }
 
@@ -444,7 +444,7 @@ impl ApplicationHandler for App {
                     if let Some((dx, dy)) =
                         Self::normalize_wheel_delta(wheel_normalization, viewport, delta)
                     {
-                        viewport.dispatch_mouse_wheel_event(dx, dy);
+                        viewport.dispatch_mouse_wheel_event(-dx, -dy);
                     }
                 });
                 self.mark_ime_dirty();
