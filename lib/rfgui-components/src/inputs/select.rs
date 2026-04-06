@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use crate::use_theme;
+use crate::{ExpandMoreIcon, use_theme};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
     MouseDownHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,
@@ -9,8 +9,9 @@ use rfgui::ui::{
 };
 use rfgui::view::{Element, Text};
 use rfgui::{
-    Align, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout, Length,
-    Operator, Position, ScrollDirection, flex,
+    Align, Angle, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout,
+    Length, Operator, Position, Rotate, ScrollDirection, Transform, Transition,
+    TransitionProperty, flex,
 };
 
 pub struct Select;
@@ -201,8 +202,24 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                 </Element>
                 <Element style={{
                     flex: flex().grow(0.0).shrink(0.0),
+                    color: theme.color.text.secondary.clone(),
+                    transition: [
+                        Transition::new(
+                            TransitionProperty::Transform,
+                            theme.motion.duration.normal,
+                        )
+                        .ease_in_out(),
+                    ],
+                    transform: if is_open {
+                        Transform::new([Rotate::z(Angle::deg(0.0))])
+                    } else {
+                        Transform::new([Rotate::z(Angle::deg(270.0))])
+                    },
                 }}>
-                    {if is_open { "▴" } else { "▾" }}
+                    <ExpandMoreIcon style={{
+                        font_size: theme.typography.size.md,
+                        color: theme.color.text.secondary.clone(),
+                    }} />
                 </Element>
             </Element>
         </Element>

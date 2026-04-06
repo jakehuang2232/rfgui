@@ -1,7 +1,5 @@
 use rfgui::ui::{GlobalState, global_state};
-use rfgui::{
-    Border, BorderRadius, BoxShadow, Color, ColorLike, FontSize, Length, Padding, TransitionTiming,
-};
+use rfgui::{Border, BorderRadius, BoxShadow, Color, ColorLike, FontFamily, FontSize, Length, Padding, TransitionTiming};
 #[derive(Clone)]
 pub struct Theme {
     pub color: ColorTheme,
@@ -67,7 +65,7 @@ pub struct StateColorSet {
 
 #[derive(Clone)]
 pub struct TypographyTheme {
-    pub font_family: String,
+    pub font_family: FontFamily,
     pub size: FontSizeScale,
     pub weight: FontWeightScale,
     pub line_height: LineHeightScale,
@@ -270,7 +268,7 @@ impl Theme {
                 },
             },
             typography: TypographyTheme {
-                font_family: String::from("SF Pro Text, PingFang TC, sans-serif"),
+                font_family: FontFamily::new(["Noto Sans CJK TC", "PingFang TC"]),
                 size: FontSizeScale {
                     xs: FontSize::px(12.0),
                     sm: FontSize::px(14.0),
@@ -437,7 +435,7 @@ impl Theme {
                 },
             },
             typography: TypographyTheme {
-                font_family: String::from("SF Pro Text, PingFang TC, sans-serif"),
+                font_family: FontFamily::new(["Noto Sans CJK TC", "PingFang TC"]),
                 size: FontSizeScale {
                     xs: FontSize::px(12.0),
                     sm: FontSize::px(14.0),

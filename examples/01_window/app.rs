@@ -28,6 +28,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 #[cfg(target_arch = "wasm32")]
+use js_sys::Promise;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::wasm_bindgen;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, closure::Closure};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -40,9 +44,45 @@ use winit::platform::web::WindowAttributesExtWebSys;
 use winit::window::{Window as WinitWindow, WindowId};
 
 #[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 #[cfg(target_arch = "wasm32")]
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent, Window};
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(inline_js = r#"
+export function rfguiSetBootStatus(message) {
+  window.__RFGUI_BOOT__?.setBootStatus?.(message);
+}
+
+export function rfguiSetBootError(message) {
+  window.__RFGUI_BOOT__?.setBootError?.(message);
+}
+
+export async function rfguiWaitForBootFonts() {
+  const fonts = document.fonts;
+  if (!fonts) {
+    return;
+  }
+
+  await Promise.all([
+    fonts.ready.catch(() => {}),
+    fonts.load('400 1em "Noto Sans CJK TC"').catch(() => {}),
+  ]);
+}
+
+export function rfguiHideBootOverlayAfterPaint() {
+  const hide = () => window.__RFGUI_BOOT__?.hideBootOverlay?.();
+  window.requestAnimationFrame(() => window.requestAnimationFrame(hide));
+}
+"#)]
+unsafe extern "C" {
+    fn rfguiSetBootStatus(message: &str);
+    fn rfguiSetBootError(message: &str);
+    fn rfguiWaitForBootFonts() -> Promise;
+    fn rfguiHideBootOverlayAfterPaint();
+}
 
 #[cfg(target_os = "macos")]
 use crate::platform::with_shadow;
@@ -784,7 +824,13 @@ fn run_web() {
         let raf_pending = raf_pending.clone();
         let raf_callback_ref = raf_callback.clone();
         spawn_local(async move {
-            let _ = load_default_web_cjk_font().await;
+            rfguiSetBootStatus("Loading web fonts…");
+            let _ = JsFuture::from(rfguiWaitForBootFonts()).await;
+            rfguiSetBootStatus("Preparing text renderer…");
+            if load_default_web_cjk_font().await.is_err() {
+                rfguiSetBootStatus("Web font unavailable. Using bundled fallback font…");
+            }
+            rfguiSetBootStatus("Initializing canvas…");
             let mut viewport = {
                 let app = app.borrow_mut();
                 app.viewport
@@ -801,6 +847,7 @@ fn run_web() {
                 app.viewport.borrow_mut().replace(viewport);
             }
             web_schedule_redraw(&window, &raf_pending, &raf_callback_ref);
+            rfguiHideBootOverlayAfterPaint();
         });
     }
 
