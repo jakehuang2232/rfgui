@@ -1,8 +1,8 @@
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{Layout, Length, Padding};
+use crate::rfgui::{Angle, Layout, Length, Padding, Rotate, Transform};
 use crate::rfgui_components::{
-    Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme,
+    Button, ButtonVariant, Checkbox, CloseIcon, NumberField, Select, Slider, Switch, Theme,
 };
 use rfgui::ScrollDirection;
 use rfgui_components::Accordion;
@@ -115,6 +115,41 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
                     step=0.1
                     label="F32 Number"
                 />
+            </Accordion>
+            <Accordion title="Material Symbols">
+                <Element style={{
+                    width: Length::percent(100.0),
+                    layout: Layout::flow().row().wrap(),
+                    gap: theme.spacing.md,
+                    color: theme.color.text.primary.clone(),
+                }}>
+                    <Element style={{
+                        layout: Layout::flow().column().no_wrap(),
+                        gap: theme.spacing.xs,
+                    }}>
+                        <Text>Default</Text>
+                        <CloseIcon />
+                    </Element>
+                    <Element style={{
+                        layout: Layout::flow().column().no_wrap(),
+                        gap: theme.spacing.xs,
+                    }}>
+                        <Text>Large</Text>
+                        <CloseIcon style={{
+                            font_size: theme.typography.size.xl,
+                        }} />
+                    </Element>
+                    <Element style={{
+                        layout: Layout::flow().column().no_wrap(),
+                        gap: theme.spacing.xs,
+                    }}>
+                        <Text>Rotated</Text>
+                        <CloseIcon style={{
+                            color: theme.color.primary.base.clone(),
+                            transform: Transform::new([Rotate::z(Angle::deg(45.0))]),
+                        }} />
+                    </Element>
+                </Element>
             </Accordion>
             <Checkbox
                 label="Enable flag"

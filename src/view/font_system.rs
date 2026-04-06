@@ -1,13 +1,10 @@
 use std::cell::RefCell;
 
 use glyphon::FontSystem;
-#[cfg(target_arch = "wasm32")]
 use glyphon::fontdb;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Uint8Array;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Mutex;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
@@ -21,7 +18,6 @@ const WEB_CJK_FONT_FAMILY: &str = "Noto Sans TC";
 #[cfg(target_arch = "wasm32")]
 const WEB_CJK_FONT_URL: &str = "https://fonts.gstatic.com/ea/notosanstc/v1/NotoSansTC-Regular.otf";
 
-#[cfg(target_arch = "wasm32")]
 static RUNTIME_WEB_FONTS: Mutex<Vec<Arc<Vec<u8>>>> = Mutex::new(Vec::new());
 
 thread_local! {
@@ -29,6 +25,19 @@ thread_local! {
 }
 
 pub(crate) fn create_font_system() -> FontSystem {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut font_system = FontSystem::new();
+        if let Ok(runtime_fonts) = RUNTIME_WEB_FONTS.lock() {
+            for font in runtime_fonts.iter() {
+                font_system
+                    .db_mut()
+                    .load_font_source(fontdb::Source::Binary(font.clone()));
+            }
+        }
+        return font_system;
+    }
+
     #[cfg(target_arch = "wasm32")]
     {
         let mut db = fontdb::Database::new();
@@ -53,11 +62,6 @@ pub(crate) fn create_font_system() -> FontSystem {
         db.set_monospace_family("Noto Sans");
         return FontSystem::new_with_locale_and_db(String::from("en-US"), db);
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        FontSystem::new()
-    }
 }
 
 pub(crate) fn with_shared_font_system<R>(f: impl FnOnce(&mut FontSystem) -> R) -> R {
@@ -72,6 +76,31 @@ pub(crate) fn reset_shared_font_system() {
     SHARED_FONT_SYSTEM.with(|slot| {
         slot.replace(create_font_system());
     });
+}
+
+pub fn register_font_bytes(bytes: &[u8]) -> bool {
+    let font = Arc::new(bytes.to_vec());
+    let inserted = {
+        let Ok(mut fonts) = RUNTIME_WEB_FONTS.lock() else {
+            return false;
+        };
+        if fonts.iter().any(|font| font.as_slice() == bytes) {
+            false
+        } else {
+            fonts.push(font.clone());
+            true
+        }
+    };
+
+    if inserted {
+        with_shared_font_system(|font_system| {
+            font_system
+                .db_mut()
+                .load_font_source(fontdb::Source::Binary(font));
+        });
+    }
+
+    inserted
 }
 
 #[cfg(target_arch = "wasm32")]

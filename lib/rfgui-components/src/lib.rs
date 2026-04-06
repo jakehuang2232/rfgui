@@ -1,7 +1,9 @@
+mod icons;
 mod inputs;
 mod layout;
 mod theme;
 
+pub use icons::*;
 pub use inputs::*;
 pub use layout::*;
 pub use theme::*;
@@ -10,7 +12,7 @@ pub use theme::*;
 mod tests {
     use crate::{
         Accordion, Button, ButtonHoverStyleSlot, ButtonStyleSlot, ButtonVariant, Checkbox,
-        NumberField, Select, Switch, Window,
+        CloseIcon, NumberField, Select, Switch, Window,
     };
     use rfgui::ui::{
         EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
@@ -28,6 +30,19 @@ mod tests {
 
     fn is_host_tag<T: 'static>(node: &RsxElementNode) -> bool {
         node.tag_descriptor == Some(RsxTagDescriptor::of::<T>())
+    }
+
+    fn shared_element_style(
+        node: &RsxElementNode,
+    ) -> Option<rfgui::view::ElementStylePropSchema> {
+        node.props.iter().find_map(|(key, value)| match (key.as_str(), value) {
+            ("style", PropValue::Shared(shared)) => shared
+                .value()
+                .downcast::<rfgui::view::ElementStylePropSchema>()
+                .ok()
+                .map(|style| (*style).clone()),
+            _ => None,
+        })
     }
 
     #[test]
@@ -206,6 +221,42 @@ mod tests {
             "expected option row to keep content height, got {}",
             option_snapshot.height
         );
+    }
+
+    #[test]
+    fn material_symbol_icon_renders_as_typed_element_with_symbol_font() {
+        let tree = rsx! { <CloseIcon /> };
+
+        let RsxNode::Element(root) = tree else {
+            panic!("icon should render element root");
+        };
+        assert_eq!(root.tag, "Element");
+
+        let style = shared_element_style(&root).expect("missing icon root style");
+        assert_eq!(
+            style
+                .font
+                .as_ref()
+                .expect("missing icon font")
+                .as_slice(),
+            &[String::from("Material Symbols Outlined")]
+        );
+        assert_eq!(
+            style.font_size,
+            Some(rfgui::FontSize::px(24.0)),
+            "icon should default to 24px"
+        );
+
+        let text_child = root.children.first().expect("missing text child");
+        let RsxNode::Element(text_node) = text_child else {
+            panic!("icon child should be text element");
+        };
+        assert!(is_host_tag::<Text>(text_node));
+        assert_eq!(text_node.children.len(), 1);
+        match &text_node.children[0] {
+            RsxNode::Text(content) => assert_eq!(content.content, "close"),
+            other => panic!("expected ligature text child, got {other:?}"),
+        }
     }
 
     fn click_once(
