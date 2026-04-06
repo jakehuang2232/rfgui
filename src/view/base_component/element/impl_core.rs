@@ -209,6 +209,9 @@ impl Element {
         overflow_child_indices: &[bool],
         inner_radii: CornerRadii,
     ) -> bool {
+        if self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1 {
+            return false;
+        }
         if self.children.is_empty()
             || !self.has_inner_render_area()
         {
@@ -446,6 +449,8 @@ impl Element {
                 width: 0.0,
                 height: 0.0,
             },
+            pending_inline_measure_context: None,
+            inline_paint_fragments: Vec::new(),
             scrollbar_drag: None,
             last_scrollbar_interaction: None,
             scrollbar_shadow_blur_radius: 3.0,

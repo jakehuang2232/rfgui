@@ -5,6 +5,7 @@ use crate::scene_windows::about_panel::build as build_about_panel;
 use crate::scene_windows::component_test::{
     ComponentTestBindings, ComponentTestValues, build as build_component_test_window,
 };
+use crate::scene_windows::inline_test::build as build_inline_test_window;
 use crate::scene_windows::inspector_panel::{
     InspectorPanelBindings, build as build_inspector_panel,
 };
@@ -147,6 +148,11 @@ pub fn MainScene() -> RsxNode {
             increment.clone(),
         )],
         (640.0, 420.0),
+    );
+    window_manager.push(
+        "Inline test",
+        vec![build_inline_test_window(&theme)],
+        (620.0, 560.0),
     );
     window_manager.push(
         "Transition Plugin Lab",

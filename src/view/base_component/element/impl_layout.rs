@@ -1295,61 +1295,107 @@ impl Element {
         for (line_idx, line) in info.lines.iter().enumerate() {
             let line_main = info.line_main_sum[line_idx];
             let line_cross = info.line_cross_max[line_idx];
+            let mut line_item_count = 0_usize;
+            let mut prev_child_index: Option<usize> = None;
+            for item in line {
+                if prev_child_index != Some(item.child_index) {
+                    line_item_count += 1;
+                    prev_child_index = Some(item.child_index);
+                }
+            }
             let (mut main_cursor, distributed_gap) = main_axis_start_and_gap(
                 main_limit,
                 line_main,
                 gap,
-                line.len(),
+                line_item_count,
                 self.computed_style.layout_axis_justify_content(),
             );
 
-            for &child_idx in line {
-                let (item_main, _item_cross) = info.child_sizes[child_idx];
-                if is_row {
-                    self.children[child_idx].set_layout_width(item_main);
-                } else {
-                    self.children[child_idx].set_layout_height(item_main);
-                }
-
-                let stretched_cross = if cross_size == CrossSize::Stretch
-                    && self.children[child_idx].allows_cross_stretch(is_row)
-                {
-                    if is_row {
-                        self.children[child_idx].set_layout_height(line_cross);
-                    } else {
-                        self.children[child_idx].set_layout_width(line_cross);
-                    }
-                    Some(line_cross)
-                } else {
-                    None
-                };
-                let alignment_cross = self.children[child_idx]
-                    .cross_alignment_size(is_row, stretched_cross)
-                    .max(0.0);
-                let cross_offset = cross_item_offset(line_cross, alignment_cross, align);
-                let (offset_x, offset_y) = if is_row {
-                    (main_cursor, cross_cursor + cross_offset)
-                } else {
-                    (cross_cursor + cross_offset, main_cursor)
-                };
-
-                self.children[child_idx].set_layout_offset(offset_x, offset_y);
+            for (item_idx, item) in line.iter().enumerate() {
+                let child_idx = item.child_index;
+                let item_main = item.main;
                 LAYOUT_PLACE_PROFILE.with(|profile| {
                     profile.borrow_mut().child_place_calls += 1;
                 });
-                self.children[child_idx].place(LayoutPlacement {
-                    parent_x: origin_x,
-                    parent_y: origin_y,
-                    visual_offset_x,
-                    visual_offset_y,
-                    available_width: child_available_width,
-                    available_height: child_available_height,
-                    viewport_width,
-                    viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
-                });
-                main_cursor += item_main + distributed_gap;
+                if matches!(self.computed_style.layout, Layout::Inline) {
+                    let alignment_cross = item.cross.max(0.0);
+                    let align_offset = cross_item_offset(line_cross, alignment_cross, align);
+                    let (offset_x, offset_y) = if is_row {
+                        (
+                            main_cursor + item.main_offset,
+                            cross_cursor + align_offset + item.cross_offset,
+                        )
+                    } else {
+                        (
+                            cross_cursor + align_offset + item.cross_offset,
+                            main_cursor + item.main_offset,
+                        )
+                    };
+                    self.children[child_idx].place_inline(InlinePlacement {
+                        node_index: item.node_index,
+                        x: origin_x + visual_offset_x + offset_x,
+                        y: origin_y + visual_offset_y + offset_y,
+                        offset_x,
+                        offset_y,
+                        parent_x: origin_x,
+                        parent_y: origin_y,
+                        visual_offset_x,
+                        visual_offset_y,
+                        available_width: child_available_width,
+                        available_height: child_available_height,
+                        viewport_width,
+                        viewport_height,
+                        percent_base_width: child_percent_base_width,
+                        percent_base_height: child_percent_base_height,
+                    });
+                } else {
+                    if is_row {
+                        self.children[child_idx].set_layout_width(item_main);
+                    } else {
+                        self.children[child_idx].set_layout_height(item_main);
+                    }
+                    let stretched_cross = if cross_size == CrossSize::Stretch
+                        && self.children[child_idx].allows_cross_stretch(is_row)
+                    {
+                        if is_row {
+                            self.children[child_idx].set_layout_height(line_cross);
+                        } else {
+                            self.children[child_idx].set_layout_width(line_cross);
+                        }
+                        Some(line_cross)
+                    } else {
+                        None
+                    };
+                    let alignment_cross = self.children[child_idx]
+                        .cross_alignment_size(is_row, stretched_cross)
+                        .max(0.0);
+                    let cross_offset = cross_item_offset(line_cross, alignment_cross, align);
+                    let (offset_x, offset_y) = if is_row {
+                        (main_cursor, cross_cursor + cross_offset)
+                    } else {
+                        (cross_cursor + cross_offset, main_cursor)
+                    };
+                    self.children[child_idx].set_layout_offset(offset_x, offset_y);
+                    self.children[child_idx].place(LayoutPlacement {
+                        parent_x: origin_x,
+                        parent_y: origin_y,
+                        visual_offset_x,
+                        visual_offset_y,
+                        available_width: child_available_width,
+                        available_height: child_available_height,
+                        viewport_width,
+                        viewport_height,
+                        percent_base_width: child_percent_base_width,
+                        percent_base_height: child_percent_base_height,
+                    });
+                }
+                main_cursor += item_main;
+                if line
+                    .get(item_idx + 1)
+                    .is_some_and(|next| next.child_index != child_idx)
+                {
+                    main_cursor += distributed_gap;
+                }
             }
 
             cross_cursor += line_cross + gap;

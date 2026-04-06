@@ -28,7 +28,11 @@ pub(crate) fn build_text_buffer(
             Wrap::None
         },
     );
-    buffer.set_size(font_system, width.map(|w| w.max(1.0)), height.map(|h| h.max(1.0)));
+    buffer.set_size(
+        font_system,
+        width.map(|w| w.max(1.0)),
+        height.map(|h| h.max(1.0)),
+    );
 
     let attrs = if let Some(first) = font_families.first() {
         Attrs::new()

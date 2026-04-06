@@ -849,6 +849,41 @@ impl LayoutPlacement {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InlineMeasureContext {
+    pub first_available_width: f32,
+    pub full_available_width: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub percent_base_width: Option<f32>,
+    pub percent_base_height: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InlineNodeSize {
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InlinePlacement {
+    pub node_index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub parent_x: f32,
+    pub parent_y: f32,
+    pub visual_offset_x: f32,
+    pub visual_offset_y: f32,
+    pub available_width: f32,
+    pub available_height: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub percent_base_width: Option<f32>,
+    pub percent_base_height: Option<f32>,
+}
+
 pub trait Layoutable {
     fn measure(&mut self, constraints: LayoutConstraints);
     fn place(&mut self, placement: LayoutPlacement);
@@ -887,7 +922,39 @@ pub trait Layoutable {
     fn flex_max_main_size(&self, _is_row: bool) -> SizeValue {
         SizeValue::Auto
     }
+    fn inline_relative_position(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
+    fn measure_inline(&mut self, context: InlineMeasureContext) {
+        self.measure(LayoutConstraints {
+            max_width: context.first_available_width.max(0.0),
+            max_height: 1_000_000.0,
+            viewport_width: context.viewport_width,
+            viewport_height: context.viewport_height,
+            percent_base_width: context.percent_base_width,
+            percent_base_height: context.percent_base_height,
+        });
+    }
+    fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
+        let (width, height) = self.measured_size();
+        vec![InlineNodeSize { width, height }]
+    }
+    fn place_inline(&mut self, placement: InlinePlacement) {
+        self.set_layout_offset(placement.offset_x, placement.offset_y);
+        self.place(LayoutPlacement {
+            parent_x: placement.parent_x,
+            parent_y: placement.parent_y,
+            visual_offset_x: placement.visual_offset_x,
+            visual_offset_y: placement.visual_offset_y,
+            available_width: placement.available_width,
+            available_height: placement.available_height,
+            viewport_width: placement.viewport_width,
+            viewport_height: placement.viewport_height,
+            percent_base_width: placement.percent_base_width,
+            percent_base_height: placement.percent_base_height,
+        });
+    }
 }
 
 pub trait EventTarget {
@@ -1067,12 +1134,21 @@ type BlurHandler = Box<dyn FnMut(&mut BlurEvent, &mut ViewportControl<'_>)>;
 
 #[derive(Clone, Debug)]
 struct FlexLayoutInfo {
-    lines: Vec<Vec<usize>>,
+    lines: Vec<Vec<FlexLineItem>>,
     line_main_sum: Vec<f32>,
     line_cross_max: Vec<f32>,
     total_main: f32,
     total_cross: f32,
-    child_sizes: Vec<(f32, f32)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FlexLineItem {
+    child_index: usize,
+    node_index: usize,
+    main: f32,
+    cross: f32,
+    main_offset: f32,
+    cross_offset: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1151,6 +1227,8 @@ pub struct Element {
     scroll_direction: ScrollDirection,
     scroll_offset: Position,
     content_size: Size,
+    pending_inline_measure_context: Option<InlineMeasureContext>,
+    inline_paint_fragments: Vec<Rect>,
     scrollbar_drag: Option<ScrollbarDragState>,
     last_scrollbar_interaction: Option<Instant>,
     scrollbar_shadow_blur_radius: f32,
@@ -1197,6 +1275,12 @@ pub struct Element {
 }
 
 impl Element {
+    fn is_fragmentable_inline_element(&self) -> bool {
+        self.computed_style.layout == Layout::Inline
+            && self.computed_style.width == SizeValue::Auto
+            && self.computed_style.height == SizeValue::Auto
+    }
+
     fn capture_style_snapshot(&self) -> ElementStyleSnapshot {
         let [bg_r, bg_g, bg_b, bg_a] = self.background_color.as_ref().to_rgba_u8();
         let [bt_r, bt_g, bt_b, bt_a] = self.border_colors.top.as_ref().to_rgba_u8();
@@ -1542,6 +1626,13 @@ impl ElementTrait for Element {
         hash_f32(&mut hasher, self.scroll_offset.y);
         hash_f32(&mut hasher, self.content_size.width.max(0.0));
         hash_f32(&mut hasher, self.content_size.height.max(0.0));
+        self.inline_paint_fragments.len().hash(&mut hasher);
+        for fragment in &self.inline_paint_fragments {
+            hash_f32(&mut hasher, fragment.x);
+            hash_f32(&mut hasher, fragment.y);
+            hash_f32(&mut hasher, fragment.width.max(0.0));
+            hash_f32(&mut hasher, fragment.height.max(0.0));
+        }
         hash_f32(&mut hasher, self.layout_transition_visual_offset_x);
         hash_f32(&mut hasher, self.layout_transition_visual_offset_y);
         self.layout_transition_override_width

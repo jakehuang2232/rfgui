@@ -6,6 +6,7 @@ mod tests {
         LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
     };
     use super::super::core::Position as LayoutPosition;
+    use crate::view::base_component::Text;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
     use crate::view::base_component::{
@@ -3866,6 +3867,679 @@ mod tests {
         assert_eq!(third.y, 10.0);
         assert!((parent.box_model_snapshot().height - 30.0).abs() < 0.01);
         assert!((parent.content_size.height - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn inline_layout_keeps_text_flowing_after_inline_element() {
+        let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        parent.apply_style(parent_style);
+
+        parent.add_child(Box::new(Text::from_content("lead")));
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
+        parent.add_child(Box::new(Text::from_content(" trailing text continues after the badge.")));
+
+        parent.measure(LayoutConstraints {
+            max_width: 220.0,
+            max_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 220.0,
+            available_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let children = parent.children().expect("children");
+        let badge = children[1].box_model_snapshot();
+        let trailing = children[2]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("text child");
+        let trailing_snapshot = trailing.box_model_snapshot();
+        let trailing_fragments = trailing.inline_fragment_positions();
+        let first_fragment = trailing_fragments.first().expect("first inline fragment");
+
+        assert_eq!(badge.y, 0.0);
+        assert_eq!(trailing_snapshot.y, 0.0);
+        assert!(first_fragment.1.x >= badge.x + badge.width);
+        assert_eq!(first_fragment.1.y, 0.0);
+    }
+
+    #[test]
+    fn inline_text_ignores_explicit_size_and_still_fragments() {
+        let mut parent = Element::new(0.0, 0.0, 160.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
+        parent.apply_style(parent_style);
+
+        let mut text = Text::from_content("fragmented text should wrap across multiple inline lines");
+        text.set_size(300.0, 300.0);
+        parent.add_child(Box::new(text));
+
+        parent.measure(LayoutConstraints {
+            max_width: 160.0,
+            max_height: 240.0,
+            viewport_width: 160.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(240.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 160.0,
+            available_height: 240.0,
+            viewport_width: 160.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(240.0),
+        });
+
+        let text = parent.children().expect("children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("text child");
+        let fragments = text.inline_fragment_positions();
+        let snapshot = text.box_model_snapshot();
+
+        assert!(fragments.len() > 1);
+        assert!(snapshot.width < 300.0);
+        assert!(snapshot.height < 300.0);
+    }
+
+    #[test]
+    fn inline_gap_does_not_apply_between_text_fragments_of_same_text_node() {
+        let mut parent = Element::new(0.0, 0.0, 400.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(400.0)));
+        parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(24.0)));
+        parent.apply_style(parent_style);
+
+        let mut text = Text::from_content("alpha beta gamma");
+        text.set_size(300.0, 80.0);
+        parent.add_child(Box::new(text));
+
+        parent.measure(LayoutConstraints {
+            max_width: 400.0,
+            max_height: 120.0,
+            viewport_width: 400.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 120.0,
+            viewport_width: 400.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let text = parent.children().expect("children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("text child");
+        let fragments = text.inline_fragment_positions();
+        assert!(fragments.len() >= 2);
+        assert!(fragments[1].1.x < 120.0);
+    }
+
+    #[test]
+    fn inline_cjk_text_fragments_per_character() {
+        let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        parent.apply_style(parent_style);
+
+        parent.add_child(Box::new(Text::from_content("最後接一段中文，確認混排時也能一起換行。")));
+
+        parent.measure(LayoutConstraints {
+            max_width: 220.0,
+            max_height: 120.0,
+            viewport_width: 220.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 220.0,
+            available_height: 120.0,
+            viewport_width: 220.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let text = parent.children().expect("children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("text child");
+        let fragments = text.inline_fragment_positions();
+
+        assert!(fragments.len() > 8);
+        assert_eq!(fragments[0].0, "最");
+        assert_eq!(fragments[1].0, "後");
+        assert_eq!(fragments[2].0, "接");
+    }
+
+    #[test]
+    fn inline_auto_sized_element_expands_into_child_fragments() {
+        let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        parent.apply_style(parent_style);
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content("nested")));
+        wrapper.add_child(Box::new(Element::new(0.0, 0.0, 44.0, 20.0)));
+
+        parent.add_child(Box::new(wrapper));
+        parent.add_child(Box::new(Text::from_content("tail")));
+
+        parent.measure(LayoutConstraints {
+            max_width: 220.0,
+            max_height: 120.0,
+            viewport_width: 220.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 220.0,
+            available_height: 120.0,
+            viewport_width: 220.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let wrapper = parent.children().expect("children")[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("wrapper element");
+        let tail = parent.children().expect("children")[1]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("tail text");
+        let wrapper_children = wrapper.children().expect("wrapper children");
+
+        assert!(wrapper.box_model_snapshot().width > 44.0);
+        assert_eq!(wrapper_children[1].box_model_snapshot().y, 0.0);
+        assert!(tail.box_model_snapshot().x >= wrapper.box_model_snapshot().x + 44.0);
+    }
+
+    #[test]
+    fn inline_fragmentable_element_builds_multiple_draw_rect_passes() {
+        let mut parent = Element::new(0.0, 0.0, 160.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
+        parent.apply_style(parent_style);
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#93c5fd")),
+        );
+        wrapper_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content(
+            "inline wrapper background should wrap across lines",
+        )));
+        parent.add_child(Box::new(wrapper));
+
+        parent.measure(LayoutConstraints {
+            max_width: 160.0,
+            max_height: 160.0,
+            viewport_width: 160.0,
+            viewport_height: 160.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(160.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 160.0,
+            available_height: 160.0,
+            viewport_width: 160.0,
+            viewport_height: 160.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(160.0),
+        });
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(160, 160, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        let next_state = parent.build(
+            &mut graph,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(next_state);
+
+        let pass_names = graph
+            .pass_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+        let rect_like_count = pass_names
+            .iter()
+            .filter(|name| name.contains("draw_rect_pass::DrawRectPass") || name.contains("draw_rect_pass::OpaqueRectPass"))
+            .count();
+        let border_count = pass_names
+            .iter()
+            .filter(|name| name.contains("draw_rect_pass::DrawRectPass"))
+            .count();
+
+        assert!(rect_like_count >= 4, "expected multiple fragment rect passes, got {pass_names:?}");
+        assert!(border_count >= 2, "expected multiple border rect passes, got {pass_names:?}");
+    }
+
+    #[test]
+    fn inline_fragmentable_element_keeps_all_nested_text_fragments() {
+        let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
+        parent.apply_style(parent_style);
+        parent.add_child(Box::new(Text::from_content("Inline text starts here,")));
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#93c5fd")),
+        );
+        wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content(
+            "badge test test test test test test test",
+        )));
+        parent.add_child(Box::new(wrapper));
+        parent.add_child(Box::new(Text::from_content(
+            "then more text continues after the badge,",
+        )));
+
+        parent.measure(LayoutConstraints {
+            max_width: 220.0,
+            max_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 220.0,
+            available_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let wrapper = parent.children().expect("children")[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("wrapper");
+        let nested_text = wrapper.children().expect("wrapper children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("nested text");
+        let fragments = nested_text.inline_fragment_positions();
+        assert!(fragments.len() >= 4, "fragments={fragments:?}");
+    }
+
+    #[test]
+    fn inline_fragmentable_element_uses_slice_padding_across_fragments() {
+        let mut parent = Element::new(0.0, 0.0, 160.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
+        parent.apply_style(parent_style);
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content(
+            "badge test test test test",
+        )));
+        parent.add_child(Box::new(wrapper));
+
+        parent.measure(LayoutConstraints {
+            max_width: 160.0,
+            max_height: 160.0,
+            viewport_width: 160.0,
+            viewport_height: 160.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(160.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 160.0,
+            available_height: 160.0,
+            viewport_width: 160.0,
+            viewport_height: 160.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(160.0),
+        });
+
+        let wrapper = parent.children().expect("children")[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("wrapper");
+        let nested_text = wrapper.children().expect("wrapper children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("nested text");
+        assert!(wrapper.inline_paint_fragments.len() >= 2);
+        let first = wrapper.inline_paint_fragments[0];
+        let last = *wrapper.inline_paint_fragments.last().expect("last fragment");
+        let fragments = nested_text.inline_fragment_positions();
+        assert!(fragments.len() >= 2, "fragments={fragments:?}");
+
+        let first_line_y = fragments[0].1.y;
+        let first_line_left = fragments
+            .iter()
+            .filter(|(_, position)| (position.y - first_line_y).abs() < 0.5)
+            .map(|(_, position)| position.x)
+            .fold(f32::INFINITY, f32::min);
+        assert!((first_line_left - first.x - 8.0).abs() < 0.5);
+
+        let last_line_y = fragments.last().expect("last fragment").1.y;
+        let last_line_right = fragments
+            .iter()
+            .filter(|(_, position)| (position.y - last_line_y).abs() < 0.5)
+            .map(|(content, position)| {
+                let mut text = Text::from_content(content.as_str());
+                text.measure(LayoutConstraints {
+                    max_width: 200.0,
+                    max_height: 80.0,
+                    viewport_width: 200.0,
+                    viewport_height: 80.0,
+                    percent_base_width: Some(200.0),
+                    percent_base_height: Some(80.0),
+                });
+                let (width, _) = text.measured_size();
+                position.x + width
+            })
+            .fold(0.0_f32, f32::max);
+        assert!((last.x + last.width - last_line_right - 8.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn inline_fragmentable_element_vertical_padding_does_not_shift_inline_content_y() {
+        let mut parent = Element::new(0.0, 0.0, 280.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(280.0)));
+        parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
+        parent.apply_style(parent_style);
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.set_padding(crate::Padding::new().xy(
+            Length::px(8.0),
+            Length::px(12.0),
+        ));
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content("badge")));
+        parent.add_child(Box::new(wrapper));
+        parent.add_child(Box::new(Text::from_content("trailing")));
+
+        parent.measure(LayoutConstraints {
+            max_width: 280.0,
+            max_height: 120.0,
+            viewport_width: 280.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(280.0),
+            percent_base_height: Some(120.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 280.0,
+            available_height: 120.0,
+            viewport_width: 280.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(280.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let wrapper = parent.children().expect("children")[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("wrapper");
+        let nested_text = wrapper.children().expect("wrapper children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("nested text");
+        let trailing = parent.children().expect("children")[1]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("trailing text");
+
+        let badge_y = nested_text.inline_fragment_positions()[0].1.y;
+        let trailing_y = trailing.inline_fragment_positions()[0].1.y;
+        let paint_top = wrapper.inline_paint_fragments[0].y;
+        let (_, text_height) = nested_text.measured_size();
+        let paint_height = wrapper.inline_paint_fragments[0].height;
+        assert!((badge_y - trailing_y).abs() < 0.5);
+        assert!((badge_y - paint_top - 12.0).abs() < 0.5);
+        assert!((paint_height - (text_height + 24.0)).abs() < 0.5);
+    }
+
+    #[test]
+    fn inline_fragmentable_element_positions_all_nested_text_fragments_across_widths() {
+        for width in 140..=240 {
+            let width = width as f32;
+            let mut parent = Element::new(0.0, 0.0, width, 0.0);
+            let mut parent_style = Style::new();
+            parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+            parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
+            parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
+            parent.apply_style(parent_style);
+            parent.add_child(Box::new(Text::from_content("Inline text starts here,")));
+
+            let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+            let mut wrapper_style = Style::new();
+            wrapper_style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(Color::hex("#93c5fd")));
+            wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+            wrapper.apply_style(wrapper_style);
+            wrapper.add_child(Box::new(Text::from_content(
+                "badge test test test test test test test",
+            )));
+            parent.add_child(Box::new(wrapper));
+            parent.add_child(Box::new(Text::from_content(
+                "then more text continues after the badge,",
+            )));
+
+            parent.measure(LayoutConstraints {
+                max_width: width,
+                max_height: 240.0,
+                viewport_width: width,
+                viewport_height: 240.0,
+                percent_base_width: Some(width),
+                percent_base_height: Some(240.0),
+            });
+            parent.place(LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: width,
+                available_height: 240.0,
+                viewport_width: width,
+                viewport_height: 240.0,
+                percent_base_width: Some(width),
+                percent_base_height: Some(240.0),
+            });
+
+            let wrapper = parent.children().expect("children")[1]
+                .as_any()
+                .downcast_ref::<Element>()
+                .expect("wrapper");
+            let nested_text = wrapper.children().expect("wrapper children")[0]
+                .as_any()
+                .downcast_ref::<Text>()
+                .expect("nested text");
+            let expected = nested_text.get_inline_nodes_size().len();
+            let actual = nested_text.inline_fragment_positions().len();
+            assert_eq!(actual, expected, "width={width}, actual={actual}, expected={expected}, fragments={:?}", nested_text.inline_fragment_positions());
+        }
+    }
+
+    #[test]
+    fn inline_fragmentable_element_does_not_overlap_trailing_text_across_widths() {
+        for width in 140..=240 {
+            let width = width as f32;
+            let mut parent = Element::new(0.0, 0.0, width, 0.0);
+            let mut parent_style = Style::new();
+            parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+            parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
+            parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
+            parent.apply_style(parent_style);
+            parent.add_child(Box::new(Text::from_content("Inline text starts here,")));
+
+            let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+            let mut wrapper_style = Style::new();
+            wrapper_style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(Color::hex("#93c5fd")));
+            wrapper_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#ffffff")));
+            wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+            wrapper.apply_style(wrapper_style);
+            wrapper.add_child(Box::new(Text::from_content(
+                "badge test test test test test test test",
+            )));
+            parent.add_child(Box::new(wrapper));
+            parent.add_child(Box::new(Text::from_content(
+                "then more text continues after the badge,",
+            )));
+
+            parent.measure(LayoutConstraints {
+                max_width: width,
+                max_height: 240.0,
+                viewport_width: width,
+                viewport_height: 240.0,
+                percent_base_width: Some(width),
+                percent_base_height: Some(240.0),
+            });
+            parent.place(LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: width,
+                available_height: 240.0,
+                viewport_width: width,
+                viewport_height: 240.0,
+                percent_base_width: Some(width),
+                percent_base_height: Some(240.0),
+            });
+
+            let wrapper = parent.children().expect("children")[1]
+                .as_any()
+                .downcast_ref::<Element>()
+                .expect("wrapper");
+            let nested_text = wrapper.children().expect("wrapper children")[0]
+                .as_any()
+                .downcast_ref::<Text>()
+                .expect("nested text");
+            let trailing = parent.children().expect("children")[2]
+                .as_any()
+                .downcast_ref::<Text>()
+                .expect("trailing text");
+
+            let nested_fragments = nested_text.inline_fragment_positions();
+            let trailing_fragments = trailing.inline_fragment_positions();
+            for (_, trailing_position) in &trailing_fragments {
+                let same_line_right = nested_fragments
+                    .iter()
+                    .filter(|(_, nested_position)| (nested_position.y - trailing_position.y).abs() < 0.5)
+                    .map(|(content, nested_position)| {
+                        let mut text = Text::from_content(content.as_str());
+                        text.measure(LayoutConstraints {
+                            max_width: 200.0,
+                            max_height: 80.0,
+                            viewport_width: 200.0,
+                            viewport_height: 80.0,
+                            percent_base_width: Some(200.0),
+                            percent_base_height: Some(80.0),
+                        });
+                        let (fragment_width, _) = text.measured_size();
+                        nested_position.x + fragment_width
+                    })
+                    .fold(None, |acc: Option<f32>, value| Some(acc.map_or(value, |max| max.max(value))));
+                if let Some(nested_right) = same_line_right {
+                    assert!(
+                        nested_right <= trailing_position.x + 0.5,
+                        "width={width}, nested_right={nested_right}, trailing_x={}, nested={nested_fragments:?}, trailing={trailing_fragments:?}",
+                        trailing_position.x
+                    );
+                }
+            }
+        }
     }
 
 }
