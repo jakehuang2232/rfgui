@@ -131,9 +131,9 @@ fn AccordionView(
                             .ease_in_out(),
                         ],
                         transform: if is_expanded {
-                            Transform::new([Rotate::z(Angle::deg(180.0))])
+                            Transform::new([Rotate::z(Angle::deg(0.0))])
                         } else {
-                            Transform::default()
+                            Transform::new([Rotate::z(Angle::deg(270.0))])
                         },
                     }}
                 >

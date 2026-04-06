@@ -10,6 +10,7 @@ function isUnsupportedSafari() {
 function bootApi() {
   return window.__RFGUI_BOOT__ ?? {
     hideBootOverlay() {},
+    setBootStatus() {},
     setBootError() {},
     formatBootError(_error, fallbackMessage) {
       return fallbackMessage;
@@ -34,7 +35,7 @@ export default function initializer() {
     },
 
     onSuccess() {
-      bootApi().hideBootOverlay();
+      bootApi().setBootStatus("Wasm initialized. Loading fonts…");
     },
 
     onFailure(error) {

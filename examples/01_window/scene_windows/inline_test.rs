@@ -1,7 +1,7 @@
 use crate::rfgui::ui::{RsxNode, rsx};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{
-    Border, BorderRadius, Color, ColorLike, FontFamily, Layout, Length, Padding, ScrollDirection,
+    Border, BorderRadius, Color, ColorLike, Layout, Length, Padding, ScrollDirection,
 };
 use crate::rfgui_components::Theme;
 
@@ -61,7 +61,7 @@ pub fn build(theme: &Theme) -> RsxNode {
             padding: Padding::uniform(theme.spacing.lg),
             scroll_direction: ScrollDirection::Vertical,
             color: theme.color.text.primary.clone(),
-            font: FontFamily::new(["Noto Sans CJK TC", "PingFang TC"]),
+            font: theme.typography.font_family.clone(),
             font_size: theme.typography.size.sm,
             background: theme.color.background.base.clone(),
         }}>
@@ -119,9 +119,18 @@ pub fn build(theme: &Theme) -> RsxNode {
                             Permission is hereby granted, free of charge, to any
                             person obtaining a copy of this software and associated
                             documentation files (the &quot;Software&quot;), to deal in the
-                            Software without restriction, including without
-                            limitation the rights to use, copy, modify, merge,
-                            publish, distribute, sublicense, and/or sell copies of
+                            Software without
+                            <Element style={{
+                                background: theme.color.primary.base.clone(),
+                                color: theme.color.primary.on.clone(),
+                                border_radius: BorderRadius::uniform(theme.radius.sm),
+                                padding: Padding::uniform(Length::px(8.0)),
+                            }}>
+                                restriction, including without
+                                limitation the rights to use, copy, modify, merge,
+                                publish, distribute, sublicense,
+                            </Element>
+                            and/or sell copies of
                             the Software, and to permit persons to whom the Software
                             is furnished to do so, subject to the following
                             conditions

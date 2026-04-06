@@ -3,7 +3,7 @@ use crate::rfgui::ui::{RsxNode, component, on_click, rsx, use_state};
 use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text, TextArea};
 use crate::rfgui::{
     Align, Angle, Animation, Animator, Border, BorderRadius, ClipMode, Collision,
-    CollisionBoundary, Color, CrossSize, Direction, FontFamily, JustifyContent, Keyframe, Layout,
+    CollisionBoundary, Color, CrossSize, Direction, JustifyContent, Keyframe, Layout,
     Length, Opacity, Padding, ParsedValue, Perspective, Position, PropertyId, Repeat, Rotate,
     Scale, ScrollDirection, Style, Transform, TransformOrigin, Transition, TransitionProperty,
     Translate,
@@ -88,7 +88,7 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
             gap: theme.spacing.md,
             padding: Padding::uniform(theme.spacing.xl),
             scroll_direction: ScrollDirection::Vertical,
-            font: FontFamily::new(["Noto Sans CJK TC", "PingFang TC"]),
+            font: theme.typography.font_family.clone(),
             color: theme.color.text.primary.clone(),
             font_size: theme.typography.size.sm,
         }} anchor="root">

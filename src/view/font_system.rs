@@ -14,9 +14,9 @@ use wasm_bindgen_futures::JsFuture;
 #[cfg(target_arch = "wasm32")]
 const WASM_FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../assets/NotoSans-Regular.ttf");
 #[cfg(target_arch = "wasm32")]
-const WEB_CJK_FONT_FAMILY: &str = "Noto Sans TC";
+const WEB_CJK_FONT_FAMILY: &str = "Noto Sans CJK TC";
 #[cfg(target_arch = "wasm32")]
-const WEB_CJK_FONT_URL: &str = "https://fonts.gstatic.com/ea/notosanstc/v1/NotoSansTC-Regular.otf";
+const WEB_CJK_FONT_URL: &str = "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf";
 
 static RUNTIME_WEB_FONTS: Mutex<Vec<Arc<Vec<u8>>>> = Mutex::new(Vec::new());
 

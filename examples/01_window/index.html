@@ -6,14 +6,11 @@
     <title>RFGUI Example</title>
     <style>
       @font-face {
-        font-family: "Noto Sans TC";
+        font-family: "Noto Sans CJK TC";
         font-style: normal;
         font-weight: 400;
         font-display: swap;
-        src:
-          url("https://fonts.gstatic.com/ea/notosanstc/v1/NotoSansTC-Regular.woff2") format("woff2"),
-          url("https://fonts.gstatic.com/ea/notosanstc/v1/NotoSansTC-Regular.woff") format("woff"),
-          url("https://fonts.gstatic.com/ea/notosanstc/v1/NotoSansTC-Regular.otf") format("opentype");
+        src: url("https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf") format("opentype");
       }
 
       :root {
@@ -35,7 +32,7 @@
 
       body {
         overflow: hidden;
-        font-family: "Noto Sans TC", "PingFang TC", "Segoe UI", sans-serif;
+        font-family: "Noto Sans CJK TC", "PingFang TC", "Segoe UI", sans-serif;
       }
 
       canvas {
@@ -153,6 +150,14 @@
         bootStatus.classList.add("is-error");
       }
 
+      function setBootStatus(message) {
+        if (!bootStatus) {
+          return;
+        }
+        bootStatus.textContent = message;
+        bootStatus.classList.remove("is-error");
+      }
+
       function formatBootError(error, fallbackMessage) {
         if (typeof error === "string" && error.trim()) {
           return error;
@@ -171,16 +176,13 @@
 
       window.__RFGUI_BOOT__ = {
         hideBootOverlay,
+        setBootStatus,
         setBootError,
         formatBootError,
       };
     </script>
     <link data-trunk rel="rust" data-initializer="bootstrap.js" />
     <script>
-      window.addEventListener("TrunkApplicationStarted", () => {
-        hideBootOverlay();
-      });
-
       window.addEventListener("error", () => {
         setBootError("Loading failed. Please refresh the page.");
       });
