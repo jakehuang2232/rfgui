@@ -117,13 +117,13 @@ impl TextPass {
         hasher.finish()
     }
 
-    fn layout_signature(&self, _scale: f32) -> u64 {
+    fn layout_signature(&self, scale: f32) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.params.content.hash(&mut hasher);
-        self.params.width.to_bits().hash(&mut hasher);
-        self.params.height.to_bits().hash(&mut hasher);
-        self.params.font_size.to_bits().hash(&mut hasher);
+        (self.params.width * scale).to_bits().hash(&mut hasher);
+        (self.params.height * scale).to_bits().hash(&mut hasher);
+        (self.params.font_size * scale).to_bits().hash(&mut hasher);
         self.params.line_height.to_bits().hash(&mut hasher);
         self.params.font_weight.hash(&mut hasher);
         self.params.font_families.hash(&mut hasher);
@@ -233,9 +233,9 @@ impl GraphicsPass for TextPass {
                 owned_buffer = resources.prepare_buffer_cached(
                     layout_signature,
                     self.params.content.as_str(),
-                    self.params.width,
-                    self.params.height,
-                    self.params.font_size,
+                    self.params.width * scale,
+                    self.params.height * scale,
+                    self.params.font_size * scale,
                     self.params.line_height,
                     self.params.font_weight,
                     self.params.font_families.as_slice(),
