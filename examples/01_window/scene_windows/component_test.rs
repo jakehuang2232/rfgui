@@ -1,40 +1,26 @@
-use crate::rfgui::ui::{Binding, RsxNode, rsx};
+use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::{
     Button, ButtonVariant, Checkbox, NumberField, Select, Slider, Switch, Theme,
 };
 use rfgui::ScrollDirection;
-use rfgui::ui::use_state;
 use rfgui_components::Accordion;
-
-pub struct ComponentTestBindings {
-    pub checked: Binding<bool>,
-    pub selected: Binding<String>,
-    pub slider: Binding<f64>,
-    pub switch_state: Binding<bool>,
-}
-
-pub struct ComponentTestValues {
-    pub checked: bool,
-    pub selected: String,
-    pub slider: f64,
-    pub switch_state: bool,
-}
 
 fn select_label(item: &String, _: usize) -> String {
     item.clone()
 }
 
-pub fn build(
-    theme: &Theme,
-    bindings: ComponentTestBindings,
-    values: ComponentTestValues,
-) -> RsxNode {
+#[component]
+pub fn ComponentTest(theme: Theme) -> RsxNode {
     let options = (1..=1000)
         .map(|index| format!("Option {index}"))
         .collect::<Vec<String>>();
 
+    let checked = use_state(|| false);
+    let selected = use_state(|| String::from("Option A"));
+    let slider = use_state(|| 25.0_f64);
+    let switch_state = use_state(|| true);
     let count = use_state(|| 0);
     let count_for_increment = count.clone();
     let count_increment = move |_event: &mut crate::rfgui::ui::ClickEvent| {
@@ -132,21 +118,21 @@ pub fn build(
             </Accordion>
             <Checkbox
                 label="Enable flag"
-                binding={bindings.checked}
+                binding={checked.binding()}
             />
             <Switch
                 label="Switch state"
-                binding={bindings.switch_state}
+                binding={switch_state.binding()}
             />
 
             <Select
                 data={options}
                 to_label={select_label}
                 to_value={|item, _| item.clone()}
-                value={bindings.selected}
+                value={selected.binding()}
             />
             <Slider
-                binding={bindings.slider}
+                binding={slider.binding()}
                 min=0.0
                 max=100.0
                 label="Slider"
@@ -154,10 +140,10 @@ pub fn build(
             <Text>
                 {format!(
                     "checked={} selected={} slider={:.0} switch={}",
-                    values.checked,
-                    values.selected,
-                    values.slider,
-                    values.switch_state
+                    checked.get(),
+                    selected.get(),
+                    slider.get(),
+                    switch_state.get()
                 )}
             </Text>
         </Element>

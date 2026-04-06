@@ -1,4 +1,4 @@
-use crate::rfgui::ui::{Binding, RsxNode, rsx};
+use crate::rfgui::ui::{RsxNode, component, rsx, use_redraw_state, use_state};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{
     Angle, Border, Color, JustifyContent, Layout, Length, Padding, Perspective, Rotate, Scale,
@@ -6,55 +6,48 @@ use crate::rfgui::{
 };
 use crate::rfgui_components::{Button, Theme};
 
-pub struct TransitionLabBindings {
-    pub style_enabled: Binding<bool>,
-    pub style_target_alt: Binding<bool>,
-    pub transform_enabled: Binding<bool>,
-    pub transform_target_alt: Binding<bool>,
-    pub layout_enabled: Binding<bool>,
-    pub layout_expanded: Binding<bool>,
-    pub visual_enabled: Binding<bool>,
-    pub visual_at_end: Binding<bool>,
-}
+#[component]
+pub fn TransitionLab(theme: Theme) -> RsxNode {
+    let style_enabled = use_state(|| true);
+    let style_target_alt = use_state(|| false);
+    let transform_enabled = use_redraw_state(|| true);
+    let transform_target_alt = use_redraw_state(|| false);
+    let layout_enabled = use_state(|| true);
+    let layout_expanded = use_state(|| false);
+    let visual_enabled = use_state(|| true);
+    let visual_at_end = use_state(|| false);
 
-pub struct TransitionLabValues {
-    pub style_enabled: bool,
-    pub style_target_alt: bool,
-    pub transform_enabled: bool,
-    pub transform_target_alt: bool,
-    pub layout_enabled: bool,
-    pub layout_expanded: bool,
-    pub visual_enabled: bool,
-    pub visual_at_end: bool,
-}
+    let style_enabled_value = style_enabled.get();
+    let style_target_alt_value = style_target_alt.get();
+    let transform_enabled_value = transform_enabled.get();
+    let transform_target_alt_value = transform_target_alt.get();
+    let layout_enabled_value = layout_enabled.get();
+    let layout_expanded_value = layout_expanded.get();
+    let visual_enabled_value = visual_enabled.get();
+    let visual_at_end_value = visual_at_end.get();
 
-pub fn build(
-    theme: &Theme,
-    bindings: TransitionLabBindings,
-    values: TransitionLabValues,
-) -> RsxNode {
-    let style_start = bindings.style_enabled.clone();
-    let style_toggle_target = bindings.style_target_alt.clone();
-    let style_remove = bindings.style_enabled.clone();
-    let style_reset_enable = bindings.style_enabled.clone();
-    let style_reset_target = bindings.style_target_alt.clone();
-    let transform_start = bindings.transform_enabled.clone();
-    let transform_toggle_target = bindings.transform_target_alt.clone();
-    let transform_remove = bindings.transform_enabled.clone();
-    let transform_reset_enable = bindings.transform_enabled.clone();
-    let transform_reset_target = bindings.transform_target_alt.clone();
+    let style_start = style_enabled.binding();
+    let style_toggle_target = style_target_alt.binding();
+    let style_remove = style_enabled.binding();
+    let style_reset_enable = style_enabled.binding();
+    let style_reset_target = style_target_alt.binding();
+    let transform_start = transform_enabled.binding();
+    let transform_toggle_target = transform_target_alt.binding();
+    let transform_remove = transform_enabled.binding();
+    let transform_reset_enable = transform_enabled.binding();
+    let transform_reset_target = transform_target_alt.binding();
     let transform_idle_border = Color::hex("#334155");
     let transform_active_border = Color::hex("#67e8f9");
-    let layout_start_enable = bindings.layout_enabled.clone();
-    let layout_toggle_size = bindings.layout_expanded.clone();
-    let layout_remove = bindings.layout_enabled.clone();
-    let layout_reset_enable = bindings.layout_enabled.clone();
-    let layout_reset_size = bindings.layout_expanded.clone();
-    let visual_start_enable = bindings.visual_enabled.clone();
-    let visual_toggle_pos = bindings.visual_at_end.clone();
-    let visual_remove = bindings.visual_enabled.clone();
-    let visual_reset_enable = bindings.visual_enabled.clone();
-    let visual_reset_pos = bindings.visual_at_end.clone();
+    let layout_start_enable = layout_enabled.binding();
+    let layout_toggle_size = layout_expanded.binding();
+    let layout_remove = layout_enabled.binding();
+    let layout_reset_enable = layout_enabled.binding();
+    let layout_reset_size = layout_expanded.binding();
+    let visual_start_enable = visual_enabled.binding();
+    let visual_toggle_pos = visual_at_end.binding();
+    let visual_remove = visual_enabled.binding();
+    let visual_reset_enable = visual_enabled.binding();
+    let visual_reset_pos = visual_at_end.binding();
 
     rsx! {
         <Element style={{
@@ -87,14 +80,14 @@ pub fn build(
                 }}>
                     <Text>StyleTransitionPlugin</Text>
                     <Text>
-                        {format!("transition={} target={}", values.style_enabled, values.style_target_alt)}
+                        {format!("transition={} target={}", style_enabled_value, style_target_alt_value)}
                     </Text>
                     <Element style={{
                         width: Length::px(180.0),
                         height: Length::px(56.0),
-                        background: if values.style_target_alt { Color::hex("#f97316") } else { Color::hex("#22c55e") },
+                        background: if style_target_alt_value { Color::hex("#f97316") } else { Color::hex("#22c55e") },
                         border_radius: theme.radius.md,
-                        transition: if values.style_enabled {
+                        transition: if style_enabled_value {
                             vec![Transition::new(TransitionProperty::BackgroundColor, theme.motion.duration.slow).ease_in_out()]
                         } else {
                             Vec::<Transition>::new()
@@ -117,7 +110,7 @@ pub fn build(
                 }}>
                     <Text>TransformTransitionPlugin</Text>
                     <Text>
-                        {format!("transition={} target={}", values.transform_enabled, values.transform_target_alt)}
+                        {format!("transition={} target={}", transform_enabled_value, transform_target_alt_value)}
                     </Text>
                     <Element style={{
                         width: Length::px(180.0),
@@ -131,14 +124,14 @@ pub fn build(
                         <Element style={{
                             width: Length::px(124.0),
                             height: Length::px(82.0),
-                            background: if values.transform_target_alt { Color::hex("#0f172a") } else { Color::hex("#020617") },
+                            background: if transform_target_alt_value { Color::hex("#0f172a") } else { Color::hex("#020617") },
                             border: Border::uniform(
                                 Length::px(1.0),
-                                if values.transform_target_alt { &transform_active_border } else { &transform_idle_border }
+                                if transform_target_alt_value { &transform_active_border } else { &transform_idle_border }
                             ),
                             border_radius: theme.radius.md,
                             box_shadow: vec![
-                                if values.transform_target_alt {
+                                if transform_target_alt_value {
                                     theme.shadow.level_3
                                         .color(Color::rgba(34, 211, 238, 110))
                                         .offset_x(-10.0)
@@ -154,12 +147,12 @@ pub fn build(
                                         .spread(0.0)
                                 },
                             ],
-                            transform_origin: if values.transform_target_alt {
+                            transform_origin: if transform_target_alt_value {
                                 TransformOrigin::percent(84.0, 12.0).with_z(48.0)
                             } else {
                                 TransformOrigin::percent(16.0, 82.0).with_z(18.0)
                             },
-                            transform: if values.transform_target_alt {
+                            transform: if transform_target_alt_value {
                                 Transform::new([
                                     Perspective::px(960.0),
                                     Translate::x(Length::px(26.0)).with_y(Length::px(-10.0)),
@@ -174,7 +167,7 @@ pub fn build(
                                     Scale::xy(0.96, 0.96),
                                 ])
                             },
-                            transition: if values.transform_enabled {
+                            transition: if transform_enabled_value {
                                 vec![
                                     Transition::new(TransitionProperty::Transform, theme.motion.duration.slow).ease_in_out(),
                                     Transition::new(TransitionProperty::BoxShadow, theme.motion.duration.slow).ease_in_out(),
@@ -189,7 +182,7 @@ pub fn build(
                             <Element style={{
                                 width: Length::percent(100.0),
                                 height: Length::px(8.0),
-                                background: if values.transform_target_alt { Color::hex("#67e8f9") } else { Color::hex("#2563eb") },
+                                background: if transform_target_alt_value { Color::hex("#67e8f9") } else { Color::hex("#2563eb") },
                                 border_radius: theme.radius.md,
                             }} />
                             <Element style={{
@@ -200,7 +193,7 @@ pub fn build(
                                 <Text style={{ color: Color::hex("#7dd3fc") }}>3D</Text>
                             </Element>
                             <Text style={{ color: Color::hex("#94a3b8") }}>
-                                {if values.transform_target_alt { "tilt / lift / spin" } else { "armed / waiting" }}
+                                {if transform_target_alt_value { "tilt / lift / spin" } else { "armed / waiting" }}
                             </Text>
                         </Element>
                     </Element>
@@ -221,7 +214,7 @@ pub fn build(
                 }}>
                     <Text>LayoutTransitionPlugin</Text>
                     <Text>
-                        {format!("transition={} expanded={}", values.layout_enabled, values.layout_expanded)}
+                        {format!("transition={} expanded={}", layout_enabled_value, layout_expanded_value)}
                     </Text>
                     <Element style={{
                         width: Length::px(180.0),
@@ -230,11 +223,11 @@ pub fn build(
                         border_radius: theme.radius.md,
                     }}>
                         <Element style={{
-                            width: if values.layout_expanded { Length::px(180.0) } else { Length::px(34.0) },
-                            height: if values.layout_expanded { Length::px(58.0) } else { Length::px(34.0) },
+                            width: if layout_expanded_value { Length::px(180.0) } else { Length::px(34.0) },
+                            height: if layout_expanded_value { Length::px(58.0) } else { Length::px(34.0) },
                             background: "#38bdf8",
                             border_radius: theme.radius.md,
-                            transition: if values.layout_enabled {
+                            transition: if layout_enabled_value {
                                 vec![
                                     Transition::new(TransitionProperty::Width, theme.motion.duration.slow).ease_in_out(),
                                     Transition::new(TransitionProperty::Height, theme.motion.duration.slow).ease_in_out(),
@@ -261,14 +254,14 @@ pub fn build(
                 }}>
                     <Text>VisualTransitionPlugin</Text>
                     <Text>
-                        {format!("transition={} at_end={}", values.visual_enabled, values.visual_at_end)}
+                        {format!("transition={} at_end={}", visual_enabled_value, visual_at_end_value)}
                     </Text>
                     <Element style={{
                         width: Length::px(180.0),
                         height: Length::px(58.0),
                         background: "#1f2937",
                         border_radius: theme.radius.md,
-                        layout: Layout::flow().row().no_wrap().justify_content(if values.visual_at_end { JustifyContent::End } else { JustifyContent::Start }),
+                        layout: Layout::flow().row().no_wrap().justify_content(if visual_at_end_value { JustifyContent::End } else { JustifyContent::Start }),
                         padding: Padding::uniform(theme.spacing.xs),
                     }}>
                         <Element style={{
@@ -276,7 +269,7 @@ pub fn build(
                             height: Length::px(42.0),
                             background: theme.color.secondary.base.clone(),
                             border_radius: theme.radius.md,
-                            transition: if values.visual_enabled {
+                            transition: if visual_enabled_value {
                                 vec![Transition::new(TransitionProperty::Position, theme.motion.duration.slow).ease_in_out()]
                             } else {
                                 Vec::<Transition>::new()
