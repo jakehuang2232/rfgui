@@ -13,10 +13,18 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, Layoutable, Position,
-    Renderable, Size, UiBuildContext,
+    BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, InlineMeasureContext,
+    InlineNodeSize, InlinePlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
 };
 use crate::view::promotion::PromotionNodeInfo;
+
+#[derive(Clone, Debug, Default)]
+struct InlineTextFragment {
+    content: String,
+    width: f32,
+    height: f32,
+    position: Option<Position>,
+}
 
 pub struct Text {
     element: Element,
@@ -42,6 +50,7 @@ pub struct Text {
     measure_revision: u64,
     cached_intrinsic_width: Option<(u64, f32)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
+    inline_fragments: Vec<InlineTextFragment>,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
 }
@@ -146,6 +155,7 @@ impl Text {
             measure_revision: 0,
             cached_intrinsic_width: None,
             cached_height_for_width: None,
+            inline_fragments: Vec::new(),
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
         }
@@ -155,6 +165,7 @@ impl Text {
         self.measure_revision = self.measure_revision.wrapping_add(1);
         self.cached_intrinsic_width = None;
         self.cached_height_for_width = None;
+        self.inline_fragments.clear();
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
@@ -296,6 +307,135 @@ impl Text {
         style.set_cursor(cursor);
         self.element.apply_style(style);
     }
+
+    #[cfg(test)]
+    pub(crate) fn inline_fragment_positions(&self) -> Vec<(String, Position)> {
+        self.inline_fragments
+            .iter()
+            .filter_map(|fragment| {
+                fragment
+                    .position
+                    .map(|position| (fragment.content.clone(), position))
+            })
+            .collect()
+    }
+}
+
+fn tokenize_inline_content(content: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut current_kind: Option<bool> = None;
+
+    for ch in content.chars() {
+        if is_cjk_character(ch) {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            current_kind = None;
+            tokens.push(ch.to_string());
+            continue;
+        }
+        let is_whitespace = ch.is_whitespace();
+        match current_kind {
+            None => {
+                current.push(ch);
+                current_kind = Some(is_whitespace);
+            }
+            Some(true) if is_whitespace => {
+                current.push(ch);
+            }
+            Some(true) => {
+                tokens.push(std::mem::take(&mut current));
+                current.push(ch);
+                current_kind = Some(false);
+            }
+            Some(false) if !is_whitespace => {
+                current.push(ch);
+            }
+            Some(false) => {
+                current.push(ch);
+                current_kind = Some(true);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn is_cjk_character(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x3040..=0x309F
+            | 0x30A0..=0x30FF
+            | 0xAC00..=0xD7AF
+            | 0x3000..=0x303F
+            | 0xFF00..=0xFFEF
+    )
+}
+
+fn split_inline_token_by_width(
+    token: &str,
+    max_width: f32,
+    font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+    align: Align,
+    font_families: &[String],
+) -> Vec<(String, f32, f32)> {
+    let max_width = max_width.max(1.0);
+    let (token_width, token_height) = measure_text_size(
+        token,
+        None,
+        false,
+        font_size,
+        line_height,
+        font_weight,
+        align,
+        font_families,
+    );
+    if token_width <= max_width || token.chars().count() <= 1 {
+        return vec![(token.to_string(), token_width, token_height)];
+    }
+
+    let chars = token.chars().collect::<Vec<_>>();
+    let mut fragments = Vec::new();
+    let mut start = 0_usize;
+    while start < chars.len() {
+        let mut candidate = String::new();
+        let mut best: Option<(usize, f32, f32)> = None;
+        for end in start..chars.len() {
+            candidate.push(chars[end]);
+            let (width, height) = measure_text_size(
+                candidate.as_str(),
+                None,
+                false,
+                font_size,
+                line_height,
+                font_weight,
+                align,
+                font_families,
+            );
+            if width <= max_width || end == start {
+                best = Some((end + 1, width, height));
+                if width > max_width {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        let (next_start, width, height) = best.expect("at least one char must fit");
+        let fragment = chars[start..next_start].iter().collect::<String>();
+        fragments.push((fragment, width, height));
+        start = next_start;
+    }
+    fragments
 }
 
 fn measure_text_size(
@@ -411,6 +551,15 @@ impl ElementTrait for Text {
         self.allow_wrap.hash(&mut hasher);
         self.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
         self.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
+        for fragment in &self.inline_fragments {
+            fragment.content.hash(&mut hasher);
+            fragment.width.to_bits().hash(&mut hasher);
+            fragment.height.to_bits().hash(&mut hasher);
+            if let Some(position) = fragment.position {
+                position.x.to_bits().hash(&mut hasher);
+                position.y.to_bits().hash(&mut hasher);
+            }
+        }
         hasher.finish()
     }
 
@@ -556,13 +705,144 @@ impl Layoutable for Text {
         <Element as Layoutable>::flex_max_main_size(&self.element, is_row)
     }
 
+    fn inline_relative_position(&self) -> (f32, f32) {
+        (self.position.x, self.position.y)
+    }
+
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.position = Position { x, y };
         self.element.set_position(x, y);
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::RUNTIME);
     }
 
+    fn measure_inline(&mut self, context: InlineMeasureContext) {
+        self.inline_fragments.clear();
+
+        if self.content.is_empty() {
+            self.size = Size {
+                width: 0.0,
+                height: 0.0,
+            };
+            self.element.set_size(0.0, 0.0);
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+            return;
+        }
+
+        let max_fragment_width = context.full_available_width.max(1.0);
+        let fragments = if self.text_wrap == TextWrap::NoWrap {
+            let (width, height) = measure_text_size(
+                self.content.as_str(),
+                None,
+                false,
+                self.font_size,
+                self.line_height,
+                self.font_weight,
+                self.align,
+                self.font_families.as_slice(),
+            );
+            vec![InlineTextFragment {
+                content: self.content.clone(),
+                width,
+                height,
+                position: None,
+            }]
+        } else {
+            let mut fragments = Vec::new();
+            for token in tokenize_inline_content(self.content.as_str()) {
+                for (content, width, height) in split_inline_token_by_width(
+                    token.as_str(),
+                    max_fragment_width,
+                    self.font_size,
+                    self.line_height,
+                    self.font_weight,
+                    self.align,
+                    self.font_families.as_slice(),
+                ) {
+                    fragments.push(InlineTextFragment {
+                        content,
+                        width,
+                        height,
+                        position: None,
+                    });
+                }
+            }
+            fragments
+        };
+
+        let (max_width, max_height) = fragments.iter().fold((0.0_f32, 0.0_f32), |(w, h), item| {
+            (w.max(item.width), h.max(item.height))
+        });
+        self.inline_fragments = fragments;
+        self.size = Size {
+            width: max_width,
+            height: max_height,
+        };
+        self.element.set_size(self.size.width, self.size.height);
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+    }
+
+    fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
+        self.inline_fragments
+            .iter()
+            .map(|fragment| InlineNodeSize {
+                width: fragment.width,
+                height: fragment.height,
+            })
+            .collect()
+    }
+
+    fn place_inline(&mut self, placement: InlinePlacement) {
+        if placement.node_index == 0 {
+            for fragment in &mut self.inline_fragments {
+                fragment.position = None;
+            }
+            self.layout_position = Position {
+                x: placement.x,
+                y: placement.y,
+            };
+            self.layout_size = Size {
+                width: 0.0,
+                height: 0.0,
+            };
+            self.should_render = false;
+        }
+
+        let Some(fragment) = self.inline_fragments.get_mut(placement.node_index) else {
+            return;
+        };
+        fragment.position = Some(Position {
+            x: placement.x,
+            y: placement.y,
+        });
+
+        let left = placement.x;
+        let top = placement.y;
+        let right = placement.x + fragment.width.max(0.0);
+        let bottom = placement.y + fragment.height.max(0.0);
+        if self.should_render {
+            let current_right = self.layout_position.x + self.layout_size.width;
+            let current_bottom = self.layout_position.y + self.layout_size.height;
+            self.layout_position.x = self.layout_position.x.min(left);
+            self.layout_position.y = self.layout_position.y.min(top);
+            self.layout_size.width = current_right.max(right) - self.layout_position.x;
+            self.layout_size.height = current_bottom.max(bottom) - self.layout_position.y;
+        } else {
+            self.layout_position = Position { x: left, y: top };
+            self.layout_size = Size {
+                width: (right - left).max(0.0),
+                height: (bottom - top).max(0.0),
+            };
+        }
+        self.should_render = self.layout_size.width > 0.0 && self.layout_size.height > 0.0;
+        self.dirty_flags = self.dirty_flags.without(
+            super::DirtyFlags::PLACE
+                .union(super::DirtyFlags::BOX_MODEL)
+                .union(super::DirtyFlags::HIT_TEST),
+        );
+    }
+
     fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
+        self.inline_fragments.clear();
         self.layout_override_width = None;
         self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();
@@ -729,34 +1009,75 @@ impl Renderable for Text {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        let pass = TextPass::new(
-            TextPassParams {
-                content: self.content.clone(),
-                x: self.layout_position.x,
-                y: self.layout_position.y,
-                width: self.layout_size.width,
-                height: self.layout_size.height,
-                color: self.color.to_rgba_f32(),
-                opacity,
-                font_size: self.font_size,
-                line_height: self.line_height,
-                font_weight: self.font_weight,
-                font_families: self.font_families.clone(),
-                align: self.align,
-                allow_wrap: self.allow_wrap,
-                layout_buffer: None,
-                scissor_rect: None,
-                stencil_clip_id: None,
-            },
-            TextInput {
-                pass_context: ctx.graphics_pass_context(),
-            },
-            TextOutput {
-                render_target: input_target,
-                ..Default::default()
-            },
-        );
-        graph.add_graphics_pass(pass);
+        let inline_fragments = self
+            .inline_fragments
+            .iter()
+            .filter(|fragment| fragment.position.is_some() && !fragment.content.is_empty())
+            .collect::<Vec<_>>();
+        if inline_fragments.is_empty() {
+            let pass = TextPass::new(
+                TextPassParams {
+                    content: self.content.clone(),
+                    x: self.layout_position.x,
+                    y: self.layout_position.y,
+                    width: self.layout_size.width,
+                    height: self.layout_size.height,
+                    color: self.color.to_rgba_f32(),
+                    opacity,
+                    font_size: self.font_size,
+                    line_height: self.line_height,
+                    font_weight: self.font_weight,
+                    font_families: self.font_families.clone(),
+                    align: self.align,
+                    allow_wrap: self.allow_wrap,
+                    layout_buffer: None,
+                    scissor_rect: None,
+                    stencil_clip_id: None,
+                },
+                TextInput {
+                    pass_context: ctx.graphics_pass_context(),
+                },
+                TextOutput {
+                    render_target: input_target,
+                    ..Default::default()
+                },
+            );
+            graph.add_graphics_pass(pass);
+        } else {
+            for fragment in inline_fragments {
+                let position = fragment.position.expect("filtered above");
+                let fragment_bounds_width =
+                    self.layout_size.width.max(fragment.width).max(1.0) + 4.0;
+                let pass = TextPass::new(
+                    TextPassParams {
+                        content: fragment.content.clone(),
+                        x: position.x,
+                        y: position.y,
+                        width: fragment_bounds_width,
+                        height: fragment.height.max(1.0),
+                        color: self.color.to_rgba_f32(),
+                        opacity,
+                        font_size: self.font_size,
+                        line_height: self.line_height,
+                        font_weight: self.font_weight,
+                        font_families: self.font_families.clone(),
+                        align: self.align,
+                        allow_wrap: false,
+                        layout_buffer: None,
+                        scissor_rect: None,
+                        stencil_clip_id: None,
+                    },
+                    TextInput {
+                        pass_context: ctx.graphics_pass_context(),
+                    },
+                    TextOutput {
+                        render_target: input_target,
+                        ..Default::default()
+                    },
+                );
+                graph.add_graphics_pass(pass);
+            }
+        }
         ctx.set_current_target(input_target);
         ctx.into_state()
     }

@@ -47,15 +47,15 @@ use std::sync::Arc;
 use wasm_bindgen::JsValue;
 #[cfg(target_arch = "wasm32")]
 use web_sys::HtmlCanvasElement;
-use wgpu::util::StagingBelt;
-use wgpu::{
-    Instance, Queue, TextureUsages,
-    rwh::{HasDisplayHandle, HasWindowHandle},
-};
 #[cfg(target_arch = "wasm32")]
 use wgpu::rwh::{
     DisplayHandle as BorrowedDisplayHandle, HandleError, RawDisplayHandle, RawWindowHandle,
     WebCanvasWindowHandle, WebDisplayHandle, WindowHandle as BorrowedWindowHandle,
+};
+use wgpu::util::StagingBelt;
+use wgpu::{
+    Instance, Queue, TextureUsages,
+    rwh::{HasDisplayHandle, HasWindowHandle},
 };
 
 pub(crate) use self::debug::{
@@ -1966,7 +1966,10 @@ impl Viewport {
 
     pub async fn create_surface(&mut self) {
         #[cfg(target_arch = "wasm32")]
-        let surface_target = self.web_canvas.clone().map(|canvas| SurfaceInitTarget::Canvas(canvas));
+        let surface_target = self
+            .web_canvas
+            .clone()
+            .map(|canvas| SurfaceInitTarget::Canvas(canvas));
         #[cfg(not(target_arch = "wasm32"))]
         let surface_target = self.window.clone().map(SurfaceInitTarget::Window);
 
@@ -2041,8 +2044,7 @@ impl Viewport {
                 .copied()
                 .find(|f| f.is_srgb())
                 .or_else(|| caps.formats.first().copied());
-            let Some(format) = format
-            else {
+            let Some(format) = format else {
                 eprintln!("[warn] surface reported no supported formats");
                 return;
             };

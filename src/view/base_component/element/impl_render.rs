@@ -244,15 +244,27 @@ impl Element {
             None
         };
 
+        let inline_context = InlineMeasureContext {
+            first_available_width: inner_w,
+            full_available_width: inner_w,
+            viewport_width: proposal.viewport_width,
+            viewport_height: proposal.viewport_height,
+            percent_base_width: child_percent_base_width,
+            percent_base_height: child_percent_base_height,
+        };
         for child in &mut self.children {
-            child.measure(LayoutConstraints {
-                max_width: child_available_width,
-                max_height: child_available_height,
-                viewport_width: proposal.viewport_width,
-                viewport_height: proposal.viewport_height,
-                percent_base_width: child_percent_base_width,
-                percent_base_height: child_percent_base_height,
-            });
+            if matches!(self.computed_style.layout, Layout::Inline) {
+                child.measure_inline(inline_context);
+            } else {
+                child.measure(LayoutConstraints {
+                    max_width: child_available_width,
+                    max_height: child_available_height,
+                    viewport_width: proposal.viewport_width,
+                    viewport_height: proposal.viewport_height,
+                    percent_base_width: child_percent_base_width,
+                    percent_base_height: child_percent_base_height,
+                });
+            }
         }
         let info = self.compute_flex_info(
             inner_w,
@@ -543,8 +555,24 @@ impl Element {
             } else {
                 final_main_sum + gap_total
             };
+            let line_items = line
+                .iter()
+                .copied()
+                .map(|child_index| FlexLineItem {
+                    child_index,
+                    node_index: 0,
+                    main: child_sizes[child_index].0,
+                    cross: child_sizes[child_index].1,
+                    main_offset: 0.0,
+                    cross_offset: 0.0,
+                })
+                .collect::<Vec<_>>();
             return FlexLayoutInfo {
-                lines: if line.is_empty() { Vec::new() } else { vec![line] },
+                lines: if line_items.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![line_items]
+                },
                 line_main_sum: if total_main > 0.0 || line_cross > 0.0 {
                     vec![total_main]
                 } else {
@@ -557,35 +585,72 @@ impl Element {
                 },
                 total_main,
                 total_cross: line_cross,
-                child_sizes,
             };
         }
 
-        for (idx, child) in self.children.iter().enumerate() {
-            if self.child_is_absolute(idx) {
+        let mut inline_nodes: Vec<FlexLineItem> = Vec::new();
+        for (child_index, child) in self.children.iter().enumerate() {
+            if self.child_is_absolute(child_index) {
                 continue;
             }
-            let (w, h) = child.measured_size();
-            let main = if is_row { w } else { h };
-            let cross = if is_row { h } else { w };
-            child_sizes[idx] = (main, cross);
+            let node_sizes = if matches!(self.computed_style.layout, Layout::Inline) {
+                child.get_inline_nodes_size()
+            } else {
+                let (w, h) = child.measured_size();
+                vec![InlineNodeSize { width: w, height: h }]
+            };
+            if node_sizes.is_empty() {
+                inline_nodes.push(FlexLineItem {
+                    child_index,
+                    node_index: 0,
+                    main: 0.0,
+                    cross: 0.0,
+                    main_offset: 0.0,
+                    cross_offset: 0.0,
+                });
+                continue;
+            }
+            for (node_index, node) in node_sizes.into_iter().enumerate() {
+                let node_main = if is_row {
+                    node.width.max(0.0)
+                } else {
+                    node.height.max(0.0)
+                };
+                let node_cross = if is_row {
+                    node.height.max(0.0)
+                } else {
+                    node.width.max(0.0)
+                };
+                inline_nodes.push(FlexLineItem {
+                    child_index,
+                    node_index,
+                    main: node_main,
+                    cross: node_cross,
+                    main_offset: 0.0,
+                    cross_offset: 0.0,
+                });
+            }
         }
 
-        let mut lines: Vec<Vec<usize>> = Vec::new();
+        let mut lines: Vec<Vec<FlexLineItem>> = Vec::new();
         let mut line_main_sum: Vec<f32> = Vec::new();
         let mut line_cross_max: Vec<f32> = Vec::new();
         let mut current = Vec::new();
         let mut current_main = 0.0;
         let mut current_cross = 0.0;
 
-        for (idx, (item_main, item_cross)) in child_sizes.iter().copied().enumerate() {
-            if self.child_is_absolute(idx) {
-                continue;
-            }
+        for item in inline_nodes {
+            let item_main = item.main;
+            let item_cross = item.cross;
+            let inserts_gap = current
+                .last()
+                .is_some_and(|prev: &FlexLineItem| prev.child_index != item.child_index);
             let next_main = if current.is_empty() {
                 item_main
-            } else {
+            } else if inserts_gap {
                 current_main + gap + item_main
+            } else {
+                current_main + item_main
             };
             if wrap && !current.is_empty() && next_main > main_limit {
                 lines.push(current);
@@ -598,11 +663,17 @@ impl Element {
             if current.is_empty() {
                 current_main = item_main;
                 current_cross = item_cross;
-            } else {
+            } else if current
+                .last()
+                .is_some_and(|prev: &FlexLineItem| prev.child_index != item.child_index)
+            {
                 current_main += gap + item_main;
                 current_cross = current_cross.max(item_cross);
+            } else {
+                current_main += item_main;
+                current_cross = current_cross.max(item_cross);
             }
-            current.push(idx);
+            current.push(item);
         }
         if !current.is_empty() {
             lines.push(current);
@@ -620,7 +691,6 @@ impl Element {
             line_cross_max,
             total_main,
             total_cross,
-            child_sizes,
         }
     }
 
@@ -641,6 +711,10 @@ impl Element {
             opacity,
         );
         ctx.set_state(shadow_state);
+
+        if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty() {
+            return self.build_inline_fragment_render_pipeline(graph, ctx, fill_color, opacity);
+        }
 
         let max_bw = (self
             .core
@@ -699,6 +773,70 @@ impl Element {
         border_pass.set_border_widths(left, right, top, bottom);
         border_pass.set_border_radii(outer_radii.to_array());
         self.push_rect_pass_auto(graph, &mut ctx, border_pass);
+        ctx.into_state()
+    }
+
+    fn build_inline_fragment_render_pipeline(
+        &mut self,
+        graph: &mut FrameGraph,
+        mut ctx: UiBuildContext,
+        fill_color: [f32; 4],
+        opacity: f32,
+    ) -> BuildState {
+        for fragment in self.inline_paint_fragments.clone() {
+            let max_bw = (fragment.width.min(fragment.height)) * 0.5;
+            let left = self.border_widths.left.clamp(0.0, max_bw);
+            let right = self.border_widths.right.clamp(0.0, max_bw);
+            let top = self.border_widths.top.clamp(0.0, max_bw);
+            let bottom = self.border_widths.bottom.clamp(0.0, max_bw);
+            let outer_radii = normalize_corner_radii(
+                self.border_radii,
+                fragment.width.max(0.0),
+                fragment.height.max(0.0),
+            );
+
+            let mut fill_pass = DrawRectPass::new(
+                RectPassParams {
+                    position: [fragment.x, fragment.y],
+                    size: [fragment.width, fragment.height],
+                    fill_color,
+                    opacity,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            fill_pass.set_render_mode(RectRenderMode::FillOnly);
+            fill_pass.set_border_widths(left, right, top, bottom);
+            fill_pass.set_border_radii(outer_radii.to_array());
+            self.push_rect_pass_auto(graph, &mut ctx, fill_pass);
+
+            if left <= 0.0 && right <= 0.0 && top <= 0.0 && bottom <= 0.0 {
+                continue;
+            }
+
+            let mut border_pass = DrawRectPass::new(
+                RectPassParams {
+                    position: [fragment.x, fragment.y],
+                    size: [fragment.width, fragment.height],
+                    fill_color: [0.0, 0.0, 0.0, 0.0],
+                    opacity,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            border_pass.set_render_mode(RectRenderMode::BorderOnly);
+            border_pass.set_border_side_colors(
+                self.border_colors.left.as_ref().to_rgba_f32(),
+                self.border_colors.right.as_ref().to_rgba_f32(),
+                self.border_colors.top.as_ref().to_rgba_f32(),
+                self.border_colors.bottom.as_ref().to_rgba_f32(),
+            );
+            border_pass.set_border_widths(left, right, top, bottom);
+            border_pass.set_border_radii(outer_radii.to_array());
+            self.push_rect_pass_auto(graph, &mut ctx, border_pass);
+        }
         ctx.into_state()
     }
 
@@ -918,42 +1056,56 @@ impl Element {
         if self.box_shadows.is_empty() {
             return ctx.into_state();
         }
-        let layout_x = self.core.layout_position.x;
-        let layout_y = self.core.layout_position.y;
-        let layout_w = self.core.layout_size.width.max(0.0);
-        let layout_h = self.core.layout_size.height.max(0.0);
-        if layout_w <= 0.0 || layout_h <= 0.0 {
-            return ctx.into_state();
-        }
-        let outer_radii = normalize_corner_radii(self.border_radii, layout_w, layout_h);
+        let fragment_rects = if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty()
+        {
+            self.inline_paint_fragments.clone()
+        } else {
+            vec![Rect {
+                x: self.core.layout_position.x,
+                y: self.core.layout_position.y,
+                width: self.core.layout_size.width.max(0.0),
+                height: self.core.layout_size.height.max(0.0),
+            }]
+        };
         let shadows = self.box_shadows.clone();
-        for shadow in shadows {
-            let spread = shadow.spread;
-            let shadow_radii =
-                expand_corner_radii_for_spread(outer_radii, spread, layout_w, layout_h);
-            let mesh = ShadowMesh::rounded_rect_with_radii(
-                layout_x - spread,
-                layout_y - spread,
-                layout_w + spread * 2.0,
-                layout_h + spread * 2.0,
-                shadow_radii.to_array(),
-            );
-            let params = ShadowParams {
-                offset_x: shadow.offset_x,
-                offset_y: shadow.offset_y,
-                blur_radius: shadow.blur.max(0.0),
-                color: shadow.color.to_rgba_f32(),
-                opacity: opacity.clamp(0.0, 1.0),
-                spread: 0.0,
-                clip_to_geometry: shadow.inset,
-            };
-            let next_state = self.push_shadow_pass(
-                mesh,
-                params,
-                graph,
-                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-            );
-            ctx.set_state(next_state);
+        for fragment in fragment_rects {
+            if fragment.width <= 0.0 || fragment.height <= 0.0 {
+                continue;
+            }
+            let outer_radii =
+                normalize_corner_radii(self.border_radii, fragment.width, fragment.height);
+            for shadow in shadows.iter().cloned() {
+                let spread = shadow.spread;
+                let shadow_radii = expand_corner_radii_for_spread(
+                    outer_radii,
+                    spread,
+                    fragment.width,
+                    fragment.height,
+                );
+                let mesh = ShadowMesh::rounded_rect_with_radii(
+                    fragment.x - spread,
+                    fragment.y - spread,
+                    fragment.width + spread * 2.0,
+                    fragment.height + spread * 2.0,
+                    shadow_radii.to_array(),
+                );
+                let params = ShadowParams {
+                    offset_x: shadow.offset_x,
+                    offset_y: shadow.offset_y,
+                    blur_radius: shadow.blur.max(0.0),
+                    color: shadow.color.to_rgba_f32(),
+                    opacity: opacity.clamp(0.0, 1.0),
+                    spread: 0.0,
+                    clip_to_geometry: shadow.inset,
+                };
+                let next_state = self.push_shadow_pass(
+                    mesh,
+                    params,
+                    graph,
+                    UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+                );
+                ctx.set_state(next_state);
+            }
         }
         ctx.into_state()
     }

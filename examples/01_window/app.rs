@@ -5,9 +5,9 @@ use crate::rfgui::ui::{
     RsxNode, UiDirtyState, clear_redraw_callback, next_timer_deadline, rsx, run_due_timers,
     set_redraw_callback, take_state_dirty,
 };
-use crate::rfgui::{ColorLike, Viewport};
 #[cfg(target_arch = "wasm32")]
 use crate::rfgui::view::load_default_web_cjk_font;
+use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::{Theme, init_theme};
 use crate::scene::MainScene;
 use crate::state::{
@@ -19,11 +19,11 @@ use crate::utils::current_unix_timestamp;
 use crate::utils::{app_background_color, should_dispatch_keyboard_text};
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
+#[cfg(target_arch = "wasm32")]
+use std::cell::Cell;
 use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
-#[cfg(target_arch = "wasm32")]
-use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -32,9 +32,9 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{DeviceEvent, ElementState, Ime, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::EventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 #[cfg(target_arch = "wasm32")]
 use winit::platform::web::WindowAttributesExtWebSys;
 use winit::window::{Window as WinitWindow, WindowId};
@@ -131,7 +131,9 @@ impl App {
         viewport.set_clear_color(background_color);
         let canvas = canvas.clone();
         viewport.set_cursor_handler(move |cursor| {
-            let _ = canvas.style().set_property("cursor", web_cursor_name(cursor));
+            let _ = canvas
+                .style()
+                .set_property("cursor", web_cursor_name(cursor));
         });
         viewport
     }
@@ -688,7 +690,9 @@ fn web_schedule_redraw(
         return;
     }
     let callback = raf_callback.borrow();
-    let callback = callback.as_ref().expect("raf callback should be initialized");
+    let callback = callback
+        .as_ref()
+        .expect("raf callback should be initialized");
     let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
 }
 
@@ -761,11 +765,7 @@ fn run_web() {
         let redraw_pending = raf_pending.clone();
         let redraw_callback_ref = raf_callback_ref.clone();
         set_redraw_callback(move || {
-            web_schedule_redraw(
-                &redraw_window,
-                &redraw_pending,
-                &redraw_callback_ref,
-            );
+            web_schedule_redraw(&redraw_window, &redraw_pending, &redraw_callback_ref);
         });
         let mut app_mut = app.borrow_mut();
         app_mut.sync_theme_visuals();
@@ -787,7 +787,10 @@ fn run_web() {
             let _ = load_default_web_cjk_font().await;
             let mut viewport = {
                 let app = app.borrow_mut();
-                app.viewport.borrow_mut().take().expect("viewport should exist")
+                app.viewport
+                    .borrow_mut()
+                    .take()
+                    .expect("viewport should exist")
             };
             viewport.set_canvas(canvas.clone()).await;
             viewport.create_surface().await;
@@ -818,11 +821,7 @@ fn run_web() {
                 app.finalize_frame_updates()
             };
             if should_schedule {
-                web_schedule_redraw(
-                    &resize_schedule_window,
-                    &raf_pending,
-                    &raf_callback_ref,
-                );
+                web_schedule_redraw(&resize_schedule_window, &raf_pending, &raf_callback_ref);
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
         let _ = window.add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref());
@@ -864,7 +863,8 @@ fn run_web() {
                 web_schedule_redraw(&window, &raf_pending, &raf_callback_ref);
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = canvas.add_event_listener_with_callback("pointermove", closure.as_ref().unchecked_ref());
+        let _ = canvas
+            .add_event_listener_with_callback("pointermove", closure.as_ref().unchecked_ref());
         closure.forget();
     }
 
@@ -888,7 +888,8 @@ fn run_web() {
                 web_schedule_redraw(&window, &raf_pending, &raf_callback_ref);
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = canvas.add_event_listener_with_callback("pointerleave", closure.as_ref().unchecked_ref());
+        let _ = canvas
+            .add_event_listener_with_callback("pointerleave", closure.as_ref().unchecked_ref());
         closure.forget();
     }
 
@@ -932,7 +933,8 @@ fn run_web() {
             }
             event.prevent_default();
         }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = canvas.add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
+        let _ = canvas
+            .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
         closure.forget();
     }
 
@@ -972,7 +974,8 @@ fn run_web() {
             }
             event.prevent_default();
         }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = window.add_event_listener_with_callback("pointerup", closure.as_ref().unchecked_ref());
+        let _ =
+            window.add_event_listener_with_callback("pointerup", closure.as_ref().unchecked_ref());
         closure.forget();
     }
 
@@ -992,9 +995,10 @@ fn run_web() {
                 let wheel_normalization = app.wheel_normalization;
                 app.with_viewport_mut(|viewport| {
                     let delta = match event.delta_mode() {
-                        WheelEvent::DOM_DELTA_LINE => {
-                            MouseScrollDelta::LineDelta(event.delta_x() as f32, event.delta_y() as f32)
-                        }
+                        WheelEvent::DOM_DELTA_LINE => MouseScrollDelta::LineDelta(
+                            event.delta_x() as f32,
+                            event.delta_y() as f32,
+                        ),
                         _ => MouseScrollDelta::PixelDelta(PhysicalPosition::new(
                             event.delta_x(),
                             event.delta_y(),
@@ -1046,7 +1050,8 @@ fn run_web() {
                 web_schedule_redraw(&window, &raf_pending, &raf_callback_ref);
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = canvas.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+        let _ =
+            canvas.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
         closure.forget();
     }
 
@@ -1111,13 +1116,13 @@ pub fn run() {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-    init_theme(Theme::dark());
-    THEME_DARK_MODE.store(true, Ordering::Relaxed);
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::default();
-    app.background_color = app_background_color(true);
-    app.applied_theme_dark = Some(true);
-    event_loop.run_app(&mut app).unwrap();
+        init_theme(Theme::dark());
+        THEME_DARK_MODE.store(true, Ordering::Relaxed);
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(ControlFlow::Wait);
+        let mut app = App::default();
+        app.background_color = app_background_color(true);
+        app.applied_theme_dark = Some(true);
+        event_loop.run_app(&mut app).unwrap();
     }
 }

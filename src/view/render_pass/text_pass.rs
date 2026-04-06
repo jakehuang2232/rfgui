@@ -1,18 +1,18 @@
+use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
-use crate::view::font_system::with_shared_font_system;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
     render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
-use crate::view::text_layout::build_text_buffer;
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
+use crate::view::text_layout::build_text_buffer;
 use glyphon::cosmic_text::Align;
 use glyphon::{
-    Buffer, Cache, Color as GlyphonColor, Resolution, SwashCache, TextArea, TextAtlas,
-    TextBounds, TextRenderer, Viewport as GlyphonViewport,
+    Buffer, Cache, Color as GlyphonColor, Resolution, SwashCache, TextArea, TextAtlas, TextBounds,
+    TextRenderer, Viewport as GlyphonViewport,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;

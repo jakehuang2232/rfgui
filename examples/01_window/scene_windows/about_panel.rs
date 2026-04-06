@@ -1,10 +1,10 @@
+#[cfg(target_arch = "wasm32")]
+use crate::rfgui::ScrollDirection;
 use crate::rfgui::ui::{RsxNode, rsx};
 use crate::rfgui::view::Element;
 #[cfg(target_arch = "wasm32")]
 use crate::rfgui::view::{Text, TextArea};
 use crate::rfgui::{Layout, Length, Padding};
-#[cfg(target_arch = "wasm32")]
-use crate::rfgui::ScrollDirection;
 use crate::rfgui_components::Theme;
 use crate::utils::output_image_source;
 use rfgui::Align;

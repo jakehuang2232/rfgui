@@ -6,9 +6,9 @@ use glyphon::fontdb;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Uint8Array;
 #[cfg(target_arch = "wasm32")]
-use std::sync::Mutex;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
@@ -19,8 +19,7 @@ const WASM_FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../assets/NotoSans-Re
 #[cfg(target_arch = "wasm32")]
 const WEB_CJK_FONT_FAMILY: &str = "Noto Sans TC";
 #[cfg(target_arch = "wasm32")]
-const WEB_CJK_FONT_URL: &str =
-    "https://fonts.gstatic.com/ea/notosanstc/v1/NotoSansTC-Regular.otf";
+const WEB_CJK_FONT_URL: &str = "https://fonts.gstatic.com/ea/notosanstc/v1/NotoSansTC-Regular.otf";
 
 #[cfg(target_arch = "wasm32")]
 static RUNTIME_WEB_FONTS: Mutex<Vec<Arc<Vec<u8>>>> = Mutex::new(Vec::new());
@@ -33,7 +32,9 @@ pub(crate) fn create_font_system() -> FontSystem {
     #[cfg(target_arch = "wasm32")]
     {
         let mut db = fontdb::Database::new();
-        db.load_font_source(fontdb::Source::Binary(Arc::new(WASM_FALLBACK_FONT_BYTES.to_vec())));
+        db.load_font_source(fontdb::Source::Binary(Arc::new(
+            WASM_FALLBACK_FONT_BYTES.to_vec(),
+        )));
         let has_runtime_fonts = if let Ok(runtime_fonts) = RUNTIME_WEB_FONTS.lock() {
             for font in runtime_fonts.iter() {
                 db.load_font_source(fontdb::Source::Binary(font.clone()));
@@ -87,18 +88,21 @@ pub async fn load_default_web_cjk_font() -> Result<(), wasm_bindgen::JsValue> {
         return Ok(());
     }
 
-    let window = web_sys::window().ok_or_else(|| wasm_bindgen::JsValue::from_str("window not available"))?;
+    let window =
+        web_sys::window().ok_or_else(|| wasm_bindgen::JsValue::from_str("window not available"))?;
     let response_value = JsFuture::from(window.fetch_with_str(WEB_CJK_FONT_URL)).await?;
     let response: web_sys::Response = response_value.dyn_into()?;
     if !response.ok() {
-        return Err(wasm_bindgen::JsValue::from_str("failed to fetch web CJK font"));
+        return Err(wasm_bindgen::JsValue::from_str(
+            "failed to fetch web CJK font",
+        ));
     }
     let buffer = JsFuture::from(response.array_buffer()?).await?;
     let bytes = Uint8Array::new(&buffer).to_vec();
     let should_reset = {
         let mut fonts = RUNTIME_WEB_FONTS
-        .lock()
-        .map_err(|_| wasm_bindgen::JsValue::from_str("web font mutex poisoned"))?;
+            .lock()
+            .map_err(|_| wasm_bindgen::JsValue::from_str("web font mutex poisoned"))?;
         if fonts.is_empty() {
             fonts.push(Arc::new(bytes));
             true
