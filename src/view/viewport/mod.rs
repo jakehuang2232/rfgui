@@ -1978,11 +1978,12 @@ impl Viewport {
         if let Some(surface_target) = surface_target {
             let backends = wgpu::Backends::all();
 
-            let instance = Instance::new(&wgpu::InstanceDescriptor {
+            let instance = Instance::new(wgpu::InstanceDescriptor {
                 backends,
                 flags: wgpu::InstanceFlags::empty(),
                 memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
                 backend_options: wgpu::BackendOptions::default(),
+                display: None,
             });
 
             let surface = match surface_target {
@@ -2990,8 +2991,8 @@ impl Viewport {
             return false;
         };
         let mut mapped = staging_belt.write_buffer(&mut frame.encoder, &buffer, offset, size);
-        mapped.fill(0);
-        mapped[..data.len()].copy_from_slice(data);
+        mapped.slice(..).fill(0);
+        mapped.slice(..data.len()).copy_from_slice(data);
         drop(mapped);
         true
     }
@@ -3059,8 +3060,8 @@ impl Viewport {
         let staging_belt = self.upload_staging_belt.as_mut()?;
         let mut mapped =
             staging_belt.write_buffer(&mut frame.encoder, &buffer, dynamic_offset, size);
-        mapped.fill(0);
-        mapped[..data.len()].copy_from_slice(data);
+        mapped.slice(..).fill(0);
+        mapped.slice(..data.len()).copy_from_slice(data);
         drop(mapped);
         self.draw_rect_uniform_offset = self.draw_rect_uniform_offset.saturating_add(slot_size);
         Some((buffer, dynamic_offset as u32))
@@ -4088,18 +4089,23 @@ impl Viewport {
 
         let acquire_started_at = Instant::now();
         let render_texture = match surface.get_current_texture() {
-            Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+                surface.configure(device, &self.surface_config);
+                texture
+            }
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 println!("[warn] surface lost, recreate render texture");
                 surface.configure(device, &self.surface_config);
                 match surface.get_current_texture() {
-                    Ok(texture) => texture,
-                    Err(_) => return None,
+                    wgpu::CurrentSurfaceTexture::Success(texture)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+                    _ => return None,
                 }
             }
-            Err(wgpu::SurfaceError::Timeout) => return None,
-            Err(wgpu::SurfaceError::OutOfMemory) => return None,
-            Err(wgpu::SurfaceError::Other) => return None,
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => return None,
         };
         let acquire_ms = acquire_started_at.elapsed().as_secs_f64() * 1000.0;
 
