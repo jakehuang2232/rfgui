@@ -3,10 +3,9 @@ use crate::rfgui::ui::{RsxNode, component, on_click, rsx, use_state};
 use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text, TextArea};
 use crate::rfgui::{
     Align, Angle, Animation, Animator, Border, BorderRadius, ClipMode, Collision,
-    CollisionBoundary, Color, CrossSize, Direction, JustifyContent, Keyframe, Layout,
-    Length, Opacity, Padding, ParsedValue, Perspective, Position, PropertyId, Repeat, Rotate,
-    Scale, ScrollDirection, Style, Transform, TransformOrigin, Transition, TransitionProperty,
-    Translate,
+    CollisionBoundary, Color, CrossSize, Direction, JustifyContent, Keyframe, Layout, Length,
+    Opacity, Padding, ParsedValue, Perspective, Position, PropertyId, Repeat, Rotate, Scale,
+    ScrollDirection, Style, Transform, TransformOrigin, Transition, TransitionProperty, Translate,
 };
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
 use crate::utils::output_image_source;
@@ -305,7 +304,7 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                         animator: Animator::new([
                             Animation::new([
                                 Keyframe::new(0.0, animator_demo_keyframe(Color::hex("#38bdf8"), 56.0, 56.0, 0.72, -34.0, -18.0, 0.88)),
-                                Keyframe::new(0.45, animator_demo_keyframe(Color::hex("#f97316"), 88.0, 40.0, 1.0, 0.0, 0.0, 1.06)),
+                                Keyframe::new(0.45, animator_demo_keyframe(Color::hex("#f97316"), 88.0, 40.0, 1.0, 0.0, 0.0, 3.0)),
                                 Keyframe::new(1.0, animator_demo_keyframe(Color::hex("#22c55e"), 52.0, 74.0, 0.82, 34.0, 16.0, 0.92)),
                             ])
                             .duration(2200)
@@ -315,11 +314,12 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                         .repeat(Repeat::Infinite)
                         .fill_mode(FillMode::Both)
                         .direction(Direction::Normal),
-                    }} />
+                    }}>
+                        <Text style={{ color: theme.color.text.secondary.clone() }}>
+                            {"Animator::new + Animation::new + Keyframe::new"}
+                        </Text>
+                    </Element>
                 </Element>
-                <Text style={{ color: theme.color.text.secondary.clone() }}>
-                    {"Animator::new + Animation::new + Keyframe::new"}
-                </Text>
             </Element>
             <Element style={{
                 width: Length::px(170.0),
@@ -382,7 +382,7 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                 background: theme.color.layer.surface.clone(),
                 border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
                 border_radius: theme.radius.lg,
-                layout: Layout::flow().row(),
+                layout: Layout::flow().row().wrap(),
                 gap: theme.spacing.sm,
                 padding: Padding::uniform(theme.spacing.sm),
                 color: theme.color.text.primary.clone(),

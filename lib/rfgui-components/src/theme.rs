@@ -1,5 +1,8 @@
 use rfgui::ui::{GlobalState, global_state};
-use rfgui::{Border, BorderRadius, BoxShadow, Color, ColorLike, FontFamily, FontSize, Length, Padding, TransitionTiming};
+use rfgui::{
+    Border, BorderRadius, BoxShadow, Color, ColorLike, FontFamily, FontSize, Length, Padding,
+    TransitionTiming,
+};
 #[derive(Clone)]
 pub struct Theme {
     pub color: ColorTheme,

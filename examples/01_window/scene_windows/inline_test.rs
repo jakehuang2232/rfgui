@@ -135,7 +135,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             is furnished to do so, subject to the following
                             conditions
                         </Element>
-                    
+
                         <Element style={{
                             background: theme.color.primary.base.clone(),
                             color: theme.color.primary.on.clone(),

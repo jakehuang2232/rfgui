@@ -121,6 +121,17 @@ impl AnimationPlugin {
             .retain(|target, _| keep_targets.contains(target));
     }
 
+    pub fn active_targets(&self) -> HashSet<u64> {
+        self.animators.keys().copied().collect()
+    }
+
+    pub fn active_promotion_hints(&self) -> HashMap<u64, AnimationPromotionHint> {
+        self.animators
+            .iter()
+            .map(|(&target, animator)| (target, AnimationPromotionHint::from(animator)))
+            .collect()
+    }
+
     pub fn run_animations(&mut self, dt_seconds: f32, now_seconds: f64) -> RunResult {
         self.style_samples.clear();
         self.layout_samples.clear();
@@ -194,6 +205,40 @@ impl AnimationPlugin {
             needs_layout: !self.layout_samples.is_empty(),
             needs_paint: !self.style_samples.is_empty(),
             keep_running,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnimationPromotionHint {
+    pub composite_only: bool,
+}
+
+impl From<&ActiveAnimator> for AnimationPromotionHint {
+    fn from(animator: &ActiveAnimator) -> Self {
+        let mut saw_style_field = false;
+        let mut saw_non_composite_style = false;
+        let mut saw_layout_field = false;
+
+        for animation in &animator.animations {
+            for keyframe in &animation.keyframes {
+                if !keyframe.layout_values.is_empty() {
+                    saw_layout_field = true;
+                }
+                for field in keyframe.style_values.keys() {
+                    saw_style_field = true;
+                    if !matches!(
+                        field,
+                        StyleField::Opacity | StyleField::Transform | StyleField::TransformOrigin
+                    ) {
+                        saw_non_composite_style = true;
+                    }
+                }
+            }
+        }
+
+        Self {
+            composite_only: saw_style_field && !saw_non_composite_style && !saw_layout_field,
         }
     }
 }

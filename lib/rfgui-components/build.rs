@@ -77,7 +77,11 @@ fn to_component_name(ligature: &str) -> String {
         ident.push_str("MaterialSymbol");
     }
 
-    if ident.as_bytes().first().is_some_and(|byte| byte.is_ascii_digit()) {
+    if ident
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
         ident.insert_str(0, "Icon");
     }
 

@@ -1,3 +1,4 @@
+use crate::transition::AnimationPromotionHint;
 use crate::view::base_component::{BoxModelSnapshot, ElementTrait};
 use crate::view::promotion::{PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionCandidate};
 use std::collections::hash_map::DefaultHasher;
@@ -6,11 +7,13 @@ use std::hash::{Hash, Hasher};
 
 pub(crate) fn collect_promotion_candidates(
     roots: &[Box<dyn ElementTrait>],
+    active_animator_hints: &HashMap<u64, AnimationPromotionHint>,
     active_channels: &HashMap<u64, HashSet<crate::transition::ChannelId>>,
     viewport_size: (f32, f32),
 ) -> Vec<PromotionCandidate> {
     fn walk(
         node: &dyn ElementTrait,
+        active_animator_hints: &HashMap<u64, AnimationPromotionHint>,
         active_channels: &HashMap<u64, HashSet<crate::transition::ChannelId>>,
         viewport_size: (f32, f32),
         out: &mut Vec<PromotionCandidate>,
@@ -22,8 +25,13 @@ pub(crate) fn collect_promotion_candidates(
 
         if let Some(children) = node.children() {
             for child in children {
-                let (child_nodes, child_passes) =
-                    walk(child.as_ref(), active_channels, viewport_size, out);
+                let (child_nodes, child_passes) = walk(
+                    child.as_ref(),
+                    active_animator_hints,
+                    active_channels,
+                    viewport_size,
+                    out,
+                );
                 subtree_node_count += child_nodes;
                 estimated_pass_count += child_passes;
             }
@@ -31,6 +39,10 @@ pub(crate) fn collect_promotion_candidates(
 
         let (visible_area_ratio, viewport_coverage, distance_to_viewport) =
             visibility_metrics(snapshot, viewport_size);
+        let animator_hint = active_animator_hints
+            .get(&snapshot.node_id)
+            .copied()
+            .unwrap_or_default();
         out.push(PromotionCandidate {
             node_id: snapshot.node_id,
             parent_id: snapshot.parent_id,
@@ -42,6 +54,8 @@ pub(crate) fn collect_promotion_candidates(
             viewport_coverage,
             distance_to_viewport,
             info,
+            has_active_animator: active_animator_hints.contains_key(&snapshot.node_id),
+            has_composite_only_animator: animator_hint.composite_only,
             active_channels: active_channels
                 .get(&snapshot.node_id)
                 .cloned()
@@ -53,7 +67,13 @@ pub(crate) fn collect_promotion_candidates(
 
     let mut out = Vec::new();
     for root in roots {
-        walk(root.as_ref(), active_channels, viewport_size, &mut out);
+        walk(
+            root.as_ref(),
+            active_animator_hints,
+            active_channels,
+            viewport_size,
+            &mut out,
+        );
     }
     out
 }
@@ -496,6 +516,7 @@ mod tests {
         let roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(shadowed_root), Box::new(parent)];
         let candidates = collect_promotion_candidates(
             &roots,
+            &HashMap::new(),
             &HashMap::<u64, HashSet<crate::transition::ChannelId>>::new(),
             (320.0, 200.0),
         );
@@ -829,5 +850,27 @@ mod tests {
                 "scrolling a different root should not dirty promoted composition for node {node_id}"
             );
         }
+    }
+
+    #[test]
+    fn collect_promotion_candidates_marks_active_animator_targets() {
+        let roots: Vec<Box<dyn ElementTrait>> =
+            vec![Box::new(Element::new_with_id(1, 0.0, 0.0, 56.0, 56.0))];
+        let active_animator_hints = HashMap::from([(
+            1_u64,
+            AnimationPromotionHint {
+                composite_only: true,
+            },
+        )]);
+        let candidates = collect_promotion_candidates(
+            &roots,
+            &active_animator_hints,
+            &HashMap::new(),
+            (320.0, 240.0),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].has_active_animator);
+        assert!(candidates[0].has_composite_only_animator);
     }
 }

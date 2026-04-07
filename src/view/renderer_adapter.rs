@@ -2874,5 +2874,4 @@ mod tests {
         assert_eq!(root_snapshot.height, 0.0);
         assert_eq!(child_snapshot.height, 0.0);
     }
-
 }

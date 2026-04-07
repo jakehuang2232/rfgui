@@ -32,17 +32,17 @@ mod tests {
         node.tag_descriptor == Some(RsxTagDescriptor::of::<T>())
     }
 
-    fn shared_element_style(
-        node: &RsxElementNode,
-    ) -> Option<rfgui::view::ElementStylePropSchema> {
-        node.props.iter().find_map(|(key, value)| match (key.as_str(), value) {
-            ("style", PropValue::Shared(shared)) => shared
-                .value()
-                .downcast::<rfgui::view::ElementStylePropSchema>()
-                .ok()
-                .map(|style| (*style).clone()),
-            _ => None,
-        })
+    fn shared_element_style(node: &RsxElementNode) -> Option<rfgui::view::ElementStylePropSchema> {
+        node.props
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("style", PropValue::Shared(shared)) => shared
+                    .value()
+                    .downcast::<rfgui::view::ElementStylePropSchema>()
+                    .ok()
+                    .map(|style| (*style).clone()),
+                _ => None,
+            })
     }
 
     #[test]
@@ -234,11 +234,7 @@ mod tests {
 
         let style = shared_element_style(&root).expect("missing icon root style");
         assert_eq!(
-            style
-                .font
-                .as_ref()
-                .expect("missing icon font")
-                .as_slice(),
+            style.font.as_ref().expect("missing icon font").as_slice(),
             &[String::from("Material Symbols Outlined")]
         );
         assert_eq!(
