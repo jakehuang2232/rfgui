@@ -1,4 +1,5 @@
 function isUnsupportedSafari() {
+  return false;
   const ua = navigator.userAgent;
   const isAppleEngine =
     /Safari/i.test(ua) &&

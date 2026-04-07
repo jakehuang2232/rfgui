@@ -927,7 +927,7 @@ fn create_draw_rect_resources(
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("DrawRect Pipeline Layout"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
 
@@ -994,25 +994,25 @@ fn create_draw_rect_resources(
         depth_stencil: Some(match (variant, stencil_class) {
             (RectShaderVariant::Alpha, RectStencilClass::None) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             },
             (RectShaderVariant::Opaque, RectStencilClass::None) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             },
             (_, RectStencilClass::Test) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: matches!(variant, RectShaderVariant::Opaque),
+                depth_write_enabled: Some(matches!(variant, RectShaderVariant::Opaque)),
                 depth_compare: if matches!(variant, RectShaderVariant::Opaque) {
-                    wgpu::CompareFunction::LessEqual
+                    Some(wgpu::CompareFunction::LessEqual)
                 } else {
-                    wgpu::CompareFunction::Always
+                    Some(wgpu::CompareFunction::Always)
                 },
                 stencil: wgpu::StencilState {
                     front: wgpu::StencilFaceState {
@@ -1034,8 +1034,8 @@ fn create_draw_rect_resources(
             },
             (_, RectStencilClass::Increment) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState {
                     front: wgpu::StencilFaceState {
                         compare: wgpu::CompareFunction::Equal,
@@ -1056,8 +1056,8 @@ fn create_draw_rect_resources(
             },
             (_, RectStencilClass::Decrement) => wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState {
                     front: wgpu::StencilFaceState {
                         compare: wgpu::CompareFunction::Equal,

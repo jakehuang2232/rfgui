@@ -784,7 +784,7 @@ fn create_resources(
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("TextureComposite Pipeline Layout"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
 
@@ -912,15 +912,15 @@ fn texture_composite_depth_stencil_state(
         TextureCompositeDepthMode::None => None,
         TextureCompositeDepthMode::DepthNoStencil => Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth24PlusStencil8,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
         TextureCompositeDepthMode::DepthStencilTest => Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth24PlusStencil8,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
             stencil: wgpu::StencilState {
                 front: wgpu::StencilFaceState {
                     compare: wgpu::CompareFunction::Equal,
