@@ -1409,9 +1409,11 @@ impl Viewport {
 
     fn update_promotion_state(&mut self, roots: &[Box<dyn super::base_component::ElementTrait>]) {
         let previous_promoted_node_ids = self.promotion_state.promoted_node_ids.clone();
+        let active_animator_hints = self.animation_plugin.active_promotion_hints();
         let active_channels = active_channels_by_node(&self.transition_claims);
         let candidates = collect_promotion_candidates(
             roots,
+            &active_animator_hints,
             &active_channels,
             (self.logical_width, self.logical_height),
         );

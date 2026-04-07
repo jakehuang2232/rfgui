@@ -10,8 +10,8 @@ use rfgui::ui::{
 use rfgui::view::{Element, Text};
 use rfgui::{
     Align, Angle, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout,
-    Length, Operator, Position, Rotate, ScrollDirection, Transform, Transition,
-    TransitionProperty, flex,
+    Length, Operator, Position, Rotate, ScrollDirection, Transform, Transition, TransitionProperty,
+    flex,
 };
 
 pub struct Select;

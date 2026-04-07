@@ -32,6 +32,7 @@ pub struct PromotionScoreBreakdown {
     pub effect_score: i32,
     pub subtree_complexity_score: i32,
     pub repaint_reuse_score: i32,
+    pub animation_score: i32,
     pub interaction_score: i32,
     pub visibility_score: i32,
     pub area_cost: i32,
@@ -43,6 +44,7 @@ impl PromotionScoreBreakdown {
         self.effect_score
             + self.subtree_complexity_score
             + self.repaint_reuse_score
+            + self.animation_score
             + self.interaction_score
             + self.visibility_score
             - self.area_cost
@@ -125,6 +127,8 @@ pub(crate) struct PromotionCandidate {
     pub viewport_coverage: f32,
     pub distance_to_viewport: f32,
     pub info: PromotionNodeInfo,
+    pub has_active_animator: bool,
+    pub has_composite_only_animator: bool,
     pub active_channels: HashSet<ChannelId>,
 }
 
@@ -266,6 +270,26 @@ fn score_candidate(candidate: &PromotionCandidate) -> PromotionScoreBreakdown {
         0
     };
 
+    let animation_score = if candidate.has_active_animator {
+        let mut score = if candidate.visible_area_ratio > 0.0 {
+            12
+        } else {
+            6
+        };
+        if candidate.estimated_pass_count >= 3 {
+            score += 4;
+        }
+        if candidate.subtree_node_count >= 6 {
+            score += 4;
+        }
+        if candidate.has_composite_only_animator {
+            score += 4;
+        }
+        score.min(20)
+    } else {
+        0
+    };
+
     let mut interaction_score = 0;
     if candidate.info.is_scroll_container {
         interaction_score += 6;
@@ -311,6 +335,7 @@ fn score_candidate(candidate: &PromotionCandidate) -> PromotionScoreBreakdown {
         effect_score,
         subtree_complexity_score,
         repaint_reuse_score,
+        animation_score,
         interaction_score,
         visibility_score,
         area_cost,
@@ -400,6 +425,8 @@ mod tests {
                 is_scroll_container: false,
                 is_hovered: false,
             },
+            has_active_animator: false,
+            has_composite_only_animator: false,
             active_channels: HashSet::new(),
         }
     }
@@ -449,5 +476,69 @@ mod tests {
         let first = state.decisions.iter().find(|d| d.node_id == 1).unwrap();
         let second = state.decisions.iter().find(|d| d.node_id == 2).unwrap();
         assert!(second.threshold >= first.threshold);
+    }
+
+    #[test]
+    fn active_animator_boosts_candidate_score_without_hard_promote() {
+        let mut animated = candidate(1);
+        animated.width = 56.0;
+        animated.height = 56.0;
+        animated.subtree_node_count = 1;
+        animated.estimated_pass_count = 1;
+        animated.viewport_coverage = 0.01;
+        animated.info.estimated_pass_count = 1;
+        animated.info.has_box_shadow = false;
+        animated.info.has_border = false;
+        animated.has_active_animator = true;
+
+        let state = evaluate_promotion(
+            vec![animated],
+            (1280.0, 720.0),
+            ViewportPromotionConfig::default(),
+        );
+        assert_eq!(state.decisions.len(), 1);
+        let decision = &state.decisions[0];
+        assert_eq!(decision.hard_reason, None);
+        assert_eq!(decision.breakdown.animation_score, 12);
+        assert!(decision.score > decision.breakdown.animation_score);
+        assert!(!decision.should_promote);
+    }
+
+    #[test]
+    fn active_animator_gets_bounded_complexity_bonus() {
+        let mut animated = candidate(1);
+        animated.has_active_animator = true;
+
+        let state = evaluate_promotion(
+            vec![animated],
+            (1280.0, 720.0),
+            ViewportPromotionConfig::default(),
+        );
+        assert_eq!(state.decisions.len(), 1);
+        let decision = &state.decisions[0];
+        assert_eq!(decision.breakdown.animation_score, 20);
+    }
+
+    #[test]
+    fn composite_only_animator_gets_extra_bonus() {
+        let mut animated = candidate(1);
+        animated.width = 56.0;
+        animated.height = 56.0;
+        animated.subtree_node_count = 1;
+        animated.estimated_pass_count = 1;
+        animated.viewport_coverage = 0.01;
+        animated.info.estimated_pass_count = 1;
+        animated.info.has_box_shadow = false;
+        animated.info.has_border = false;
+        animated.has_active_animator = true;
+        animated.has_composite_only_animator = true;
+
+        let state = evaluate_promotion(
+            vec![animated],
+            (1280.0, 720.0),
+            ViewportPromotionConfig::default(),
+        );
+        let decision = &state.decisions[0];
+        assert_eq!(decision.breakdown.animation_score, 16);
     }
 }

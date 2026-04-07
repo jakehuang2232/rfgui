@@ -17,6 +17,8 @@ use crate::state::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::current_unix_timestamp;
 use crate::utils::{app_background_color, should_dispatch_keyboard_text};
+#[cfg(target_arch = "wasm32")]
+use js_sys::Promise;
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
 #[cfg(target_arch = "wasm32")]
@@ -27,8 +29,6 @@ use std::fs;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-#[cfg(target_arch = "wasm32")]
-use js_sys::Promise;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
 #[cfg(target_arch = "wasm32")]
