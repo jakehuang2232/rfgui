@@ -3,22 +3,106 @@ use crate::ui::MouseButton as UiMouseButton;
 use crate::view::font_system::create_font_system;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, RectPassParams};
-use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPassParams};
+use crate::view::render_pass::text_pass::{
+    TextInput, TextOutput, TextPassFragment, TextPassParams,
+};
 use crate::view::render_pass::{DrawRectPass, TextPass};
-use crate::{ColorLike, Cursor as UiCursor, HexColor, Length, Style};
+use crate::view::rsx_to_elements_scoped_with_context;
+use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
+use crate::{
+    ColorLike, Cursor as UiCursor, FontFamily, FontSize, HexColor, IntoColor, Layout, Length,
+    ParsedValue, PropertyId, Style,
+};
 use glyphon::cosmic_text::{Affinity, Align, Cursor, Motion};
 use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::{Bound, Range, RangeBounds};
 
 use crate::ui::Binding;
+use crate::ui::RsxNode;
 use crate::view::promotion::PromotionNodeInfo;
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, LayoutConstraints,
     LayoutPlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextAreaRenderProjection {
+    pub range: Range<usize>,
+    pub node: RsxNode,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextAreaRenderString {
+    content: String,
+    projections: Vec<TextAreaRenderProjection>,
+}
+
+impl TextAreaRenderString {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            projections: Vec::new(),
+        }
+    }
+
+    pub fn content(&self) -> &str {
+        self.content.as_str()
+    }
+
+    pub fn projections(&self) -> &[TextAreaRenderProjection] {
+        self.projections.as_slice()
+    }
+
+    pub fn range<R, F>(&mut self, range: R, render: F)
+    where
+        R: RangeBounds<usize>,
+        F: FnOnce(RsxNode) -> RsxNode,
+    {
+        let Some(range) = clamp_char_range(self.content.as_str(), range) else {
+            return;
+        };
+        let start_byte = byte_index_at_char(self.content.as_str(), range.start);
+        let end_byte = byte_index_at_char(self.content.as_str(), range.end);
+        let text_area_node = RsxNode::tagged(
+            "TextArea",
+            crate::ui::RsxTagDescriptor::of::<crate::view::TextArea>(),
+        )
+        .with_prop("content", self.content[start_byte..end_byte].to_string())
+        .with_prop("multiline", false)
+        .with_prop("source_text_start", range.start as i64)
+        .with_prop("source_text_end", range.end as i64);
+        self.projections.push(TextAreaRenderProjection {
+            range,
+            node: render(text_area_node),
+        });
+    }
+}
+
+#[derive(Clone, Debug)]
+enum TextAreaRenderFragmentKind {
+    Text(String),
+    Preedit(String),
+    Projection(usize),
+}
+
+#[derive(Clone, Debug)]
+struct TextAreaRenderFragment {
+    source_range: Range<usize>,
+    kind: TextAreaRenderFragmentKind,
+    content_x: f32,
+    content_y: f32,
+    width: f32,
+    height: f32,
+}
+
+struct TextAreaProjectionNode {
+    range: Range<usize>,
+    node: Box<dyn ElementTrait>,
+}
 
 pub struct TextArea {
     element: Element,
@@ -48,6 +132,10 @@ pub struct TextArea {
     max_length: Option<usize>,
     on_focus_handlers: Vec<crate::ui::TextAreaFocusHandlerProp>,
     on_change_handlers: Vec<crate::ui::TextChangeHandlerProp>,
+    on_render_handler: Option<crate::ui::TextAreaRenderHandlerProp>,
+    render_nodes: Vec<TextAreaProjectionNode>,
+    render_fragments: Vec<TextAreaRenderFragment>,
+    render_content_height: f32,
     cursor_char: usize,
     selection_anchor_char: Option<usize>,
     selection_focus_char: Option<usize>,
@@ -71,6 +159,7 @@ pub struct TextArea {
     caret_blink_started_at: Instant,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<LayoutPlacement>,
+    source_text_range: Option<Range<usize>>,
 }
 
 thread_local! {
@@ -168,6 +257,10 @@ impl TextArea {
             max_length: None,
             on_focus_handlers: Vec::new(),
             on_change_handlers: Vec::new(),
+            on_render_handler: None,
+            render_nodes: Vec::new(),
+            render_fragments: Vec::new(),
+            render_content_height: 0.0,
             cursor_char: 0,
             selection_anchor_char: None,
             selection_focus_char: None,
@@ -191,6 +284,7 @@ impl TextArea {
             caret_blink_started_at: Instant::now(),
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
+            source_text_range: None,
         };
         text_area.set_text(content);
         text_area
@@ -198,14 +292,7 @@ impl TextArea {
 
     fn mark_measure_dirty(&mut self) {
         self.measure_revision = self.measure_revision.wrapping_add(1);
-        let widths = if self.content.is_empty() {
-            vec![0.0]
-        } else {
-            self.content
-                .lines()
-                .map(|line| estimate_line_width_px(line, self.font_size))
-                .collect()
-        };
+        let widths = self.measure_content_line_widths();
         self.cached_measure_line_widths = Some((self.measure_revision, widths));
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
@@ -217,20 +304,33 @@ impl TextArea {
             .map(|(revision, _)| *revision != self.measure_revision)
             .unwrap_or(true);
         if rebuild {
-            let widths = if self.content.is_empty() {
-                vec![0.0]
-            } else {
-                self.content
-                    .lines()
-                    .map(|line| estimate_line_width_px(line, self.font_size))
-                    .collect()
-            };
+            let widths = self.measure_content_line_widths();
             self.cached_measure_line_widths = Some((self.measure_revision, widths));
         }
         self.cached_measure_line_widths
             .as_ref()
             .map(|(_, widths)| widths.as_slice())
             .unwrap_or(&[])
+    }
+
+    fn measure_content_line_widths(&self) -> Vec<f32> {
+        let composed = self.composed_text();
+        if composed.is_empty() {
+            return vec![0.0];
+        }
+
+        composed
+            .lines()
+            .map(|line| {
+                Self::measure_render_text_run_with_style(
+                    line,
+                    self.font_size,
+                    self.line_height,
+                    &self.font_families,
+                )
+                .0
+            })
+            .collect()
     }
 
     fn reset_caret_blink(&mut self) {
@@ -299,6 +399,7 @@ impl TextArea {
         self.content = next;
         if changed {
             self.mark_measure_dirty();
+            self.rebuild_render_nodes();
         }
         self.clear_vertical_goal();
         self.reset_caret_blink();
@@ -357,6 +458,7 @@ impl TextArea {
             if self.content != prev {
                 self.mark_measure_dirty();
                 self.sync_bound_text();
+                self.rebuild_render_nodes();
             }
         }
     }
@@ -375,6 +477,39 @@ impl TextArea {
     {
         self.on_focus_handlers
             .push(crate::ui::TextAreaFocusHandlerProp::new(handler));
+    }
+
+    pub fn on_render<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut TextAreaRenderString) + 'static,
+    {
+        self.on_render_handler = Some(crate::ui::TextAreaRenderHandlerProp::new(handler));
+        self.rebuild_render_nodes();
+    }
+
+    pub fn set_render_projection_nodes(
+        &mut self,
+        projections: Vec<(Range<usize>, Box<dyn ElementTrait>)>,
+    ) {
+        self.on_render_handler = None;
+        self.render_nodes = projections
+            .into_iter()
+            .map(|(range, node)| TextAreaProjectionNode { range, node })
+            .collect();
+        self.rebuild_render_fragments_from_ranges(
+            self.render_nodes
+                .iter()
+                .map(|projection| projection.range.clone())
+                .collect(),
+        );
+    }
+
+    pub fn source_text_range(&self) -> Option<Range<usize>> {
+        self.source_text_range.clone()
+    }
+
+    pub fn set_source_text_range(&mut self, range: Option<Range<usize>>) {
+        self.source_text_range = range;
     }
 
     pub fn on_blur<F>(&mut self, handler: F)
@@ -555,6 +690,7 @@ impl TextArea {
         }
         if self.content != prev {
             self.sync_bound_text();
+            self.rebuild_render_nodes();
         }
     }
 
@@ -563,9 +699,20 @@ impl TextArea {
     }
 
     fn clear_preedit(&mut self) {
+        let had_preedit = !self.ime_preedit.is_empty();
         self.ime_preedit.clear();
         self.ime_preedit_cursor = None;
         self.invalidate_glyph_layout();
+        self.cached_ime_cursor_rect = None;
+        self.mark_measure_dirty();
+        if had_preedit && !self.render_nodes.is_empty() {
+            self.rebuild_render_fragments_from_ranges(
+                self.render_nodes
+                    .iter()
+                    .map(|projection| projection.range.clone())
+                    .collect(),
+            );
+        }
     }
 
     fn clear_vertical_goal(&mut self) {
@@ -576,6 +723,16 @@ impl TextArea {
         self.ime_preedit = normalize_multiline(text, self.multiline);
         self.ime_preedit_cursor = cursor;
         self.invalidate_glyph_layout();
+        self.cached_ime_cursor_rect = None;
+        self.mark_measure_dirty();
+        if !self.render_nodes.is_empty() {
+            self.rebuild_render_fragments_from_ranges(
+                self.render_nodes
+                    .iter()
+                    .map(|projection| projection.range.clone())
+                    .collect(),
+            );
+        }
     }
 
     fn effective_width(&self) -> f32 {
@@ -626,6 +783,7 @@ impl TextArea {
         let end_byte = byte_index_at_char(&self.content, end);
         self.content.replace_range(start_byte..end_byte, "");
         self.mark_measure_dirty();
+        self.rebuild_render_nodes();
         self.cursor_char = start;
         self.clear_selection();
         self.reset_caret_blink();
@@ -676,6 +834,7 @@ impl TextArea {
         let insert_at = byte_index_at_char(&self.content, self.cursor_char);
         self.content.insert_str(insert_at, &incoming);
         self.mark_measure_dirty();
+        self.rebuild_render_nodes();
         self.cursor_char += incoming.chars().count();
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
@@ -695,6 +854,7 @@ impl TextArea {
         let start = byte_index_at_char(&self.content, self.cursor_char - 1);
         self.content.replace_range(start..end, "");
         self.mark_measure_dirty();
+        self.rebuild_render_nodes();
         self.cursor_char -= 1;
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
@@ -715,6 +875,7 @@ impl TextArea {
         let end = byte_index_at_char(&self.content, self.cursor_char + 1);
         self.content.replace_range(start..end, "");
         self.mark_measure_dirty();
+        self.rebuild_render_nodes();
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
         self.clear_vertical_goal();
@@ -852,6 +1013,35 @@ impl TextArea {
     }
 
     fn set_cursor_from_local_position(&mut self, local_x: f32, local_y: f32) {
+        if self.uses_projection_rendering() {
+            let hit_x = local_x.max(0.0);
+            let hit_y = (local_y + self.scroll_y).max(0.0);
+            for fragment in &self.render_fragments {
+                let left = fragment.content_x;
+                let top = fragment.content_y;
+                let right = left + fragment.width;
+                let bottom = top + fragment.height;
+                if hit_y < top || hit_y > bottom || hit_x < left || hit_x > right {
+                    continue;
+                }
+                self.cursor_char = if hit_x - left <= fragment.width * 0.5 {
+                    fragment.source_range.start
+                } else {
+                    fragment.source_range.end
+                };
+                self.reset_caret_blink();
+                self.cached_ime_cursor_rect = None;
+                self.clear_vertical_goal();
+                self.ensure_cursor_visible();
+                return;
+            }
+            self.cursor_char = self.content.chars().count();
+            self.reset_caret_blink();
+            self.cached_ime_cursor_rect = None;
+            self.clear_vertical_goal();
+            self.ensure_cursor_visible();
+            return;
+        }
         let composed = self.composed_text();
         let scale = self.glyph_cache_scale_factor.max(0.0001);
         self.ensure_glyph_layout(composed.as_str(), scale);
@@ -904,6 +1094,9 @@ impl TextArea {
     }
 
     fn content_height(&self) -> f32 {
+        if self.uses_projection_rendering() {
+            return self.render_content_height.max(self.line_height_px());
+        }
         if let Some((_, widths)) = self.cached_measure_line_widths.as_ref() {
             let effective_width = self.effective_width().max(1.0);
             let line_count = widths.len().max(1);
@@ -931,7 +1124,29 @@ impl TextArea {
         self.cached_ime_cursor_rect = None;
     }
 
+    fn has_projection_rendering(&self) -> bool {
+        (!self.render_nodes.is_empty() || self.on_render_handler.is_some())
+            && !self.render_fragments.is_empty()
+    }
+
+    fn uses_projection_rendering(&self) -> bool {
+        self.has_projection_rendering()
+    }
+
+    fn preedit_is_inside_projection_range(&self, ranges: &[Range<usize>]) -> bool {
+        if self.ime_preedit.is_empty() {
+            return false;
+        }
+        let cursor_char = self.cursor_char.min(self.content.chars().count());
+        ranges
+            .iter()
+            .any(|range| cursor_char >= range.start && cursor_char <= range.end)
+    }
+
     fn render_payload(&self) -> (String, [f32; 4]) {
+        if self.has_projection_rendering() {
+            return (String::new(), self.color.to_rgba_f32());
+        }
         let composed = self.composed_text();
         if composed.is_empty() {
             if !self.placeholder.is_empty() {
@@ -946,12 +1161,169 @@ impl TextArea {
         (composed, self.color.to_rgba_f32())
     }
 
-    fn caret_screen_position(&mut self) -> Option<(f32, f32)> {
-        if !self.is_focused {
+    fn fragment_cursor_offset_px(&self, fragment: &TextAreaRenderFragment, cursor_char: usize) -> f32 {
+        let start = fragment.source_range.start;
+        let end = fragment.source_range.end;
+        if start >= end || fragment.width <= 0.0 {
+            return 0.0;
+        }
+
+        let clamped = cursor_char.clamp(start, end);
+        let chars: Vec<char> = self.content.chars().collect();
+        let mut offset = 0.0_f32;
+        for index in start..clamped.min(chars.len()) {
+            offset += estimate_char_width_px(chars[index], self.font_size);
+        }
+
+        let fragment_text_width = (start..end.min(chars.len()))
+            .map(|index| estimate_char_width_px(chars[index], self.font_size))
+            .sum::<f32>()
+            .max(0.0001);
+        let scale = if fragment.width > 0.0 {
+            fragment.width / fragment_text_width
+        } else {
+            1.0
+        };
+        (offset * scale).clamp(0.0, fragment.width)
+    }
+
+    fn fragment_cursor_screen_x(&self, fragment: &TextAreaRenderFragment, cursor_char: usize) -> f32 {
+        self.layout_position.x
+            + fragment.content_x
+            + self.fragment_cursor_offset_px(fragment, cursor_char)
+    }
+
+    fn preedit_fragment_caret_screen_position(
+        &self,
+        fragment: &TextAreaRenderFragment,
+        text: &str,
+    ) -> Option<(f32, f32)> {
+        let caret_chars = match self.ime_preedit_cursor {
+            Some((_, end)) => text[..clamp_utf8_boundary(text, end)].chars().count(),
+            None => text.chars().count(),
+        };
+        let total_chars = text.chars().count().max(1);
+        let offset = if total_chars == 0 {
+            0.0
+        } else {
+            fragment.width * (caret_chars as f32 / total_chars as f32)
+        };
+        Some((
+            self.layout_position.x + fragment.content_x + offset.clamp(0.0, fragment.width),
+            self.layout_position.y + fragment.content_y - self.scroll_y,
+        ))
+    }
+
+    fn projection_fragment_caret_screen_position(
+        &mut self,
+        node_index: usize,
+        fragment: &TextAreaRenderFragment,
+        cursor_char: usize,
+    ) -> Option<(f32, f32)> {
+        let node = self.render_nodes.get_mut(node_index)?;
+        let nested = find_first_text_area_mut(node.node.as_mut())?;
+        let local_char = cursor_char
+            .clamp(fragment.source_range.start, fragment.source_range.end)
+            .saturating_sub(fragment.source_range.start)
+            .min(nested.content.chars().count());
+        nested.caret_screen_position_for_char(local_char, false)
+    }
+
+    fn place_projection_fragments(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) {
+        for fragment in &self.render_fragments {
+            let TextAreaRenderFragmentKind::Projection(index) = fragment.kind else {
+                continue;
+            };
+            let Some(node) = self.render_nodes.get_mut(index) else {
+                continue;
+            };
+            let screen_x = self.layout_position.x + fragment.content_x;
+            let screen_y = self.layout_position.y + fragment.content_y - self.scroll_y;
+            node.node.place(LayoutPlacement {
+                parent_x: screen_x,
+                parent_y: screen_y,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: fragment.width.max(1.0),
+                available_height: fragment.height.max(1.0),
+                viewport_width: viewport_width.max(1.0),
+                viewport_height: viewport_height.max(1.0),
+                percent_base_width: Some(fragment.width.max(1.0)),
+                percent_base_height: Some(fragment.height.max(1.0)),
+            });
+        }
+    }
+
+    fn projection_fragment_cursor_char_from_viewport_position(
+        &mut self,
+        node_index: usize,
+        fragment: &TextAreaRenderFragment,
+        viewport_x: f32,
+        viewport_y: f32,
+    ) -> Option<usize> {
+        let node = self.render_nodes.get_mut(node_index)?;
+        let nested = find_first_text_area_mut(node.node.as_mut())?;
+        let local_x = viewport_x - nested.layout_position.x;
+        let local_y = viewport_y - nested.layout_position.y;
+        nested.set_cursor_from_local_position(local_x, local_y);
+        let local_char = nested.cursor_char.min(nested.content.chars().count());
+        Some(
+            fragment.source_range.start
+                + local_char.min(fragment.source_range.end.saturating_sub(fragment.source_range.start)),
+        )
+    }
+
+    fn caret_screen_position_for_char(
+        &mut self,
+        cursor_char: usize,
+        require_focus: bool,
+    ) -> Option<(f32, f32)> {
+        if require_focus && !self.is_focused {
             return None;
         }
+        if self.uses_projection_rendering() {
+            for fragment_index in 0..self.render_fragments.len() {
+                let fragment = self.render_fragments[fragment_index].clone();
+                if let TextAreaRenderFragmentKind::Preedit(text) = &fragment.kind
+                    && cursor_char == fragment.source_range.start
+                {
+                    return self.preedit_fragment_caret_screen_position(&fragment, text.as_str());
+                }
+                if cursor_char <= fragment.source_range.start {
+                    return Some((
+                        self.layout_position.x + fragment.content_x,
+                        self.layout_position.y + fragment.content_y - self.scroll_y,
+                    ));
+                }
+                if cursor_char <= fragment.source_range.end {
+                    if let TextAreaRenderFragmentKind::Projection(index) = fragment.kind.clone()
+                        && let Some(position) = self.projection_fragment_caret_screen_position(
+                            index,
+                            &fragment,
+                            cursor_char,
+                        )
+                    {
+                        return Some(position);
+                    }
+                    return Some((
+                        self.fragment_cursor_screen_x(&fragment, cursor_char),
+                        self.layout_position.y + fragment.content_y - self.scroll_y,
+                    ));
+                }
+            }
+            if let Some(last) = self.render_fragments.last() {
+                return Some((
+                    self.layout_position.x + last.content_x + last.width,
+                    self.layout_position.y + last.content_y - self.scroll_y,
+                ));
+            }
+        }
         let composed = self.composed_text();
-        let caret_byte = self.caret_byte_in_composed(composed.as_str())?;
+        let caret_byte = self.caret_byte_in_composed_for_char(composed.as_str(), cursor_char)?;
         let scale = self.glyph_cache_scale_factor.max(0.0001);
         self.ensure_glyph_layout(composed.as_str(), scale);
         let (cursor_line, cursor_index) = line_and_index_from_byte(composed.as_str(), caret_byte);
@@ -985,6 +1357,10 @@ impl TextArea {
             self.layout_position.x,
             self.layout_position.y + fallback_y / scale - self.scroll_y,
         ))
+    }
+
+    fn caret_screen_position(&mut self) -> Option<(f32, f32)> {
+        self.caret_screen_position_for_char(self.cursor_char, true)
     }
 
     fn screen_rects_for_char_range(
@@ -1054,7 +1430,405 @@ impl TextArea {
         let Some((start_char, end_char)) = self.selection_range_chars() else {
             return Vec::new();
         };
+        if self.uses_projection_rendering() {
+            let mut rects = Vec::new();
+            for fragment_index in 0..self.render_fragments.len() {
+                let fragment = self.render_fragments[fragment_index].clone();
+                if fragment.source_range.end <= start_char || fragment.source_range.start >= end_char {
+                    continue;
+                }
+                let overlap_start = start_char.max(fragment.source_range.start);
+                let overlap_end = end_char.min(fragment.source_range.end);
+                if matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)) {
+                    continue;
+                }
+                let left = self.fragment_cursor_screen_x(&fragment, overlap_start);
+                let right = self.fragment_cursor_screen_x(&fragment, overlap_end);
+                rects.push((
+                    [
+                        left,
+                        self.layout_position.y + fragment.content_y - self.scroll_y,
+                    ],
+                    [(right - left).abs().max(1.0), fragment.height.max(1.0)],
+                ));
+            }
+            return rects;
+        }
         self.screen_rects_for_char_range(composed, start_char, end_char)
+    }
+
+    fn rebuild_render_nodes(&mut self) {
+        let Some(handler) = self.on_render_handler.clone() else {
+            self.rebuild_render_fragments_from_ranges(
+                self.render_nodes
+                    .iter()
+                    .map(|projection| projection.range.clone())
+                    .collect(),
+            );
+            return;
+        };
+
+        let mut render_string = TextAreaRenderString::new(self.content.clone());
+        handler.call(&mut render_string);
+
+        let mut next_nodes = Vec::with_capacity(render_string.projections().len());
+        let mut next_fragments = Vec::new();
+        let mut projections = render_string.projections().to_vec();
+        projections.sort_by_key(|projection| projection.range.start);
+
+        let mut cursor = 0_usize;
+        for (index, projection) in render_string.projections().iter().enumerate() {
+            let mut root = match self.build_projection_root(index, &projection.node) {
+                Ok(root) => root,
+                Err(_error) => continue,
+            };
+            root.set_parent_id(Some(self.id()));
+            apply_text_source_range(root.as_mut(), projection.range.clone());
+            next_nodes.push(root);
+        }
+        for projection in projections {
+            if cursor < projection.range.start {
+                append_plain_render_fragments(
+                    &mut next_fragments,
+                    self.content.as_str(),
+                    cursor,
+                    projection.range.start,
+                );
+            }
+            if let Some(node_index) = render_string
+                .projections()
+                .iter()
+                .position(|candidate| candidate == &projection)
+            {
+                next_fragments.push(TextAreaRenderFragment {
+                    source_range: projection.range.clone(),
+                    kind: TextAreaRenderFragmentKind::Projection(node_index),
+                    content_x: 0.0,
+                    content_y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                });
+            }
+            cursor = projection.range.end;
+        }
+        if cursor < self.content.chars().count() {
+            append_plain_render_fragments(
+                &mut next_fragments,
+                self.content.as_str(),
+                cursor,
+                self.content.chars().count(),
+            );
+        }
+
+        self.render_nodes = next_nodes
+            .into_iter()
+            .zip(render_string.projections().iter())
+            .map(|(node, projection)| TextAreaProjectionNode {
+                range: projection.range.clone(),
+                node,
+            })
+            .collect();
+        self.render_fragments = next_fragments;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+    }
+
+    fn rebuild_render_fragments_from_ranges(&mut self, mut projection_ranges: Vec<Range<usize>>) {
+        let mut next_fragments = Vec::new();
+        projection_ranges.sort_by_key(|range| range.start);
+        let preedit_cursor = self.cursor_char.min(self.content.chars().count());
+        let render_preedit_as_fragment = !self.ime_preedit.is_empty()
+            && !self.preedit_is_inside_projection_range(&projection_ranges);
+        let mut preedit_inserted = false;
+        let mut cursor = 0_usize;
+        for projection in projection_ranges {
+            if render_preedit_as_fragment
+                && !preedit_inserted
+                && preedit_cursor <= projection.start
+            {
+                if cursor < preedit_cursor {
+                    append_plain_render_fragments(
+                        &mut next_fragments,
+                        self.content.as_str(),
+                        cursor,
+                        preedit_cursor,
+                    );
+                }
+                append_preedit_render_fragment(
+                    &mut next_fragments,
+                    preedit_cursor,
+                    self.ime_preedit.as_str(),
+                );
+                cursor = preedit_cursor;
+                preedit_inserted = true;
+            }
+            if cursor < projection.start {
+                append_plain_render_fragments(
+                    &mut next_fragments,
+                    self.content.as_str(),
+                    cursor,
+                    projection.start,
+                );
+            }
+            if let Some(node_index) = self
+                .render_nodes
+                .iter()
+                .position(|candidate| candidate.range == projection)
+            {
+                next_fragments.push(TextAreaRenderFragment {
+                    source_range: projection.clone(),
+                    kind: TextAreaRenderFragmentKind::Projection(node_index),
+                    content_x: 0.0,
+                    content_y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                });
+            }
+            cursor = projection.end;
+        }
+        if render_preedit_as_fragment && !preedit_inserted {
+            if cursor < preedit_cursor {
+                append_plain_render_fragments(
+                    &mut next_fragments,
+                    self.content.as_str(),
+                    cursor,
+                    preedit_cursor,
+                );
+            }
+            append_preedit_render_fragment(
+                &mut next_fragments,
+                preedit_cursor,
+                self.ime_preedit.as_str(),
+            );
+            cursor = preedit_cursor;
+        }
+        if cursor < self.content.chars().count() {
+            append_plain_render_fragments(
+                &mut next_fragments,
+                self.content.as_str(),
+                cursor,
+                self.content.chars().count(),
+            );
+        }
+        self.render_fragments = next_fragments;
+        self.render_content_height = 0.0;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+    }
+
+    fn projection_inherited_style(&self) -> Style {
+        let mut style = Style::new();
+        if !self.font_families.is_empty() {
+            style.insert(
+                PropertyId::FontFamily,
+                ParsedValue::FontFamily(FontFamily::new(self.font_families.clone())),
+            );
+        }
+        style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(self.font_size)),
+        );
+        style.insert(
+            PropertyId::Color,
+            ParsedValue::Color(self.color.clone().into_color().into()),
+        );
+        style
+    }
+
+    fn build_projection_root(
+        &self,
+        index: usize,
+        node: &RsxNode,
+    ) -> Result<Box<dyn ElementTrait>, String> {
+        let scope = [self.id(), 0x5445_5854, index as u64];
+        let inherited_style = self.projection_inherited_style();
+        let mut children =
+            rsx_to_elements_scoped_with_context(node, &scope, &inherited_style, 0.0, 0.0)?;
+        self.wrap_projection_children(index, &mut children)
+    }
+
+    fn wrap_projection_children(
+        &self,
+        index: usize,
+        children: &mut Vec<Box<dyn ElementTrait>>,
+    ) -> Result<Box<dyn ElementTrait>, String> {
+        if children.is_empty() {
+            return Err("projection produced no elements".to_string());
+        }
+        if children.len() == 1 {
+            return Ok(children.remove(0));
+        }
+
+        let wrapper_id = self.id().wrapping_mul(1_000_003).wrapping_add(index as u64 + 1);
+        let mut wrapper = Element::new_with_id(wrapper_id, 0.0, 0.0, 0.0, 0.0);
+        wrapper.set_intrinsic_size_as_percent_base(false);
+
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+        );
+        style.insert(PropertyId::Width, ParsedValue::Auto);
+        style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper.apply_style(style);
+
+        for child in children.drain(..) {
+            wrapper.add_child(child);
+        }
+        Ok(Box::new(wrapper))
+    }
+
+    fn sync_projection_preedit_state(&mut self) {
+        let cursor_char = self.cursor_char.min(self.content.chars().count());
+        for projection in &mut self.render_nodes {
+            let Some(nested) = find_first_text_area_mut(projection.node.as_mut()) else {
+                continue;
+            };
+            let local_cursor = cursor_char
+                .saturating_sub(projection.range.start)
+                .min(nested.content.chars().count());
+            nested.cursor_char = local_cursor;
+            if !self.ime_preedit.is_empty()
+                && cursor_char >= projection.range.start
+                && cursor_char <= projection.range.end
+            {
+                nested.set_preedit(self.ime_preedit.clone(), self.ime_preedit_cursor);
+            } else {
+                nested.clear_preedit();
+            }
+        }
+    }
+
+    fn sync_projection_selection_state(&mut self) {
+        let selection = self.selection_range_chars();
+        let selection_color = self.selection_background_color.to_rgba_f32();
+        for projection in &mut self.render_nodes {
+            let Some(nested) = find_first_text_area_mut(projection.node.as_mut()) else {
+                continue;
+            };
+            nested.set_selection_background_color(crate::Color::rgba(
+                (selection_color[0] * 255.0).round().clamp(0.0, 255.0) as u8,
+                (selection_color[1] * 255.0).round().clamp(0.0, 255.0) as u8,
+                (selection_color[2] * 255.0).round().clamp(0.0, 255.0) as u8,
+                (selection_color[3] * 255.0).round().clamp(0.0, 255.0) as u8,
+            ));
+            let Some((start, end)) = selection else {
+                nested.clear_selection();
+                continue;
+            };
+            let overlap_start = start.max(projection.range.start);
+            let overlap_end = end.min(projection.range.end);
+            if overlap_start >= overlap_end {
+                nested.clear_selection();
+                continue;
+            }
+            nested.selection_anchor_char =
+                Some(overlap_start.saturating_sub(projection.range.start));
+            nested.selection_focus_char =
+                Some(overlap_end.saturating_sub(projection.range.start));
+        }
+    }
+
+    fn layout_render_fragments(&mut self, viewport_width: f32, viewport_height: f32) {
+        if self.render_fragments.is_empty() {
+            self.render_content_height = 0.0;
+            return;
+        }
+        self.sync_projection_preedit_state();
+        self.sync_projection_selection_state();
+        let available_width = self.effective_width().max(1.0);
+        let line_height_px = self.line_height_px();
+        let effective_height = self.effective_height().max(line_height_px);
+        let font_size = self.font_size;
+        let line_height_ratio = self.line_height;
+        let font_families = self.font_families.clone();
+        let mut cursor_x = 0.0_f32;
+        let mut cursor_y = 0.0_f32;
+        let mut line_height = line_height_px;
+
+        for fragment in &mut self.render_fragments {
+            let (fragment_width, fragment_height) = match &fragment.kind {
+                TextAreaRenderFragmentKind::Text(text)
+                | TextAreaRenderFragmentKind::Preedit(text) =>
+                    Self::measure_render_text_run_with_style(
+                        text.as_str(),
+                        font_size,
+                        line_height_ratio,
+                        &font_families,
+                    ),
+                TextAreaRenderFragmentKind::Projection(index) => {
+                    let Some(node) = self.render_nodes.get_mut(*index) else {
+                        continue;
+                    };
+                    node.node.measure(LayoutConstraints {
+                        max_width: available_width,
+                        max_height: effective_height,
+                        viewport_width,
+                        viewport_height,
+                        percent_base_width: Some(available_width),
+                        percent_base_height: Some(effective_height),
+                    });
+                    let (measured_width, measured_height) = node.node.measured_size();
+                    (measured_width.max(1.0), measured_height.max(line_height_px))
+                }
+            };
+
+            if self.multiline && cursor_x > 0.0 && cursor_x + fragment_width > available_width {
+                cursor_x = 0.0;
+                cursor_y += line_height;
+                line_height = line_height_px;
+            }
+
+            fragment.content_x = cursor_x;
+            fragment.content_y = cursor_y;
+            fragment.width = fragment_width.max(1.0);
+            fragment.height = fragment_height.max(line_height_px);
+            cursor_x += fragment_width;
+            line_height = line_height.max(fragment_height);
+        }
+
+        self.render_content_height = (cursor_y + line_height).max(line_height_px);
+    }
+
+    fn set_cursor_from_projection_position(&mut self, viewport_x: f32, viewport_y: f32) -> bool {
+        for fragment_index in 0..self.render_fragments.len() {
+            let fragment = self.render_fragments[fragment_index].clone();
+            let left = self.layout_position.x + fragment.content_x;
+            let top = self.layout_position.y + fragment.content_y - self.scroll_y;
+            let right = left + fragment.width;
+            let bottom = top + fragment.height;
+            if viewport_x < left || viewport_x > right || viewport_y < top || viewport_y > bottom {
+                continue;
+            }
+            if let TextAreaRenderFragmentKind::Projection(index) = fragment.kind
+                && let Some(cursor_char) = self.projection_fragment_cursor_char_from_viewport_position(
+                    index,
+                    &fragment,
+                    viewport_x,
+                    viewport_y,
+                )
+            {
+                self.cursor_char = cursor_char;
+                self.cached_ime_cursor_rect = None;
+                self.reset_caret_blink();
+                self.clear_vertical_goal();
+                return true;
+            }
+            let mut best_char = fragment.source_range.start;
+            let mut best_distance = f32::INFINITY;
+            for candidate in fragment.source_range.start..=fragment.source_range.end {
+                let caret_x = self.fragment_cursor_screen_x(&fragment, candidate);
+                let distance = (viewport_x - caret_x).abs();
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_char = candidate;
+                }
+            }
+            self.cursor_char = best_char;
+            self.cached_ime_cursor_rect = None;
+            self.reset_caret_blink();
+            self.clear_vertical_goal();
+            return true;
+        }
+        false
     }
 
     fn ime_preedit_range_chars(&self) -> Option<(usize, usize)> {
@@ -1070,6 +1844,42 @@ impl TextArea {
         let Some((start_char, end_char)) = self.ime_preedit_range_chars() else {
             return Vec::new();
         };
+        if self.uses_projection_rendering() {
+            let mut rects = Vec::new();
+            for fragment_index in 0..self.render_fragments.len() {
+                let fragment = self.render_fragments[fragment_index].clone();
+                match fragment.kind {
+                    TextAreaRenderFragmentKind::Preedit(_) => {
+                        if fragment.width > 0.01 && fragment.height > 0.01 {
+                            rects.push((
+                                [
+                                    self.layout_position.x + fragment.content_x,
+                                    self.layout_position.y + fragment.content_y - self.scroll_y
+                                        + fragment.height
+                                        - 1.0,
+                                ],
+                                [fragment.width, 1.0],
+                            ));
+                        }
+                    }
+                    TextAreaRenderFragmentKind::Projection(index) => {
+                        if start_char < fragment.source_range.start || start_char > fragment.source_range.end {
+                            continue;
+                        }
+                        let Some(node) = self.render_nodes.get_mut(index) else {
+                            continue;
+                        };
+                        let Some(nested) = find_first_text_area_mut(node.node.as_mut()) else {
+                            continue;
+                        };
+                        let nested_composed = nested.composed_text();
+                        rects.extend(nested.ime_preedit_underline_rects(nested_composed.as_str()));
+                    }
+                    TextAreaRenderFragmentKind::Text(_) => {}
+                }
+            }
+            return rects;
+        }
         let line_rects = self.screen_rects_for_char_range(composed, start_char, end_char);
         line_rects
             .into_iter()
@@ -1127,6 +1937,29 @@ impl TextArea {
         self.glyph_cache_font_families = self.font_families.clone();
     }
 
+    fn measure_render_text_run_with_style(
+        text: &str,
+        font_size: f32,
+        line_height: f32,
+        font_families: &[String],
+    ) -> (f32, f32) {
+        Self::with_shared_font_system(|font_system| {
+            let buffer = build_text_buffer(
+                font_system,
+                text,
+                None,
+                None,
+                false,
+                font_size,
+                line_height,
+                400,
+                Align::Left,
+                font_families,
+            );
+            measure_buffer_size(&buffer)
+        })
+    }
+
     fn composed_text(&self) -> String {
         if self.ime_preedit.is_empty() {
             return self.content.clone();
@@ -1174,8 +2007,8 @@ impl TextArea {
         insert_char
     }
 
-    fn caret_byte_in_composed(&self, composed: &str) -> Option<usize> {
-        let base = byte_index_at_char(&self.content, self.cursor_char);
+    fn caret_byte_in_composed_for_char(&self, composed: &str, cursor_char: usize) -> Option<usize> {
+        let base = byte_index_at_char(&self.content, cursor_char.min(self.content.chars().count()));
         if self.ime_preedit.is_empty() {
             return Some(base.min(composed.len()));
         }
@@ -1328,6 +2161,9 @@ impl TextArea {
     }
 
     fn move_cursor_vertical(&mut self, motion: Motion) -> bool {
+        if self.uses_projection_rendering() {
+            return false;
+        }
         if !self.multiline {
             return false;
         }
@@ -1477,12 +2313,6 @@ fn estimate_char_width_px(ch: char, font_size: f32) -> f32 {
         return font_size * 0.56;
     }
     font_size * 1.0
-}
-
-fn estimate_line_width_px(line: &str, font_size: f32) -> f32 {
-    line.chars()
-        .map(|ch| estimate_char_width_px(ch, font_size))
-        .sum()
 }
 
 fn line_lengths_bytes(value: &str) -> Vec<usize> {
@@ -1716,6 +2546,7 @@ impl ElementTrait for TextArea {
         self.ime_preedit.hash(&mut hasher);
         self.ime_preedit_cursor.hash(&mut hasher);
         self.should_draw_caret().hash(&mut hasher);
+        self.render_fragments.len().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -1739,7 +2570,10 @@ impl EventTarget for TextArea {
         self.clear_preedit();
         self.reset_caret_blink();
         let previous = self.cursor_char;
-        self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+        if !self.set_cursor_from_projection_position(event.mouse.viewport_x, event.mouse.viewport_y)
+        {
+            self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+        }
         if event.mouse.modifiers.shift {
             let anchor = self.selection_anchor_char.unwrap_or(previous);
             self.selection_anchor_char = Some(anchor);
@@ -1779,7 +2613,10 @@ impl EventTarget for TextArea {
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         if self.mouse_selecting && event.mouse.buttons.left {
-            self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+            if !self.set_cursor_from_projection_position(event.mouse.viewport_x, event.mouse.viewport_y)
+            {
+                self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+            }
             if self.selection_anchor_char.is_none() {
                 self.selection_anchor_char = Some(self.cursor_char);
             }
@@ -1867,7 +2704,11 @@ impl EventTarget for TextArea {
         if self.read_only {
             return;
         }
-        self.set_preedit(event.text.clone(), event.cursor);
+        if event.text.is_empty() {
+            self.clear_preedit();
+        } else {
+            self.set_preedit(event.text.clone(), event.cursor);
+        }
         self.ensure_cursor_visible();
         event.meta.stop_propagation();
         control.request_redraw();
@@ -2138,6 +2979,12 @@ impl Layoutable for TextArea {
         if (prev_layout_width - self.layout_size.width).abs() > 0.01 {
             self.invalidate_glyph_layout();
         }
+        if !self.render_nodes.is_empty() || self.on_render_handler.is_some() {
+            self.layout_render_fragments(
+                placement.viewport_width,
+                placement.viewport_height,
+            );
+        }
         self.clamp_scroll();
         self.last_layout_placement = Some(placement);
         self.dirty_flags = self.dirty_flags.without(
@@ -2172,6 +3019,111 @@ impl Renderable for TextArea {
             self.layout_size.height.ceil().max(0.0) as u32,
         ]);
 
+        if self.uses_projection_rendering() {
+            self.place_projection_fragments(
+                self.layout_size.width.max(1.0),
+                self.layout_size.height.max(1.0),
+            );
+            let content = self.content.clone();
+            for (position, size) in self.selection_screen_rects(content.as_str()) {
+                let fill_color = self.selection_background_color.to_rgba_f32();
+                let mut selection_pass = DrawRectPass::new(
+                    RectPassParams {
+                        position,
+                        size,
+                        fill_color,
+                        opacity,
+                        ..Default::default()
+                    },
+                    DrawRectInput::default(),
+                    DrawRectOutput::default(),
+                );
+                selection_pass.set_scissor_rect(clip);
+                push_draw_rect_pass_explicit(graph, &mut ctx, selection_pass);
+            }
+
+            for fragment in &mut self.render_fragments {
+                let screen_x = self.layout_position.x + fragment.content_x;
+                let screen_y = self.layout_position.y + fragment.content_y - self.scroll_y;
+                match &fragment.kind {
+                    TextAreaRenderFragmentKind::Text(text)
+                    | TextAreaRenderFragmentKind::Preedit(text) => {
+                        push_text_pass_explicit(
+                            graph,
+                            &mut ctx,
+                            TextPassParams::single_fragment(
+                                crate::view::render_pass::text_pass::TextPassFragment {
+                                    content: text.clone(),
+                                    x: screen_x,
+                                    y: screen_y,
+                                    width: fragment.width.max(1.0),
+                                    height: fragment.height.max(1.0),
+                                    color: self.color.to_rgba_f32(),
+                                    opacity,
+                                    layout_buffer: None,
+                                },
+                                self.font_size,
+                                self.line_height,
+                                400,
+                                self.font_families.clone(),
+                                Align::Left,
+                                false,
+                                clip,
+                                None,
+                            ),
+                        );
+                    }
+                    TextAreaRenderFragmentKind::Projection(index) => {
+                        let Some(node) = self.render_nodes.get_mut(*index) else {
+                            continue;
+                        };
+                        let viewport = ctx.viewport();
+                        let next_state = node.node.build(graph, ctx);
+                        ctx = UiBuildContext::from_parts(viewport, next_state);
+                    }
+                }
+            }
+
+            let ime_underline_rects = self.ime_preedit_underline_rects(content.as_str());
+            for (position, size) in ime_underline_rects {
+                let mut underline_pass = DrawRectPass::new(
+                    RectPassParams {
+                        position,
+                        size,
+                        fill_color: self.color.to_rgba_f32(),
+                        opacity,
+                        ..Default::default()
+                    },
+                    DrawRectInput::default(),
+                    DrawRectOutput::default(),
+                );
+                underline_pass.set_scissor_rect(clip);
+                push_draw_rect_pass_explicit(graph, &mut ctx, underline_pass);
+            }
+
+            if let Some((caret_x, caret_y)) = self.caret_screen_position() {
+                self.cached_ime_cursor_rect = Some((caret_x, caret_y, 1.0, self.line_height_px()));
+                if self.should_draw_caret() {
+                    let mut caret_pass = DrawRectPass::new(
+                        RectPassParams {
+                            position: [caret_x, caret_y],
+                            size: [1.0, self.line_height_px()],
+                            fill_color: self.color.to_rgba_f32(),
+                            opacity,
+                            ..Default::default()
+                        },
+                        DrawRectInput::default(),
+                        DrawRectOutput::default(),
+                    );
+                    caret_pass.set_scissor_rect(clip);
+                    push_draw_rect_pass_explicit(graph, &mut ctx, caret_pass);
+                }
+            } else {
+                self.cached_ime_cursor_rect = None;
+            }
+            return ctx.into_state();
+        }
+
         if !content.is_empty() {
             let scale = ctx.viewport().scale_factor();
             self.ensure_glyph_layout(content.as_str(), scale);
@@ -2196,24 +3148,26 @@ impl Renderable for TextArea {
             push_text_pass_explicit(
                 graph,
                 &mut ctx,
-                TextPassParams {
-                    content,
-                    x: self.layout_position.x,
-                    y: self.layout_position.y - self.scroll_y,
-                    width: self.layout_size.width,
-                    height: self.layout_size.height.max(self.content_height()),
-                    color,
-                    opacity,
-                    font_size: self.font_size,
-                    line_height: self.line_height,
-                    font_weight: 400,
-                    font_families: self.font_families.clone(),
-                    align: Align::Left,
-                    allow_wrap: self.multiline,
-                    layout_buffer: Some(self.glyph_buffer.clone()),
-                    scissor_rect: clip,
-                    stencil_clip_id: None,
-                },
+                TextPassParams::single_fragment(
+                    TextPassFragment {
+                        content,
+                        x: self.layout_position.x,
+                        y: self.layout_position.y - self.scroll_y,
+                        width: self.layout_size.width,
+                        height: self.layout_size.height.max(self.content_height()),
+                        color,
+                        opacity,
+                        layout_buffer: Some(self.glyph_buffer.clone()),
+                    },
+                    self.font_size,
+                    self.line_height,
+                    400,
+                    self.font_families.clone(),
+                    Align::Left,
+                    self.multiline,
+                    clip,
+                    None,
+                ),
             );
 
             for (position, size) in ime_underline_rects {
@@ -2236,6 +3190,11 @@ impl Renderable for TextArea {
         if let Some((caret_x, caret_y)) = self.caret_screen_position() {
             self.cached_ime_cursor_rect = Some((caret_x, caret_y, 1.0, self.line_height_px()));
             if !self.should_draw_caret() {
+                for node in &mut self.render_nodes {
+                    let viewport = ctx.viewport();
+                    let next_state = node.node.build(graph, ctx);
+                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                }
                 return ctx.into_state();
             }
             let mut caret_pass = DrawRectPass::new(
@@ -2254,7 +3213,99 @@ impl Renderable for TextArea {
         } else {
             self.cached_ime_cursor_rect = None;
         }
+        for node in &mut self.render_nodes {
+            let viewport = ctx.viewport();
+            let next_state = node.node.build(graph, ctx);
+            ctx = UiBuildContext::from_parts(viewport, next_state);
+        }
         ctx.into_state()
+    }
+}
+
+fn clamp_char_range<R>(content: &str, range: R) -> Option<Range<usize>>
+where
+    R: RangeBounds<usize>,
+{
+    let len = content.chars().count();
+    let start = match range.start_bound() {
+        Bound::Included(value) => *value,
+        Bound::Excluded(value) => value.saturating_add(1),
+        Bound::Unbounded => 0,
+    }
+    .min(len);
+    let end = match range.end_bound() {
+        Bound::Included(value) => value.saturating_add(1),
+        Bound::Excluded(value) => *value,
+        Bound::Unbounded => len,
+    }
+    .min(len);
+    if start >= end {
+        return None;
+    }
+    Some(start..end)
+}
+
+fn append_plain_render_fragments(
+    out: &mut Vec<TextAreaRenderFragment>,
+    content: &str,
+    start: usize,
+    end: usize,
+) {
+    let chars: Vec<char> = content.chars().collect();
+    let end = end.min(chars.len());
+    let start = start.min(end);
+    if start >= end {
+        return;
+    }
+    out.push(TextAreaRenderFragment {
+        source_range: start..end,
+        kind: TextAreaRenderFragmentKind::Text(chars[start..end].iter().collect::<String>()),
+        content_x: 0.0,
+        content_y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    });
+}
+
+fn append_preedit_render_fragment(
+    out: &mut Vec<TextAreaRenderFragment>,
+    cursor_char: usize,
+    preedit: &str,
+) {
+    if preedit.is_empty() {
+        return;
+    }
+    out.push(TextAreaRenderFragment {
+        source_range: cursor_char..cursor_char,
+        kind: TextAreaRenderFragmentKind::Preedit(preedit.to_string()),
+        content_x: 0.0,
+        content_y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    });
+}
+
+fn find_first_text_area_mut(node: &mut dyn ElementTrait) -> Option<&mut TextArea> {
+    if node.as_any().is::<TextArea>() {
+        return node.as_any_mut().downcast_mut::<TextArea>();
+    }
+    let children = node.children_mut()?;
+    for child in children {
+        if let Some(text_area) = find_first_text_area_mut(child.as_mut()) {
+            return Some(text_area);
+        }
+    }
+    None
+}
+
+fn apply_text_source_range(node: &mut dyn ElementTrait, range: Range<usize>) {
+    if let Some(text_area) = node.as_any_mut().downcast_mut::<TextArea>() {
+        text_area.set_source_text_range(Some(range.clone()));
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            apply_text_source_range(child.as_mut(), range.clone());
+        }
     }
 }
 
@@ -2302,13 +3353,18 @@ fn push_text_pass_explicit(
 
 #[cfg(test)]
 mod tests {
-    use super::TextArea;
+    use super::{TextArea, TextAreaRenderFragmentKind};
+    use crate::ColorLike;
     use crate::Length;
-    use crate::ui::{BlurEvent, EventMeta, FocusEvent, TextInputEvent, ViewportListenerAction};
-    use crate::view::base_component::{
-        ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
-        select_all_text_by_id, select_text_range_by_id,
+    use crate::ui::{
+        Binding, BlurEvent, EventMeta, FocusEvent, MouseButton, MouseButtons, MouseDownEvent,
+        MouseEventData, TextInputEvent, ViewportListenerAction, rsx,
     };
+    use crate::view::base_component::{
+        Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+        dispatch_mouse_down_from_hit_test, select_all_text_by_id, select_text_range_by_id,
+    };
+    use crate::view::renderer_adapter::rsx_to_elements;
     use crate::view::{Viewport, ViewportControl};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2327,6 +3383,270 @@ mod tests {
         area.set_max_length(Some(5));
         assert!(area.insert_text("123456"));
         assert_eq!(area.content, "12345");
+    }
+
+    #[test]
+    fn on_render_rebuilds_projection_only_when_content_changes() {
+        let calls = Rc::new(RefCell::new(0usize));
+        let calls_for_render = calls.clone();
+        let mut area = TextArea::from_content("hello");
+        area.on_render(move |render| {
+            *calls_for_render.borrow_mut() += 1;
+            render.range(1..4, |text_area_node| {
+                crate::ui::rsx! {
+                    <crate::view::Element>
+                        {text_area_node}
+                    </crate::view::Element>
+                }
+            });
+        });
+
+        assert_eq!(*calls.borrow(), 1);
+        area.set_text("hello");
+        assert_eq!(*calls.borrow(), 1);
+        area.set_text("world");
+        assert_eq!(*calls.borrow(), 2);
+
+        assert_eq!(area.render_nodes.len(), 1);
+        let wrapper = area.render_nodes[0]
+            .node
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("projection root element");
+        let nested = wrapper
+            .children()
+            .expect("wrapper children")[0]
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .expect("nested projection text area");
+        assert_eq!(nested.source_text_range(), Some(1..4));
+    }
+
+    #[test]
+    fn on_render_fragment_projection_wraps_multiple_siblings() {
+        let mut area = TextArea::from_content("{{x}}");
+        area.on_render(|render| {
+            render.range(0..5, |text_area_node| {
+                crate::ui::rsx! {
+                    <crate::view::Text>abc</crate::view::Text>
+                    {text_area_node}
+                }
+            });
+        });
+
+        assert_eq!(area.render_nodes.len(), 1);
+        let wrapper = area.render_nodes[0]
+            .node
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("projection wrapper element");
+        let children = wrapper.children().expect("wrapper children");
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().any(|child| child.as_any().is::<TextArea>()));
+    }
+
+    #[test]
+    fn on_render_single_text_area_projection_inherits_text_style() {
+        let mut area = TextArea::from_content("{{x}}");
+        area.set_font_size(13.0);
+        area.set_color(crate::Color::hex("#aabbcc"));
+        area.on_render(|render| {
+            render.range(0..5, |text_area_node| text_area_node);
+        });
+
+        assert_eq!(area.render_nodes.len(), 1);
+        let nested = area.render_nodes[0]
+            .node
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .expect("nested projection text area");
+        assert!((nested.font_size - 13.0).abs() < 0.01);
+        assert_eq!(nested.color.to_rgba_f32(), crate::Color::hex("#aabbcc").to_rgba_f32());
+    }
+
+    #[test]
+    fn rsx_on_render_with_binding_populates_projection_nodes() {
+        let binding = Binding::new("{{API_HOST}}/user".to_string());
+        let tree = rsx! {
+            <crate::view::TextArea
+                binding={binding}
+                multiline={false}
+                on_render={move |render: &mut crate::view::base_component::TextAreaRenderString| {
+                    render.range(0..12, |text_area_node| {
+                        rsx! {
+                            <crate::view::Element>
+                                {text_area_node}
+                            </crate::view::Element>
+                        }
+                    });
+                }}
+            />
+        };
+
+        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
+        let area = roots[0]
+            .as_any_mut()
+            .downcast_mut::<TextArea>()
+            .expect("host textarea");
+        assert_eq!(area.render_nodes.len(), 1);
+        assert!(matches!(
+            area.render_fragments[0].kind,
+            TextAreaRenderFragmentKind::Projection(_)
+        ));
+    }
+
+    #[test]
+    fn ime_preedit_outside_projection_becomes_render_fragment() {
+        let mut area = TextArea::from_content("ab {{x}}");
+        area.on_render(|render| {
+            render.range(3..8, |text_area_node| text_area_node);
+        });
+        area.cursor_char = 1;
+        area.set_preedit("中文".to_string(), None);
+
+        assert!(area.uses_projection_rendering());
+        assert!(area.render_fragments.iter().any(|fragment| matches!(
+            &fragment.kind,
+            TextAreaRenderFragmentKind::Preedit(text) if text == "中文"
+        )));
+    }
+
+    #[test]
+    fn ime_preedit_inside_projection_syncs_to_nested_text_area() {
+        let mut area = TextArea::from_content("{{x}}");
+        area.on_render(|render| {
+            render.range(0..5, |text_area_node| text_area_node);
+        });
+        area.cursor_char = 2;
+        area.set_preedit("中文".to_string(), None);
+        area.layout_render_fragments(240.0, 64.0);
+
+        let nested = area.render_nodes[0]
+            .node
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .expect("nested projection text area");
+        assert_eq!(nested.ime_preedit, "中文");
+        assert_eq!(nested.cursor_char, 2);
+    }
+
+    #[test]
+    fn clearing_preedit_removes_preedit_fragments() {
+        let mut area = TextArea::from_content("ab {{x}}");
+        area.on_render(|render| {
+            render.range(3..8, |text_area_node| text_area_node);
+        });
+        area.cursor_char = 1;
+        area.set_preedit("中文".to_string(), None);
+        assert!(area.render_fragments.iter().any(|fragment| matches!(
+            &fragment.kind,
+            TextAreaRenderFragmentKind::Preedit(text) if text == "中文"
+        )));
+
+        area.clear_preedit();
+        assert!(!area.render_fragments.iter().any(|fragment| matches!(
+            fragment.kind,
+            TextAreaRenderFragmentKind::Preedit(_)
+        )));
+    }
+
+    #[test]
+    fn mouse_down_on_projection_child_maps_back_to_source_range() {
+        let mut area = TextArea::from_content("hello");
+        area.on_render(|render| {
+            render.range(1..4, |text_area_node| {
+                crate::ui::rsx! {
+                    <crate::view::Element style={{ width: Length::percent(100.0), height: Length::percent(100.0) }}>
+                        {text_area_node}
+                    </crate::view::Element>
+                }
+            });
+        });
+        area.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 240.0,
+            available_height: 64.0,
+            viewport_width: 240.0,
+            viewport_height: 64.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(64.0),
+        });
+
+        let fragment = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+            .expect("projection fragment");
+        let click_x = area.layout_position.x + fragment.content_x + fragment.width * 0.8;
+        let click_y = area.layout_position.y + fragment.content_y + fragment.height * 0.5;
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let meta = EventMeta::new(0);
+        let viewport_api = meta.viewport();
+        let mut event = MouseDownEvent {
+            meta,
+            mouse: MouseEventData {
+                viewport_x: click_x,
+                viewport_y: click_y,
+                local_x: 0.0,
+                local_y: 0.0,
+                current_target_width: 0.0,
+                current_target_height: 0.0,
+                button: Some(MouseButton::Left),
+                buttons: MouseButtons::default(),
+                modifiers: Default::default(),
+            },
+            viewport: viewport_api,
+        };
+
+        assert!(dispatch_mouse_down_from_hit_test(
+            &mut area,
+            &mut event,
+            &mut control
+        ));
+        assert!((2..=4).contains(&area.cursor_char));
+    }
+
+    #[test]
+    fn projection_click_uses_nested_text_area_hit_testing() {
+        let mut area = TextArea::from_content("{{API_HOST}}");
+        area.on_render(|render| {
+            render.range(0..12, |text_area_node| {
+                crate::ui::rsx! {
+                    <crate::view::Element>
+                        {text_area_node}
+                    </crate::view::Element>
+                }
+            });
+        });
+        area.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 320.0,
+            available_height: 64.0,
+            viewport_width: 320.0,
+            viewport_height: 64.0,
+            percent_base_width: Some(320.0),
+            percent_base_height: Some(64.0),
+        });
+
+        let fragment = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+            .expect("projection fragment");
+        let click_x = area.layout_position.x + fragment.content_x + fragment.width * 0.45;
+        let click_y = area.layout_position.y + fragment.content_y + fragment.height * 0.5;
+
+        assert!(area.set_cursor_from_projection_position(click_x, click_y));
+        assert!(area.cursor_char > 0);
+        assert!(area.cursor_char < 12);
     }
 
     #[test]
@@ -2613,5 +3933,29 @@ mod tests {
         assert!((metrics_2x.font_size - 32.0).abs() < 0.01);
         assert!((width_1x - 100.0).abs() < 0.01);
         assert!((width_2x - 200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn auto_width_uses_glyph_measurement() {
+        let mut area = TextArea::from_content("{{API_HOST}}");
+        area.set_multiline(false);
+        area.set_font_size(16.0);
+        area.measure(LayoutConstraints {
+            max_width: 500.0,
+            max_height: 40.0,
+            viewport_width: 500.0,
+            percent_base_width: Some(500.0),
+            percent_base_height: Some(40.0),
+            viewport_height: 40.0,
+        });
+
+        let expected_width = TextArea::measure_render_text_run_with_style(
+            "{{API_HOST}}",
+            16.0,
+            area.line_height,
+            &area.font_families,
+        )
+        .0;
+        assert!((area.measured_size().0 - expected_width).abs() < 0.01);
     }
 }

@@ -11,8 +11,8 @@ use crate::rfgui::{ColorLike, Viewport};
 use crate::rfgui_components::{Theme, init_theme};
 use crate::scene::MainScene;
 use crate::state::{
-    DEBUG_GEOMETRY_OVERLAY, DEBUG_RENDER_TIME, DEBUG_REUSE_PATH, ENABLE_LAYER_PROMOTION,
-    REQUEST_DUMP_FRAME_GRAPH_DOT, THEME_DARK_MODE,
+    DEBUG_COMPILE_DETAIL, DEBUG_GEOMETRY_OVERLAY, DEBUG_RENDER_TIME, DEBUG_REUSE_PATH,
+    ENABLE_LAYER_PROMOTION, REQUEST_DUMP_FRAME_GRAPH_DOT, THEME_DARK_MODE,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::current_unix_timestamp;
@@ -201,6 +201,8 @@ impl App {
             self.with_viewport_mut(|viewport| {
                 viewport.set_debug_geometry_overlay(DEBUG_GEOMETRY_OVERLAY.load(Ordering::Relaxed));
                 viewport.set_debug_trace_render_time(DEBUG_RENDER_TIME.load(Ordering::Relaxed));
+                viewport
+                    .set_debug_trace_compile_detail(DEBUG_COMPILE_DETAIL.load(Ordering::Relaxed));
                 viewport.set_debug_trace_reuse_path(DEBUG_REUSE_PATH.load(Ordering::Relaxed));
                 let mut promotion_config = viewport.promotion_config();
                 let enable_layer_promotion = ENABLE_LAYER_PROMOTION.load(Ordering::Relaxed);

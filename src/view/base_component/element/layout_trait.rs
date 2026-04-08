@@ -12,7 +12,12 @@ impl Layoutable for Element {
             percent_base_height: context.percent_base_height,
         };
 
-        if !self.layout_dirty && self.last_layout_proposal == Some(proposal) {
+        let child_layout_dirty = self.children.iter().any(|child| {
+            crate::view::base_component::subtree_dirty_flags(child.as_ref())
+                .intersects(DirtyFlags::LAYOUT)
+        });
+
+        if !self.layout_dirty && !child_layout_dirty && self.last_layout_proposal == Some(proposal) {
             return;
         }
 

@@ -77,6 +77,10 @@ impl_event_into_optional_prop!(
     crate::ui::TextAreaFocusEvent
 );
 impl_event_into_optional_prop!(crate::ui::TextChangeHandlerProp, crate::ui::TextChangeEvent);
+impl_event_into_optional_prop!(
+    crate::ui::TextAreaRenderHandlerProp,
+    crate::view::base_component::TextAreaRenderString
+);
 impl_no_arg_event_into_optional_prop!(
     crate::ui::MouseDownHandlerProp,
     crate::ui::into_mouse_down_handler

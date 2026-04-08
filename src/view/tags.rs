@@ -8,7 +8,7 @@ use crate::ui::{
     KeyDownHandlerProp, KeyUpHandlerProp, MouseDownHandlerProp, MouseEnterHandlerProp,
     MouseLeaveHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxChildrenPolicy,
     RsxComponent, RsxPropsStyleSchema, RsxStyleSchema, SharedPropValue, TextAreaFocusHandlerProp,
-    TextChangeHandlerProp, props,
+    TextAreaRenderHandlerProp, TextChangeHandlerProp, props,
 };
 use crate::{
     Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
@@ -19,6 +19,8 @@ use crate::{
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+
+const TEXT_AREA_PROJECTION_TAG: &str = "__rfgui_text_area_projection";
 
 /// The built-in container host tag.
 pub struct Element;
@@ -241,6 +243,7 @@ pub struct TextAreaPropSchema {
     pub binding: Option<crate::ui::Binding<String>>,
     pub style: Option<ElementStylePropSchema>,
     pub on_focus: Option<TextAreaFocusHandlerProp>,
+    pub on_render: Option<TextAreaRenderHandlerProp>,
     pub on_blur: Option<BlurHandlerProp>,
     pub on_change: Option<TextChangeHandlerProp>,
     pub placeholder: Option<String>,
@@ -358,8 +361,21 @@ impl RsxComponent<TextPropSchema> for Text {
 
 impl RsxComponent<TextAreaPropSchema> for TextArea {
     fn render(props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
+        let mut resolved_content = props
+            .binding
+            .as_ref()
+            .map(crate::ui::Binding::get)
+            .or(props.content.clone());
+        if resolved_content.is_none() {
+            let mut content = String::new();
+            for child in &children {
+                append_text_area_content_child(&mut content, child);
+            }
+            resolved_content = Some(content);
+        }
+
         let mut node = RsxNode::tagged("TextArea", crate::ui::RsxTagDescriptor::of::<TextArea>());
-        if let Some(content) = props.content
+        if let Some(content) = resolved_content.clone()
             && !content.is_empty()
         {
             node = node.with_prop("content", content);
@@ -423,10 +439,33 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         {
             node = node.with_prop("max_length", max_length);
         }
-        for child in children {
-            node = node.with_child(child);
+        if let Some(handler) = props.on_render {
+            let mut render_string =
+                crate::view::base_component::TextAreaRenderString::new(
+                    resolved_content.unwrap_or_default(),
+                );
+            handler.call(&mut render_string);
+            for projection in render_string.projections() {
+                let projection_node = RsxNode::element(TEXT_AREA_PROJECTION_TAG)
+                    .with_prop("source_text_start", projection.range.start as i64)
+                    .with_prop("source_text_end", projection.range.end as i64)
+                    .with_child(projection.node.clone());
+                node = node.with_child(projection_node);
+            }
         }
         node
+    }
+}
+
+fn append_text_area_content_child(out: &mut String, node: &RsxNode) {
+    match node {
+        RsxNode::Text(content) => out.push_str(&content.content),
+        RsxNode::Fragment(fragment) => {
+            for child in &fragment.children {
+                append_text_area_content_child(out, child);
+            }
+        }
+        RsxNode::Element(_) => {}
     }
 }
 

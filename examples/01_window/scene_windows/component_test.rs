@@ -134,8 +134,9 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
                         layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                     }}>
-                        <Text>Large</Text>
+                        <Text>Colored</Text>
                         <CloseIcon style={{
+                            color: theme.color.secondary.base.clone(),
                             font_size: theme.typography.size.xl,
                         }} />
                     </Element>

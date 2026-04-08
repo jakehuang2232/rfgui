@@ -12,10 +12,14 @@ use crate::view::base_component::{Element, ElementTrait, Image, Svg, Text, TextA
 use crate::view::{
     ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, SvgSource, TextStylePropSchema,
 };
-use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
+use crate::{
+    AnchorName, Color, Cursor, Layout, Length, ParsedValue, Position, PropertyId, TextWrap,
+};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
+
+const TEXT_AREA_PROJECTION_TAG: &str = "__rfgui_text_area_projection";
 
 pub type ElementFactory =
     Arc<dyn Fn(&RsxElementNode, &[u64]) -> Result<Box<dyn ElementTrait>, String> + Send + Sync>;
@@ -128,6 +132,23 @@ pub fn rsx_to_elements_with_context(
         viewport_width,
         viewport_height,
     )?;
+    Ok(out)
+}
+
+pub fn rsx_to_elements_scoped_with_context(
+    root: &RsxNode,
+    scope_path: &[u64],
+    viewport_style: &Style,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<Vec<Box<dyn ElementTrait>>, String> {
+    let mut out = Vec::new();
+    let mut path = Vec::with_capacity(scope_path.len().saturating_add(8));
+    path.extend_from_slice(scope_path);
+    let inherited =
+        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
+    let global_path = current_global_node_path(root, None);
+    append_nodes_with_path(root, &mut out, &mut path, global_path, &inherited)?;
     Ok(out)
 }
 
@@ -1081,6 +1102,9 @@ fn convert_text_area_element(
     let mut y: Option<f32> = None;
     let mut width: Option<Length> = None;
     let mut height: Option<Length> = None;
+    let mut source_text_start: Option<usize> = None;
+    let mut source_text_end: Option<usize> = None;
+    let mut projection_nodes: Vec<(std::ops::Range<usize>, Box<dyn ElementTrait>)> = Vec::new();
     let mut has_explicit_font = false;
     let mut has_explicit_font_size = false;
     let mut has_explicit_color = false;
@@ -1139,8 +1163,20 @@ fn convert_text_area_element(
             "multiline" => text_area.set_multiline(as_bool(value, key)?),
             "read_only" => text_area.set_read_only(as_bool(value, key)?),
             "max_length" => text_area.set_max_length(as_usize(value, key)?),
+            "source_text_start" => {
+                source_text_start = as_usize(value, key)?;
+            }
+            "source_text_end" => {
+                source_text_end = as_usize(value, key)?;
+            }
             _ => return Err(format!("unknown prop `{}` on <TextArea>", key,)),
         }
+    }
+
+    if let (Some(start), Some(end)) = (source_text_start, source_text_end)
+        && start <= end
+    {
+        text_area.set_source_text_range(Some(start..end));
     }
 
     if let Some(style) = &style {
@@ -1177,15 +1213,30 @@ fn convert_text_area_element(
     text_area.set_style_width(width);
     text_area.set_style_height(height);
 
-    if binding.is_none() {
-        if text_content.is_empty() {
-            for child in &node.children {
-                match child {
-                    RsxNode::Text(content) => text_content.push_str(&content.content),
-                    _ => return Err("<TextArea> children must be text".to_string()),
+    for (child_index, child) in node.children.iter().enumerate() {
+        if let Some(projection) = convert_text_area_projection_child(
+            child,
+            path,
+            child_index,
+            inherited_text_style,
+        )? {
+            projection_nodes.push(projection);
+            continue;
+        }
+        if binding.is_none() && text_content.is_empty() {
+            match child {
+                RsxNode::Text(content) => text_content.push_str(&content.content),
+                RsxNode::Fragment(fragment) => {
+                    for nested in &fragment.children {
+                        append_text_children(&mut text_content, nested)?;
+                    }
                 }
+                _ => return Err("<TextArea> children must be text".to_string()),
             }
         }
+    }
+
+    if binding.is_none() {
         text_area.set_text(text_content);
     } else if let Some(bound) = binding.as_ref() {
         text_area.set_text(bound.get());
@@ -1194,10 +1245,127 @@ fn convert_text_area_element(
     if let Some(bound) = binding {
         text_area.bind_text(bound);
     }
+    if !projection_nodes.is_empty() {
+        text_area.set_render_projection_nodes(projection_nodes);
+    }
     if !placeholder.is_empty() {
         text_area.set_placeholder(placeholder);
     }
     Ok(Box::new(text_area))
+}
+
+fn convert_text_area_projection_child(
+    node: &RsxNode,
+    path: &[u64],
+    child_index: usize,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<Option<(std::ops::Range<usize>, Box<dyn ElementTrait>)>, String> {
+    let RsxNode::Element(element) = node else {
+        return Ok(None);
+    };
+    if element.tag != TEXT_AREA_PROJECTION_TAG {
+        return Ok(None);
+    }
+
+    let mut start = None;
+    let mut end = None;
+    for (key, value) in &element.props {
+        match key.as_str() {
+            "source_text_start" => start = as_usize(value, key)?,
+            "source_text_end" => end = as_usize(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <{}>", key, TEXT_AREA_PROJECTION_TAG)),
+        }
+    }
+
+    let (Some(start), Some(end)) = (start, end) else {
+        return Err("TextArea projection child requires source_text_start/source_text_end".to_string());
+    };
+
+    let fragment = RsxNode::fragment(element.children.clone());
+    let scope = [
+        path,
+        &[0x5458_5052, child_index as u64],
+    ]
+    .concat();
+    let mut children = rsx_to_elements_scoped_with_context(
+        &fragment,
+        &scope,
+        &projection_inherited_style_from_context(inherited_text_style),
+        0.0,
+        0.0,
+    )?;
+    let mut root = wrap_projection_children_for_adapter(path, child_index, &mut children)?;
+    apply_text_source_range_to_projection(root.as_mut(), start..end);
+    Ok(Some((start..end, root)))
+}
+
+fn projection_inherited_style_from_context(inherited_text_style: &InheritedTextStyle) -> Style {
+    let mut style = Style::new();
+    if !inherited_text_style.font_families.is_empty() {
+        style.insert(
+            PropertyId::FontFamily,
+            ParsedValue::FontFamily(crate::FontFamily::new(
+                inherited_text_style.font_families.clone(),
+            )),
+        );
+    }
+    if let Some(font_size) = inherited_text_style.font_size {
+        style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(crate::FontSize::px(font_size)),
+        );
+    }
+    if let Some(color) = inherited_text_style.color {
+        style.insert(PropertyId::Color, ParsedValue::Color(color.into()));
+    }
+    style
+}
+
+fn wrap_projection_children_for_adapter(
+    path: &[u64],
+    child_index: usize,
+    children: &mut Vec<Box<dyn ElementTrait>>,
+) -> Result<Box<dyn ElementTrait>, String> {
+    if children.is_empty() {
+        return Err("projection produced no elements".to_string());
+    }
+    if children.len() == 1 {
+        return Ok(children.remove(0));
+    }
+
+    let wrapper_id = stable_node_id_from_parts(
+        "TextAreaProjectionWrapper",
+        &[path, &[0x5458_5057, child_index as u64]].concat(),
+        None,
+    );
+    let mut wrapper = Element::new_with_id(wrapper_id, 0.0, 0.0, 0.0, 0.0);
+    wrapper.set_intrinsic_size_as_percent_base(false);
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::Layout,
+        ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+    );
+    style.insert(PropertyId::Width, ParsedValue::Auto);
+    style.insert(PropertyId::Height, ParsedValue::Auto);
+    wrapper.apply_style(style);
+    for child in children.drain(..) {
+        wrapper.add_child(child);
+    }
+    Ok(Box::new(wrapper))
+}
+
+fn apply_text_source_range_to_projection(
+    node: &mut dyn ElementTrait,
+    range: std::ops::Range<usize>,
+) {
+    if let Some(text_area) = node.as_any_mut().downcast_mut::<TextArea>() {
+        text_area.set_source_text_range(Some(range.clone()));
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            apply_text_source_range_to_projection(child.as_mut(), range.clone());
+        }
+    }
 }
 
 fn convert_image_element(

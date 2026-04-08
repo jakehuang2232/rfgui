@@ -40,11 +40,38 @@ fn animator_demo_keyframe<T: crate::rfgui::ColorLike>(
     style
 }
 
+fn projection_token_ranges(content: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = content.chars().collect();
+    let mut ranges = Vec::new();
+    let mut index = 0_usize;
+    while index + 1 < chars.len() {
+        if chars[index] == '{' && chars[index + 1] == '{' {
+            let start = index;
+            let mut cursor = index + 2;
+            while cursor + 1 < chars.len() {
+                if chars[cursor] == '}' && chars[cursor + 1] == '}' {
+                    ranges.push((start, cursor + 2));
+                    index = cursor + 2;
+                    break;
+                }
+                cursor += 1;
+            }
+            if cursor + 1 >= chars.len() {
+                break;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    ranges
+}
+
 #[component]
 pub fn RenderTest(theme: Theme) -> RsxNode {
     let click_count = use_state(|| 0_i32);
     let message =
         use_state(|| String::from("Line 1: multiline=true\nLine 2: keep editing\n中文字測試"));
+    let projection_text = use_state(|| String::from("{{API_HOST}}/user"));
     let transform_event_status = use_state(|| String::from("Move over the transform cards"));
     let justify_content = use_state(|| JustifyContent::Start);
     let align = use_state(|| Align::Start);
@@ -68,6 +95,9 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
     let transform_down = transform_event_status.binding();
     let transform_up = transform_event_status.binding();
     let transform_click = transform_event_status.binding();
+    let projection_badge_background = Color::hex("#233241");
+    let projection_badge_border = Color::hex("#42566f");
+    let projection_badge_text = Color::hex("#9fbdd9");
     let increment_state = click_count.clone();
     let increment = on_click(move |event| {
         increment_state.update(|value| *value += 1);
@@ -466,7 +496,7 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
             </Element>
             <Element style={{
                 width: Length::px(320.0),
-                height: Length::px(170.0),
+                height: Length::px(194.0),
                 background: theme.color.layer.raised.clone(),
                 border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
                 border_radius: theme.radius.lg,
@@ -483,6 +513,40 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                     multiline=false
                     Line breaks should become spaces
                 </TextArea>
+                <TextArea
+                    x=12
+                    y=132
+                    style={{
+                        width: Length::px(296.0),
+                        height: Length::px(28.0),
+                        color: theme.color.text.primary.clone(),
+                        background: theme.color.background.base.clone(),
+                        border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
+                        border_radius: theme.radius.md,
+                    }}
+                    binding={projection_text.binding()}
+                    multiline=false
+                    on_render={move |render: &mut rfgui::view::base_component::TextAreaRenderString| {
+                        for (start, end) in projection_token_ranges(render.content()) {
+                            let badge_background = projection_badge_background.clone();
+                            let badge_border = projection_badge_border.clone();
+                            let badge_text = projection_badge_text.clone();
+                            render.range(start..end, move |text_area_node| {
+                                rsx! {
+                                    <Element style={{
+                                        background: badge_background.clone(),
+                                        border: Border::uniform(Length::px(1.0), &badge_border),
+                                        border_radius: BorderRadius::uniform(Length::px(4.0)),
+                                        padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
+                                        color: badge_text.clone(),
+                                    }}>
+                                        {text_area_node}
+                                    </Element>
+                                }
+                            });
+                        }
+                    }}
+                />
             </Element>
             <Element style={{
                 width: Length::percent(100.0),

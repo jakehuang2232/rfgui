@@ -187,6 +187,10 @@ impl<'a> ViewportControl<'a> {
         self.viewport.set_debug_trace_render_time(enabled);
     }
 
+    pub fn set_debug_trace_compile_detail(&mut self, enabled: bool) {
+        self.viewport.set_debug_trace_compile_detail(enabled);
+    }
+
     pub fn set_debug_trace_reuse_path(&mut self, enabled: bool) {
         self.viewport.set_debug_trace_reuse_path(enabled);
     }
@@ -1726,6 +1730,14 @@ impl Viewport {
         self.debug_options.trace_render_time = enabled;
     }
 
+    pub fn debug_trace_compile_detail(&self) -> bool {
+        self.debug_options.trace_compile_detail
+    }
+
+    pub fn set_debug_trace_compile_detail(&mut self, enabled: bool) {
+        self.debug_options.trace_compile_detail = enabled;
+    }
+
     pub fn debug_trace_reuse_path(&self) -> bool {
         self.debug_options.trace_reuse_path
     }
@@ -2519,7 +2531,8 @@ impl Viewport {
         let compiled = match graph.compile_with_upload(self) {
             Ok(profile) => {
                 compile_elapsed_ms = profile.total_ms;
-                compile_children = build_compile_trace_nodes(&profile);
+                compile_children =
+                    build_compile_trace_nodes(&profile, self.debug_trace_compile_detail());
                 true
             }
             Err(err) => {

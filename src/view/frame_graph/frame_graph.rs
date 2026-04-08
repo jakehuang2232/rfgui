@@ -699,6 +699,19 @@ pub struct ExecuteProfile {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct CompileCountStat {
+    pub label: String,
+    pub count: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CompileDegreeStat {
+    pub pass_index: usize,
+    pub pass_name: String,
+    pub degree: usize,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct CompileGraphProfile {
     pub total_ms: f64,
     pub build_version_producers_ms: f64,
@@ -717,6 +730,17 @@ pub struct CompileGraphProfile {
     pub execution_step_count: usize,
     pub compiled_resource_count: usize,
     pub culled_pass_count: usize,
+    pub live_dependency_edge_count: usize,
+    pub graphics_pass_count: usize,
+    pub compute_pass_count: usize,
+    pub transfer_pass_count: usize,
+    pub graphics_step_count: usize,
+    pub graphics_group_count: usize,
+    pub max_graphics_group_size: usize,
+    pub pass_name_counts: Vec<CompileCountStat>,
+    pub versioned_resource_counts: Vec<CompileCountStat>,
+    pub top_indegree_passes: Vec<CompileDegreeStat>,
+    pub top_outdegree_passes: Vec<CompileDegreeStat>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1302,7 +1326,8 @@ impl FrameGraph {
             * 1000.0;
 
         let toposort_live_passes_started_at = Instant::now();
-        let ordered_passes = self.toposort_live_passes(&live_passes, &graph_edges, indegree)?;
+        let ordered_passes =
+            self.toposort_live_passes(&live_passes, &graph_edges, indegree.clone())?;
         let toposort_live_passes_ms =
             toposort_live_passes_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -1404,6 +1429,17 @@ impl FrameGraph {
             execution_step_count: compiled_graph.execution_plan.steps.len(),
             compiled_resource_count: compiled_graph.resources.len(),
             culled_pass_count: compiled_graph.culled_passes.len(),
+            live_dependency_edge_count: count_graph_edges(&graph_edges, &live_passes),
+            graphics_pass_count: count_live_passes_by_kind(self, &live_passes, PassKind::Graphics),
+            compute_pass_count: count_live_passes_by_kind(self, &live_passes, PassKind::Compute),
+            transfer_pass_count: count_live_passes_by_kind(self, &live_passes, PassKind::Transfer),
+            graphics_step_count: count_graphics_steps(&compiled_graph.execution_plan.steps),
+            graphics_group_count: count_graphics_groups(&compiled_graph.execution_plan.steps),
+            max_graphics_group_size: max_graphics_group_size(&compiled_graph.execution_plan.steps),
+            pass_name_counts: summarize_pass_name_counts(self, &live_passes, 8),
+            versioned_resource_counts: summarize_versioned_resource_counts(self, &live_passes, 8),
+            top_indegree_passes: summarize_degree_counts(self, &live_passes, &indegree, 5),
+            top_outdegree_passes: summarize_outdegree_counts(self, &live_passes, &graph_edges, 5),
         };
 
         Ok((compiled_graph, profile))
@@ -2013,6 +2049,13 @@ impl FrameGraph {
                 .unwrap_or_else(|| {
                     ResourceMetadata::transient(ResourceKind::Buffer, AllocationClass::Buffer)
                 }),
+        }
+    }
+
+    fn describe_resource_handle(&self, handle: ResourceHandle) -> String {
+        match handle {
+            ResourceHandle::Texture(texture) => format!("tex#{}", texture.0),
+            ResourceHandle::Buffer(buffer) => format!("buf#{}", buffer.0),
         }
     }
 
@@ -3735,6 +3778,165 @@ fn build_allocation_plan(
         texture_allocation_ids,
         buffer_allocation_ids,
     )
+}
+
+fn count_graph_edges(graph_edges: &[HashSet<usize>], live_passes: &HashSet<usize>) -> usize {
+    live_passes
+        .iter()
+        .map(|&index| graph_edges[index].len())
+        .sum()
+}
+
+fn count_live_passes_by_kind(
+    graph: &FrameGraph,
+    live_passes: &HashSet<usize>,
+    kind: PassKind,
+) -> usize {
+    live_passes
+        .iter()
+        .filter(|&&index| graph.passes[index].descriptor.kind == kind)
+        .count()
+}
+
+fn count_graphics_steps(steps: &[CompiledExecuteStep]) -> usize {
+    steps
+        .iter()
+        .filter(|step| {
+            matches!(
+                step,
+                CompiledExecuteStep::GraphicsPass { .. }
+                    | CompiledExecuteStep::GraphicsPassGroup(_)
+            )
+        })
+        .count()
+}
+
+fn count_graphics_groups(steps: &[CompiledExecuteStep]) -> usize {
+    steps
+        .iter()
+        .filter(|step| matches!(step, CompiledExecuteStep::GraphicsPassGroup(_)))
+        .count()
+}
+
+fn max_graphics_group_size(steps: &[CompiledExecuteStep]) -> usize {
+    steps
+        .iter()
+        .filter_map(|step| match step {
+            CompiledExecuteStep::GraphicsPassGroup(group) => Some(group.pass_indices.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn summarize_pass_name_counts(
+    graph: &FrameGraph,
+    live_passes: &HashSet<usize>,
+    limit: usize,
+) -> Vec<CompileCountStat> {
+    let mut counts = HashMap::<String, usize>::new();
+    for &index in live_passes {
+        *counts
+            .entry(graph.passes[index].descriptor.name.to_string())
+            .or_default() += 1;
+    }
+    sort_count_stats(counts, limit)
+}
+
+fn summarize_versioned_resource_counts(
+    graph: &FrameGraph,
+    live_passes: &HashSet<usize>,
+    limit: usize,
+) -> Vec<CompileCountStat> {
+    let mut counts = HashMap::<ResourceHandle, usize>::new();
+    for &index in live_passes {
+        for usage in &graph.passes[index].usages {
+            if usage.read_version.is_some() {
+                *counts.entry(usage.resource).or_default() += 1;
+            }
+            if usage.write_version.is_some() {
+                *counts.entry(usage.resource).or_default() += 1;
+            }
+        }
+    }
+
+    let mut items = counts
+        .into_iter()
+        .map(|(resource, count)| CompileCountStat {
+            label: graph.describe_resource_handle(resource),
+            count,
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    items.truncate(limit);
+    items
+}
+
+fn summarize_degree_counts(
+    graph: &FrameGraph,
+    live_passes: &HashSet<usize>,
+    indegree: &[usize],
+    limit: usize,
+) -> Vec<CompileDegreeStat> {
+    let mut items = live_passes
+        .iter()
+        .map(|&index| CompileDegreeStat {
+            pass_index: index,
+            pass_name: graph.passes[index].descriptor.name.to_string(),
+            degree: indegree[index],
+        })
+        .collect::<Vec<_>>();
+    sort_degree_stats(&mut items, limit);
+    items
+}
+
+fn summarize_outdegree_counts(
+    graph: &FrameGraph,
+    live_passes: &HashSet<usize>,
+    graph_edges: &[HashSet<usize>],
+    limit: usize,
+) -> Vec<CompileDegreeStat> {
+    let mut items = live_passes
+        .iter()
+        .map(|&index| CompileDegreeStat {
+            pass_index: index,
+            pass_name: graph.passes[index].descriptor.name.to_string(),
+            degree: graph_edges[index].len(),
+        })
+        .collect::<Vec<_>>();
+    sort_degree_stats(&mut items, limit);
+    items
+}
+
+fn sort_count_stats(counts: HashMap<String, usize>, limit: usize) -> Vec<CompileCountStat> {
+    let mut items = counts
+        .into_iter()
+        .map(|(label, count)| CompileCountStat { label, count })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    items.truncate(limit);
+    items
+}
+
+fn sort_degree_stats(items: &mut Vec<CompileDegreeStat>, limit: usize) {
+    items.sort_by(|left, right| {
+        right
+            .degree
+            .cmp(&left.degree)
+            .then_with(|| left.pass_name.cmp(&right.pass_name))
+            .then_with(|| left.pass_index.cmp(&right.pass_index))
+    });
+    items.truncate(limit);
 }
 
 pub trait FrameResourceContext {

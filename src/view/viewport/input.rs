@@ -29,6 +29,7 @@ pub enum MouseButton {
 pub struct ViewportDebugOptions {
     pub trace_fps: bool,
     pub trace_render_time: bool,
+    pub trace_compile_detail: bool,
     pub trace_reuse_path: bool,
     pub geometry_overlay: bool,
 }
@@ -38,6 +39,7 @@ impl ViewportDebugOptions {
         Self {
             trace_fps: std::env::var("RFGUI_TRACE_FPS").is_ok(),
             trace_render_time: std::env::var("RFGUI_TRACE_RENDER_TIME").is_ok(),
+            trace_compile_detail: std::env::var("RFGUI_TRACE_COMPILE_DETAIL").is_ok(),
             trace_reuse_path: std::env::var("RFGUI_TRACE_REUSE_PATH").is_ok(),
             geometry_overlay: std::env::var("RFGUI_DEBUG_GEOMETRY_OVERLAY").is_ok(),
         }
