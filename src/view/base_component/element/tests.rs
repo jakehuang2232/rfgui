@@ -4452,6 +4452,42 @@ mod tests {
     }
 
     #[test]
+    fn measure_recomputes_when_child_layout_dirty_under_same_proposal() {
+        let constraints = LayoutConstraints {
+            max_width: 240.0,
+            max_height: 120.0,
+            viewport_width: 240.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(120.0),
+        };
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+        );
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper.apply_style(wrapper_style);
+
+        wrapper.add_child(Box::new(Text::from_content("a")));
+        wrapper.measure(constraints);
+        let (before_width, _) = wrapper.measured_size();
+
+        let child = wrapper.children_mut().expect("children")[0]
+            .as_any_mut()
+            .downcast_mut::<Text>()
+            .expect("text child");
+        child.set_text("a much longer child");
+
+        wrapper.measure(constraints);
+        let (after_width, _) = wrapper.measured_size();
+        assert!(after_width > before_width + 1.0);
+    }
+
+    #[test]
     fn inline_fragmentable_element_does_not_overlap_trailing_text_across_widths() {
         for width in 140..=240 {
             let width = width as f32;

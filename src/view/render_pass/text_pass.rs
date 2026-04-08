@@ -23,7 +23,8 @@ pub struct TextPass {
     output: TextOutput,
 }
 
-pub struct TextPassParams {
+#[derive(Clone)]
+pub struct TextPassFragment {
     pub content: String,
     pub x: f32,
     pub y: f32,
@@ -31,15 +32,45 @@ pub struct TextPassParams {
     pub height: f32,
     pub color: [f32; 4],
     pub opacity: f32,
+    pub layout_buffer: Option<Buffer>,
+}
+
+pub struct TextPassParams {
+    pub fragments: Vec<TextPassFragment>,
     pub font_size: f32,
     pub line_height: f32,
     pub font_weight: u16,
     pub font_families: Vec<String>,
     pub align: Align,
     pub allow_wrap: bool,
-    pub layout_buffer: Option<Buffer>,
     pub scissor_rect: Option<[u32; 4]>,
     pub stencil_clip_id: Option<u8>,
+}
+
+impl TextPassParams {
+    pub fn single_fragment(
+        fragment: TextPassFragment,
+        font_size: f32,
+        line_height: f32,
+        font_weight: u16,
+        font_families: Vec<String>,
+        align: Align,
+        allow_wrap: bool,
+        scissor_rect: Option<[u32; 4]>,
+        stencil_clip_id: Option<u8>,
+    ) -> Self {
+        Self {
+            fragments: vec![fragment],
+            font_size,
+            line_height,
+            font_weight,
+            font_families,
+            align,
+            allow_wrap,
+            scissor_rect,
+            stencil_clip_id,
+        }
+    }
 }
 
 struct TextPreparedState {
@@ -91,14 +122,8 @@ impl TextPass {
     fn prepare_signature(&self, bounds: TextBounds, scale: f32, screen_size: (u32, u32)) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.params.content.hash(&mut hasher);
-        self.params.x.to_bits().hash(&mut hasher);
-        self.params.y.to_bits().hash(&mut hasher);
-        self.params.width.to_bits().hash(&mut hasher);
-        self.params.height.to_bits().hash(&mut hasher);
         self.params.font_size.to_bits().hash(&mut hasher);
         self.params.line_height.to_bits().hash(&mut hasher);
-        self.params.opacity.to_bits().hash(&mut hasher);
         self.params.font_weight.hash(&mut hasher);
         self.params.font_families.hash(&mut hasher);
         std::mem::discriminant(&self.params.align).hash(&mut hasher);
@@ -111,24 +136,17 @@ impl TextPass {
         bounds.top.hash(&mut hasher);
         bounds.right.hash(&mut hasher);
         bounds.bottom.hash(&mut hasher);
-        for channel in self.params.color {
-            channel.to_bits().hash(&mut hasher);
+        for fragment in &self.params.fragments {
+            fragment.content.hash(&mut hasher);
+            fragment.x.to_bits().hash(&mut hasher);
+            fragment.y.to_bits().hash(&mut hasher);
+            fragment.width.to_bits().hash(&mut hasher);
+            fragment.height.to_bits().hash(&mut hasher);
+            fragment.opacity.to_bits().hash(&mut hasher);
+            for channel in fragment.color {
+                channel.to_bits().hash(&mut hasher);
+            }
         }
-        hasher.finish()
-    }
-
-    fn layout_signature(&self, scale: f32) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.params.content.hash(&mut hasher);
-        (self.params.width * scale).to_bits().hash(&mut hasher);
-        (self.params.height * scale).to_bits().hash(&mut hasher);
-        (self.params.font_size * scale).to_bits().hash(&mut hasher);
-        self.params.line_height.to_bits().hash(&mut hasher);
-        self.params.font_weight.hash(&mut hasher);
-        self.params.font_families.hash(&mut hasher);
-        std::mem::discriminant(&self.params.align).hash(&mut hasher);
-        self.params.allow_wrap.hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -159,14 +177,7 @@ impl GraphicsPass for TextPass {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        if self.params.content.is_empty()
-            || self.params.width <= 0.0
-            || self.params.height <= 0.0
-            || !self.params.x.is_finite()
-            || !self.params.y.is_finite()
-            || !self.params.width.is_finite()
-            || !self.params.height.is_finite()
-        {
+        if self.params.fragments.is_empty() {
             return;
         }
 
@@ -199,60 +210,103 @@ impl GraphicsPass for TextPass {
         };
         with_text_resources(&device, &queue, format, |resources| {
             let glyphon_viewport = resources.take_viewport(&device, &queue, resolution);
+            let physical_scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
+                logical_scissor_to_target_physical(
+                    viewport,
+                    scissor_rect,
+                    target_origin,
+                    (screen_w, screen_h),
+                )
+            });
+            let mut resolved_buffers = vec![None; self.params.fragments.len()];
+            let mut resolved_bounds = vec![None; self.params.fragments.len()];
+            let mut combined_bounds: Option<TextBounds> = None;
 
-            let bounds = match resolve_text_bounds(
-                self.params.x * scale - target_origin.0 as f32
-                    + target_meta.logical_origin.0 as f32,
-                self.params.y * scale - target_origin.1 as f32
-                    + target_meta.logical_origin.1 as f32,
-                self.params.width * scale,
-                self.params.height * scale,
-                screen_w,
-                screen_h,
-                self.params.scissor_rect.and_then(|scissor_rect| {
-                    logical_scissor_to_target_physical(
-                        viewport,
-                        scissor_rect,
-                        target_origin,
-                        (screen_w, screen_h),
-                    )
-                }),
-            ) {
-                Some(bounds) => bounds,
-                None => {
-                    resources.put_viewport(resolution, glyphon_viewport);
-                    return;
+            for (index, fragment) in self.params.fragments.iter().enumerate() {
+                if fragment.content.is_empty()
+                    || fragment.width <= 0.0
+                    || fragment.height <= 0.0
+                    || !fragment.x.is_finite()
+                    || !fragment.y.is_finite()
+                    || !fragment.width.is_finite()
+                    || !fragment.height.is_finite()
+                {
+                    continue;
                 }
+                let bounds = match resolve_text_bounds(
+                    fragment.x * scale - target_origin.0 as f32
+                        + target_meta.logical_origin.0 as f32,
+                    fragment.y * scale - target_origin.1 as f32
+                        + target_meta.logical_origin.1 as f32,
+                    fragment.width * scale,
+                    fragment.height * scale,
+                    screen_w,
+                    screen_h,
+                    physical_scissor_rect,
+                ) {
+                    Some(bounds) => bounds,
+                    None => continue,
+                };
+                resolved_bounds[index] = Some(bounds);
+                combined_bounds = Some(match combined_bounds {
+                    Some(current) => TextBounds {
+                        left: current.left.min(bounds.left),
+                        top: current.top.min(bounds.top),
+                        right: current.right.max(bounds.right),
+                        bottom: current.bottom.max(bounds.bottom),
+                    },
+                    None => bounds,
+                });
+                if fragment.layout_buffer.is_none() {
+                    let layout_signature = single_fragment_layout_signature(
+                        fragment,
+                        scale,
+                        self.params.font_size,
+                        self.params.line_height,
+                        self.params.font_weight,
+                        self.params.font_families.as_slice(),
+                        self.params.align,
+                        self.params.allow_wrap,
+                    );
+                    resolved_buffers[index] = Some(resources.prepare_buffer_cached(
+                        layout_signature,
+                        fragment.content.as_str(),
+                        fragment.width * scale,
+                        fragment.height * scale,
+                        self.params.font_size * scale,
+                        self.params.line_height,
+                        self.params.font_weight,
+                        self.params.font_families.as_slice(),
+                        self.params.align,
+                        self.params.allow_wrap,
+                    ));
+                }
+            }
+            let Some(bounds) = combined_bounds else {
+                resources.put_viewport(resolution, glyphon_viewport);
+                return;
             };
             let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
-            let layout_signature = self.layout_signature(scale);
-            let owned_buffer;
-            let buffer = if let Some(buffer) = self.params.layout_buffer.as_ref() {
-                buffer
-            } else {
-                owned_buffer = resources.prepare_buffer_cached(
-                    layout_signature,
-                    self.params.content.as_str(),
-                    self.params.width * scale,
-                    self.params.height * scale,
-                    self.params.font_size * scale,
-                    self.params.line_height,
-                    self.params.font_weight,
-                    self.params.font_families.as_slice(),
-                    self.params.align,
-                    self.params.allow_wrap,
-                );
-                &owned_buffer
-            };
-            let text_area = build_text_area(
-                buffer,
-                self.params.x * scale - target_origin.0 as f32
-                    + target_meta.logical_origin.0 as f32,
-                self.params.y * scale - target_origin.1 as f32
-                    + target_meta.logical_origin.1 as f32,
-                bounds,
-                to_glyphon_color(self.params.color, self.params.opacity),
-            );
+            let mut text_areas = Vec::new();
+            for (index, fragment) in self.params.fragments.iter().enumerate() {
+                let Some(fragment_bounds) = resolved_bounds[index] else {
+                    continue;
+                };
+                let buffer = fragment
+                    .layout_buffer
+                    .as_ref()
+                    .or_else(|| resolved_buffers[index].as_ref())
+                    .expect("buffer should be resolved for visible text fragment");
+                text_areas.push(build_text_area(
+                    buffer,
+                    fragment.x * scale - target_origin.0 as f32
+                        + target_meta.logical_origin.0 as f32,
+                    fragment.y * scale - target_origin.1 as f32
+                        + target_meta.logical_origin.1 as f32,
+                    fragment_bounds,
+                    to_glyphon_color(fragment.color, fragment.opacity),
+                ));
+            }
             let renderer_key = TextRendererKey {
                 sample_count: output_sample_count,
                 stencil_enabled: self.input.pass_context.uses_depth_stencil,
@@ -281,17 +335,13 @@ impl GraphicsPass for TextPass {
             }
             if viewport.debug_geometry_overlay() {
                 let (overlay_w, overlay_h) = viewport.surface_size();
-                let overlay = build_text_debug_overlay(
-                    &buffer,
-                    self.params.x * scale - target_origin.0 as f32
-                        + target_meta.logical_origin.0 as f32,
-                    self.params.y * scale - target_origin.1 as f32
-                        + target_meta.logical_origin.1 as f32,
-                    bounds,
-                    [
-                        target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
-                        target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
-                    ],
+                let overlay = build_text_debug_overlay_multi(
+                    &self.params.fragments,
+                    &resolved_buffers,
+                    &resolved_bounds,
+                    scale,
+                    target_origin,
+                    target_meta.logical_origin,
                     overlay_w as f32,
                     overlay_h as f32,
                 );
@@ -334,7 +384,7 @@ impl GraphicsPass for TextPass {
                     font_system,
                     &mut resources.atlas,
                     &glyphon_viewport,
-                    vec![text_area],
+                    text_areas,
                     &mut resources.swash_cache,
                 )
             });
@@ -431,6 +481,30 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
             Some([left, top, right - left, bottom - top])
         }
     }
+}
+
+fn single_fragment_layout_signature(
+    fragment: &TextPassFragment,
+    scale: f32,
+    font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+    font_families: &[String],
+    align: Align,
+    allow_wrap: bool,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    fragment.content.hash(&mut hasher);
+    (fragment.width * scale).to_bits().hash(&mut hasher);
+    (fragment.height * scale).to_bits().hash(&mut hasher);
+    (font_size * scale).to_bits().hash(&mut hasher);
+    line_height.to_bits().hash(&mut hasher);
+    font_weight.hash(&mut hasher);
+    font_families.hash(&mut hasher);
+    std::mem::discriminant(&align).hash(&mut hasher);
+    allow_wrap.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn to_glyphon_color(color: [f32; 4], opacity: f32) -> GlyphonColor {
@@ -733,6 +807,52 @@ fn build_text_debug_overlay(
         }
     }
     TextDebugOverlay { vertices, indices }
+}
+
+fn build_text_debug_overlay_multi(
+    fragments: &[TextPassFragment],
+    resolved_buffers: &[Option<Buffer>],
+    resolved_bounds: &[Option<TextBounds>],
+    scale: f32,
+    target_origin: (u32, u32),
+    logical_origin: (u32, u32),
+    screen_w: f32,
+    screen_h: f32,
+) -> TextDebugOverlay {
+    let mut combined = TextDebugOverlay {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+    };
+    for (index, fragment) in fragments.iter().enumerate() {
+        let Some(bounds) = resolved_bounds[index] else {
+            continue;
+        };
+        let Some(buffer) = fragment
+            .layout_buffer
+            .as_ref()
+            .or_else(|| resolved_buffers[index].as_ref())
+        else {
+            continue;
+        };
+        let overlay = build_text_debug_overlay(
+            buffer,
+            fragment.x * scale - target_origin.0 as f32 + logical_origin.0 as f32,
+            fragment.y * scale - target_origin.1 as f32 + logical_origin.1 as f32,
+            bounds,
+            [
+                target_origin.0 as f32 - logical_origin.0 as f32,
+                target_origin.1 as f32 - logical_origin.1 as f32,
+            ],
+            screen_w,
+            screen_h,
+        );
+        let base = combined.vertices.len() as u32;
+        combined.vertices.extend(overlay.vertices);
+        combined
+            .indices
+            .extend(overlay.indices.into_iter().map(|index| index + base));
+    }
+    combined
 }
 
 fn append_text_debug_line_quad(

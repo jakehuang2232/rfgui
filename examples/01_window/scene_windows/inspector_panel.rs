@@ -9,6 +9,7 @@ pub struct InspectorPanelBindings {
     pub switch_on: Binding<bool>,
     pub debug_geometry_overlay: Binding<bool>,
     pub debug_render_time: Binding<bool>,
+    pub debug_compile_detail: Binding<bool>,
     pub debug_reuse_path: Binding<bool>,
     pub enable_layer_promotion: Binding<bool>,
 }
@@ -33,6 +34,10 @@ pub fn build(theme: &Theme, bindings: InspectorPanelBindings) -> RsxNode {
             <Switch
                 label="Debug Render Time"
                 binding={bindings.debug_render_time}
+            />
+            <Switch
+                label="Debug Compile Detail"
+                binding={bindings.debug_compile_detail}
             />
             <Switch
                 label="Debug Reuse Path"

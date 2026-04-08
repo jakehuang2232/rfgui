@@ -7,7 +7,7 @@ use crate::TextAlign;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
     MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
-    MouseUpHandlerProp, TextAreaFocusHandlerProp, TextChangeHandlerProp,
+    MouseUpHandlerProp, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp, TextChangeHandlerProp,
 };
 use std::any::{Any, TypeId};
 use std::fmt;
@@ -369,6 +369,7 @@ pub enum PropValue {
     OnBlur(BlurHandlerProp),
     OnTextAreaFocus(TextAreaFocusHandlerProp),
     OnChange(TextChangeHandlerProp),
+    OnTextAreaRender(TextAreaRenderHandlerProp),
     TextAlign(TextAlign),
     Shared(SharedPropValue),
 }
@@ -504,6 +505,12 @@ impl From<TextAreaFocusHandlerProp> for PropValue {
 impl From<TextChangeHandlerProp> for PropValue {
     fn from(value: TextChangeHandlerProp) -> Self {
         PropValue::OnChange(value)
+    }
+}
+
+impl From<TextAreaRenderHandlerProp> for PropValue {
+    fn from(value: TextAreaRenderHandlerProp) -> Self {
+        PropValue::OnTextAreaRender(value)
     }
 }
 
@@ -798,6 +805,15 @@ impl FromPropValue for TextChangeHandlerProp {
         match value {
             PropValue::OnChange(v) => Ok(v),
             _ => Err("expected change handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for TextAreaRenderHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnTextAreaRender(v) => Ok(v),
+            _ => Err("expected textarea render handler value".to_string()),
         }
     }
 }

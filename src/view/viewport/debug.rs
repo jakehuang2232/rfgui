@@ -159,8 +159,132 @@ pub(super) fn build_execute_detail_trace_nodes(
 
 pub(super) fn build_compile_trace_nodes(
     profile: &crate::view::frame_graph::CompileProfile,
+    show_detail: bool,
 ) -> Vec<TraceRenderNode> {
     let graph = &profile.graph;
+    let mut build_compiled_graph_children = vec![
+        TraceRenderNode::new("build_version_producers", graph.build_version_producers_ms),
+        TraceRenderNode::new(
+            "latest_resource_versions",
+            graph.latest_resource_versions_ms,
+        ),
+        TraceRenderNode::new(
+            format!("discover_sink_passes (count={})", graph.sink_pass_count),
+            graph.discover_sink_passes_ms,
+        ),
+        TraceRenderNode::new("discover_live_passes", graph.discover_live_passes_ms),
+        TraceRenderNode::new(
+            "build_live_dependency_graph",
+            graph.build_live_dependency_graph_ms,
+        ),
+        TraceRenderNode::new("toposort_live_passes", graph.toposort_live_passes_ms),
+        TraceRenderNode::new("build_execution_plan", graph.build_execution_plan_ms),
+        TraceRenderNode::new(
+            "build_resource_state_timelines",
+            graph.build_resource_state_timelines_ms,
+        ),
+        TraceRenderNode::new(
+            "build_compiled_resources",
+            graph.build_compiled_resources_ms,
+        ),
+        TraceRenderNode::new(
+            "assemble_compiled_passes",
+            graph.assemble_compiled_passes_ms,
+        ),
+    ];
+
+    if show_detail {
+        build_compiled_graph_children.push(TraceRenderNode::with_children(
+            format!(
+                "pass_kinds (graphics={}, compute={}, transfer={})",
+                graph.graphics_pass_count, graph.compute_pass_count, graph.transfer_pass_count,
+            ),
+            0.0,
+            Vec::new(),
+        ));
+        build_compiled_graph_children.push(TraceRenderNode::with_children(
+            format!(
+                "dependency_graph (edges={}, max_in={}, max_out={})",
+                graph.live_dependency_edge_count,
+                graph
+                    .top_indegree_passes
+                    .first()
+                    .map(|stat| stat.degree)
+                    .unwrap_or(0),
+                graph
+                    .top_outdegree_passes
+                    .first()
+                    .map(|stat| stat.degree)
+                    .unwrap_or(0),
+            ),
+            0.0,
+            vec![
+                TraceRenderNode::with_children(
+                    "top_indegree",
+                    0.0,
+                    graph
+                        .top_indegree_passes
+                        .iter()
+                        .map(|stat| {
+                            TraceRenderNode::new(
+                                format!(
+                                    "{}#{} (indegree={})",
+                                    stat.pass_name, stat.pass_index, stat.degree
+                                ),
+                                0.0,
+                            )
+                        })
+                        .collect(),
+                ),
+                TraceRenderNode::with_children(
+                    "top_outdegree",
+                    0.0,
+                    graph
+                        .top_outdegree_passes
+                        .iter()
+                        .map(|stat| {
+                            TraceRenderNode::new(
+                                format!(
+                                    "{}#{} (outdegree={})",
+                                    stat.pass_name, stat.pass_index, stat.degree
+                                ),
+                                0.0,
+                            )
+                        })
+                        .collect(),
+                ),
+            ],
+        ));
+        build_compiled_graph_children.push(TraceRenderNode::with_children(
+            format!(
+                "execution_steps (graphics={}, groups={}, max_group_size={})",
+                graph.graphics_step_count,
+                graph.graphics_group_count,
+                graph.max_graphics_group_size,
+            ),
+            0.0,
+            Vec::new(),
+        ));
+        build_compiled_graph_children.push(TraceRenderNode::with_children(
+            "pass_name_top",
+            0.0,
+            graph
+                .pass_name_counts
+                .iter()
+                .map(|stat| TraceRenderNode::new(format!("{} ({})", stat.label, stat.count), 0.0))
+                .collect(),
+        ));
+        build_compiled_graph_children.push(TraceRenderNode::with_children(
+            "resource_versions_top",
+            0.0,
+            graph
+                .versioned_resource_counts
+                .iter()
+                .map(|stat| TraceRenderNode::new(format!("{} ({})", stat.label, stat.count), 0.0))
+                .collect(),
+        ));
+    }
+
     vec![
         TraceRenderNode::new(
             format!("setup_passes (passes={})", profile.setup_pass_count),
@@ -180,36 +304,7 @@ pub(super) fn build_compile_trace_nodes(
                 graph.culled_pass_count,
             ),
             profile.build_compiled_graph_ms,
-            vec![
-                TraceRenderNode::new("build_version_producers", graph.build_version_producers_ms),
-                TraceRenderNode::new(
-                    "latest_resource_versions",
-                    graph.latest_resource_versions_ms,
-                ),
-                TraceRenderNode::new(
-                    format!("discover_sink_passes (count={})", graph.sink_pass_count),
-                    graph.discover_sink_passes_ms,
-                ),
-                TraceRenderNode::new("discover_live_passes", graph.discover_live_passes_ms),
-                TraceRenderNode::new(
-                    "build_live_dependency_graph",
-                    graph.build_live_dependency_graph_ms,
-                ),
-                TraceRenderNode::new("toposort_live_passes", graph.toposort_live_passes_ms),
-                TraceRenderNode::new("build_execution_plan", graph.build_execution_plan_ms),
-                TraceRenderNode::new(
-                    "build_resource_state_timelines",
-                    graph.build_resource_state_timelines_ms,
-                ),
-                TraceRenderNode::new(
-                    "build_compiled_resources",
-                    graph.build_compiled_resources_ms,
-                ),
-                TraceRenderNode::new(
-                    "assemble_compiled_passes",
-                    graph.assemble_compiled_passes_ms,
-                ),
-            ],
+            build_compiled_graph_children,
         ),
         TraceRenderNode::new(
             format!("prepare_upload (passes={})", profile.prepare_pass_count),

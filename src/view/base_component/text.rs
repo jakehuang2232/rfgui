@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
-use crate::view::render_pass::text_pass::TextPassParams;
 use crate::view::render_pass::text_pass::{TextInput, TextOutput};
+use crate::view::render_pass::text_pass::{TextPassFragment, TextPassParams};
 use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
 use crate::{ColorLike, Cursor, HexColor, Style, TextAlign, TextWrap};
 use glyphon::cosmic_text::Align;
@@ -353,6 +353,7 @@ fn tokenize_inline_content(content: &str) -> Vec<String> {
                 current.push(ch);
             }
             Some(false) => {
+                tokens.push(std::mem::take(&mut current));
                 current.push(ch);
                 current_kind = Some(true);
             }
@@ -1014,70 +1015,57 @@ impl Renderable for Text {
             .iter()
             .filter(|fragment| fragment.position.is_some() && !fragment.content.is_empty())
             .collect::<Vec<_>>();
-        if inline_fragments.is_empty() {
-            let pass = TextPass::new(
-                TextPassParams {
-                    content: self.content.clone(),
-                    x: self.layout_position.x,
-                    y: self.layout_position.y,
-                    width: self.layout_size.width,
-                    height: self.layout_size.height,
-                    color: self.color.to_rgba_f32(),
-                    opacity,
-                    font_size: self.font_size,
-                    line_height: self.line_height,
-                    font_weight: self.font_weight,
-                    font_families: self.font_families.clone(),
-                    align: self.align,
-                    allow_wrap: self.allow_wrap,
-                    layout_buffer: None,
-                    scissor_rect: None,
-                    stencil_clip_id: None,
-                },
-                TextInput {
-                    pass_context: ctx.graphics_pass_context(),
-                },
-                TextOutput {
-                    render_target: input_target,
-                    ..Default::default()
-                },
-            );
-            graph.add_graphics_pass(pass);
+        let has_inline_fragments = !inline_fragments.is_empty();
+        let fragments = if !has_inline_fragments {
+            vec![TextPassFragment {
+                content: self.content.clone(),
+                x: self.layout_position.x,
+                y: self.layout_position.y,
+                width: self.layout_size.width,
+                height: self.layout_size.height,
+                color: self.color.to_rgba_f32(),
+                opacity,
+                layout_buffer: None,
+            }]
         } else {
-            for fragment in inline_fragments {
-                let position = fragment.position.expect("filtered above");
-                let fragment_bounds_width =
-                    self.layout_size.width.max(fragment.width).max(1.0) + 4.0;
-                let pass = TextPass::new(
-                    TextPassParams {
+            inline_fragments
+                .into_iter()
+                .map(|fragment| {
+                    let position = fragment.position.expect("filtered above");
+                    TextPassFragment {
                         content: fragment.content.clone(),
                         x: position.x,
                         y: position.y,
-                        width: fragment_bounds_width,
+                        width: fragment.width.max(1.0),
                         height: fragment.height.max(1.0),
                         color: self.color.to_rgba_f32(),
                         opacity,
-                        font_size: self.font_size,
-                        line_height: self.line_height,
-                        font_weight: self.font_weight,
-                        font_families: self.font_families.clone(),
-                        align: self.align,
-                        allow_wrap: false,
                         layout_buffer: None,
-                        scissor_rect: None,
-                        stencil_clip_id: None,
-                    },
-                    TextInput {
-                        pass_context: ctx.graphics_pass_context(),
-                    },
-                    TextOutput {
-                        render_target: input_target,
-                        ..Default::default()
-                    },
-                );
-                graph.add_graphics_pass(pass);
-            }
-        }
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let pass = TextPass::new(
+            TextPassParams {
+                fragments,
+                font_size: self.font_size,
+                line_height: self.line_height,
+                font_weight: self.font_weight,
+                font_families: self.font_families.clone(),
+                align: self.align,
+                allow_wrap: !has_inline_fragments && self.allow_wrap,
+                scissor_rect: None,
+                stencil_clip_id: None,
+            },
+            TextInput {
+                pass_context: ctx.graphics_pass_context(),
+            },
+            TextOutput {
+                render_target: input_target,
+                ..Default::default()
+            },
+        );
+        graph.add_graphics_pass(pass);
         ctx.set_current_target(input_target);
         ctx.into_state()
     }

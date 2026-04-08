@@ -3,6 +3,7 @@
 //! Event payloads and handler prop types used by the retained UI runtime.
 
 use crate::Cursor;
+use crate::view::base_component::TextAreaRenderString;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -477,6 +478,12 @@ pub struct TextChangeHandlerProp {
     handler: Rc<RefCell<dyn FnMut(&mut TextChangeEvent)>>,
 }
 
+#[derive(Clone)]
+pub struct TextAreaRenderHandlerProp {
+    id: u64,
+    handler: Rc<RefCell<dyn FnMut(&mut TextAreaRenderString)>>,
+}
+
 pub struct NoArgHandler<F>(F);
 
 pub fn no_arg_handler<F>(handler: F) -> NoArgHandler<F> {
@@ -589,6 +596,7 @@ impl_handler_prop!(FocusHandlerProp, FocusEvent);
 impl_handler_prop!(BlurHandlerProp, BlurEvent);
 impl_handler_prop!(TextAreaFocusHandlerProp, TextAreaFocusEvent);
 impl_handler_prop!(TextChangeHandlerProp, TextChangeEvent);
+impl_handler_prop!(TextAreaRenderHandlerProp, TextAreaRenderString);
 
 impl_into_event_handler_prop!(
     MouseDownHandlerProp,
@@ -625,6 +633,11 @@ impl_into_event_handler_prop!(
     TextChangeHandlerProp,
     TextChangeEvent,
     into_text_change_handler
+);
+impl_into_event_handler_prop!(
+    TextAreaRenderHandlerProp,
+    TextAreaRenderString,
+    into_text_area_render_handler
 );
 
 pub fn on_mouse_down<F>(handler: F) -> MouseDownHandlerProp
@@ -709,4 +722,11 @@ where
     F: FnMut(&mut TextChangeEvent) + 'static,
 {
     TextChangeHandlerProp::new(handler)
+}
+
+pub fn on_text_area_render<F>(handler: F) -> TextAreaRenderHandlerProp
+where
+    F: FnMut(&mut TextAreaRenderString) + 'static,
+{
+    TextAreaRenderHandlerProp::new(handler)
 }
