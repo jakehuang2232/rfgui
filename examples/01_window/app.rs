@@ -1090,7 +1090,7 @@ fn run_web() {
                     let key = event.key();
                     let code = event.code();
                     viewport.set_key_pressed(key.clone(), true);
-                    viewport.dispatch_key_down_event(key.clone(), code, event.repeat());
+                    viewport.dispatch_key_down_event(key.clone(), code.clone(), event.repeat());
                     if !ime_composing && should_dispatch_web_keyboard_text(viewport, &key, &code) {
                         viewport.dispatch_text_input_event(key);
                     }
