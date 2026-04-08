@@ -496,7 +496,6 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
             </Element>
             <Element style={{
                 width: Length::px(320.0),
-                height: Length::px(194.0),
                 background: theme.color.layer.raised.clone(),
                 border: Border::uniform(Length::px(3.0), theme.color.primary.base.as_ref()),
                 border_radius: theme.radius.lg,
@@ -508,14 +507,12 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                 <Text>
                     {format!("Bound chars: {}", message.get().chars().count())}
                 </Text>
-                <TextArea x=12 y=34 style={{ width: Length::px(296.0), height: Length::px(78.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
-                <TextArea x=12 y=98 style={{ width: Length::px(296.0), height: Length::px(26.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=false read_only=true>
+                <TextArea style={{ width: Length::px(296.0), height: Length::px(78.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=true placeholder="Please enter multiline content..." binding={message.binding()} />
+                <TextArea style={{ width: Length::px(296.0), height: Length::px(26.0), color: theme.color.text.primary.clone() }} font_size=13 multiline=false read_only=true>
                     multiline=false
                     Line breaks should become spaces
                 </TextArea>
                 <TextArea
-                    x=12
-                    y=132
                     style={{
                         width: Length::px(296.0),
                         height: Length::px(28.0),

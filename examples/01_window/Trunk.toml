@@ -6,4 +6,4 @@ minify = "never"
 public_url = "/rfgui/"
 
 [tools]
-wasm_bindgen = "0.2.108"
+wasm_bindgen = "0.2.117"
