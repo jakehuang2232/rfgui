@@ -1411,11 +1411,11 @@ pub fn build(theme: &Theme) -> RsxNode {
     <Element>cfg-if 1.0.4</Element>
     <Element>js-sys 0.3.85</Element>
     <Element>pkg-config 0.3.32</Element>
-    <Element>wasm-bindgen-futures 0.4.58</Element>
-    <Element>wasm-bindgen-macro-support 0.2.108</Element>
-    <Element>wasm-bindgen-macro 0.2.108</Element>
-    <Element>wasm-bindgen-shared 0.2.108</Element>
-    <Element>wasm-bindgen 0.2.108</Element>
+    <Element>wasm-bindgen-futures 0.4.67</Element>
+    <Element>wasm-bindgen-macro-support 0.2.117</Element>
+    <Element>wasm-bindgen-macro 0.2.117</Element>
+    <Element>wasm-bindgen-shared 0.2.117</Element>
+    <Element>wasm-bindgen 0.2.117</Element>
     <Element>web-sys 0.3.85</Element>
 
     <Element>

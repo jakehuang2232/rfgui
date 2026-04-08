@@ -18,6 +18,8 @@ use crate::state::{
 use crate::utils::current_unix_timestamp;
 use crate::utils::{app_background_color, should_dispatch_keyboard_text};
 #[cfg(target_arch = "wasm32")]
+use crate::utils::should_dispatch_web_keyboard_text;
+#[cfg(target_arch = "wasm32")]
 use js_sys::Promise;
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
@@ -1089,7 +1091,7 @@ fn run_web() {
                     let code = event.code();
                     viewport.set_key_pressed(key.clone(), true);
                     viewport.dispatch_key_down_event(key.clone(), code, event.repeat());
-                    if !ime_composing && should_dispatch_keyboard_text(viewport, &key) {
+                    if !ime_composing && should_dispatch_web_keyboard_text(viewport, &key, &code) {
                         viewport.dispatch_text_input_event(key);
                     }
                 });
@@ -1098,6 +1100,7 @@ fn run_web() {
             if should_schedule {
                 web_schedule_redraw(&window, &raf_pending, &raf_callback_ref);
             }
+            event.prevent_default();
         }) as Box<dyn FnMut(web_sys::Event)>);
         let _ =
             canvas.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
@@ -1127,6 +1130,7 @@ fn run_web() {
             if should_schedule {
                 web_schedule_redraw(&window, &raf_pending, &raf_callback_ref);
             }
+            event.prevent_default();
         }) as Box<dyn FnMut(web_sys::Event)>);
         let _ = canvas.add_event_listener_with_callback("keyup", closure.as_ref().unchecked_ref());
         closure.forget();
