@@ -3668,6 +3668,65 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_restore_reconciles_stale_layout_override_without_runtime_track() {
+        let mut original = Element::new(0.0, 0.0, 180.0, 58.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
+        style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Width,
+                180,
+            ))),
+        );
+        original.apply_style(style.clone());
+        original.layout_transition_override_width = Some(34.0);
+        original.layout_transition_target_width = Some(180.0);
+        original.layout_assigned_width = Some(180.0);
+
+        let snapshot = original.snapshot_state().expect("snapshot should exist");
+
+        let mut rebuilt = Element::new(0.0, 0.0, 180.0, 58.0);
+        rebuilt.apply_style(style);
+        assert!(rebuilt.restore_state(snapshot.as_ref()));
+
+        let mut roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(rebuilt)];
+        assert!(crate::view::base_component::reconcile_transition_runtime_state(
+            &mut roots,
+            &HashMap::new(),
+        ));
+        let rebuilt = roots[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("rebuilt element");
+
+        rebuilt.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        rebuilt.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        assert_eq!(rebuilt.box_model_snapshot().width, 180.0);
+        assert_eq!(rebuilt.layout_transition_override_width, None);
+        assert_eq!(rebuilt.layout_transition_target_width, None);
+    }
+
+    #[test]
     fn transform_style_sample_updates_element_transform_matrix() {
         let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
         let node_id = el.id();

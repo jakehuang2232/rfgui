@@ -505,6 +505,125 @@ mod tests {
         );
     }
 
+    #[test]
+    fn switch_checked_layout_stays_stable_across_forced_rebuild() {
+        let first = rsx! {
+            <Switch
+                label="Dark mode"
+                checked={Some(true)}
+            />
+        };
+        let second = rsx! {
+            <Switch
+                label="Dark mode"
+                checked={Some(true)}
+            />
+        };
+
+        fn save_snapshots(
+            nodes: &[Box<dyn rfgui::view::base_component::ElementTrait>],
+            out: &mut std::collections::HashMap<u64, Box<dyn std::any::Any>>,
+        ) {
+            for node in nodes {
+                if let Some(snapshot) = node.snapshot_state() {
+                    out.insert(node.id(), snapshot);
+                }
+                if let Some(children) = node.children() {
+                    save_snapshots(children, out);
+                }
+            }
+        }
+
+        fn restore_snapshots(
+            nodes: &mut [Box<dyn rfgui::view::base_component::ElementTrait>],
+            snapshots: &std::collections::HashMap<u64, Box<dyn std::any::Any>>,
+        ) {
+            for node in nodes {
+                if let Some(snapshot) = snapshots.get(&node.id()) {
+                    let _ = node.restore_state(snapshot.as_ref());
+                }
+                if let Some(children) = node.children_mut() {
+                    restore_snapshots(children, snapshots);
+                }
+            }
+        }
+
+        fn measure_and_place(
+            nodes: &mut [Box<dyn rfgui::view::base_component::ElementTrait>],
+        ) -> Vec<(f32, f32, f32, f32, bool)> {
+            let mut out = Vec::new();
+            for node in nodes.iter_mut() {
+                node.measure(rfgui::view::base_component::LayoutConstraints {
+                    max_width: 320.0,
+                    max_height: 120.0,
+                    viewport_width: 320.0,
+                    viewport_height: 120.0,
+                    percent_base_width: Some(320.0),
+                    percent_base_height: Some(120.0),
+                });
+                node.place(rfgui::view::base_component::LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 320.0,
+                    available_height: 120.0,
+                    viewport_width: 320.0,
+                    viewport_height: 120.0,
+                    percent_base_width: Some(320.0),
+                    percent_base_height: Some(120.0),
+                });
+                fn walk(
+                    node: &dyn rfgui::view::base_component::ElementTrait,
+                    out: &mut Vec<(f32, f32, f32, f32, bool)>,
+                ) {
+                    let snapshot = node.box_model_snapshot();
+                    out.push((
+                        snapshot.x,
+                        snapshot.y,
+                        snapshot.width,
+                        snapshot.height,
+                        snapshot.should_render,
+                    ));
+                    if let Some(children) = node.children() {
+                        for child in children {
+                            walk(child.as_ref(), out);
+                        }
+                    }
+                }
+                walk(node.as_ref(), &mut out);
+            }
+            out
+        }
+
+        let mut first_roots = rfgui::rsx_to_elements(&first).expect("convert first switch");
+        let first_boxes = measure_and_place(&mut first_roots);
+        let mut snapshots = std::collections::HashMap::<u64, Box<dyn std::any::Any>>::new();
+        save_snapshots(&first_roots, &mut snapshots);
+
+        let mut second_roots = rfgui::rsx_to_elements(&second).expect("convert rebuilt switch");
+        restore_snapshots(&mut second_roots, &snapshots);
+        let second_boxes = measure_and_place(&mut second_roots);
+
+        assert_eq!(first_boxes, second_boxes, "switch boxes changed after rebuild");
+        assert!(
+            second_boxes.iter().any(|(_, _, width, height, _)| {
+                (*width - 44.0).abs() < 0.01 && (*height - 18.0).abs() < 0.01
+            }),
+            "expected switch track box in {second_boxes:?}"
+        );
+        let child_twenty_count = second_boxes
+            .iter()
+            .filter(|(_, _, width, height, _)| {
+                (*width - 20.0).abs() < 0.01 && (*height - 14.0).abs() < 0.01
+            })
+            .count();
+        assert!(
+            child_twenty_count >= 2,
+            "expected checked switch spacer + thumb boxes in {second_boxes:?}"
+        );
+    }
+
     fn collect_text_boxes(
         node: &dyn rfgui::view::base_component::ElementTrait,
         out: &mut Vec<(f32, f32)>,
