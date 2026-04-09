@@ -21,6 +21,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::{Bound, Range, RangeBounds};
 
 use crate::ui::Binding;
+use crate::ui::PropValue;
 use crate::ui::RsxNode;
 use crate::view::promotion::PromotionNodeInfo;
 
@@ -82,14 +83,14 @@ impl TextAreaRenderString {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 enum TextAreaRenderFragmentKind {
     Text(String),
     Preedit(String),
     Projection(usize),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct TextAreaRenderFragment {
     source_range: Range<usize>,
     kind: TextAreaRenderFragmentKind,
@@ -97,6 +98,7 @@ struct TextAreaRenderFragment {
     content_y: f32,
     width: f32,
     height: f32,
+    layout_buffer: Option<GlyphBuffer>,
 }
 
 struct TextAreaProjectionNode {
@@ -1168,6 +1170,38 @@ impl TextArea {
             return 0.0;
         }
 
+        if let Some(buffer) = fragment.layout_buffer.as_ref() {
+            let mut buffer = buffer.clone();
+            let local_char = cursor_char.clamp(start, end).saturating_sub(start);
+            let text = match &fragment.kind {
+                TextAreaRenderFragmentKind::Text(text)
+                | TextAreaRenderFragmentKind::Preedit(text) => text.as_str(),
+                TextAreaRenderFragmentKind::Projection(_) => "",
+            };
+            let caret_byte = byte_index_at_char(text, local_char.min(text.chars().count()));
+            let (cursor_line, cursor_index) = line_and_index_from_byte(text, caret_byte);
+            for affinity in [Affinity::Before, Affinity::After] {
+                let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
+                let Some(layout_cursor) = Self::with_shared_font_system(|font_system| {
+                    buffer.layout_cursor(font_system, cursor)
+                }) else {
+                    continue;
+                };
+                if layout_cursor.line != cursor_line {
+                    continue;
+                }
+                if let Some(run) = find_layout_run_by_line_layout(
+                    &buffer,
+                    layout_cursor.line,
+                    layout_cursor.layout,
+                ) && let Some(x) = caret_x_in_layout_run(cursor_index, &run)
+                {
+                    let scale = self.glyph_cache_scale_factor.max(0.0001);
+                    return x / scale;
+                }
+            }
+        }
+
         let clamped = cursor_char.clamp(start, end);
         let chars: Vec<char> = self.content.chars().collect();
         let mut offset = 0.0_f32;
@@ -1471,13 +1505,15 @@ impl TextArea {
         let mut render_string = TextAreaRenderString::new(self.content.clone());
         handler.call(&mut render_string);
 
-        let mut next_nodes = Vec::with_capacity(render_string.projections().len());
+        let projections = normalize_text_area_render_projections(
+            self.content.as_str(),
+            render_string.projections(),
+        );
+        let mut next_nodes = Vec::with_capacity(projections.len());
         let mut next_fragments = Vec::new();
-        let mut projections = render_string.projections().to_vec();
-        projections.sort_by_key(|projection| projection.range.start);
 
         let mut cursor = 0_usize;
-        for (index, projection) in render_string.projections().iter().enumerate() {
+        for (index, projection) in projections.iter().enumerate() {
             let mut root = match self.build_projection_root(index, &projection.node) {
                 Ok(root) => root,
                 Err(_error) => continue,
@@ -1486,7 +1522,7 @@ impl TextArea {
             apply_text_source_range(root.as_mut(), projection.range.clone());
             next_nodes.push(root);
         }
-        for projection in projections {
+        for (projection_index, projection) in projections.iter().enumerate() {
             if cursor < projection.range.start {
                 append_plain_render_fragments(
                     &mut next_fragments,
@@ -1495,20 +1531,15 @@ impl TextArea {
                     projection.range.start,
                 );
             }
-            if let Some(node_index) = render_string
-                .projections()
-                .iter()
-                .position(|candidate| candidate == &projection)
-            {
-                next_fragments.push(TextAreaRenderFragment {
-                    source_range: projection.range.clone(),
-                    kind: TextAreaRenderFragmentKind::Projection(node_index),
-                    content_x: 0.0,
-                    content_y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                });
-            }
+            next_fragments.push(TextAreaRenderFragment {
+                source_range: projection.range.clone(),
+                kind: TextAreaRenderFragmentKind::Projection(projection_index),
+                content_x: 0.0,
+                content_y: 0.0,
+                width: 0.0,
+                height: 0.0,
+                layout_buffer: None,
+            });
             cursor = projection.range.end;
         }
         if cursor < self.content.chars().count() {
@@ -1522,7 +1553,7 @@ impl TextArea {
 
         self.render_nodes = next_nodes
             .into_iter()
-            .zip(render_string.projections().iter())
+            .zip(projections.iter())
             .map(|(node, projection)| TextAreaProjectionNode {
                 range: projection.range.clone(),
                 node,
@@ -1581,6 +1612,7 @@ impl TextArea {
                     content_y: 0.0,
                     width: 0.0,
                     height: 0.0,
+                    layout_buffer: None,
                 });
             }
             cursor = projection.end;
@@ -1740,6 +1772,7 @@ impl TextArea {
         let font_size = self.font_size;
         let line_height_ratio = self.line_height;
         let font_families = self.font_families.clone();
+        let scale = self.glyph_cache_scale_factor.max(0.0001);
         let mut cursor_x = 0.0_f32;
         let mut cursor_y = 0.0_f32;
         let mut line_height = line_height_px;
@@ -1747,14 +1780,20 @@ impl TextArea {
         for fragment in &mut self.render_fragments {
             let (fragment_width, fragment_height) = match &fragment.kind {
                 TextAreaRenderFragmentKind::Text(text)
-                | TextAreaRenderFragmentKind::Preedit(text) =>
-                    Self::measure_render_text_run_with_style(
+                | TextAreaRenderFragmentKind::Preedit(text) => {
+                    let buffer = Self::build_render_text_buffer_with_style(
                         text.as_str(),
                         font_size,
                         line_height_ratio,
                         &font_families,
-                    ),
+                        scale,
+                    );
+                    let measured = measure_buffer_size(&buffer);
+                    fragment.layout_buffer = Some(buffer);
+                    (measured.0 / scale, measured.1 / scale)
+                }
                 TextAreaRenderFragmentKind::Projection(index) => {
+                    fragment.layout_buffer = None;
                     let Some(node) = self.render_nodes.get_mut(*index) else {
                         continue;
                     };
@@ -1957,6 +1996,29 @@ impl TextArea {
                 font_families,
             );
             measure_buffer_size(&buffer)
+        })
+    }
+
+    fn build_render_text_buffer_with_style(
+        text: &str,
+        font_size: f32,
+        line_height: f32,
+        font_families: &[String],
+        scale: f32,
+    ) -> GlyphBuffer {
+        Self::with_shared_font_system(|font_system| {
+            build_text_buffer(
+                font_system,
+                text,
+                None,
+                None,
+                false,
+                font_size * scale,
+                line_height,
+                400,
+                Align::Left,
+                font_families,
+            )
         })
     }
 
@@ -3264,6 +3326,7 @@ fn append_plain_render_fragments(
         content_y: 0.0,
         width: 0.0,
         height: 0.0,
+        layout_buffer: None,
     });
 }
 
@@ -3282,7 +3345,100 @@ fn append_preedit_render_fragment(
         content_y: 0.0,
         width: 0.0,
         height: 0.0,
+        layout_buffer: None,
     });
+}
+
+fn normalize_text_area_render_projections(
+    content: &str,
+    projections: &[TextAreaRenderProjection],
+) -> Vec<TextAreaRenderProjection> {
+    let mut sorted = projections.to_vec();
+    sorted.sort_by_key(|projection| projection.range.start);
+
+    let mut normalized: Vec<TextAreaRenderProjection> = Vec::new();
+    for projection in sorted {
+        let mut next = Vec::new();
+        for existing in normalized {
+            next.extend(subtract_projection_overlap(content, existing, &projection.range));
+        }
+        next.push(slice_text_area_render_projection(
+            content,
+            &projection,
+            projection.range.clone(),
+        ));
+        normalized = next;
+    }
+    normalized.sort_by_key(|projection| projection.range.start);
+    normalized
+}
+
+fn subtract_projection_overlap(
+    content: &str,
+    projection: TextAreaRenderProjection,
+    covering_range: &Range<usize>,
+) -> Vec<TextAreaRenderProjection> {
+    if covering_range.end <= projection.range.start || covering_range.start >= projection.range.end {
+        return vec![projection];
+    }
+
+    let mut fragments = Vec::new();
+    if projection.range.start < covering_range.start {
+        fragments.push(slice_text_area_render_projection(
+            content,
+            &projection,
+            projection.range.start..covering_range.start.min(projection.range.end),
+        ));
+    }
+    if projection.range.end > covering_range.end {
+        fragments.push(slice_text_area_render_projection(
+            content,
+            &projection,
+            covering_range.end.max(projection.range.start)..projection.range.end,
+        ));
+    }
+    fragments
+}
+
+fn slice_text_area_render_projection(
+    content: &str,
+    projection: &TextAreaRenderProjection,
+    range: Range<usize>,
+) -> TextAreaRenderProjection {
+    let mut node = projection.node.clone();
+    update_projection_rsx_node_range(&mut node, content, range.clone());
+    TextAreaRenderProjection { range, node }
+}
+
+fn update_projection_rsx_node_range(node: &mut RsxNode, content: &str, range: Range<usize>) {
+    if let RsxNode::Element(element) = node {
+        if element.tag == "TextArea" {
+            let start_byte = byte_index_at_char(content, range.start);
+            let end_byte = byte_index_at_char(content, range.end);
+            set_rsx_element_prop(
+                element,
+                "content",
+                PropValue::String(content[start_byte..end_byte].to_string()),
+            );
+            set_rsx_element_prop(element, "source_text_start", PropValue::I64(range.start as i64));
+            set_rsx_element_prop(element, "source_text_end", PropValue::I64(range.end as i64));
+        }
+    }
+
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            update_projection_rsx_node_range(child, content, range.clone());
+        }
+    }
+}
+
+fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &str, value: PropValue) {
+    if let Some((_, prop_value)) = element.props.iter_mut().rev().find(|(prop_key, _)| prop_key == key)
+    {
+        *prop_value = value;
+        return;
+    }
+    element.props.push((key.to_string(), value));
 }
 
 fn find_first_text_area_mut(node: &mut dyn ElementTrait) -> Option<&mut TextArea> {
@@ -3462,6 +3618,54 @@ mod tests {
             .expect("nested projection text area");
         assert!((nested.font_size - 13.0).abs() < 0.01);
         assert_eq!(nested.color.to_rgba_f32(), crate::Color::hex("#aabbcc").to_rgba_f32());
+    }
+
+    #[test]
+    fn on_render_overlapping_ranges_are_sorted_and_later_ranges_override_earlier_ones() {
+        let mut area = TextArea::from_content("abcdefghij");
+        area.on_render(|render| {
+            render.range(2..8, |text_area_node| {
+                crate::ui::rsx! {
+                    <crate::view::Element>
+                        {text_area_node}
+                    </crate::view::Element>
+                }
+            });
+            render.range(4..6, |text_area_node| {
+                crate::ui::rsx! {
+                    <crate::view::Element>
+                        {text_area_node}
+                    </crate::view::Element>
+                }
+            });
+        });
+
+        let ranges = area
+            .render_nodes
+            .iter()
+            .map(|projection| projection.range.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ranges, vec![2..4, 4..6, 6..8]);
+
+        let nested_contents = area
+            .render_nodes
+            .iter()
+            .map(|projection| {
+                projection
+                    .node
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .expect("projection wrapper")
+                    .children()
+                    .expect("wrapper children")[0]
+                    .as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("nested projection text area")
+                    .content
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(nested_contents, vec!["cd", "ef", "gh"]);
     }
 
     #[test]
