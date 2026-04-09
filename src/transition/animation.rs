@@ -680,6 +680,38 @@ mod tests {
     }
 
     #[test]
+    fn keyframe_accepts_style_macro_shorthand() {
+        let mut plugin = AnimationPlugin::new();
+        plugin.start_animator(AnimationRequest {
+            target: 8,
+            animator: Animator::new([Animation::new([
+                Keyframe::new(
+                    0.0,
+                    crate::style! {
+                        color: Color::hex("#ff0000"),
+                        opacity: 0.25,
+                    },
+                ),
+                Keyframe::new(
+                    1.0,
+                    crate::style! {
+                        color: Color::hex("#00ff00"),
+                        opacity: 1.0,
+                    },
+                ),
+            ])
+            .duration(1000)]),
+        });
+
+        let result = plugin.run_animations(0.5, 0.5);
+        assert!(result.keep_running);
+
+        let samples = plugin.take_style_samples();
+        assert!(samples.iter().any(|sample| sample.field == StyleField::Color));
+        assert!(samples.iter().any(|sample| sample.field == StyleField::Opacity));
+    }
+
+    #[test]
     fn plugin_keeps_last_frame_with_forwards_fill() {
         let mut style = Style::new();
         style.insert(

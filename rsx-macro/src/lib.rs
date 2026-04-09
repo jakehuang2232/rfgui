@@ -62,6 +62,7 @@ impl Parse for MultipleNodes {
     }
 }
 
+
 #[proc_macro_attribute]
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = syn::parse_macro_input!(item as ItemFn);
@@ -1092,6 +1093,7 @@ fn expand_style_object_for_builder(
         })
     }}
 }
+
 
 fn expand_object_value_for_builder(
     key: &Ident,

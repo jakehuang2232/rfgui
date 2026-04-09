@@ -34,9 +34,7 @@ impl Interpolate for Angle {
     fn interpolate(from: &Self, to: &Self, t: f32) -> Self {
         let from = from.to_radians();
         let to = to.to_radians();
-        let delta = ((to - from) + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-            - std::f32::consts::PI;
-        Angle::rad(from + delta * t.clamp(0.0, 1.0))
+        Angle::rad(f32::interpolate(&from, &to, t))
     }
 }
 
@@ -648,6 +646,29 @@ mod tests {
                 assert!(y.to_radians().abs() < 0.0001);
                 let radians = z.to_radians();
                 assert!((radians.abs() - std::f32::consts::FRAC_PI_2).abs() < 0.0001);
+            }
+            _ => panic!("expected rotate"),
+        }
+    }
+
+    #[test]
+    fn angle_interpolation_preserves_full_turn_delta() {
+        let value = Angle::interpolate(&Angle::deg(0.0), &Angle::deg(360.0), 0.5);
+        assert!((value.to_radians() - std::f32::consts::PI).abs() < 0.0001);
+    }
+
+    #[test]
+    fn transform_rotation_interpolation_preserves_full_turn_delta() {
+        let from = Transform::new([Rotate::z(Angle::deg(0.0))]);
+        let to = Transform::new([Rotate::z(Angle::deg(360.0))]);
+
+        let value = Transform::interpolate(&from, &to, 0.5);
+        assert_eq!(value.as_slice().len(), 1);
+        match value.as_slice()[0].kind() {
+            TransformKind::Rotate { x, y, z } => {
+                assert!(x.to_radians().abs() < 0.0001);
+                assert!(y.to_radians().abs() < 0.0001);
+                assert!((z.to_radians() - std::f32::consts::PI).abs() < 0.0001);
             }
             _ => panic!("expected rotate"),
         }
