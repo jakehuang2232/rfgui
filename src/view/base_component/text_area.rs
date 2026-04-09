@@ -13,8 +13,10 @@ use crate::{
     ColorLike, Cursor as UiCursor, FontFamily, FontSize, HexColor, IntoColor, Layout, Length,
     ParsedValue, PropertyId, Style,
 };
-use glyphon::cosmic_text::{Affinity, Align, Cursor, Motion};
-use glyphon::{Attrs, Buffer as GlyphBuffer, Family, FontSystem, Metrics, Shaping, Wrap};
+use cosmic_text::{
+    Affinity, Align, Attrs, Buffer as GlyphBuffer, Cursor, Family, FontSystem, Metrics, Motion,
+    Shaping, Wrap,
+};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -1980,7 +1982,7 @@ impl TextArea {
                 text,
                 &attrs,
                 Shaping::Advanced,
-                Some(glyphon::cosmic_text::Align::Left),
+                Some(cosmic_text::Align::Left),
             );
             self.glyph_buffer.shape_until_scroll(font_system, false);
         });
@@ -2406,10 +2408,7 @@ fn line_lengths_bytes(value: &str) -> Vec<usize> {
     out
 }
 
-fn caret_x_in_layout_run(
-    cursor_index: usize,
-    run: &glyphon::cosmic_text::LayoutRun<'_>,
-) -> Option<f32> {
+fn caret_x_in_layout_run(cursor_index: usize, run: &cosmic_text::LayoutRun<'_>) -> Option<f32> {
     let mut found_glyph = None;
     let mut offset = 0.0_f32;
 
@@ -2472,7 +2471,7 @@ fn find_layout_run_by_line_layout<'a>(
     buffer: &'a GlyphBuffer,
     target_line: usize,
     target_layout: usize,
-) -> Option<glyphon::cosmic_text::LayoutRun<'a>> {
+) -> Option<cosmic_text::LayoutRun<'a>> {
     let mut current_layout_for_line = 0usize;
     let mut previous_line = None::<usize>;
     for run in buffer.layout_runs() {

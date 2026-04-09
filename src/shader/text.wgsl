@@ -19,6 +19,7 @@ struct GlyphInstance {
     @location(3) uv_max: vec2<f32>,
     @location(4) color: vec4<f32>,
     @location(5) opacity: f32,
+    @location(6) content_kind: f32,
 }
 
 struct VsOut {
@@ -26,6 +27,7 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) opacity: f32,
+    @location(3) content_kind: f32,
 }
 
 @vertex
@@ -49,12 +51,25 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
     out.uv = glyph.uv_min + (glyph.uv_max - glyph.uv_min) * corner;
     out.color = glyph.color;
     out.opacity = glyph.opacity;
+    out.content_kind = glyph.content_kind;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let alpha = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
-    let out_alpha = alpha * in.opacity * in.color.a;
-    return vec4<f32>(in.color.rgb, out_alpha);
+    let texel_size = 1.0 / vec2<f32>(textureDimensions(glyph_atlas));
+    let half_texel = texel_size * 0.5;
+    let texel = (
+        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>(-half_texel.x, -half_texel.y)) +
+        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>( half_texel.x, -half_texel.y)) +
+        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>(-half_texel.x,  half_texel.y)) +
+        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>( half_texel.x,  half_texel.y))
+    ) * 0.25;
+    if in.content_kind > 0.5 {
+        let out_alpha = texel.a * in.opacity * in.color.a;
+        return vec4<f32>(texel.rgb * out_alpha, out_alpha);
+    }
+
+    let out_alpha = texel.a * in.opacity * in.color.a;
+    return vec4<f32>(in.color.rgb * out_alpha, out_alpha);
 }
