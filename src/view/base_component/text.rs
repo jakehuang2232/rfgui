@@ -725,7 +725,12 @@ impl Layoutable for Text {
                 height: 0.0,
             };
             self.element.set_size(0.0, 0.0);
-            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+            self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT).union(
+                super::DirtyFlags::PLACE
+                    .union(super::DirtyFlags::BOX_MODEL)
+                    .union(super::DirtyFlags::HIT_TEST)
+                    .union(super::DirtyFlags::PAINT),
+            );
             return;
         }
 
@@ -779,7 +784,12 @@ impl Layoutable for Text {
             height: max_height,
         };
         self.element.set_size(self.size.width, self.size.height);
-        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+        self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT).union(
+            super::DirtyFlags::PLACE
+                .union(super::DirtyFlags::BOX_MODEL)
+                .union(super::DirtyFlags::HIT_TEST)
+                .union(super::DirtyFlags::PAINT),
+        );
     }
 
     fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
@@ -1074,7 +1084,9 @@ impl Renderable for Text {
 #[cfg(test)]
 mod tests {
     use super::{ElementTrait, Layoutable, Text};
-    use crate::view::base_component::{LayoutConstraints, LayoutPlacement};
+    use crate::view::base_component::{
+        DirtyFlags, InlineMeasureContext, LayoutConstraints, LayoutPlacement,
+    };
     use crate::{Length, TextWrap};
 
     #[test]
@@ -1389,5 +1401,20 @@ mod tests {
             h_narrow > h_wide,
             "expected text to reflow when parent width shrinks: narrow={h_narrow}, wide={h_wide}"
         );
+    }
+
+    #[test]
+    fn inline_measure_clears_layout_dirty() {
+        let mut text = Text::from_content("inline text");
+        text.measure_inline(InlineMeasureContext {
+            first_available_width: 200.0,
+            full_available_width: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(120.0),
+        });
+
+        assert!(!text.local_dirty_flags().intersects(DirtyFlags::LAYOUT));
     }
 }
