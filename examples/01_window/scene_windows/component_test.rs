@@ -4,7 +4,8 @@ use crate::rfgui::{Angle, Layout, Length, Padding, Rotate, Transform};
 use crate::rfgui_components::{
     Button, ButtonVariant, Checkbox, CloseIcon, NumberField, Select, Slider, Switch, Theme,
 };
-use rfgui::ScrollDirection;
+use rfgui::{Animation, Animator, FillMode, Keyframe, ScrollDirection};
+use rfgui::Repeat::Infinite;
 use rfgui_components::Accordion;
 
 fn select_label(item: &String, _: usize) -> String {
@@ -144,10 +145,21 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
                         layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                     }}>
-                        <Text>Rotated</Text>
+                        <Text>Rotating</Text>
                         <CloseIcon style={{
                             color: theme.color.primary.base.clone(),
-                            transform: Transform::new([Rotate::z(Angle::deg(45.0))]),
+                            animator: Animator::new([
+                                Animation::new([
+                                    Keyframe::new(0.0, rfgui::style! {
+                                        transform: Transform::new([Rotate::z(Angle::deg(0.0))]),
+                                    }),
+                                    Keyframe::new(1.0, rfgui::style! {
+                                        transform: Transform::new([Rotate::z(Angle::deg(360.0))]),
+                                    }),
+                                ]),
+                            ]).fill_mode(FillMode::Forwards)
+                            .repeat(Infinite)
+                            .duration(theme.motion.duration.slow),
                         }} />
                     </Element>
                 </Element>
