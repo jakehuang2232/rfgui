@@ -511,6 +511,56 @@ impl Element {
         channels
     }
 
+    pub(crate) fn reconcile_transition_runtime_state(
+        &mut self,
+        active_channels: Option<&std::collections::HashSet<ChannelId>>,
+    ) -> bool {
+        let has_channel = |channel| active_channels.is_some_and(|channels| channels.contains(&channel));
+        let mut needs_layout = false;
+        let mut needs_place = false;
+
+        if !has_channel(CHANNEL_VISUAL_X)
+            && (!approx_eq(self.layout_transition_visual_offset_x, 0.0)
+                || self.layout_transition_target_x.is_some())
+        {
+            self.layout_transition_visual_offset_x = 0.0;
+            self.layout_transition_target_x = None;
+            needs_place = true;
+        }
+        if !has_channel(CHANNEL_VISUAL_Y)
+            && (!approx_eq(self.layout_transition_visual_offset_y, 0.0)
+                || self.layout_transition_target_y.is_some())
+        {
+            self.layout_transition_visual_offset_y = 0.0;
+            self.layout_transition_target_y = None;
+            needs_place = true;
+        }
+        if !has_channel(CHANNEL_LAYOUT_WIDTH)
+            && (self.layout_transition_override_width.is_some()
+                || self.layout_transition_target_width.is_some())
+        {
+            self.layout_transition_override_width = None;
+            self.layout_transition_target_width = None;
+            needs_layout = true;
+        }
+        if !has_channel(CHANNEL_LAYOUT_HEIGHT)
+            && (self.layout_transition_override_height.is_some()
+                || self.layout_transition_target_height.is_some())
+        {
+            self.layout_transition_override_height = None;
+            self.layout_transition_target_height = None;
+            needs_layout = true;
+        }
+
+        if needs_layout {
+            self.mark_layout_dirty();
+        } else if needs_place {
+            self.mark_place_dirty();
+        }
+
+        needs_layout || needs_place
+    }
+
     pub fn set_position(&mut self, x: f32, y: f32) {
         self.core.set_position(x, y);
         self.mark_place_dirty();

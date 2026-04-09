@@ -294,11 +294,13 @@ impl Layoutable for Element {
     }
 
     fn cross_alignment_size(&self, is_row: bool, stretched_cross: Option<f32>) -> f32 {
-        let current_cross = if is_row {
+        let rendered_cross = if is_row {
             self.core.layout_size.height.max(0.0)
         } else {
             self.core.layout_size.width.max(0.0)
         };
+        let (measured_w, measured_h) = self.measured_size();
+        let measured_cross = if is_row { measured_h } else { measured_w }.max(0.0);
         let target_cross = if is_row {
             self.layout_assigned_height
         } else {
@@ -317,11 +319,11 @@ impl Layoutable for Element {
             self.layout_transition_override_width.is_some()
         };
         let transition_will_start = has_cross_transition
-            && target_cross.is_some_and(|target| !approx_eq(target.max(0.0), current_cross));
+            && target_cross.is_some_and(|target| !approx_eq(target.max(0.0), rendered_cross));
         if transition_active || transition_will_start {
-            current_cross
+            rendered_cross
         } else {
-            stretched_cross.unwrap_or(current_cross)
+            stretched_cross.unwrap_or(target_cross.unwrap_or(measured_cross))
         }
     }
 

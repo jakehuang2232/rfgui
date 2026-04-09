@@ -4,7 +4,7 @@ use crate::transition::{
     AnimationRequest, LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue,
     VisualField, VisualTrackRequest,
 };
-use crate::transition::{TrackKey, TrackTarget};
+use crate::transition::{ChannelId, TrackKey, TrackTarget};
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyUpEvent, MouseDownEvent,
     MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent, TextInputEvent,
@@ -817,6 +817,35 @@ pub(crate) fn collect_node_id_allowlist(roots: &[Box<dyn ElementTrait>]) -> Hash
     }
 
     out
+}
+
+pub(crate) fn reconcile_transition_runtime_state(
+    roots: &mut [Box<dyn ElementTrait>],
+    active_channels_by_node: &HashMap<u64, HashSet<ChannelId>>,
+) -> bool {
+    fn walk(
+        node: &mut dyn ElementTrait,
+        active_channels_by_node: &HashMap<u64, HashSet<ChannelId>>,
+    ) -> bool {
+        let mut changed = false;
+        let node_id = node.id();
+        if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
+            changed |= element
+                .reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
+        }
+        if let Some(children) = node.children_mut() {
+            for child in children.iter_mut() {
+                changed |= walk(child.as_mut(), active_channels_by_node);
+            }
+        }
+        changed
+    }
+
+    let mut changed = false;
+    for root in roots.iter_mut() {
+        changed |= walk(root.as_mut(), active_channels_by_node);
+    }
+    changed
 }
 
 pub(crate) fn set_style_field_by_id(
