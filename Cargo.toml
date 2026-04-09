@@ -17,7 +17,7 @@ members = [
 wgpu = "29.0.1"
 bytemuck = { version = "1.14", features = ["derive"] }
 once_cell = "1.21.3"
-glyphon = { git = "https://github.com/grovesNL/glyphon.git", rev = "28f1cb92e120ab790eca9ecc6aeb0ed8c8336fc0" }
+cosmic-text = "0.18.2"
 image = { version = "0.25", default-features = false, features = ["default-formats"] }
 resvg = "0.45.1"
 rfgui-rsx = { version = "0.1.0-alpha.1", path = "rsx-macro" }

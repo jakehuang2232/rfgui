@@ -1,5 +1,4 @@
-use glyphon::cosmic_text::{Align, Weight};
-use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Wrap};
+use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
 
 pub(crate) fn build_text_buffer(
     font_system: &mut FontSystem,

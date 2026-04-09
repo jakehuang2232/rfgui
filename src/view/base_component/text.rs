@@ -8,7 +8,7 @@ use crate::view::render_pass::text_pass::{TextInput, TextOutput};
 use crate::view::render_pass::text_pass::{TextPassFragment, TextPassParams};
 use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
 use crate::{ColorLike, Cursor, HexColor, Style, TextAlign, TextWrap};
-use glyphon::cosmic_text::Align;
+use cosmic_text::Align;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 

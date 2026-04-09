@@ -94,10 +94,6 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
         self.render_pass
             .draw_indexed(indices, base_vertex, instances);
     }
-
-    pub(crate) fn raw_render_pass(&mut self) -> &mut wgpu::RenderPass<'pass> {
-        self.render_pass
-    }
 }
 
 pub struct ComputeCtx<'a, 'ctx, 'res, 'pass> {

@@ -9,19 +9,21 @@ use crate::view::render_pass::render_target::{
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use crate::view::text_layout::build_text_buffer;
-use glyphon::cosmic_text::Align;
-use glyphon::{
-    Buffer, Cache, Color as GlyphonColor, Resolution, SwashCache, TextArea, TextAtlas, TextBounds,
-    TextRenderer, Viewport as GlyphonViewport,
+use cosmic_text::{
+    Align, Buffer, CacheKey, Color as CosmicColor, FontSystem, SwashCache, SwashContent, SwashImage,
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::num::NonZeroU64;
+use wgpu::util::DeviceExt;
 pub struct TextPass {
     params: TextPassParams,
     prepared: Option<TextPreparedState>,
     input: TextInput,
     output: TextOutput,
 }
+
+const TEXT_RASTER_SCALE: f32 = 2.0;
 
 #[derive(Clone)]
 pub struct TextPassFragment {
@@ -75,10 +77,12 @@ impl TextPassParams {
 
 struct TextPreparedState {
     renderer_key: TextRendererKey,
-    renderer: Option<TextRenderer>,
+    vertex_buffer: wgpu::Buffer,
+    vertex_count: u32,
+    screen_bind_group: wgpu::BindGroup,
     prepare_signature: u64,
+    atlas_generation: u64,
     stencil_clip_id: Option<u8>,
-    resolution: Resolution,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -90,6 +94,49 @@ struct TextRendererKey {
 struct TextDebugOverlay {
     vertices: Vec<TextDebugVertex>,
     indices: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct TextBounds {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct TextScreenUniform {
+    screen_size: [f32; 2],
+    _pad: [f32; 2],
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct TextGlyphVertex {
+    pos: [f32; 2],
+    size: [f32; 2],
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+    color: [f32; 4],
+    opacity: f32,
+    content_kind: f32,
+}
+
+struct TextArea<'a> {
+    buffer: &'a Buffer,
+    left: f32,
+    top: f32,
+    scale: f32,
+    bounds: TextBounds,
+    default_color: CosmicColor,
+}
+
+#[derive(Clone)]
+struct PreparedTextDraw {
+    vertex_buffer: wgpu::Buffer,
+    vertex_count: u32,
+    screen_bind_group: wgpu::BindGroup,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -204,12 +251,7 @@ impl GraphicsPass for TextPass {
         let (screen_w, screen_h) = target_size;
         let scale = viewport.scale_factor();
         let format = viewport.surface_format();
-        let resolution = Resolution {
-            width: screen_w,
-            height: screen_h,
-        };
         with_text_resources(&device, &queue, format, |resources| {
-            let glyphon_viewport = resources.take_viewport(&device, &queue, resolution);
             let physical_scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
                 logical_scissor_to_target_physical(
                     viewport,
@@ -283,7 +325,6 @@ impl GraphicsPass for TextPass {
                 }
             }
             let Some(bounds) = combined_bounds else {
-                resources.put_viewport(resolution, glyphon_viewport);
                 return;
             };
             let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
@@ -304,34 +345,36 @@ impl GraphicsPass for TextPass {
                     fragment.y * scale - target_origin.1 as f32
                         + target_meta.logical_origin.1 as f32,
                     fragment_bounds,
-                    to_glyphon_color(fragment.color, fragment.opacity),
+                    to_cosmic_color(fragment.color, fragment.opacity),
                 ));
             }
             let renderer_key = TextRendererKey {
                 sample_count: output_sample_count,
                 stencil_enabled: self.input.pass_context.uses_depth_stencil,
             };
-            if let Some(renderer) =
-                resources.take_prepared_renderer(renderer_key, prepare_signature)
-            {
-                self.prepared = Some(TextPreparedState {
-                    renderer_key,
-                    renderer: Some(renderer),
-                    prepare_signature,
-                    stencil_clip_id: self.params.stencil_clip_id,
-                    resolution,
-                });
-                resources.put_viewport(resolution, glyphon_viewport);
-                return;
-            }
+            let atlas_generation = resources.atlas.generation();
             if let Some(prepared) = self.prepared.as_mut() {
                 if prepared.renderer_key == renderer_key
                     && prepared.prepare_signature == prepare_signature
+                    && prepared.atlas_generation == atlas_generation
                 {
                     prepared.stencil_clip_id = self.params.stencil_clip_id;
-                    resources.put_viewport(resolution, glyphon_viewport);
                     return;
                 }
+            }
+            if let Some(draw) =
+                resources.take_prepared_draw(renderer_key, prepare_signature, atlas_generation)
+            {
+                self.prepared = Some(TextPreparedState {
+                    renderer_key,
+                    vertex_buffer: draw.vertex_buffer,
+                    vertex_count: draw.vertex_count,
+                    screen_bind_group: draw.screen_bind_group,
+                    prepare_signature,
+                    atlas_generation,
+                    stencil_clip_id: self.params.stencil_clip_id,
+                });
+                return;
             }
             if viewport.debug_geometry_overlay() {
                 let (overlay_w, overlay_h) = viewport.surface_size();
@@ -361,44 +404,83 @@ impl GraphicsPass for TextPass {
                     viewport.push_debug_overlay_geometry(&overlay_vertices, &overlay.indices);
                 }
             }
-            let mut renderer = match self.prepared.take() {
-                Some(mut previous) => {
-                    if previous.renderer_key == renderer_key {
-                        previous
-                            .renderer
-                            .take()
-                            .unwrap_or_else(|| resources.take_renderer(&device, renderer_key))
-                    } else {
-                        if let Some(old_renderer) = previous.renderer.take() {
-                            resources.put_renderer(previous.renderer_key, old_renderer);
+
+            let vertices = with_shared_font_system(|font_system| {
+                let mut retry_count = 0;
+                loop {
+                    let mut vertices = Vec::new();
+                    let mut atlas_full = false;
+                    for text_area in &text_areas {
+                        if resources
+                            .prepare_text_area(
+                                font_system,
+                                &device,
+                                &queue,
+                                text_area,
+                                &mut vertices,
+                            )
+                            .is_err()
+                        {
+                            atlas_full = true;
+                            break;
                         }
-                        resources.take_renderer(&device, renderer_key)
                     }
+                    if !atlas_full {
+                        break vertices;
+                    }
+                    if retry_count >= 1 {
+                        break Vec::new();
+                    }
+                    retry_count += 1;
+                    resources.reset_atlas();
                 }
-                None => resources.take_renderer(&device, renderer_key),
-            };
-            let prepare_result = with_shared_font_system(|font_system| {
-                renderer.prepare(
-                    &device,
-                    &queue,
-                    font_system,
-                    &mut resources.atlas,
-                    &glyphon_viewport,
-                    text_areas,
-                    &mut resources.swash_cache,
-                )
             });
-            resources.put_viewport(resolution, glyphon_viewport);
-            if prepare_result.is_err() {
-                resources.put_renderer(renderer_key, renderer);
+            if vertices.is_empty() {
                 return;
             }
+            resources.atlas.flush_uploads(&queue);
+            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Text Glyph Vertex Buffer"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let screen_uniform = TextScreenUniform {
+                screen_size: [screen_w as f32, screen_h as f32],
+                _pad: [0.0, 0.0],
+            };
+            let screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Text Screen Uniform Buffer"),
+                contents: bytemuck::bytes_of(&screen_uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Text Screen Bind Group"),
+                layout: &resources.screen_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buffer.as_entire_binding(),
+                }],
+            });
+            let prepared_draw = PreparedTextDraw {
+                vertex_buffer,
+                vertex_count: vertices.len() as u32,
+                screen_bind_group,
+            };
+            let atlas_generation = resources.atlas.generation();
+            resources.put_prepared_draw(
+                renderer_key,
+                prepare_signature,
+                atlas_generation,
+                prepared_draw.clone(),
+            );
             self.prepared = Some(TextPreparedState {
                 renderer_key,
-                renderer: Some(renderer),
+                vertex_buffer: prepared_draw.vertex_buffer,
+                vertex_count: prepared_draw.vertex_count,
+                screen_bind_group: prepared_draw.screen_bind_group,
                 prepare_signature,
+                atlas_generation,
                 stencil_clip_id: self.params.stencil_clip_id,
-                resolution,
             });
         });
     }
@@ -411,15 +493,8 @@ impl GraphicsPass for TextPass {
             Some(device) => device,
             None => return,
         };
-        let queue = match ctx.viewport().queue().cloned() {
-            Some(queue) => queue,
-            None => return,
-        };
         let format = ctx.viewport().surface_format();
-        with_text_resources(&device, &queue, format, |resources| {
-            let Some(glyphon_viewport) = resources.viewport(prepared.resolution) else {
-                return;
-            };
+        with_text_resources_for_render(format, |resources| {
             let fallback_surface_size = ctx.viewport().surface_size();
             let target_meta = resolve_texture_ref(
                 self.output.render_target.handle(),
@@ -443,21 +518,19 @@ impl GraphicsPass for TextPass {
                 )
             });
             let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
-            let Some(renderer) = prepared.renderer.take() else {
-                return;
-            };
             if let Some([x, y, width, height]) = scissor_rect {
                 ctx.set_scissor_rect(x, y, width, height);
             } else {
                 ctx.set_scissor_rect(0, 0, target_size.0, target_size.1);
             }
             ctx.set_stencil_reference(stencil_reference);
-            let _ = renderer.render(&resources.atlas, glyphon_viewport, ctx.raw_render_pass());
-            resources.put_prepared_renderer(
-                prepared.renderer_key,
-                prepared.prepare_signature,
-                renderer,
-            );
+            resources.ensure_pipeline(&device, prepared.renderer_key);
+            let pipeline = resources.pipeline(prepared.renderer_key);
+            ctx.set_pipeline(pipeline);
+            ctx.set_bind_group(0, &prepared.screen_bind_group, &[]);
+            ctx.set_bind_group(1, &resources.atlas.bind_group, &[]);
+            ctx.set_vertex_buffer(0, prepared.vertex_buffer.slice(..));
+            ctx.draw(0..6, 0..prepared.vertex_count);
         });
     }
 }
@@ -507,13 +580,13 @@ fn single_fragment_layout_signature(
     hasher.finish()
 }
 
-fn to_glyphon_color(color: [f32; 4], opacity: f32) -> GlyphonColor {
+fn to_cosmic_color(color: [f32; 4], opacity: f32) -> CosmicColor {
     fn to_u8(v: f32) -> u8 {
         (v.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 
     let alpha = to_u8(color[3] * opacity.clamp(0.0, 1.0));
-    GlyphonColor::rgba(to_u8(color[0]), to_u8(color[1]), to_u8(color[2]), alpha)
+    CosmicColor::rgba(to_u8(color[0]), to_u8(color[1]), to_u8(color[2]), alpha)
 }
 
 fn intersect_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -595,7 +668,7 @@ fn build_text_area<'a>(
     left: f32,
     top: f32,
     bounds: TextBounds,
-    default_color: GlyphonColor,
+    default_color: CosmicColor,
 ) -> TextArea<'a> {
     TextArea {
         buffer,
@@ -604,101 +677,534 @@ fn build_text_area<'a>(
         scale: 1.0,
         bounds,
         default_color,
-        custom_glyphs: &[],
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AtlasGlyph {
+    x: u32,
+    y: u32,
+    layout_width: f32,
+    layout_height: f32,
+    layout_left: f32,
+    layout_top: f32,
+    content_kind: f32,
+}
+
+struct TextAtlas {
+    texture: wgpu::Texture,
+    bind_group_layout: wgpu::BindGroupLayout,
+    bind_group: wgpu::BindGroup,
+    size: u32,
+    cursor_x: u32,
+    cursor_y: u32,
+    row_height: u32,
+    glyphs: HashMap<CacheKey, AtlasGlyph>,
+    pending_uploads: Vec<AtlasUpload>,
+    generation: u64,
+}
+
+struct AtlasUpload {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl TextAtlas {
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue) -> Self {
+        let size = device.limits().max_texture_dimension_2d.min(4096).max(256);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Text Atlas Texture"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Text Atlas Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Text Atlas Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Text Atlas Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        Self {
+            texture,
+            bind_group_layout,
+            bind_group,
+            size,
+            cursor_x: 1,
+            cursor_y: 1,
+            row_height: 0,
+            glyphs: HashMap::new(),
+            pending_uploads: Vec::new(),
+            generation: 0,
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn reset(&mut self) {
+        self.cursor_x = 1;
+        self.cursor_y = 1;
+        self.row_height = 0;
+        self.glyphs.clear();
+        self.pending_uploads.clear();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn get_glyph(&self, cache_key: CacheKey) -> Option<AtlasGlyph> {
+        self.glyphs.get(&cache_key).copied()
+    }
+
+    fn cache_glyph(
+        &mut self,
+        _device: &wgpu::Device,
+        cache_key: CacheKey,
+        image: SwashImage,
+    ) -> Result<Option<AtlasGlyph>, TextAtlasCacheError> {
+        if let Some(glyph) = self.get_glyph(cache_key) {
+            return Ok(Some(glyph));
+        }
+        let width = image.placement.width;
+        let height = image.placement.height;
+        if width == 0 || height == 0 {
+            return Ok(None);
+        }
+        let padded_width = width.saturating_add(2);
+        let padded_height = height.saturating_add(2);
+        if padded_width >= self.size || padded_height >= self.size {
+            return Ok(None);
+        }
+        if self.cursor_x.saturating_add(padded_width) >= self.size {
+            self.cursor_x = 1;
+            self.cursor_y = self
+                .cursor_y
+                .saturating_add(self.row_height)
+                .saturating_add(1);
+            self.row_height = 0;
+        }
+        if self.cursor_y.saturating_add(padded_height) >= self.size {
+            return Err(TextAtlasCacheError::Full);
+        }
+
+        let allocation_x = self.cursor_x;
+        let allocation_y = self.cursor_y;
+        self.cursor_x = self.cursor_x.saturating_add(padded_width);
+        self.row_height = self.row_height.max(padded_height);
+
+        let (data, content_kind) = swash_image_to_rgba(&image);
+        let mut padded_data = vec![0_u8; padded_width as usize * padded_height as usize * 4];
+        for row in 0..height as usize {
+            let source_start = row * width as usize * 4;
+            let source_end = source_start + width as usize * 4;
+            let target_start = ((row + 1) * padded_width as usize + 1) * 4;
+            let target_end = target_start + width as usize * 4;
+            padded_data[target_start..target_end].copy_from_slice(&data[source_start..source_end]);
+        }
+        self.pending_uploads.push(AtlasUpload {
+            x: allocation_x,
+            y: allocation_y,
+            width: padded_width,
+            height: padded_height,
+            data: padded_data,
+        });
+
+        let glyph = AtlasGlyph {
+            x: allocation_x + 1,
+            y: allocation_y + 1,
+            layout_width: width as f32 / TEXT_RASTER_SCALE,
+            layout_height: height as f32 / TEXT_RASTER_SCALE,
+            layout_left: image.placement.left as f32 / TEXT_RASTER_SCALE,
+            layout_top: image.placement.top as f32 / TEXT_RASTER_SCALE,
+            content_kind,
+        };
+        self.glyphs.insert(cache_key, glyph);
+        Ok(Some(glyph))
+    }
+
+    fn flush_uploads(&mut self, queue: &wgpu::Queue) {
+        let uploads = std::mem::take(&mut self.pending_uploads);
+        let mut index = 0;
+        while index < uploads.len() {
+            let row_y = uploads[index].y;
+            let row_x = uploads[index].x;
+            let mut row_right = uploads[index].x + uploads[index].width;
+            let mut row_height = uploads[index].height;
+            let mut end = index + 1;
+            while end < uploads.len() && uploads[end].y == row_y {
+                row_right = row_right.max(uploads[end].x + uploads[end].width);
+                row_height = row_height.max(uploads[end].height);
+                end += 1;
+            }
+
+            let row_width = row_right - row_x;
+            let mut row_data = vec![0_u8; row_width as usize * row_height as usize * 4];
+            for upload in &uploads[index..end] {
+                for row in 0..upload.height as usize {
+                    let source_start = row * upload.width as usize * 4;
+                    let source_end = source_start + upload.width as usize * 4;
+                    let target_x = upload.x - row_x;
+                    let target_start = (row * row_width as usize + target_x as usize) * 4;
+                    let target_end = target_start + upload.width as usize * 4;
+                    row_data[target_start..target_end]
+                        .copy_from_slice(&upload.data[source_start..source_end]);
+                }
+            }
+
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: row_x,
+                        y: row_y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &row_data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row_width * 4),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: row_width,
+                    height: row_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            index = end;
+        }
+    }
+}
+
+enum TextAtlasCacheError {
+    Full,
+}
+
+fn swash_image_to_rgba(image: &SwashImage) -> (Vec<u8>, f32) {
+    let pixel_count = image.placement.width.saturating_mul(image.placement.height) as usize;
+    let mut out = Vec::with_capacity(pixel_count * 4);
+    match image.content {
+        SwashContent::Color => {
+            for index in 0..pixel_count {
+                let offset = index * 4;
+                if offset + 4 <= image.data.len() {
+                    out.extend_from_slice(&image.data[offset..offset + 4]);
+                } else {
+                    out.extend_from_slice(&[0, 0, 0, 0]);
+                }
+            }
+            (out, 1.0)
+        }
+        SwashContent::Mask => {
+            for index in 0..pixel_count {
+                let alpha = image.data.get(index).copied().unwrap_or(0);
+                out.extend_from_slice(&[255, 255, 255, alpha]);
+            }
+            (out, 0.0)
+        }
+        SwashContent::SubpixelMask => {
+            for index in 0..pixel_count {
+                let offset = index * 3;
+                let chunk = image
+                    .data
+                    .get(offset..offset.saturating_add(3))
+                    .unwrap_or(&[]);
+                let alpha = chunk.iter().copied().max().unwrap_or(0);
+                out.extend_from_slice(&[255, 255, 255, alpha]);
+            }
+            (out, 0.0)
+        }
     }
 }
 
 struct TextResources {
-    cache: Cache,
     swash_cache: SwashCache,
     atlas: TextAtlas,
     format: wgpu::TextureFormat,
-    renderers: HashMap<TextRendererKey, TextRenderer>,
-    prepared_renderers: HashMap<(TextRendererKey, u64), TextRenderer>,
+    screen_bind_group_layout: wgpu::BindGroupLayout,
+    pipelines: HashMap<TextRendererKey, wgpu::RenderPipeline>,
     layout_buffers: HashMap<u64, Buffer>,
-    viewports: HashMap<(u32, u32), GlyphonViewport>,
+    prepared_draws: HashMap<PreparedTextDrawKey, PreparedTextDraw>,
+    prepared_draw_lru: VecDeque<PreparedTextDrawKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PreparedTextDrawKey {
+    renderer_key: TextRendererKey,
+    prepare_signature: u64,
+    atlas_generation: u64,
 }
 
 impl TextResources {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let swash_cache = SwashCache::new();
-        let cache = Cache::new(device);
-        let atlas = TextAtlas::new(device, queue, &cache, format);
+        let screen_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Text Screen Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            NonZeroU64::new(std::mem::size_of::<TextScreenUniform>() as u64)
+                                .expect("text screen uniform size must be non-zero"),
+                        ),
+                    },
+                    count: None,
+                }],
+            });
+        let atlas = TextAtlas::new(device, queue);
 
         Self {
-            cache,
             swash_cache,
             atlas,
             format,
-            renderers: HashMap::new(),
-            prepared_renderers: HashMap::new(),
+            screen_bind_group_layout,
+            pipelines: HashMap::new(),
             layout_buffers: HashMap::new(),
-            viewports: HashMap::new(),
+            prepared_draws: HashMap::new(),
+            prepared_draw_lru: VecDeque::new(),
         }
     }
 
-    fn take_viewport(
+    fn reset_atlas(&mut self) {
+        self.atlas.reset();
+        self.prepared_draws.clear();
+        self.prepared_draw_lru.clear();
+        self.swash_cache.image_cache.clear();
+        self.swash_cache.outline_command_cache.clear();
+    }
+
+    fn take_prepared_draw(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        resolution: Resolution,
-    ) -> GlyphonViewport {
-        let key = (resolution.width, resolution.height);
-        let mut viewport = self
-            .viewports
-            .remove(&key)
-            .unwrap_or_else(|| GlyphonViewport::new(device, &self.cache));
-        viewport.update(queue, resolution);
-        viewport
+        renderer_key: TextRendererKey,
+        prepare_signature: u64,
+        atlas_generation: u64,
+    ) -> Option<PreparedTextDraw> {
+        let key = PreparedTextDrawKey {
+            renderer_key,
+            prepare_signature,
+            atlas_generation,
+        };
+        let draw = self.prepared_draws.get(&key).cloned()?;
+        self.prepared_draw_lru.retain(|current| *current != key);
+        self.prepared_draw_lru.push_back(key);
+        Some(draw)
     }
 
-    fn put_viewport(&mut self, resolution: Resolution, viewport: GlyphonViewport) {
-        self.viewports
-            .insert((resolution.width, resolution.height), viewport);
-    }
-
-    fn viewport(&self, resolution: Resolution) -> Option<&GlyphonViewport> {
-        self.viewports.get(&(resolution.width, resolution.height))
-    }
-
-    fn take_renderer(&mut self, device: &wgpu::Device, key: TextRendererKey) -> TextRenderer {
-        if let Some(renderer) = self.renderers.remove(&key) {
-            return renderer;
-        }
-        TextRenderer::new(
-            &mut self.atlas,
-            device,
-            wgpu::MultisampleState {
-                count: key.sample_count,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            key.stencil_enabled.then(text_depth_stencil_state),
-        )
-    }
-
-    fn put_renderer(&mut self, key: TextRendererKey, renderer: TextRenderer) {
-        self.renderers.insert(key, renderer);
-    }
-
-    fn take_prepared_renderer(
+    fn put_prepared_draw(
         &mut self,
-        key: TextRendererKey,
-        signature: u64,
-    ) -> Option<TextRenderer> {
-        self.prepared_renderers.remove(&(key, signature))
-    }
-
-    fn put_prepared_renderer(
-        &mut self,
-        key: TextRendererKey,
-        signature: u64,
-        renderer: TextRenderer,
+        renderer_key: TextRendererKey,
+        prepare_signature: u64,
+        atlas_generation: u64,
+        draw: PreparedTextDraw,
     ) {
-        self.prepared_renderers.insert((key, signature), renderer);
-        if self.prepared_renderers.len() > 512 {
-            self.prepared_renderers.clear();
+        let key = PreparedTextDrawKey {
+            renderer_key,
+            prepare_signature,
+            atlas_generation,
+        };
+        self.prepared_draws.insert(key, draw);
+        self.prepared_draw_lru.retain(|current| *current != key);
+        self.prepared_draw_lru.push_back(key);
+        while self.prepared_draw_lru.len() > 512 {
+            if let Some(old_key) = self.prepared_draw_lru.pop_front() {
+                self.prepared_draws.remove(&old_key);
+            }
         }
+    }
+
+    fn ensure_pipeline(&mut self, device: &wgpu::Device, key: TextRendererKey) {
+        if self.pipelines.contains_key(&key) {
+            return;
+        }
+        let pipeline = create_text_pipeline(
+            device,
+            self.format,
+            key.sample_count,
+            key.stencil_enabled,
+            &self.screen_bind_group_layout,
+            &self.atlas.bind_group_layout,
+        );
+        self.pipelines.insert(key, pipeline);
+    }
+
+    fn pipeline(&self, key: TextRendererKey) -> &wgpu::RenderPipeline {
+        self.pipelines
+            .get(&key)
+            .expect("text pipeline should be created before render")
+    }
+
+    fn prepare_text_area(
+        &mut self,
+        font_system: &mut FontSystem,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        text_area: &TextArea<'_>,
+        out: &mut Vec<TextGlyphVertex>,
+    ) -> Result<(), TextAtlasCacheError> {
+        let is_run_visible = |run: &cosmic_text::LayoutRun<'_>| {
+            let start_y = (text_area.top + (run.line_top * text_area.scale)) as i32;
+            let end_y = start_y + (run.line_height * text_area.scale) as i32;
+            start_y <= text_area.bounds.bottom && text_area.bounds.top <= end_y
+        };
+
+        for run in text_area
+            .buffer
+            .layout_runs()
+            .skip_while(|run| !is_run_visible(run))
+            .take_while(is_run_visible)
+        {
+            for glyph in run.glyphs.iter() {
+                let physical_glyph =
+                    glyph.physical((0.0, 0.0), text_area.scale * TEXT_RASTER_SCALE);
+                let glyph_x_offset = glyph.font_size * glyph.x_offset;
+                let glyph_y_offset = glyph.font_size * glyph.y_offset;
+                let color = glyph.color_opt.unwrap_or(text_area.default_color);
+                let atlas_glyph =
+                    if let Some(atlas_glyph) = self.atlas.get_glyph(physical_glyph.cache_key) {
+                        atlas_glyph
+                    } else {
+                        let Some(image) = self
+                            .swash_cache
+                            .get_image(font_system, physical_glyph.cache_key)
+                            .clone()
+                        else {
+                            continue;
+                        };
+                        let Some(atlas_glyph) =
+                            self.atlas
+                                .cache_glyph(device, physical_glyph.cache_key, image)?
+                        else {
+                            continue;
+                        };
+                        atlas_glyph
+                    };
+
+                let mut x = text_area.left
+                    + (glyph.x + glyph_x_offset) * text_area.scale
+                    + atlas_glyph.layout_left;
+                let mut y = text_area.top
+                    + (run.line_y + glyph.y - glyph_y_offset) * text_area.scale
+                    - atlas_glyph.layout_top;
+                let mut width = atlas_glyph.layout_width;
+                let mut height = atlas_glyph.layout_height;
+                let mut atlas_x = atlas_glyph.x as f32;
+                let mut atlas_y = atlas_glyph.y as f32;
+                let max_x = x + width;
+                let max_y = y + height;
+                let bounds_left = text_area.bounds.left as f32;
+                let bounds_top = text_area.bounds.top as f32;
+                let bounds_right = text_area.bounds.right as f32;
+                let bounds_bottom = text_area.bounds.bottom as f32;
+
+                if x > bounds_right
+                    || max_x < bounds_left
+                    || y > bounds_bottom
+                    || max_y < bounds_top
+                {
+                    continue;
+                }
+                if x < bounds_left {
+                    let shift = bounds_left - x;
+                    x = bounds_left;
+                    width = max_x - bounds_left;
+                    atlas_x += shift * TEXT_RASTER_SCALE;
+                }
+                if x + width > bounds_right {
+                    width = bounds_right - x;
+                }
+                if y < bounds_top {
+                    let shift = bounds_top - y;
+                    y = bounds_top;
+                    height = max_y - bounds_top;
+                    atlas_y += shift * TEXT_RASTER_SCALE;
+                }
+                if y + height > bounds_bottom {
+                    height = bounds_bottom - y;
+                }
+                if width <= 0.0 || height <= 0.0 {
+                    continue;
+                }
+
+                let atlas_size = self.atlas.size as f32;
+                let rgba = color.as_rgba();
+                out.push(TextGlyphVertex {
+                    pos: [x, y],
+                    size: [width, height],
+                    uv_min: [atlas_x / atlas_size, atlas_y / atlas_size],
+                    uv_max: [
+                        (atlas_x + width * TEXT_RASTER_SCALE) / atlas_size,
+                        (atlas_y + height * TEXT_RASTER_SCALE) / atlas_size,
+                    ],
+                    color: [
+                        rgba[0] as f32 / 255.0,
+                        rgba[1] as f32 / 255.0,
+                        rgba[2] as f32 / 255.0,
+                        rgba[3] as f32 / 255.0,
+                    ],
+                    opacity: 1.0,
+                    content_kind: atlas_glyph.content_kind,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn prepare_buffer_cached(
@@ -962,6 +1468,19 @@ fn with_text_resources<R>(
     })
 }
 
+fn with_text_resources_for_render(format: wgpu::TextureFormat, f: impl FnOnce(&mut TextResources)) {
+    TEXT_GLOBAL_CACHE.with(|cache| {
+        let mut guard = cache.borrow_mut();
+        let Some(resources) = guard.resources.as_mut() else {
+            return;
+        };
+        if resources.format != format {
+            return;
+        }
+        f(resources);
+    });
+}
+
 fn text_depth_stencil_state() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth24PlusStencil8,
@@ -987,6 +1506,85 @@ fn text_depth_stencil_state() -> wgpu::DepthStencilState {
     }
 }
 
+const TEXT_GLYPH_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    0 => Float32x2,
+    1 => Float32x2,
+    2 => Float32x2,
+    3 => Float32x2,
+    4 => Float32x4,
+    5 => Float32,
+    6 => Float32
+];
+
+fn create_text_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    stencil_enabled: bool,
+    screen_bind_group_layout: &wgpu::BindGroupLayout,
+    atlas_bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Text Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/text.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Text Pipeline Layout"),
+        bind_group_layouts: &[
+            Some(screen_bind_group_layout),
+            Some(atlas_bind_group_layout),
+        ],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Text Pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<TextGlyphVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &TEXT_GLYPH_VERTEX_ATTRIBUTES,
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: stencil_enabled.then(text_depth_stencil_state),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 pub fn prewarm_text_pipeline(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1002,10 +1600,8 @@ pub fn prewarm_text_pipeline(
             sample_count,
             stencil_enabled: true,
         };
-        let renderer_regular = resources.take_renderer(device, regular_key);
-        resources.put_renderer(regular_key, renderer_regular);
-        let renderer_stencil = resources.take_renderer(device, stencil_key);
-        resources.put_renderer(stencil_key, renderer_stencil);
+        resources.ensure_pipeline(device, regular_key);
+        resources.ensure_pipeline(device, stencil_key);
     });
 }
 
@@ -1021,8 +1617,7 @@ mod tests {
         TextBounds, TextDebugOverlay, build_text_debug_overlay, physical_scissor_rect,
         text_pixel_to_ndc,
     };
-    use glyphon::cosmic_text::{Weight, Wrap};
-    use glyphon::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+    use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, Weight, Wrap};
 
     fn build_buffer(content: &str, width: f32, font_size: f32, line_height: f32) -> Buffer {
         let mut font_system = FontSystem::new();

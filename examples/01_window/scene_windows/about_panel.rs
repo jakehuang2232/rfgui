@@ -3684,7 +3684,7 @@ pub fn build(theme: &Theme) -> RsxNode {
     <Element>Used by:</Element>
 
     <Element>allocator-api2 0.2.21</Element>
-    <Element>glyphon 0.10.0</Element>
+    <Element>cosmic-text 0.18.2</Element>
 
     <Element>
         Permission is hereby granted, free of charge, to any

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
-use glyphon::FontSystem;
-use glyphon::fontdb;
+use cosmic_text::FontSystem;
+use cosmic_text::fontdb;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Uint8Array;
 use std::sync::Arc;
