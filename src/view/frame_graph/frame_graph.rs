@@ -1254,12 +1254,13 @@ impl FrameGraph {
         let mut next_buffer_version = 0_u32;
 
         for (pass_index, node) in self.passes.iter_mut().enumerate() {
-            let descriptor = node.descriptor.clone();
+            // Borrow descriptor and usages as separate fields so no clone is needed.
+            let descriptor = &node.descriptor;
             for usage in &mut node.usages {
                 let (read_version, write_version) = annotate_usage_version(
                     usage.resource,
                     usage.usage,
-                    &descriptor,
+                    descriptor,
                     &self.texture_metadata,
                     &mut latest_texture_version,
                     &mut latest_buffer_version,
@@ -1327,7 +1328,7 @@ impl FrameGraph {
 
         let toposort_live_passes_started_at = Instant::now();
         let ordered_passes =
-            self.toposort_live_passes(&live_passes, &graph_edges, indegree.clone())?;
+            self.toposort_live_passes(&live_passes, &graph_edges, &indegree)?;
         let toposort_live_passes_ms =
             toposort_live_passes_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -1368,7 +1369,6 @@ impl FrameGraph {
         let culled_passes = (0..self.passes.len())
             .filter(|index| !live_passes.contains(index))
             .collect::<Vec<_>>();
-        let live_set = live_passes.iter().copied().collect::<HashSet<_>>();
         let assemble_compiled_passes_started_at = Instant::now();
         let compiled_passes = ordered_passes
             .iter()
@@ -1390,7 +1390,6 @@ impl FrameGraph {
                     is_root: sink_passes.contains(&index),
                 }
             })
-            .filter(|pass| live_set.contains(&pass.original_index))
             .collect::<Vec<_>>();
         let assemble_compiled_passes_ms =
             assemble_compiled_passes_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1501,12 +1500,13 @@ impl FrameGraph {
             if !live.insert(pass_index) {
                 continue;
             }
-            for (resource, version) in self.pass_input_versions(pass_index) {
+            for usage in &self.passes[pass_index].usages {
+                let Some(version) = usage.read_version else { continue };
                 if let Some(&producer) = version_producers.get(&version) {
                     if producer != pass_index {
                         stack.push(producer);
                     }
-                } else if !self.resource_has_external_input(resource) {
+                } else if !self.resource_has_external_input(usage.resource) {
                     return Err(FrameGraphError::MissingInput(
                         "live pass requires a resource version without a producer",
                     ));
@@ -1527,7 +1527,8 @@ impl FrameGraph {
         self.validate_live_passes(live_passes, version_producers)?;
 
         for &index in live_passes {
-            for (_, version) in self.pass_input_versions(index) {
+            for usage in &self.passes[index].usages {
+                let Some(version) = usage.read_version else { continue };
                 if let Some(&producer) = version_producers.get(&version)
                     && producer != index
                     && graph_edges[producer].insert(index)
@@ -1592,19 +1593,6 @@ impl FrameGraph {
         latest
     }
 
-    fn pass_input_versions(&self, pass_index: usize) -> Vec<(ResourceHandle, ResourceVersionId)> {
-        let mut seen = HashSet::new();
-        let mut versions = Vec::new();
-        for usage in &self.passes[pass_index].usages {
-            let Some(version) = usage.read_version else {
-                continue;
-            };
-            if seen.insert((usage.resource, version)) {
-                versions.push((usage.resource, version));
-            }
-        }
-        versions
-    }
 
     fn pass_consumed_versions(&self, pass_index: usize) -> Vec<ConsumedVersion> {
         let mut seen = HashSet::new();
@@ -1661,43 +1649,31 @@ impl FrameGraph {
         let mut info = vec![BatchAnchorInfo::default(); self.passes.len()];
 
         for &pass_index in analysis_order.iter().rev() {
-            let mut best_downstream: Option<BatchAnchorInfo> = None;
+            // Find the closest downstream anchor (minimum distance), by index only.
+            let mut best_downstream_consumer: Option<usize> = None;
             for &consumer in &graph_edges[pass_index] {
-                if !live_passes.contains(&consumer) {
+                if !live_passes.contains(&consumer) || info[consumer].anchor_pass_index.is_none() {
                     continue;
                 }
-                let candidate = &info[consumer];
-                if candidate.anchor_signature.is_none() {
-                    continue;
-                }
-                if best_downstream
-                    .as_ref()
-                    .is_none_or(|best| candidate.distance_to_anchor < best.distance_to_anchor)
+                if best_downstream_consumer
+                    .is_none_or(|best| info[consumer].distance_to_anchor < info[best].distance_to_anchor)
                 {
-                    best_downstream = Some(candidate.clone());
+                    best_downstream_consumer = Some(consumer);
                 }
             }
 
-            let mergeable_signature =
-                is_mergeable_graphics_pass(&self.passes[pass_index].descriptor)
-                    .then(|| compatibility_keys[pass_index].clone())
-                    .flatten();
-
-            info[pass_index] = if let Some(downstream) = best_downstream {
-                if mergeable_signature.is_none() {
-                    BatchAnchorInfo {
-                        anchor_signature: downstream.anchor_signature,
-                        distance_to_anchor: downstream.distance_to_anchor.saturating_add(1),
-                    }
-                } else {
-                    BatchAnchorInfo {
-                        anchor_signature: downstream.anchor_signature,
-                        distance_to_anchor: downstream.distance_to_anchor.saturating_add(1),
-                    }
-                }
-            } else if let Some(signature) = mergeable_signature {
+            info[pass_index] = if let Some(consumer) = best_downstream_consumer {
+                // Propagate the anchor from the downstream consumer (no clone needed).
                 BatchAnchorInfo {
-                    anchor_signature: Some(signature),
+                    anchor_pass_index: info[consumer].anchor_pass_index,
+                    distance_to_anchor: info[consumer].distance_to_anchor.saturating_add(1),
+                }
+            } else if is_mergeable_graphics_pass(&self.passes[pass_index].descriptor)
+                && compatibility_keys[pass_index].is_some()
+            {
+                // This pass is itself a mergeable anchor.
+                BatchAnchorInfo {
+                    anchor_pass_index: Some(pass_index),
                     distance_to_anchor: 0,
                 }
             } else {
@@ -1712,10 +1688,11 @@ impl FrameGraph {
         &self,
         live_passes: &HashSet<usize>,
         graph_edges: &[HashSet<usize>],
-        mut indegree: Vec<usize>,
+        indegree: &[usize],
     ) -> Result<Vec<usize>, FrameGraphError> {
+        let mut indegree = indegree.to_vec();
         let mut order = Vec::new();
-        let mut queue: VecDeque<usize> = indegree
+        let mut queue: HashSet<usize> = indegree
             .iter()
             .enumerate()
             .filter_map(|(idx, &deg)| {
@@ -1744,25 +1721,25 @@ impl FrameGraph {
             &indegree,
             &compatibility_keys,
         );
-        let mut last_signature: Option<RenderPassCompatibilityKey> = None;
+        let mut last_signature: Option<&RenderPassCompatibilityKey> = None;
 
         while !queue.is_empty() {
             let n = select_next_ready_node(
                 &queue,
                 &compatibility_keys,
                 &batch_anchor_info,
-                last_signature.as_ref(),
+                last_signature,
                 graph_edges,
                 &indegree,
                 live_passes,
             );
-            let n = remove_from_queue(&mut queue, n);
+            queue.remove(&n);
             order.push(n);
-            last_signature = compatibility_keys[n].clone();
+            last_signature = compatibility_keys[n].as_ref();
             for &m in &graph_edges[n] {
                 indegree[m] -= 1;
                 if indegree[m] == 0 && live_passes.contains(&m) {
-                    queue.push_back(m);
+                    queue.insert(m);
                 }
             }
         }
@@ -1812,7 +1789,7 @@ impl FrameGraph {
                             if absorbed_load_variant.is_none()
                                 && can_absorb_leading_clear_pass(&current_key, &next_key)
                             {
-                                absorbed_load_variant = Some(next_key.clone());
+                                absorbed_load_variant = Some(next_key);
                             } else {
                                 break;
                             }
@@ -2205,31 +2182,34 @@ impl FrameGraph {
             &texture_stable_keys,
             &buffer_allocations,
         );
-        for step in self.execute_steps.clone() {
+        // Take execute_steps out of self so we can call &mut self methods while iterating,
+        // then restore it afterward — zero clones, no heap allocations.
+        let execute_steps = std::mem::take(&mut self.execute_steps);
+        for step in &execute_steps {
             match step {
                 ExecuteStep::GraphicsPass { index } => self.execute_graphics_pass(
-                    index,
+                    *index,
                     &mut ctx,
                     &mut pass_timings,
                     &mut pass_counts,
                     &mut pass_first_seen_order,
                 ),
                 ExecuteStep::ComputePass { index } => self.execute_compute_pass(
-                    index,
+                    *index,
                     &mut ctx,
                     &mut pass_timings,
                     &mut pass_counts,
                     &mut pass_first_seen_order,
                 ),
                 ExecuteStep::TransferPass { index } => self.execute_transfer_pass(
-                    index,
+                    *index,
                     &mut ctx,
                     &mut pass_timings,
                     &mut pass_counts,
                     &mut pass_first_seen_order,
                 ),
                 ExecuteStep::GraphicsPassGroup(group) => self.execute_graphics_group(
-                    &group,
+                    group,
                     &mut ctx,
                     &mut pass_timings,
                     &mut pass_counts,
@@ -2237,6 +2217,7 @@ impl FrameGraph {
                 ),
             }
         }
+        self.execute_steps = execute_steps;
         let mut top_passes: Vec<(String, f64)> = pass_timings
             .iter()
             .map(|(name, ms)| (name.clone(), *ms))
@@ -2264,7 +2245,8 @@ impl FrameGraph {
 
 #[derive(Clone, Debug, Default)]
 struct BatchAnchorInfo {
-    anchor_signature: Option<RenderPassCompatibilityKey>,
+    /// Index into the `compatibility_keys` slice of the downstream anchor pass, if any.
+    anchor_pass_index: Option<usize>,
     distance_to_anchor: usize,
 }
 
@@ -3267,16 +3249,8 @@ fn validate_pass_descriptor(
     Ok(())
 }
 
-fn remove_from_queue(queue: &mut VecDeque<usize>, value: usize) -> usize {
-    if let Some(pos) = queue.iter().position(|&v| v == value) {
-        queue.remove(pos).expect("queue index should exist")
-    } else {
-        queue.pop_front().expect("queue should not be empty")
-    }
-}
-
 fn select_next_ready_node(
-    queue: &VecDeque<usize>,
+    queue: &HashSet<usize>,
     signatures: &[Option<RenderPassCompatibilityKey>],
     batch_anchor_info: &[BatchAnchorInfo],
     last_signature: Option<&RenderPassCompatibilityKey>,
@@ -3301,37 +3275,58 @@ fn select_next_ready_node(
         }
     }
 
-    let mut anchor_counts = HashMap::<RenderPassCompatibilityKey, usize>::new();
-    for &idx in queue {
-        let Some(anchor_signature) = batch_anchor_info[idx].anchor_signature.clone() else {
-            continue;
-        };
-        *anchor_counts.entry(anchor_signature).or_insert(0) += 1;
+    // Single pass: group by anchor_signature, tracking (count, best_distance, best_idx).
+    // This replaces the two separate scans that previously built anchor_counts then searched it,
+    // and eliminates the per-element clone of RenderPassCompatibilityKey.
+    struct AnchorGroupBest {
+        count: usize,
+        best_distance: usize,
+        best_idx: usize,
     }
-    let mut best_anchor_choice: Option<(usize, usize, usize)> = None;
+    let mut anchor_groups: HashMap<&RenderPassCompatibilityKey, AnchorGroupBest> = HashMap::new();
     for &idx in queue {
-        let Some(anchor_signature) = batch_anchor_info[idx].anchor_signature.as_ref() else {
+        // Resolve the anchor's signature through the index stored in BatchAnchorInfo —
+        // no clone required; we borrow directly from the signatures slice.
+        let Some(anchor_pass_idx) = batch_anchor_info[idx].anchor_pass_index else {
             continue;
         };
-        let ready_count = anchor_counts.get(anchor_signature).copied().unwrap_or(0);
+        let Some(anchor_signature) = signatures[anchor_pass_idx].as_ref() else {
+            continue;
+        };
         let distance = batch_anchor_info[idx].distance_to_anchor;
-        if best_anchor_choice
-            .as_ref()
-            .is_none_or(|(best_idx, best_count, best_distance)| {
-                ready_count > *best_count
-                    || (ready_count == *best_count && distance > *best_distance)
-                    || (ready_count == *best_count && distance == *best_distance && idx < *best_idx)
-            })
+        let entry = anchor_groups.entry(anchor_signature).or_insert(AnchorGroupBest {
+            count: 0,
+            best_distance: 0,
+            best_idx: usize::MAX,
+        });
+        entry.count += 1;
+        if distance > entry.best_distance
+            || (distance == entry.best_distance && idx < entry.best_idx)
         {
-            best_anchor_choice = Some((idx, ready_count, distance));
+            entry.best_distance = distance;
+            entry.best_idx = idx;
         }
     }
+    // Iterate over groups (O(unique anchor signatures), not O(queue)).
+    let best_anchor_choice = anchor_groups
+        .values()
+        .max_by(|a, b| {
+            a.count
+                .cmp(&b.count)
+                .then(a.best_distance.cmp(&b.best_distance))
+                .then(b.best_idx.cmp(&a.best_idx))
+        })
+        .map(|g| (g.best_idx, g.count, g.best_distance));
     if let Some((idx, ready_count, distance)) = best_anchor_choice
         && (ready_count > 1 || distance > 0)
     {
         return idx;
     }
 
+    // Allocate simulation state once; estimate_compatible_run_length uses an undo log
+    // to restore both after each candidate evaluation, avoiding per-call clones.
+    let mut sim_ready = queue.clone();
+    let mut sim_indegree = indegree.to_vec();
     let mut best_graphics_choice: Option<(usize, usize)> = None;
     for &idx in queue {
         let Some(signature) = signatures[idx].as_ref() else {
@@ -3340,10 +3335,10 @@ fn select_next_ready_node(
         let run_len = estimate_compatible_run_length(
             idx,
             signature,
-            queue,
+            &mut sim_ready,
+            &mut sim_indegree,
             signatures,
             graph_edges,
-            indegree,
             live_passes,
         );
         if best_graphics_choice
@@ -3398,14 +3393,19 @@ fn topological_order_for_analysis(
 fn estimate_compatible_run_length(
     start_idx: usize,
     target_signature: &RenderPassCompatibilityKey,
-    queue: &VecDeque<usize>,
+    ready: &mut HashSet<usize>,
+    sim_indegree: &mut Vec<usize>,
     signatures: &[Option<RenderPassCompatibilityKey>],
     graph_edges: &[HashSet<usize>],
-    indegree: &[usize],
     live_passes: &HashSet<usize>,
 ) -> usize {
-    let mut simulated_indegree = indegree.to_vec();
-    let mut ready: HashSet<usize> = queue.iter().copied().collect();
+    // Undo logs so we can restore `ready` and `sim_indegree` after the simulation
+    // instead of cloning them fresh on every call.
+    let mut removed_from_ready: Vec<usize> = Vec::new();
+    let mut added_to_ready: Vec<usize> = Vec::new();
+    // (index, value_before_decrement) — must be restored in reverse order.
+    let mut decremented: Vec<(usize, usize)> = Vec::new();
+
     let mut run_len = 0usize;
     let mut current = Some(start_idx);
 
@@ -3413,11 +3413,19 @@ fn estimate_compatible_run_length(
         if !ready.remove(&node) {
             break;
         }
+        removed_from_ready.push(node);
         run_len += 1;
         for &next in &graph_edges[node] {
-            simulated_indegree[next] = simulated_indegree[next].saturating_sub(1);
-            if simulated_indegree[next] == 0 && live_passes.contains(&next) {
-                ready.insert(next);
+            let old = sim_indegree[next];
+            let new_val = old.saturating_sub(1);
+            if new_val != old {
+                sim_indegree[next] = new_val;
+                decremented.push((next, old));
+            }
+            if sim_indegree[next] == 0 && live_passes.contains(&next) {
+                if ready.insert(next) {
+                    added_to_ready.push(next);
+                }
             }
         }
         current = ready
@@ -3429,6 +3437,18 @@ fn estimate_compatible_run_length(
                     .is_some_and(|signature| signature == target_signature)
             })
             .min();
+    }
+
+    // Restore state. Decrements are replayed in reverse to handle the case where
+    // the same index was decremented multiple times within a single simulation run.
+    for idx in added_to_ready {
+        ready.remove(&idx);
+    }
+    for idx in removed_from_ready {
+        ready.insert(idx);
+    }
+    for (idx, old_val) in decremented.into_iter().rev() {
+        sim_indegree[idx] = old_val;
     }
 
     run_len
@@ -3630,6 +3650,8 @@ fn build_allocation_plan(
     let mut next_id = 0u32;
     let mut texture_slots: Vec<TextureSlot> = Vec::new();
     let mut texture_allocations: Vec<TextureAllocationPlanEntry> = Vec::new();
+    // Index from AllocationId → position in texture_allocations for O(1) lookup.
+    let mut texture_allocation_index: HashMap<AllocationId, usize> = HashMap::new();
     let mut buffer_allocations: Vec<BufferAllocationPlanEntry> = Vec::new();
     let mut texture_allocation_ids = HashMap::new();
     let mut buffer_allocation_ids = HashMap::new();
@@ -3701,6 +3723,7 @@ fn build_allocation_plan(
                     desc: desc.clone(),
                     last_use_pass_index: candidate.last_use_pass_index,
                 });
+                texture_allocation_index.insert(id, texture_allocations.len());
                 texture_allocations.push(TextureAllocationPlanEntry {
                     allocation_id: id,
                     owner: AllocationOwner::AllocatorManaged,
@@ -3709,11 +3732,8 @@ fn build_allocation_plan(
                 id
             });
         texture_allocation_ids.insert(candidate.handle, chosen);
-        if let Some(entry) = texture_allocations
-            .iter_mut()
-            .find(|entry| entry.allocation_id == chosen)
-        {
-            entry.resources.push(candidate.handle);
+        if let Some(&idx) = texture_allocation_index.get(&chosen) {
+            texture_allocations[idx].resources.push(candidate.handle);
         }
     }
 
