@@ -8,9 +8,11 @@ use crate::view::render_pass::text_pass::{TextInput, TextOutput};
 use crate::view::render_pass::text_pass::{TextPassFragment, TextPassParams};
 use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
 use crate::{ColorLike, Cursor, HexColor, Style, TextAlign, TextWrap};
-use cosmic_text::{Align, Buffer as GlyphBuffer};
+use cosmic_text::{Align, Buffer as GlyphBuffer, Hinting, ShapeLine, Wrap};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, InlineMeasureContext,
@@ -28,11 +30,64 @@ struct InlineTextFragment {
     layout_buffer: Option<GlyphBuffer>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct InlineTextPlan {
+    runs: Vec<InlineTextFragment>,
+    max_width: f32,
+    max_height: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct InlinePlanCacheKey {
+    first_width_milli: i32,
+    full_width_milli: i32,
+    text_wrap: u8,
+}
+
 #[derive(Clone)]
 struct MeasuredTextLayout {
     buffer: GlyphBuffer,
     width: f32,
     height: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TextShapeCacheKey {
+    content: String,
+    font_size_milli: i32,
+    line_height_milli: i32,
+    font_weight: u16,
+    align: u8,
+    font_families: Vec<String>,
+}
+
+#[derive(Clone)]
+struct GlobalShapedText {
+    buffer: GlyphBuffer,
+    shape_line: Option<ShapeLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TextLayoutCacheKey {
+    width_milli: i32,
+    allow_wrap: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FirstLineLayoutCacheKey {
+    first_width_milli: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct WrappedSuffixCacheKey {
+    suffix_start: usize,
+    full_width_milli: i32,
+}
+
+#[derive(Clone, Debug)]
+struct FirstLineLayoutCacheEntry {
+    consumed_bytes: usize,
+    fragment: InlineTextFragment,
 }
 
 pub struct Text {
@@ -60,8 +115,12 @@ pub struct Text {
     measure_revision: u64,
     cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
+    layout_cache: HashMap<TextLayoutCacheKey, MeasuredTextLayout>,
+    inline_plan_cache: HashMap<InlinePlanCacheKey, InlineTextPlan>,
+    first_line_fragment_cache: HashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
+    wrapped_suffix_cache: HashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
     layout_buffer: Option<GlyphBuffer>,
-    inline_fragments: Vec<InlineTextFragment>,
+    inline_plan: Option<InlineTextPlan>,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
 }
@@ -69,6 +128,64 @@ pub struct Text {
 thread_local! {
     static MEASURE_TEXT_CACHE: RefCell<HashMap<TextMeasureCacheKey, MeasuredTextLayout>> =
         RefCell::new(HashMap::new());
+    static SHAPED_TEXT_CACHE: RefCell<HashMap<TextShapeCacheKey, GlobalShapedText>> =
+        RefCell::new(HashMap::new());
+    static TEXT_MEASURE_PROFILE: RefCell<TextMeasureProfile> =
+        RefCell::new(TextMeasureProfile::default());
+}
+
+static TEXT_MEASURE_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TextMeasureProfile {
+    pub measure_inline_calls: usize,
+    pub measure_inline_ms: f64,
+    pub ensure_shaped_base_buffer_calls: usize,
+    pub ensure_shaped_base_buffer_cache_hits: usize,
+    pub ensure_shaped_base_buffer_ms: f64,
+    pub relayout_from_base_calls: usize,
+    pub relayout_from_base_cache_hits: usize,
+    pub relayout_from_base_ms: f64,
+    pub collect_wrapped_inline_fragments_calls: usize,
+    pub collect_wrapped_inline_fragments_cache_hits: usize,
+    pub collect_wrapped_inline_fragments_ms: f64,
+    pub first_wrapped_fragment_calls: usize,
+    pub first_wrapped_fragment_cache_hits: usize,
+    pub first_wrapped_fragment_ms: f64,
+    pub wrapped_suffix_fragments_calls: usize,
+    pub wrapped_suffix_fragments_cache_hits: usize,
+    pub wrapped_suffix_fragments_ms: f64,
+    pub trimmed_suffix_shape_line_calls: usize,
+    pub trimmed_suffix_shape_line_cache_hits: usize,
+    pub trimmed_suffix_shape_line_ms: f64,
+    pub measure_text_layout_calls: usize,
+    pub measure_text_layout_cache_hits: usize,
+    pub measure_text_layout_ms: f64,
+}
+
+pub(crate) fn set_text_measure_profile_enabled(enabled: bool) {
+    TEXT_MEASURE_PROFILE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub(crate) fn reset_text_measure_profile() {
+    TEXT_MEASURE_PROFILE.with(|profile| {
+        *profile.borrow_mut() = TextMeasureProfile::default();
+    });
+}
+
+pub(crate) fn take_text_measure_profile() -> TextMeasureProfile {
+    TEXT_MEASURE_PROFILE.with(|profile| std::mem::take(&mut *profile.borrow_mut()))
+}
+
+fn text_measure_profile_enabled() -> bool {
+    TEXT_MEASURE_PROFILE_ENABLED.load(Ordering::Relaxed)
+}
+
+fn record_text_measure_profile(update: impl FnOnce(&mut TextMeasureProfile)) {
+    if !text_measure_profile_enabled() {
+        return;
+    }
+    TEXT_MEASURE_PROFILE.with(|profile| update(&mut profile.borrow_mut()));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -112,7 +229,435 @@ fn make_measure_cache_key(
     }
 }
 
+fn make_shape_cache_key(
+    content: &str,
+    font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+    align: Align,
+    font_families: &[String],
+) -> TextShapeCacheKey {
+    TextShapeCacheKey {
+        content: content.to_string(),
+        font_size_milli: quantize_milli(font_size),
+        line_height_milli: quantize_milli(line_height),
+        font_weight,
+        align: match align {
+            Align::Left => 0,
+            Align::Center => 1,
+            Align::Right => 2,
+            Align::Justified => 3,
+            Align::End => 4,
+        },
+        font_families: font_families.to_vec(),
+    }
+}
+
 impl Text {
+    fn get_global_shaped_text(&self) -> GlobalShapedText {
+        let started_at = text_measure_profile_enabled().then(Instant::now);
+        let key = make_shape_cache_key(
+            self.content.as_str(),
+            self.font_size,
+            self.line_height,
+            self.font_weight,
+            self.align,
+            self.font_families.as_slice(),
+        );
+        let (cache_hit, shaped) = SHAPED_TEXT_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(cached) = cache.get(&key).cloned() {
+                return (true, cached);
+            }
+            let shaped = with_shared_font_system(|font_system| {
+                let mut buffer = build_text_buffer(
+                    font_system,
+                    self.content.as_str(),
+                    None,
+                    None,
+                    false,
+                    self.font_size,
+                    self.line_height,
+                    self.font_weight,
+                    self.align,
+                    self.font_families.as_slice(),
+                );
+                let shape_line = buffer.line_shape(font_system, 0).cloned();
+                GlobalShapedText { buffer, shape_line }
+            });
+            if cache.len() >= 4096 {
+                let mut keep = false;
+                cache.retain(|_, _| {
+                    keep = !keep;
+                    keep
+                });
+            }
+            cache.insert(key, shaped.clone());
+            (false, shaped)
+        });
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.ensure_shaped_base_buffer_calls += 1;
+                if cache_hit {
+                    profile.ensure_shaped_base_buffer_cache_hits += 1;
+                }
+                profile.ensure_shaped_base_buffer_ms += elapsed_ms;
+            });
+        }
+        shaped
+    }
+
+    fn ensure_shaped_base_buffer(&self) -> GlyphBuffer {
+        self.get_global_shaped_text().buffer
+    }
+
+    fn base_shape_line(&self) -> Option<ShapeLine> {
+        self.get_global_shaped_text().shape_line
+    }
+
+    fn relayout_from_base(&mut self, width: Option<f32>, allow_wrap: bool) -> MeasuredTextLayout {
+        let started_at = text_measure_profile_enabled().then(Instant::now);
+        let cache_key = TextLayoutCacheKey {
+            width_milli: width.map(quantize_milli).unwrap_or(-1),
+            allow_wrap,
+        };
+        if let Some(cached) = self.layout_cache.get(&cache_key).cloned() {
+            if let Some(started_at) = started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                record_text_measure_profile(|profile| {
+                    profile.relayout_from_base_calls += 1;
+                    profile.relayout_from_base_cache_hits += 1;
+                    profile.relayout_from_base_ms += elapsed_ms;
+                });
+            }
+            return cached;
+        }
+
+        let mut buffer = self.ensure_shaped_base_buffer();
+        with_shared_font_system(|font_system| {
+            buffer.set_wrap(
+                font_system,
+                if allow_wrap {
+                    Wrap::WordOrGlyph
+                } else {
+                    Wrap::None
+                },
+            );
+            buffer.set_size(font_system, width.map(|value| value.max(1.0)), None);
+        });
+        let (measured_width, measured_height) = measure_buffer_size(&buffer);
+        let measured = MeasuredTextLayout {
+            buffer,
+            width: measured_width,
+            height: measured_height,
+        };
+        self.layout_cache.insert(cache_key, measured.clone());
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.relayout_from_base_calls += 1;
+                profile.relayout_from_base_ms += elapsed_ms;
+            });
+        }
+        measured
+    }
+
+    fn first_wrapped_fragment(&mut self, first_width: f32) -> Option<FirstLineLayoutCacheEntry> {
+        let started_at = text_measure_profile_enabled().then(Instant::now);
+        let cache_key = FirstLineLayoutCacheKey {
+            first_width_milli: quantize_milli(first_width.max(1.0)),
+        };
+        if let Some(cached) = self.first_line_fragment_cache.get(&cache_key).cloned() {
+            if let Some(started_at) = started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                record_text_measure_profile(|profile| {
+                    profile.first_wrapped_fragment_calls += 1;
+                    profile.first_wrapped_fragment_cache_hits += 1;
+                    profile.first_wrapped_fragment_ms += elapsed_ms;
+                });
+            }
+            return Some(cached);
+        }
+
+        let shape_line = self.base_shape_line()?;
+        let layout_line = shape_line
+            .layout(
+                self.font_size,
+                Some(first_width.max(1.0)),
+                Wrap::WordOrGlyph,
+                Some(self.align),
+                None,
+                Hinting::Disabled,
+            )
+            .into_iter()
+            .next()?;
+        let content = if let (Some(first), Some(last)) =
+            (layout_line.glyphs.first(), layout_line.glyphs.last())
+        {
+            self.content[first.start..last.end].to_string()
+        } else {
+            String::new()
+        };
+        let consumed_bytes = layout_line
+            .glyphs
+            .last()
+            .map(|glyph| glyph.end)
+            .unwrap_or(0);
+        let width = layout_line
+            .glyphs
+            .iter()
+            .fold(layout_line.w, |current, glyph| {
+                current.max(glyph.x + glyph.w.max(0.0))
+            })
+            .max(1.0);
+        let fragment_buffer = measure_text_layout(
+            content.as_str(),
+            Some(width),
+            false,
+            self.font_size,
+            self.line_height,
+            self.font_weight,
+            self.align,
+            self.font_families.as_slice(),
+        )
+        .buffer;
+
+        let entry = FirstLineLayoutCacheEntry {
+            consumed_bytes,
+            fragment: InlineTextFragment {
+                content,
+                width,
+                height: layout_line
+                    .line_height_opt
+                    .unwrap_or(self.font_size * self.line_height.max(0.8))
+                    .max(1.0),
+                position: None,
+                layout_buffer: Some(fragment_buffer),
+            },
+        };
+        self.first_line_fragment_cache
+            .insert(cache_key, entry.clone());
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.first_wrapped_fragment_calls += 1;
+                profile.first_wrapped_fragment_ms += elapsed_ms;
+            });
+        }
+        Some(entry)
+    }
+
+    fn wrapped_suffix_fragments(
+        &mut self,
+        suffix_start: usize,
+        full_width: f32,
+    ) -> Vec<InlineTextFragment> {
+        let started_at = text_measure_profile_enabled().then(Instant::now);
+        let cache_key = WrappedSuffixCacheKey {
+            suffix_start,
+            full_width_milli: quantize_milli(full_width.max(1.0)),
+        };
+        if let Some(cached) = self.wrapped_suffix_cache.get(&cache_key).cloned() {
+            if let Some(started_at) = started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                record_text_measure_profile(|profile| {
+                    profile.wrapped_suffix_fragments_calls += 1;
+                    profile.wrapped_suffix_fragments_cache_hits += 1;
+                    profile.wrapped_suffix_fragments_ms += elapsed_ms;
+                });
+            }
+            return cached;
+        }
+
+        let mut fragments = Vec::new();
+        if suffix_start < self.content.len() {
+            let remaining_content = &self.content[suffix_start..];
+            let remaining_layout = measure_text_layout(
+                remaining_content,
+                Some(full_width.max(1.0)),
+                true,
+                self.font_size,
+                self.line_height,
+                self.font_weight,
+                self.align,
+                self.font_families.as_slice(),
+            );
+            fragments = self.fragments_from_measured_layout(&remaining_layout);
+        }
+
+        self.wrapped_suffix_cache
+            .insert(cache_key, fragments.clone());
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.wrapped_suffix_fragments_calls += 1;
+                profile.wrapped_suffix_fragments_ms += elapsed_ms;
+            });
+        }
+        fragments
+    }
+
+    fn collect_wrapped_inline_fragments(
+        &mut self,
+        first_width: f32,
+        full_width: f32,
+    ) -> Vec<InlineTextFragment> {
+        let started_at = text_measure_profile_enabled().then(Instant::now);
+        let first_width = first_width.max(1.0);
+        let full_width = full_width.max(1.0);
+        let first_key = FirstLineLayoutCacheKey {
+            first_width_milli: quantize_milli(first_width),
+        };
+        let first_cache_hit = self.first_line_fragment_cache.contains_key(&first_key);
+        let mut fragments = Vec::new();
+
+        if (first_width - full_width).abs() <= 0.01 {
+            let full_layout = measure_text_layout(
+                self.content.as_str(),
+                Some(full_width),
+                true,
+                self.font_size,
+                self.line_height,
+                self.font_weight,
+                self.align,
+                self.font_families.as_slice(),
+            );
+            fragments = self.fragments_from_measured_layout(&full_layout);
+            if let Some(started_at) = started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                record_text_measure_profile(|profile| {
+                    profile.collect_wrapped_inline_fragments_calls += 1;
+                    profile.collect_wrapped_inline_fragments_ms += elapsed_ms;
+                });
+            }
+            return fragments;
+        }
+
+        let Some(first_line) = self.first_wrapped_fragment(first_width) else {
+            if let Some(started_at) = started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                record_text_measure_profile(|profile| {
+                    profile.collect_wrapped_inline_fragments_calls += 1;
+                    profile.collect_wrapped_inline_fragments_ms += elapsed_ms;
+                });
+            }
+            return fragments;
+        };
+
+        fragments.push(first_line.fragment.clone());
+        let suffix_key = WrappedSuffixCacheKey {
+            suffix_start: first_line.consumed_bytes,
+            full_width_milli: quantize_milli(full_width),
+        };
+        let suffix_cache_hit = self.wrapped_suffix_cache.contains_key(&suffix_key);
+        fragments.extend(self.wrapped_suffix_fragments(first_line.consumed_bytes, full_width));
+        let cache_hit = first_cache_hit
+            && (suffix_cache_hit || first_line.consumed_bytes >= self.content.len());
+
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.collect_wrapped_inline_fragments_calls += 1;
+                if cache_hit {
+                    profile.collect_wrapped_inline_fragments_cache_hits += 1;
+                }
+                profile.collect_wrapped_inline_fragments_ms += elapsed_ms;
+            });
+        }
+        fragments
+    }
+
+    fn fragments_from_measured_layout(
+        &self,
+        measured: &MeasuredTextLayout,
+    ) -> Vec<InlineTextFragment> {
+        measured
+            .buffer
+            .layout_runs()
+            .map(|run| {
+                let content =
+                    if let (Some(first), Some(last)) = (run.glyphs.first(), run.glyphs.last()) {
+                        run.text[first.start..last.end].to_string()
+                    } else {
+                        String::new()
+                    };
+                let width = run
+                    .glyphs
+                    .iter()
+                    .fold(run.line_w, |current, glyph| {
+                        current.max(glyph.x + glyph.w.max(0.0))
+                    })
+                    .max(1.0);
+                let fragment_buffer = measure_text_layout(
+                    content.as_str(),
+                    Some(width),
+                    false,
+                    self.font_size,
+                    self.line_height,
+                    self.font_weight,
+                    self.align,
+                    self.font_families.as_slice(),
+                )
+                .buffer;
+
+                InlineTextFragment {
+                    content,
+                    width,
+                    height: run.line_height.max(1.0),
+                    position: None,
+                    layout_buffer: Some(fragment_buffer),
+                }
+            })
+            .collect()
+    }
+
+    fn build_inline_plan(&mut self, first_width: f32, full_width: f32) -> InlineTextPlan {
+        let cache_key = InlinePlanCacheKey {
+            first_width_milli: quantize_milli(first_width.max(1.0)),
+            full_width_milli: quantize_milli(full_width.max(1.0)),
+            text_wrap: match self.text_wrap {
+                TextWrap::NoWrap => 0,
+                TextWrap::Wrap => 1,
+            },
+        };
+        if let Some(cached) = self.inline_plan_cache.get(&cache_key).cloned() {
+            return cached;
+        }
+
+        let runs = if self.text_wrap == TextWrap::NoWrap {
+            let layout = measure_text_layout(
+                self.content.as_str(),
+                None,
+                false,
+                self.font_size,
+                self.line_height,
+                self.font_weight,
+                self.align,
+                self.font_families.as_slice(),
+            );
+            vec![InlineTextFragment {
+                content: self.content.clone(),
+                width: layout.width,
+                height: layout.height,
+                position: None,
+                layout_buffer: Some(layout.buffer),
+            }]
+        } else {
+            self.collect_wrapped_inline_fragments(first_width.max(1.0), full_width.max(1.0))
+        };
+        let (max_width, max_height) = runs.iter().fold((0.0_f32, 0.0_f32), |(w, h), item| {
+            (w.max(item.width), h.max(item.height))
+        });
+        let plan = InlineTextPlan {
+            runs,
+            max_width,
+            max_height,
+        };
+        self.inline_plan_cache.insert(cache_key, plan.clone());
+        plan
+    }
+
     pub fn from_content(content: impl Into<String>) -> Self {
         let mut text = Self::new(0.0, 0.0, 10_000.0, 10_000.0, content);
         text.set_auto_width(true);
@@ -167,19 +712,31 @@ impl Text {
             measure_revision: 0,
             cached_intrinsic_layout: None,
             cached_height_for_width: None,
+            layout_cache: HashMap::new(),
+            inline_plan_cache: HashMap::new(),
+            first_line_fragment_cache: HashMap::new(),
+            wrapped_suffix_cache: HashMap::new(),
             layout_buffer: None,
-            inline_fragments: Vec::new(),
+            inline_plan: None,
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
         }
     }
 
-    fn mark_measure_dirty(&mut self) {
-        self.measure_revision = self.measure_revision.wrapping_add(1);
+    fn clear_layout_caches(&mut self) {
         self.cached_intrinsic_layout = None;
         self.cached_height_for_width = None;
+        self.layout_cache.clear();
+        self.inline_plan_cache.clear();
+        self.first_line_fragment_cache.clear();
+        self.wrapped_suffix_cache.clear();
         self.layout_buffer = None;
-        self.inline_fragments.clear();
+        self.inline_plan = None;
+    }
+
+    fn mark_measure_dirty(&mut self) {
+        self.measure_revision = self.measure_revision.wrapping_add(1);
+        self.clear_layout_caches();
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
 
@@ -311,15 +868,25 @@ impl Text {
     pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
         if self.text_wrap != text_wrap {
             self.text_wrap = text_wrap;
+            self.clear_layout_caches();
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
         }
     }
 
     pub fn set_auto_width(&mut self, auto: bool) {
-        self.auto_width = auto;
+        if self.auto_width != auto {
+            self.auto_width = auto;
+            self.clear_layout_caches();
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::LAYOUT);
+        }
     }
 
     pub fn set_auto_height(&mut self, auto: bool) {
-        self.auto_height = auto;
+        if self.auto_height != auto {
+            self.auto_height = auto;
+            self.clear_layout_caches();
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::LAYOUT);
+        }
     }
 
     pub fn set_cursor(&mut self, cursor: Cursor) {
@@ -330,7 +897,10 @@ impl Text {
 
     #[cfg(test)]
     pub(crate) fn inline_fragment_positions(&self) -> Vec<(String, Position)> {
-        self.inline_fragments
+        self.inline_plan
+            .as_ref()
+            .map(|plan| plan.runs.as_slice())
+            .unwrap_or(&[])
             .iter()
             .filter_map(|fragment| {
                 fragment
@@ -339,125 +909,6 @@ impl Text {
             })
             .collect()
     }
-}
-
-fn tokenize_inline_content(content: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut current_kind: Option<bool> = None;
-
-    for ch in content.chars() {
-        if is_cjk_character(ch) {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
-            current_kind = None;
-            tokens.push(ch.to_string());
-            continue;
-        }
-        let is_whitespace = ch.is_whitespace();
-        match current_kind {
-            None => {
-                current.push(ch);
-                current_kind = Some(is_whitespace);
-            }
-            Some(true) if is_whitespace => {
-                current.push(ch);
-            }
-            Some(true) => {
-                tokens.push(std::mem::take(&mut current));
-                current.push(ch);
-                current_kind = Some(false);
-            }
-            Some(false) if !is_whitespace => {
-                current.push(ch);
-            }
-            Some(false) => {
-                tokens.push(std::mem::take(&mut current));
-                current.push(ch);
-                current_kind = Some(true);
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    tokens
-}
-
-fn is_cjk_character(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x3400..=0x4DBF
-            | 0x4E00..=0x9FFF
-            | 0xF900..=0xFAFF
-            | 0x3040..=0x309F
-            | 0x30A0..=0x30FF
-            | 0xAC00..=0xD7AF
-            | 0x3000..=0x303F
-            | 0xFF00..=0xFFEF
-    )
-}
-
-fn split_inline_token_by_width(
-    token: &str,
-    max_width: f32,
-    font_size: f32,
-    line_height: f32,
-    font_weight: u16,
-    align: Align,
-    font_families: &[String],
-) -> Vec<(String, MeasuredTextLayout)> {
-    let max_width = max_width.max(1.0);
-    let token_layout = measure_text_layout(
-        token,
-        None,
-        false,
-        font_size,
-        line_height,
-        font_weight,
-        align,
-        font_families,
-    );
-    if token_layout.width <= max_width || token.chars().count() <= 1 {
-        return vec![(token.to_string(), token_layout)];
-    }
-
-    let chars = token.chars().collect::<Vec<_>>();
-    let mut fragments = Vec::new();
-    let mut start = 0_usize;
-    while start < chars.len() {
-        let mut candidate = String::new();
-        let mut best: Option<(usize, MeasuredTextLayout)> = None;
-        for end in start..chars.len() {
-            candidate.push(chars[end]);
-            let layout = measure_text_layout(
-                candidate.as_str(),
-                None,
-                false,
-                font_size,
-                line_height,
-                font_weight,
-                align,
-                font_families,
-            );
-            if layout.width <= max_width || end == start {
-                let width = layout.width;
-                best = Some((end + 1, layout));
-                if width > max_width {
-                    break;
-                }
-                continue;
-            }
-            break;
-        }
-        let (next_start, layout) = best.expect("at least one char must fit");
-        let fragment = chars[start..next_start].iter().collect::<String>();
-        fragments.push((fragment, layout));
-        start = next_start;
-    }
-    fragments
 }
 
 fn measure_text_layout(
@@ -470,6 +921,7 @@ fn measure_text_layout(
     align: Align,
     font_families: &[String],
 ) -> MeasuredTextLayout {
+    let started_at = text_measure_profile_enabled().then(Instant::now);
     let cache_key = make_measure_cache_key(
         content,
         max_width,
@@ -480,6 +932,14 @@ fn measure_text_layout(
         font_families,
     );
     if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned()) {
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.measure_text_layout_calls += 1;
+                profile.measure_text_layout_cache_hits += 1;
+                profile.measure_text_layout_ms += elapsed_ms;
+            });
+        }
         return cached;
     }
 
@@ -504,16 +964,27 @@ fn measure_text_layout(
         };
         MEASURE_TEXT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
-            cache.insert(cache_key, measured.clone());
-            if cache.len() > 4096 {
-                cache.clear();
+            if cache.len() >= 4096 {
+                let mut keep = false;
+                cache.retain(|_, _| {
+                    keep = !keep;
+                    keep
+                });
             }
+            cache.insert(cache_key, measured.clone());
         });
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.measure_text_layout_calls += 1;
+                profile.measure_text_layout_ms += elapsed_ms;
+            });
+        }
         measured
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn measure_text_size(
     content: &str,
     max_width: Option<f32>,
@@ -535,30 +1006,6 @@ fn measure_text_size(
         font_families,
     );
     (measured.width, measured.height)
-}
-
-impl Text {
-    fn build_layout_buffer_for_content(
-        &self,
-        content: &str,
-        width: Option<f32>,
-        allow_wrap: bool,
-    ) -> GlyphBuffer {
-        with_shared_font_system(|font_system| {
-            build_text_buffer(
-                font_system,
-                content,
-                width.map(|value| value.max(1.0)),
-                None,
-                allow_wrap,
-                self.font_size,
-                self.line_height,
-                self.font_weight,
-                self.align,
-                self.font_families.as_slice(),
-            )
-        })
-    }
 }
 
 impl ElementTrait for Text {
@@ -626,7 +1073,12 @@ impl ElementTrait for Text {
         self.allow_wrap.hash(&mut hasher);
         self.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
         self.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
-        for fragment in &self.inline_fragments {
+        let inline_runs = self
+            .inline_plan
+            .as_ref()
+            .map(|plan| plan.runs.as_slice())
+            .unwrap_or(&[]);
+        for fragment in inline_runs {
             fragment.content.hash(&mut hasher);
             fragment.width.to_bits().hash(&mut hasher);
             fragment.height.to_bits().hash(&mut hasher);
@@ -791,7 +1243,8 @@ impl Layoutable for Text {
     }
 
     fn measure_inline(&mut self, context: InlineMeasureContext) {
-        self.inline_fragments.clear();
+        let started_at = text_measure_profile_enabled().then(Instant::now);
+        self.inline_plan = None;
 
         if self.content.is_empty() {
             self.size = Size {
@@ -806,63 +1259,28 @@ impl Layoutable for Text {
                     .union(super::DirtyFlags::HIT_TEST)
                     .union(super::DirtyFlags::PAINT),
             );
+            if let Some(started_at) = started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                record_text_measure_profile(|profile| {
+                    profile.measure_inline_calls += 1;
+                    profile.measure_inline_ms += elapsed_ms;
+                });
+            }
             return;
         }
 
-        let max_fragment_width = context.full_available_width.max(1.0);
-        let fragments = if self.text_wrap == TextWrap::NoWrap {
-            let layout = measure_text_layout(
-                self.content.as_str(),
-                None,
-                false,
-                self.font_size,
-                self.line_height,
-                self.font_weight,
-                self.align,
-                self.font_families.as_slice(),
-            );
-            vec![InlineTextFragment {
-                content: self.content.clone(),
-                width: layout.width,
-                height: layout.height,
-                position: None,
-                layout_buffer: Some(layout.buffer),
-            }]
-        } else {
-            let mut fragments = Vec::new();
-            for token in tokenize_inline_content(self.content.as_str()) {
-                for (content, layout) in split_inline_token_by_width(
-                    token.as_str(),
-                    max_fragment_width,
-                    self.font_size,
-                    self.line_height,
-                    self.font_weight,
-                    self.align,
-                    self.font_families.as_slice(),
-                ) {
-                    fragments.push(InlineTextFragment {
-                        content,
-                        width: layout.width,
-                        height: layout.height,
-                        position: None,
-                        layout_buffer: Some(layout.buffer),
-                    });
-                }
-            }
-            fragments
-        };
-
-        let (max_width, max_height) = fragments.iter().fold((0.0_f32, 0.0_f32), |(w, h), item| {
-            (w.max(item.width), h.max(item.height))
-        });
-        self.inline_fragments = fragments;
+        let plan = self.build_inline_plan(
+            context.first_available_width.max(1.0),
+            context.full_available_width.max(1.0),
+        );
+        self.inline_plan = Some(plan.clone());
         self.size = Size {
-            width: round_layout_value(max_width),
-            height: round_layout_value(max_height),
+            width: round_layout_value(plan.max_width),
+            height: round_layout_value(plan.max_height),
         };
         self.render_size = Size {
-            width: max_width.max(0.0),
-            height: max_height.max(0.0),
+            width: plan.max_width.max(0.0),
+            height: plan.max_height.max(0.0),
         };
         self.layout_buffer = None;
         self.element.set_size(self.size.width, self.size.height);
@@ -872,10 +1290,20 @@ impl Layoutable for Text {
                 .union(super::DirtyFlags::HIT_TEST)
                 .union(super::DirtyFlags::PAINT),
         );
+        if let Some(started_at) = started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            record_text_measure_profile(|profile| {
+                profile.measure_inline_calls += 1;
+                profile.measure_inline_ms += elapsed_ms;
+            });
+        }
     }
 
     fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
-        self.inline_fragments
+        self.inline_plan
+            .as_ref()
+            .map(|plan| plan.runs.as_slice())
+            .unwrap_or(&[])
             .iter()
             .map(|fragment| InlineNodeSize {
                 width: fragment.width,
@@ -885,8 +1313,11 @@ impl Layoutable for Text {
     }
 
     fn place_inline(&mut self, placement: InlinePlacement) {
+        let Some(plan) = self.inline_plan.as_mut() else {
+            return;
+        };
         if placement.node_index == 0 {
-            for fragment in &mut self.inline_fragments {
+            for fragment in &mut plan.runs {
                 fragment.position = None;
             }
             self.layout_position = Position {
@@ -900,7 +1331,7 @@ impl Layoutable for Text {
             self.should_render = false;
         }
 
-        let Some(fragment) = self.inline_fragments.get_mut(placement.node_index) else {
+        let Some(fragment) = plan.runs.get_mut(placement.node_index) else {
             return;
         };
         fragment.position = Some(Position {
@@ -938,7 +1369,7 @@ impl Layoutable for Text {
     }
 
     fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
-        self.inline_fragments.clear();
+        self.inline_plan = None;
         self.layout_override_width = None;
         self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();
@@ -949,48 +1380,22 @@ impl Layoutable for Text {
         self.layout_buffer = None;
 
         if !self.auto_width && !self.auto_height {
-            self.layout_buffer = Some(self.build_layout_buffer_for_content(
-                self.content.as_str(),
-                Some(self.size.width.max(1.0)),
-                self.allow_wrap,
-            ));
+            self.layout_buffer = Some(
+                self.relayout_from_base(Some(self.size.width.max(1.0)), self.allow_wrap)
+                    .buffer,
+            );
             self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
             return;
         }
         let mut intrinsic_layout: Option<MeasuredTextLayout> = None;
         if self.auto_width {
-            let next_intrinsic_layout = if let Some((revision, layout)) =
-                self.cached_intrinsic_layout.as_ref()
-            {
-                if *revision == self.measure_revision {
-                    layout.clone()
-                } else {
-                    let layout = measure_text_layout(
-                        self.content.as_str(),
-                        None,
-                        false,
-                        self.font_size,
-                        self.line_height,
-                        self.font_weight,
-                        self.align,
-                        self.font_families.as_slice(),
-                    );
+            let next_intrinsic_layout = match self.cached_intrinsic_layout.as_ref() {
+                Some((revision, layout)) if *revision == self.measure_revision => layout.clone(),
+                _ => {
+                    let layout = self.relayout_from_base(None, false);
                     self.cached_intrinsic_layout = Some((self.measure_revision, layout.clone()));
                     layout
                 }
-            } else {
-                let layout = measure_text_layout(
-                    self.content.as_str(),
-                    None,
-                    false,
-                    self.font_size,
-                    self.line_height,
-                    self.font_weight,
-                    self.align,
-                    self.font_families.as_slice(),
-                );
-                self.cached_intrinsic_layout = Some((self.measure_revision, layout.clone()));
-                layout
             };
             let intrinsic_width = next_intrinsic_layout.width;
             intrinsic_layout = Some(next_intrinsic_layout);
@@ -1020,11 +1425,9 @@ impl Layoutable for Text {
                 self.element.set_height(self.size.height);
                 self.layout_buffer = Some(layout.buffer.clone());
             } else {
-                let buffer = self.build_layout_buffer_for_content(
-                    self.content.as_str(),
-                    Some(effective_width),
-                    self.allow_wrap,
-                );
+                let buffer = self
+                    .relayout_from_base(Some(effective_width), self.allow_wrap)
+                    .buffer;
                 let (_, measured_height) = measure_buffer_size(&buffer);
                 self.cached_height_for_width =
                     Some((self.measure_revision, effective_width, measured_height));
@@ -1045,11 +1448,10 @@ impl Layoutable for Text {
             {
                 self.layout_buffer = Some(layout.buffer);
             } else {
-                self.layout_buffer = Some(self.build_layout_buffer_for_content(
-                    self.content.as_str(),
-                    Some(final_width),
-                    self.allow_wrap,
-                ));
+                self.layout_buffer = Some(
+                    self.relayout_from_base(Some(final_width), self.allow_wrap)
+                        .buffer,
+                );
             }
         }
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
@@ -1120,8 +1522,12 @@ impl Renderable for Text {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        let inline_fragment_indices = self
-            .inline_fragments
+        let inline_runs = self
+            .inline_plan
+            .as_ref()
+            .map(|plan| plan.runs.as_slice())
+            .unwrap_or(&[]);
+        let inline_fragment_indices = inline_runs
             .iter()
             .enumerate()
             .filter(|(_, fragment)| fragment.position.is_some() && !fragment.content.is_empty())
@@ -1148,7 +1554,7 @@ impl Renderable for Text {
             inline_fragment_indices
                 .into_iter()
                 .filter_map(|index| {
-                    let fragment = self.inline_fragments.get(index)?;
+                    let fragment = inline_runs.get(index)?;
                     let position = fragment.position?;
                     let content = fragment.content.clone();
                     let width = fragment.width;
@@ -1569,6 +1975,53 @@ mod tests {
             1,
             "word should stay on one line when precise width fits"
         );
+    }
+
+    #[test]
+    fn inline_wrap_uses_one_fragment_per_wrapped_line() {
+        let content = "alpha beta gamma delta";
+        let available_width = 64.0;
+        let mut text = Text::from_content(content);
+        text.measure_inline(InlineMeasureContext {
+            first_available_width: available_width,
+            full_available_width: available_width,
+            viewport_width: 400.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(available_width),
+            percent_base_height: Some(200.0),
+        });
+
+        let nodes = text.get_inline_nodes_size();
+        assert!(
+            nodes.len() > 1,
+            "expected wrapped text to produce multiple line fragments"
+        );
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.width <= available_width + 0.01)
+        );
+    }
+
+    #[test]
+    fn inline_wrap_uses_first_available_width_for_first_fragment() {
+        let content = "alpha beta gamma";
+        let mut text = Text::from_content(content);
+        text.measure_inline(InlineMeasureContext {
+            first_available_width: 48.0,
+            full_available_width: 160.0,
+            viewport_width: 200.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(120.0),
+        });
+
+        let nodes = text.get_inline_nodes_size();
+        assert!(
+            nodes.len() >= 2,
+            "expected first-line constraint to force wrapping"
+        );
+        assert!(nodes[0].width <= 48.01);
     }
 
     #[test]

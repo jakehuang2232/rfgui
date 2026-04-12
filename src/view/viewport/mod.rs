@@ -2235,6 +2235,10 @@ impl Viewport {
         ];
         let layout_started_at = Instant::now();
         self.frame_box_models.clear();
+        super::base_component::set_text_measure_profile_enabled(
+            self.debug_options.trace_render_time,
+        );
+        super::base_component::reset_text_measure_profile();
         let measure_started_at = Instant::now();
         for root in roots.iter_mut() {
             root.measure(super::base_component::LayoutConstraints {
@@ -2247,6 +2251,7 @@ impl Viewport {
             });
         }
         let layout_measure_elapsed_ms = measure_started_at.elapsed().as_secs_f64() * 1000.0;
+        let layout_text_measure_profile = super::base_component::take_text_measure_profile();
         let place_started_at = Instant::now();
         super::base_component::reset_layout_place_profile();
         for root in roots.iter_mut() {
@@ -2284,6 +2289,7 @@ impl Viewport {
         let mut relayout_place_profile = super::base_component::LayoutPlaceProfile::default();
         if post_layout_transition.relayout_required {
             self.frame_box_models.clear();
+            super::base_component::reset_text_measure_profile();
             let relayout_measure_started_at = Instant::now();
             for root in roots.iter_mut() {
                 root.measure(super::base_component::LayoutConstraints {
@@ -2297,6 +2303,7 @@ impl Viewport {
             }
             relayout_measure_elapsed_ms =
                 relayout_measure_started_at.elapsed().as_secs_f64() * 1000.0;
+            let _ = super::base_component::take_text_measure_profile();
             let relayout_place_started_at = Instant::now();
             super::base_component::reset_layout_place_profile();
             for root in roots.iter_mut() {
@@ -2563,6 +2570,86 @@ impl Viewport {
 
         let total_elapsed_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
         if self.debug_options.trace_render_time {
+            let mut layout_measure_children = Vec::new();
+            if layout_text_measure_profile.measure_inline_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.measure_inline (calls={})",
+                        layout_text_measure_profile.measure_inline_calls
+                    ),
+                    layout_text_measure_profile.measure_inline_ms,
+                ));
+            }
+            if layout_text_measure_profile.collect_wrapped_inline_fragments_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.collect_wrapped_inline_fragments (calls={}, hits={})",
+                        layout_text_measure_profile.collect_wrapped_inline_fragments_calls,
+                        layout_text_measure_profile.collect_wrapped_inline_fragments_cache_hits
+                    ),
+                    layout_text_measure_profile.collect_wrapped_inline_fragments_ms,
+                ));
+            }
+            if layout_text_measure_profile.first_wrapped_fragment_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.first_wrapped_fragment (calls={}, hits={})",
+                        layout_text_measure_profile.first_wrapped_fragment_calls,
+                        layout_text_measure_profile.first_wrapped_fragment_cache_hits
+                    ),
+                    layout_text_measure_profile.first_wrapped_fragment_ms,
+                ));
+            }
+            if layout_text_measure_profile.wrapped_suffix_fragments_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.wrapped_suffix_fragments (calls={}, hits={})",
+                        layout_text_measure_profile.wrapped_suffix_fragments_calls,
+                        layout_text_measure_profile.wrapped_suffix_fragments_cache_hits
+                    ),
+                    layout_text_measure_profile.wrapped_suffix_fragments_ms,
+                ));
+            }
+            if layout_text_measure_profile.relayout_from_base_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.relayout_from_base (calls={}, hits={})",
+                        layout_text_measure_profile.relayout_from_base_calls,
+                        layout_text_measure_profile.relayout_from_base_cache_hits
+                    ),
+                    layout_text_measure_profile.relayout_from_base_ms,
+                ));
+            }
+            if layout_text_measure_profile.ensure_shaped_base_buffer_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.ensure_shaped_base_buffer (calls={}, hits={})",
+                        layout_text_measure_profile.ensure_shaped_base_buffer_calls,
+                        layout_text_measure_profile.ensure_shaped_base_buffer_cache_hits
+                    ),
+                    layout_text_measure_profile.ensure_shaped_base_buffer_ms,
+                ));
+            }
+            if layout_text_measure_profile.measure_text_layout_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.measure_text_layout (calls={}, hits={})",
+                        layout_text_measure_profile.measure_text_layout_calls,
+                        layout_text_measure_profile.measure_text_layout_cache_hits
+                    ),
+                    layout_text_measure_profile.measure_text_layout_ms,
+                ));
+            }
+            if layout_text_measure_profile.trimmed_suffix_shape_line_calls > 0 {
+                layout_measure_children.push(TraceRenderNode::new(
+                    format!(
+                        "text.trimmed_suffix_shape_line (calls={}, hits={})",
+                        layout_text_measure_profile.trimmed_suffix_shape_line_calls,
+                        layout_text_measure_profile.trimmed_suffix_shape_line_cache_hits
+                    ),
+                    layout_text_measure_profile.trimmed_suffix_shape_line_ms,
+                ));
+            }
             let layout_with_transition_elapsed_ms = layout_elapsed_ms
                 + post_layout_transition_elapsed_ms
                 + relayout_after_transition_elapsed_ms;
@@ -2600,7 +2687,11 @@ impl Viewport {
                         "layout",
                         layout_with_transition_elapsed_ms,
                         vec![
-                            TraceRenderNode::new("measure", layout_measure_elapsed_ms),
+                            TraceRenderNode::with_children(
+                                "measure",
+                                layout_measure_elapsed_ms,
+                                layout_measure_children,
+                            ),
                             TraceRenderNode::with_children(
                                 "place",
                                 layout_place_elapsed_ms,
@@ -2656,6 +2747,7 @@ impl Viewport {
                 )
             );
         }
+        super::base_component::set_text_measure_profile_enabled(false);
         if self.debug_options.trace_reuse_path {
             println!("{}", format_reuse_path_trace());
             println!("{}", format_style_request_trace());
