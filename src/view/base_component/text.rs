@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::FrameGraph;
@@ -17,7 +18,6 @@ use std::time::Instant;
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, InlineMeasureContext,
     InlineNodeSize, InlinePlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
-    round_layout_value,
 };
 use crate::view::promotion::PromotionNodeInfo;
 
@@ -27,7 +27,7 @@ struct InlineTextFragment {
     width: f32,
     height: f32,
     position: Option<Position>,
-    layout_buffer: Option<GlyphBuffer>,
+    layout_buffer: Option<Arc<GlyphBuffer>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -46,7 +46,7 @@ struct InlinePlanCacheKey {
 
 #[derive(Clone)]
 struct MeasuredTextLayout {
-    buffer: GlyphBuffer,
+    buffer: Arc<GlyphBuffer>,
     width: f32,
     height: f32,
 }
@@ -119,7 +119,7 @@ pub struct Text {
     inline_plan_cache: HashMap<InlinePlanCacheKey, InlineTextPlan>,
     first_line_fragment_cache: HashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
     wrapped_suffix_cache: HashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
-    layout_buffer: Option<GlyphBuffer>,
+    layout_buffer: Option<Arc<GlyphBuffer>>,
     inline_plan: Option<InlineTextPlan>,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
@@ -348,7 +348,7 @@ impl Text {
         });
         let (measured_width, measured_height) = measure_buffer_size(&buffer);
         let measured = MeasuredTextLayout {
-            buffer,
+            buffer: Arc::new(buffer),
             width: measured_width,
             height: measured_height,
         };
@@ -958,7 +958,7 @@ fn measure_text_layout(
         );
         let (width, height) = measure_buffer_size(&buffer);
         let measured = MeasuredTextLayout {
-            buffer,
+            buffer: Arc::new(buffer),
             width,
             height,
         };
@@ -1275,8 +1275,8 @@ impl Layoutable for Text {
         );
         self.inline_plan = Some(plan.clone());
         self.size = Size {
-            width: round_layout_value(plan.max_width),
-            height: round_layout_value(plan.max_height),
+            width: plan.max_width.max(0.0),
+            height: plan.max_height.max(0.0),
         };
         self.render_size = Size {
             width: plan.max_width.max(0.0),
@@ -1321,8 +1321,8 @@ impl Layoutable for Text {
                 fragment.position = None;
             }
             self.layout_position = Position {
-                x: round_layout_value(placement.x),
-                y: round_layout_value(placement.y),
+                x: placement.x,
+                y: placement.y,
             };
             self.layout_size = Size {
                 width: 0.0,
@@ -1335,8 +1335,8 @@ impl Layoutable for Text {
             return;
         };
         fragment.position = Some(Position {
-            x: round_layout_value(placement.x),
-            y: round_layout_value(placement.y),
+            x: placement.x,
+            y: placement.y,
         });
 
         let left = placement.x;
@@ -1352,12 +1352,12 @@ impl Layoutable for Text {
             self.layout_size.height = current_bottom.max(bottom) - self.layout_position.y;
         } else {
             self.layout_position = Position {
-                x: round_layout_value(left),
-                y: round_layout_value(top),
+                x: left,
+                y: top,
             };
             self.layout_size = Size {
-                width: round_layout_value((right - left).max(0.0)),
-                height: round_layout_value((bottom - top).max(0.0)),
+                width: (right - left).max(0.0),
+                height: (bottom - top).max(0.0),
             };
         }
         self.should_render = self.layout_size.width > 0.0 && self.layout_size.height > 0.0;
@@ -1404,7 +1404,7 @@ impl Layoutable for Text {
             } else {
                 f32::INFINITY
             };
-            self.size.width = round_layout_value(intrinsic_width.min(available));
+            self.size.width = intrinsic_width.min(available).max(0.0);
             self.render_size.width = intrinsic_width.min(available).max(0.0);
             self.element.set_width(self.size.width);
         }
@@ -1420,7 +1420,7 @@ impl Layoutable for Text {
             {
                 self.cached_height_for_width =
                     Some((self.measure_revision, effective_width, layout.height));
-                self.size.height = round_layout_value(layout.height.max(1.0));
+                self.size.height = layout.height.max(1.0);
                 self.render_size.height = layout.height.max(1.0);
                 self.element.set_height(self.size.height);
                 self.layout_buffer = Some(layout.buffer.clone());
@@ -1431,7 +1431,7 @@ impl Layoutable for Text {
                 let (_, measured_height) = measure_buffer_size(&buffer);
                 self.cached_height_for_width =
                     Some((self.measure_revision, effective_width, measured_height));
-                self.size.height = round_layout_value(measured_height.max(1.0));
+                self.size.height = measured_height.max(1.0);
                 self.render_size.height = measured_height.max(1.0);
                 self.element.set_height(self.size.height);
                 self.layout_buffer = Some(buffer);
@@ -1473,12 +1473,12 @@ impl Layoutable for Text {
         let layout_width = self.layout_override_width.unwrap_or(self.size.width);
         let layout_height = self.layout_override_height.unwrap_or(self.size.height);
         self.layout_size = Size {
-            width: round_layout_value(layout_width.max(0.0).min(max_width)),
-            height: round_layout_value(layout_height.max(0.0).min(max_height)),
+            width: layout_width.max(0.0).min(max_width),
+            height: layout_height.max(0.0).min(max_height),
         };
         self.layout_position = Position {
-            x: round_layout_value(placement.parent_x + self.position.x + placement.visual_offset_x),
-            y: round_layout_value(placement.parent_y + self.position.y + placement.visual_offset_y),
+            x: placement.parent_x + self.position.x + placement.visual_offset_x,
+            y: placement.parent_y + self.position.y + placement.visual_offset_y,
         };
 
         let parent_left = placement.parent_x + placement.visual_offset_x;
@@ -1542,8 +1542,8 @@ impl Renderable for Text {
                 .clone();
             vec![TextPassFragment {
                 content: self.content.clone(),
-                x: round_layout_value(self.layout_position.x),
-                y: round_layout_value(self.layout_position.y),
+                x: self.layout_position.x,
+                y: self.layout_position.y,
                 width: self.render_size.width.max(self.layout_size.width),
                 height: self.render_size.height.max(self.layout_size.height),
                 color: self.color.to_rgba_f32(),
@@ -1562,10 +1562,10 @@ impl Renderable for Text {
                     let layout_buffer = fragment.layout_buffer.clone()?;
                     Some(TextPassFragment {
                         content,
-                        x: round_layout_value(position.x),
-                        y: round_layout_value(position.y),
-                        width: round_layout_value(width.max(1.0)),
-                        height: round_layout_value(height.max(1.0)),
+                        x: position.x,
+                        y: position.y,
+                        width: width.max(1.0),
+                        height: height.max(1.0),
                         color: self.color.to_rgba_f32(),
                         opacity,
                         layout_buffer: Some(layout_buffer),
@@ -1938,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_measured_text_size_is_rounded_to_integer_pixels() {
+    fn auto_measured_text_size_preserves_fractional_precision() {
         let mut text = Text::from_content("rounded measurement");
         text.measure(LayoutConstraints {
             max_width: 300.0,
@@ -1950,8 +1950,35 @@ mod tests {
         });
 
         let (width, height) = text.measured_size();
-        assert_eq!(width.fract(), 0.0);
-        assert_eq!(height.fract(), 0.0);
+        assert!(width.fract() > 0.0 || height.fract() > 0.0);
+    }
+
+    #[test]
+    fn auto_width_uses_precise_text_width_before_final_pixel_rounding() {
+        let content = "Option 4";
+        let (precise_width, precise_height) =
+            measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
+        assert!(precise_width.fract() > 0.0);
+
+        let mut text = Text::from_content(content);
+        text.measure(LayoutConstraints {
+            max_width: precise_width.ceil(),
+            max_height: 200.0,
+            viewport_width: precise_width.ceil(),
+            percent_base_width: Some(precise_width.ceil()),
+            percent_base_height: Some(200.0),
+            viewport_height: 200.0,
+        });
+
+        let (measured_width, measured_height) = text.measured_size();
+        assert!(
+            (measured_width - precise_width).abs() < 0.01,
+            "expected precise width {precise_width}, got {measured_width}"
+        );
+        assert!(
+            (measured_height - precise_height).abs() < 0.01,
+            "expected single-line height {precise_height}, got {measured_height}"
+        );
     }
 
     #[test]
@@ -2039,11 +2066,11 @@ mod tests {
             viewport_height: 200.0,
         });
 
-        assert_eq!(text.measured_size().1, precise_height.round());
+        assert!((text.measured_size().1 - precise_height).abs() < 0.01);
     }
 
     #[test]
-    fn placed_text_box_is_rounded_to_integer_pixels() {
+    fn placed_text_box_preserves_fractional_layout_coordinates() {
         let mut text = Text::new(1.4, 2.6, 10.4, 20.6, "demo");
         text.place(LayoutPlacement {
             parent_x: 3.2,
@@ -2059,9 +2086,9 @@ mod tests {
         });
 
         let snapshot = text.box_model_snapshot();
-        assert_eq!(snapshot.x.fract(), 0.0);
-        assert_eq!(snapshot.y.fract(), 0.0);
-        assert_eq!(snapshot.width.fract(), 0.0);
-        assert_eq!(snapshot.height.fract(), 0.0);
+        assert!((snapshot.x - 4.9).abs() < 0.01);
+        assert!((snapshot.y - 7.1).abs() < 0.01);
+        assert!((snapshot.width - 10.4).abs() < 0.01);
+        assert!((snapshot.height - 20.6).abs() < 0.01);
     }
 }

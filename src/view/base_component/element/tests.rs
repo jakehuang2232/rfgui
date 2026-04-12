@@ -139,6 +139,45 @@ mod tests {
     }
 
     #[test]
+    fn element_layout_preserves_fractional_box_metrics() {
+        let mut root = Element::new(1.2, 2.4, 100.5, 50.5);
+        let mut style = Style::new();
+        style.set_padding(crate::Padding::new().xy(Length::px(3.25), Length::px(2.5)));
+        root.apply_style(style);
+
+        root.measure(crate::view::base_component::LayoutConstraints {
+            max_width: 200.0,
+            max_height: 200.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+            viewport_height: 200.0,
+        });
+        root.place(crate::view::base_component::LayoutPlacement {
+            parent_x: 4.1,
+            parent_y: 5.3,
+            visual_offset_x: 0.2,
+            visual_offset_y: -0.1,
+            available_width: 200.0,
+            available_height: 200.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+            viewport_height: 200.0,
+        });
+
+        let snapshot = root.box_model_snapshot();
+        assert!((snapshot.x - 5.5).abs() < 0.01);
+        assert!((snapshot.y - 7.6).abs() < 0.01);
+        assert!((snapshot.width - 100.5).abs() < 0.01);
+        assert!((snapshot.height - 50.5).abs() < 0.01);
+        assert!((root.layout_inner_position.x - 8.75).abs() < 0.01);
+        assert!((root.layout_inner_position.y - 10.1).abs() < 0.01);
+        assert!((root.layout_inner_size.width - 94.0).abs() < 0.01);
+        assert!((root.layout_inner_size.height - 45.5).abs() < 0.01);
+    }
+
+    #[test]
     fn percent_child_size_works_with_definite_containing_size() {
         let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
         let mut parent_style = Style::new();
