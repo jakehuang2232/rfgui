@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RFGUI Example</title>
+    <style>
+      @font-face {
+        font-family: "Noto Sans CJK TC";
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url("https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf") format("opentype");
+      }
+
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --panel: rgba(20, 24, 32, 0.92);
+        --border: rgba(113, 128, 150, 0.28);
+        --text: #e5edf8;
+        --muted: #93a4bd;
+        --accent: #59b2ff;
+      }
+
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--bg);
+      }
+
+      body {
+        overflow: hidden;
+        font-family: "Noto Sans CJK TC", "PingFang TC", "Segoe UI", sans-serif;
+      }
+
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        outline: none;
+      }
+
+      .boot-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top, rgba(89, 178, 255, 0.12), transparent 38%),
+          linear-gradient(180deg, rgba(8, 10, 14, 0.88), rgba(15, 17, 21, 0.96));
+        transition: opacity 180ms ease;
+      }
+
+      .boot-overlay.is-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .boot-card {
+        width: min(360px, calc(100vw - 32px));
+        padding: 24px 22px;
+        border-radius: 18px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      }
+
+      .boot-title {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--text);
+      }
+
+      .boot-subtitle {
+        margin: 8px 0 0;
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .boot-progress {
+        margin-top: 18px;
+        height: 6px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .boot-progress::after {
+        content: "";
+        display: block;
+        width: 42%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, rgba(89, 178, 255, 0.22), var(--accent), rgba(89, 178, 255, 0.22));
+        animation: boot-progress-slide 1.15s ease-in-out infinite;
+      }
+
+      .boot-status {
+        margin-top: 12px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .boot-status.is-error {
+        color: #ff9c9c;
+      }
+
+      @keyframes boot-progress-slide {
+        0% {
+          transform: translateX(-120%);
+        }
+        100% {
+          transform: translateX(320%);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot-overlay" class="boot-overlay" aria-live="polite">
+      <div class="boot-card">
+        <h1 class="boot-title">Loading Web Example</h1>
+        <p class="boot-subtitle">The first launch may take a little longer while Wasm and related assets are downloaded.</p>
+        <div class="boot-progress"></div>
+        <div id="boot-status" class="boot-status">Downloading and initializing…</div>
+      </div>
+    </div>
+    <canvas id="app-canvas" tabindex="0"></canvas>
+    <script>
+      const bootOverlay = document.getElementById("boot-overlay");
+      const bootStatus = document.getElementById("boot-status");
+
+      function hideBootOverlay() {
+        if (!bootOverlay) {
+          return;
+        }
+        bootOverlay.classList.add("is-hidden");
+        window.setTimeout(() => bootOverlay.remove(), 220);
+      }
+
+      function setBootError(message) {
+        if (!bootStatus) {
+          return;
+        }
+        bootStatus.textContent = message;
+        bootStatus.classList.add("is-error");
+      }
+
+      function setBootStatus(message) {
+        if (!bootStatus) {
+          return;
+        }
+        bootStatus.textContent = message;
+        bootStatus.classList.remove("is-error");
+      }
+
+      function formatBootError(error, fallbackMessage) {
+        if (typeof error === "string" && error.trim()) {
+          return error;
+        }
+        if (error && typeof error.message === "string" && error.message.trim()) {
+          return error.message;
+        }
+        if (error && typeof error.reason === "string" && error.reason.trim()) {
+          return error.reason;
+        }
+        if (error && error.reason && typeof error.reason.message === "string" && error.reason.message.trim()) {
+          return error.reason.message;
+        }
+        return fallbackMessage;
+      }
+
+      window.__RFGUI_BOOT__ = {
+        hideBootOverlay,
+        setBootStatus,
+        setBootError,
+        formatBootError,
+      };
+    </script>
+    <link data-trunk rel="rust" data-initializer="bootstrap.js" />
+    <script>
+      window.addEventListener("error", () => {
+        setBootError("Loading failed. Please refresh the page.");
+      });
+
+      window.addEventListener("unhandledrejection", (event) => {
+        setBootError(formatBootError(event, "Initialization failed."));
+      });
+    </script>
+  </body>
+</html>

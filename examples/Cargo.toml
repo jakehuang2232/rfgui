@@ -1,21 +1,25 @@
 [package]
-name = "example-01-window"
+name = "examples"
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 
 [[bin]]
+name = "00_hello_world"
+path = "bin/00_hello_world/main.rs"
+
+[[bin]]
 name = "01_window"
-path = "src/main.rs"
+path = "bin/01_window/main.rs"
 
 [dependencies]
-rfgui = { path = "../.." }
-rfgui-components = { path = "../../lib/rfgui-components" }
+rfgui = { path = ".." }
+rfgui-components = { path = "../lib/rfgui-components" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 winit = "0.30.13"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = "0.3"
+pollster = "0.4.0"
 rfd = "0.17.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

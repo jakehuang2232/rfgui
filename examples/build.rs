@@ -4,10 +4,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-changed=../assets");
+    println!("cargo:rerun-if-changed=assets");
 
     let output_dir = target_profile_dir();
-    let source_dir = Path::new("../assets");
+    let source_dir = Path::new("assets");
     let target_dir = output_dir.join("assets");
 
     if let Err(error) = copy_dir_all(source_dir, &target_dir) {
