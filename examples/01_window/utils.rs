@@ -143,9 +143,9 @@ pub fn output_image_source(file_name: &str) -> ImageSource {
 
 #[cfg(test)]
 mod tests {
-    use super::is_printable_keyboard_text;
     #[cfg(target_arch = "wasm32")]
     use super::is_non_text_web_key_code;
+    use super::is_printable_keyboard_text;
 
     #[test]
     fn accepts_single_character_text_keys() {

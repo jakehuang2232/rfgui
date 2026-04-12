@@ -1,3 +1,4 @@
+use crate::view::base_component::round_layout_value;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
@@ -23,7 +24,26 @@ pub struct TextPass {
     output: TextOutput,
 }
 
-const TEXT_RASTER_SCALE: f32 = 2.0;
+const TEXT_RASTER_SCALE_SMALL: f32 = 2.0;
+const TEXT_RASTER_SCALE_LARGE: f32 = 1.0;
+const TEXT_RASTER_SMALL_FONT_SIZE: f32 = 24.0;
+const TEXT_RASTER_LARGE_FONT_SIZE: f32 = 96.0;
+
+fn text_raster_scale(font_size: f32) -> f32 {
+    if !font_size.is_finite() {
+        return TEXT_RASTER_SCALE_SMALL;
+    }
+    if font_size <= TEXT_RASTER_SMALL_FONT_SIZE {
+        return TEXT_RASTER_SCALE_SMALL;
+    }
+    if font_size >= TEXT_RASTER_LARGE_FONT_SIZE {
+        return TEXT_RASTER_SCALE_LARGE;
+    }
+
+    let t = (font_size - TEXT_RASTER_SMALL_FONT_SIZE)
+        / (TEXT_RASTER_LARGE_FONT_SIZE - TEXT_RASTER_SMALL_FONT_SIZE);
+    TEXT_RASTER_SCALE_SMALL + (TEXT_RASTER_SCALE_LARGE - TEXT_RASTER_SCALE_SMALL) * t
+}
 
 #[derive(Clone)]
 pub struct TextPassFragment {
@@ -79,7 +99,10 @@ struct TextPreparedState {
     renderer_key: TextRendererKey,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
-    screen_bind_group: wgpu::BindGroup,
+    screen_buffer: wgpu::Buffer,
+    fragment_buffer: wgpu::Buffer,
+    fragment_capacity: usize,
+    globals_bind_group: wgpu::BindGroup,
     prepare_signature: u64,
     atlas_generation: u64,
     stencil_clip_id: Option<u8>,
@@ -113,14 +136,24 @@ struct TextScreenUniform {
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
+struct TextFragmentUniform {
+    origin: [f32; 2],
+    clip_min: [f32; 2],
+    clip_max: [f32; 2],
+    _pad: [f32; 2],
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 struct TextGlyphVertex {
-    pos: [f32; 2],
+    local_pos: [f32; 2],
     size: [f32; 2],
     uv_min: [f32; 2],
     uv_max: [f32; 2],
     color: [f32; 4],
     opacity: f32,
     content_kind: f32,
+    fragment_index: u32,
 }
 
 struct TextArea<'a> {
@@ -128,7 +161,8 @@ struct TextArea<'a> {
     left: f32,
     top: f32,
     scale: f32,
-    bounds: TextBounds,
+    clip_min: [f32; 2],
+    clip_max: [f32; 2],
     default_color: CosmicColor,
 }
 
@@ -136,7 +170,6 @@ struct TextArea<'a> {
 struct PreparedTextDraw {
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
-    screen_bind_group: wgpu::BindGroup,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -166,7 +199,12 @@ impl TextPass {
         }
     }
 
-    fn prepare_signature(&self, bounds: TextBounds, scale: f32, screen_size: (u32, u32)) -> u64 {
+    fn prepare_signature(
+        &self,
+        text_areas: &[TextArea<'_>],
+        scale: f32,
+        screen_size: (u32, u32),
+    ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.params.font_size.to_bits().hash(&mut hasher);
@@ -179,20 +217,20 @@ impl TextPass {
         self.params.stencil_clip_id.hash(&mut hasher);
         scale.to_bits().hash(&mut hasher);
         screen_size.hash(&mut hasher);
-        bounds.left.hash(&mut hasher);
-        bounds.top.hash(&mut hasher);
-        bounds.right.hash(&mut hasher);
-        bounds.bottom.hash(&mut hasher);
         for fragment in &self.params.fragments {
             fragment.content.hash(&mut hasher);
-            fragment.x.to_bits().hash(&mut hasher);
-            fragment.y.to_bits().hash(&mut hasher);
             fragment.width.to_bits().hash(&mut hasher);
             fragment.height.to_bits().hash(&mut hasher);
             fragment.opacity.to_bits().hash(&mut hasher);
             for channel in fragment.color {
                 channel.to_bits().hash(&mut hasher);
             }
+        }
+        for text_area in text_areas {
+            text_area.clip_min[0].to_bits().hash(&mut hasher);
+            text_area.clip_min[1].to_bits().hash(&mut hasher);
+            text_area.clip_max[0].to_bits().hash(&mut hasher);
+            text_area.clip_max[1].to_bits().hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -302,7 +340,6 @@ impl GraphicsPass for TextPass {
                 if fragment.layout_buffer.is_none() {
                     let layout_signature = single_fragment_layout_signature(
                         fragment,
-                        scale,
                         self.params.font_size,
                         self.params.line_height,
                         self.params.font_weight,
@@ -313,9 +350,9 @@ impl GraphicsPass for TextPass {
                     resolved_buffers[index] = Some(resources.prepare_buffer_cached(
                         layout_signature,
                         fragment.content.as_str(),
-                        fragment.width * scale,
-                        fragment.height * scale,
-                        self.params.font_size * scale,
+                        fragment.width,
+                        fragment.height,
+                        self.params.font_size,
                         self.params.line_height,
                         self.params.font_weight,
                         self.params.font_families.as_slice(),
@@ -324,10 +361,9 @@ impl GraphicsPass for TextPass {
                     ));
                 }
             }
-            let Some(bounds) = combined_bounds else {
+            let Some(_bounds) = combined_bounds else {
                 return;
             };
-            let prepare_signature = self.prepare_signature(bounds, scale, (screen_w, screen_h));
             let mut text_areas = Vec::new();
             for (index, fragment) in self.params.fragments.iter().enumerate() {
                 let Some(fragment_bounds) = resolved_bounds[index] else {
@@ -344,10 +380,13 @@ impl GraphicsPass for TextPass {
                         + target_meta.logical_origin.0 as f32,
                     fragment.y * scale - target_origin.1 as f32
                         + target_meta.logical_origin.1 as f32,
+                    scale,
                     fragment_bounds,
                     to_cosmic_color(fragment.color, fragment.opacity),
                 ));
             }
+            let prepare_signature =
+                self.prepare_signature(&text_areas, scale, (screen_w, screen_h));
             let renderer_key = TextRendererKey {
                 sample_count: output_sample_count,
                 stencil_enabled: self.input.pass_context.uses_depth_stencil,
@@ -362,6 +401,23 @@ impl GraphicsPass for TextPass {
                     return;
                 }
             }
+            let existing_globals = self.prepared.as_ref().map(|prepared| {
+                (
+                    &prepared.screen_buffer,
+                    &prepared.fragment_buffer,
+                    &prepared.globals_bind_group,
+                    prepared.fragment_capacity,
+                )
+            });
+            let (screen_buffer, fragment_buffer, globals_bind_group, fragment_capacity) = resources
+                .create_globals_bind_group(
+                    &device,
+                    &queue,
+                    screen_w as f32,
+                    screen_h as f32,
+                    &text_areas,
+                    existing_globals,
+                );
             if let Some(draw) =
                 resources.take_prepared_draw(renderer_key, prepare_signature, atlas_generation)
             {
@@ -369,7 +425,10 @@ impl GraphicsPass for TextPass {
                     renderer_key,
                     vertex_buffer: draw.vertex_buffer,
                     vertex_count: draw.vertex_count,
-                    screen_bind_group: draw.screen_bind_group,
+                    screen_buffer,
+                    fragment_buffer,
+                    fragment_capacity,
+                    globals_bind_group,
                     prepare_signature,
                     atlas_generation,
                     stencil_clip_id: self.params.stencil_clip_id,
@@ -410,13 +469,14 @@ impl GraphicsPass for TextPass {
                 loop {
                     let mut vertices = Vec::new();
                     let mut atlas_full = false;
-                    for text_area in &text_areas {
+                    for (fragment_index, text_area) in text_areas.iter().enumerate() {
                         if resources
                             .prepare_text_area(
                                 font_system,
                                 &device,
                                 &queue,
                                 text_area,
+                                fragment_index as u32,
                                 &mut vertices,
                             )
                             .is_err()
@@ -444,27 +504,9 @@ impl GraphicsPass for TextPass {
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
-            let screen_uniform = TextScreenUniform {
-                screen_size: [screen_w as f32, screen_h as f32],
-                _pad: [0.0, 0.0],
-            };
-            let screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Text Screen Uniform Buffer"),
-                contents: bytemuck::bytes_of(&screen_uniform),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Text Screen Bind Group"),
-                layout: &resources.screen_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: screen_buffer.as_entire_binding(),
-                }],
-            });
             let prepared_draw = PreparedTextDraw {
                 vertex_buffer,
                 vertex_count: vertices.len() as u32,
-                screen_bind_group,
             };
             let atlas_generation = resources.atlas.generation();
             resources.put_prepared_draw(
@@ -477,7 +519,10 @@ impl GraphicsPass for TextPass {
                 renderer_key,
                 vertex_buffer: prepared_draw.vertex_buffer,
                 vertex_count: prepared_draw.vertex_count,
-                screen_bind_group: prepared_draw.screen_bind_group,
+                screen_buffer,
+                fragment_buffer,
+                fragment_capacity,
+                globals_bind_group,
                 prepare_signature,
                 atlas_generation,
                 stencil_clip_id: self.params.stencil_clip_id,
@@ -527,7 +572,7 @@ impl GraphicsPass for TextPass {
             resources.ensure_pipeline(&device, prepared.renderer_key);
             let pipeline = resources.pipeline(prepared.renderer_key);
             ctx.set_pipeline(pipeline);
-            ctx.set_bind_group(0, &prepared.screen_bind_group, &[]);
+            ctx.set_bind_group(0, &prepared.globals_bind_group, &[]);
             ctx.set_bind_group(1, &resources.atlas.bind_group, &[]);
             ctx.set_vertex_buffer(0, prepared.vertex_buffer.slice(..));
             ctx.draw(0..6, 0..prepared.vertex_count);
@@ -558,7 +603,6 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
 
 fn single_fragment_layout_signature(
     fragment: &TextPassFragment,
-    scale: f32,
     font_size: f32,
     line_height: f32,
     font_weight: u16,
@@ -569,9 +613,9 @@ fn single_fragment_layout_signature(
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     fragment.content.hash(&mut hasher);
-    (fragment.width * scale).to_bits().hash(&mut hasher);
-    (fragment.height * scale).to_bits().hash(&mut hasher);
-    (font_size * scale).to_bits().hash(&mut hasher);
+    fragment.width.to_bits().hash(&mut hasher);
+    fragment.height.to_bits().hash(&mut hasher);
+    font_size.to_bits().hash(&mut hasher);
     line_height.to_bits().hash(&mut hasher);
     font_weight.hash(&mut hasher);
     font_families.hash(&mut hasher);
@@ -667,6 +711,7 @@ fn build_text_area<'a>(
     buffer: &'a Buffer,
     left: f32,
     top: f32,
+    scale: f32,
     bounds: TextBounds,
     default_color: CosmicColor,
 ) -> TextArea<'a> {
@@ -674,8 +719,9 @@ fn build_text_area<'a>(
         buffer,
         left,
         top,
-        scale: 1.0,
-        bounds,
+        scale,
+        clip_min: [bounds.left as f32 - left, bounds.top as f32 - top],
+        clip_max: [bounds.right as f32 - left, bounds.bottom as f32 - top],
         default_color,
     }
 }
@@ -684,6 +730,7 @@ fn build_text_area<'a>(
 struct AtlasGlyph {
     x: u32,
     y: u32,
+    raster_scale: f32,
     layout_width: f32,
     layout_height: f32,
     layout_left: f32,
@@ -775,7 +822,6 @@ impl TextAtlas {
                 },
             ],
         });
-
         Self {
             texture,
             bind_group_layout,
@@ -812,6 +858,7 @@ impl TextAtlas {
         _device: &wgpu::Device,
         cache_key: CacheKey,
         image: SwashImage,
+        raster_scale: f32,
     ) -> Result<Option<AtlasGlyph>, TextAtlasCacheError> {
         if let Some(glyph) = self.get_glyph(cache_key) {
             return Ok(Some(glyph));
@@ -863,10 +910,11 @@ impl TextAtlas {
         let glyph = AtlasGlyph {
             x: allocation_x + 1,
             y: allocation_y + 1,
-            layout_width: width as f32 / TEXT_RASTER_SCALE,
-            layout_height: height as f32 / TEXT_RASTER_SCALE,
-            layout_left: image.placement.left as f32 / TEXT_RASTER_SCALE,
-            layout_top: image.placement.top as f32 / TEXT_RASTER_SCALE,
+            raster_scale,
+            layout_width: width as f32 / raster_scale,
+            layout_height: height as f32 / raster_scale,
+            layout_left: image.placement.left as f32 / raster_scale,
+            layout_top: image.placement.top as f32 / raster_scale,
             content_kind,
         };
         self.glyphs.insert(cache_key, glyph);
@@ -875,6 +923,9 @@ impl TextAtlas {
 
     fn flush_uploads(&mut self, queue: &wgpu::Queue) {
         let uploads = std::mem::take(&mut self.pending_uploads);
+        if uploads.is_empty() {
+            return;
+        }
         let mut index = 0;
         while index < uploads.len() {
             let row_y = uploads[index].y;
@@ -978,6 +1029,7 @@ struct TextResources {
     screen_bind_group_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<TextRendererKey, wgpu::RenderPipeline>,
     layout_buffers: HashMap<u64, Buffer>,
+    layout_buffer_lru: VecDeque<u64>,
     prepared_draws: HashMap<PreparedTextDrawKey, PreparedTextDraw>,
     prepared_draw_lru: VecDeque<PreparedTextDrawKey>,
 }
@@ -995,19 +1047,34 @@ impl TextResources {
         let screen_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Text Screen Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            NonZeroU64::new(std::mem::size_of::<TextScreenUniform>() as u64)
-                                .expect("text screen uniform size must be non-zero"),
-                        ),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                NonZeroU64::new(std::mem::size_of::<TextScreenUniform>() as u64)
+                                    .expect("text screen uniform size must be non-zero"),
+                            ),
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                NonZeroU64::new(std::mem::size_of::<TextFragmentUniform>() as u64)
+                                    .expect("text fragment uniform size must be non-zero"),
+                            ),
+                        },
+                        count: None,
+                    },
+                ],
             });
         let atlas = TextAtlas::new(device, queue);
 
@@ -1018,6 +1085,7 @@ impl TextResources {
             screen_bind_group_layout,
             pipelines: HashMap::new(),
             layout_buffers: HashMap::new(),
+            layout_buffer_lru: VecDeque::new(),
             prepared_draws: HashMap::new(),
             prepared_draw_lru: VecDeque::new(),
         }
@@ -1091,18 +1159,150 @@ impl TextResources {
             .expect("text pipeline should be created before render")
     }
 
+    fn create_globals_bind_group(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen_w: f32,
+        screen_h: f32,
+        text_areas: &[TextArea<'_>],
+        existing: Option<(&wgpu::Buffer, &wgpu::Buffer, &wgpu::BindGroup, usize)>,
+    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, usize) {
+        let screen_uniform = TextScreenUniform {
+            screen_size: [screen_w, screen_h],
+            _pad: [0.0, 0.0],
+        };
+        let fragment_uniforms: Vec<TextFragmentUniform> = text_areas
+            .iter()
+            .map(|text_area| TextFragmentUniform {
+                origin: [text_area.left, text_area.top],
+                clip_min: [
+                    text_area.left + text_area.clip_min[0],
+                    text_area.top + text_area.clip_min[1],
+                ],
+                clip_max: [
+                    text_area.left + text_area.clip_max[0],
+                    text_area.top + text_area.clip_max[1],
+                ],
+                _pad: [0.0, 0.0],
+            })
+            .collect();
+        let fragment_capacity = fragment_uniforms.len().max(1);
+        let (screen_buffer, fragment_buffer, bind_group, capacity) =
+            if let Some((screen_buffer, fragment_buffer, bind_group, capacity)) = existing {
+                if capacity >= fragment_capacity {
+                    (
+                        screen_buffer.clone(),
+                        fragment_buffer.clone(),
+                        bind_group.clone(),
+                        capacity,
+                    )
+                } else {
+                    let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Text Screen Uniform Buffer"),
+                        size: std::mem::size_of::<TextScreenUniform>() as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    let fragment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Text Fragment Uniform Buffer"),
+                        size: (fragment_capacity * std::mem::size_of::<TextFragmentUniform>())
+                            as u64,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Text Globals Bind Group"),
+                        layout: &self.screen_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: screen_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: fragment_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+                    (
+                        screen_buffer,
+                        fragment_buffer,
+                        bind_group,
+                        fragment_capacity,
+                    )
+                }
+            } else {
+                let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Text Screen Uniform Buffer"),
+                    size: std::mem::size_of::<TextScreenUniform>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let fragment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Text Fragment Uniform Buffer"),
+                    size: (fragment_capacity * std::mem::size_of::<TextFragmentUniform>()) as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Text Globals Bind Group"),
+                    layout: &self.screen_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: screen_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: fragment_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+                (
+                    screen_buffer,
+                    fragment_buffer,
+                    bind_group,
+                    fragment_capacity,
+                )
+            };
+        queue.write_buffer(&screen_buffer, 0, bytemuck::bytes_of(&screen_uniform));
+        if fragment_uniforms.is_empty() {
+            let default_fragment = TextFragmentUniform {
+                origin: [0.0, 0.0],
+                clip_min: [0.0, 0.0],
+                clip_max: [0.0, 0.0],
+                _pad: [0.0, 0.0],
+            };
+            queue.write_buffer(&fragment_buffer, 0, bytemuck::bytes_of(&default_fragment));
+        } else {
+            queue.write_buffer(
+                &fragment_buffer,
+                0,
+                bytemuck::cast_slice(fragment_uniforms.as_slice()),
+            );
+        }
+        (
+            screen_buffer,
+            fragment_buffer,
+            bind_group,
+            capacity.max(fragment_capacity),
+        )
+    }
+
     fn prepare_text_area(
         &mut self,
         font_system: &mut FontSystem,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
         text_area: &TextArea<'_>,
+        fragment_index: u32,
         out: &mut Vec<TextGlyphVertex>,
     ) -> Result<(), TextAtlasCacheError> {
         let is_run_visible = |run: &cosmic_text::LayoutRun<'_>| {
-            let start_y = (text_area.top + (run.line_top * text_area.scale)) as i32;
-            let end_y = start_y + (run.line_height * text_area.scale) as i32;
-            start_y <= text_area.bounds.bottom && text_area.bounds.top <= end_y
+            let start_y = run.line_top * text_area.scale;
+            let end_y = start_y + (run.line_height * text_area.scale);
+            start_y <= text_area.clip_max[1] && text_area.clip_min[1] <= end_y
         };
 
         for run in text_area
@@ -1112,8 +1312,8 @@ impl TextResources {
             .take_while(is_run_visible)
         {
             for glyph in run.glyphs.iter() {
-                let physical_glyph =
-                    glyph.physical((0.0, 0.0), text_area.scale * TEXT_RASTER_SCALE);
+                let raster_scale = text_raster_scale(glyph.font_size * text_area.scale);
+                let physical_glyph = glyph.physical((0.0, 0.0), text_area.scale * raster_scale);
                 let glyph_x_offset = glyph.font_size * glyph.x_offset;
                 let glyph_y_offset = glyph.font_size * glyph.y_offset;
                 let color = glyph.color_opt.unwrap_or(text_area.default_color);
@@ -1128,20 +1328,20 @@ impl TextResources {
                         else {
                             continue;
                         };
-                        let Some(atlas_glyph) =
-                            self.atlas
-                                .cache_glyph(device, physical_glyph.cache_key, image)?
+                        let Some(atlas_glyph) = self.atlas.cache_glyph(
+                            device,
+                            physical_glyph.cache_key,
+                            image,
+                            raster_scale,
+                        )?
                         else {
                             continue;
                         };
                         atlas_glyph
                     };
 
-                let mut x = text_area.left
-                    + (glyph.x + glyph_x_offset) * text_area.scale
-                    + atlas_glyph.layout_left;
-                let mut y = text_area.top
-                    + (run.line_y + glyph.y - glyph_y_offset) * text_area.scale
+                let mut x = (glyph.x + glyph_x_offset) * text_area.scale + atlas_glyph.layout_left;
+                let mut y = (run.line_y + glyph.y - glyph_y_offset) * text_area.scale
                     - atlas_glyph.layout_top;
                 let mut width = atlas_glyph.layout_width;
                 let mut height = atlas_glyph.layout_height;
@@ -1149,10 +1349,10 @@ impl TextResources {
                 let mut atlas_y = atlas_glyph.y as f32;
                 let max_x = x + width;
                 let max_y = y + height;
-                let bounds_left = text_area.bounds.left as f32;
-                let bounds_top = text_area.bounds.top as f32;
-                let bounds_right = text_area.bounds.right as f32;
-                let bounds_bottom = text_area.bounds.bottom as f32;
+                let bounds_left = text_area.clip_min[0];
+                let bounds_top = text_area.clip_min[1];
+                let bounds_right = text_area.clip_max[0];
+                let bounds_bottom = text_area.clip_max[1];
 
                 if x > bounds_right
                     || max_x < bounds_left
@@ -1165,7 +1365,7 @@ impl TextResources {
                     let shift = bounds_left - x;
                     x = bounds_left;
                     width = max_x - bounds_left;
-                    atlas_x += shift * TEXT_RASTER_SCALE;
+                    atlas_x += shift * atlas_glyph.raster_scale;
                 }
                 if x + width > bounds_right {
                     width = bounds_right - x;
@@ -1174,10 +1374,17 @@ impl TextResources {
                     let shift = bounds_top - y;
                     y = bounds_top;
                     height = max_y - bounds_top;
-                    atlas_y += shift * TEXT_RASTER_SCALE;
+                    atlas_y += shift * atlas_glyph.raster_scale;
                 }
                 if y + height > bounds_bottom {
                     height = bounds_bottom - y;
+                }
+                x = round_layout_value(x);
+                y = round_layout_value(y);
+                width = round_layout_value(width.max(0.0));
+                height = round_layout_value(height.max(0.0));
+                if width <= 0.0 || height <= 0.0 {
+                    continue;
                 }
                 if width <= 0.0 || height <= 0.0 {
                     continue;
@@ -1186,12 +1393,12 @@ impl TextResources {
                 let atlas_size = self.atlas.size as f32;
                 let rgba = color.as_rgba();
                 out.push(TextGlyphVertex {
-                    pos: [x, y],
+                    local_pos: [x, y],
                     size: [width, height],
                     uv_min: [atlas_x / atlas_size, atlas_y / atlas_size],
                     uv_max: [
-                        (atlas_x + width * TEXT_RASTER_SCALE) / atlas_size,
-                        (atlas_y + height * TEXT_RASTER_SCALE) / atlas_size,
+                        (atlas_x + width * atlas_glyph.raster_scale) / atlas_size,
+                        (atlas_y + height * atlas_glyph.raster_scale) / atlas_size,
                     ],
                     color: [
                         rgba[0] as f32 / 255.0,
@@ -1201,6 +1408,7 @@ impl TextResources {
                     ],
                     opacity: 1.0,
                     content_kind: atlas_glyph.content_kind,
+                    fragment_index,
                 });
             }
         }
@@ -1221,6 +1429,9 @@ impl TextResources {
         allow_wrap: bool,
     ) -> Buffer {
         if let Some(buffer) = self.layout_buffers.get(&signature) {
+            self.layout_buffer_lru
+                .retain(|current_signature| *current_signature != signature);
+            self.layout_buffer_lru.push_back(signature);
             return buffer.clone();
         }
         let buffer = with_shared_font_system(|font_system| {
@@ -1238,8 +1449,13 @@ impl TextResources {
             )
         });
         self.layout_buffers.insert(signature, buffer.clone());
-        if self.layout_buffers.len() > 4096 {
-            self.layout_buffers.clear();
+        self.layout_buffer_lru
+            .retain(|current_signature| *current_signature != signature);
+        self.layout_buffer_lru.push_back(signature);
+        while self.layout_buffer_lru.len() > 4096 {
+            if let Some(old_signature) = self.layout_buffer_lru.pop_front() {
+                self.layout_buffers.remove(&old_signature);
+            }
         }
         buffer
     }
@@ -1506,14 +1722,15 @@ fn text_depth_stencil_state() -> wgpu::DepthStencilState {
     }
 }
 
-const TEXT_GLYPH_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+const TEXT_GLYPH_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
     0 => Float32x2,
     1 => Float32x2,
     2 => Float32x2,
     3 => Float32x2,
     4 => Float32x4,
     5 => Float32,
-    6 => Float32
+    6 => Float32,
+    7 => Uint32
 ];
 
 fn create_text_pipeline(

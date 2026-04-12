@@ -34,6 +34,9 @@ mod tests {
     #[test]
     fn child_layout_uses_parent_inner_box_with_padding() {
         let mut root = Element::new(10.0, 20.0, 200.0, 120.0);
+        let mut root_style = Style::new();
+        root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        root.apply_style(root_style);
         root.set_padding_left(8.0);
         root.set_padding_top(12.0);
         root.set_padding_right(16.0);
@@ -798,9 +801,8 @@ mod tests {
         let children = parent.children().expect("children");
         let first_snapshot = children[0].box_model_snapshot();
         let second_snapshot = children[1].box_model_snapshot();
-
-        assert!((first_snapshot.width - 113.333_336).abs() < 0.01);
-        assert!((second_snapshot.width - 186.666_67).abs() < 0.01);
+        assert_eq!(first_snapshot.width, 113.0);
+        assert_eq!(second_snapshot.width, 187.0);
         assert_eq!(first_snapshot.y, 50.0);
         assert_eq!(second_snapshot.y, 45.0);
     }
@@ -1761,6 +1763,18 @@ mod tests {
     fn seed_layout_snapshot_keeps_flow_and_visual_positions_separate() {
         let mut old = Element::new_with_id(42, 50.0, 0.0, 100.0, 40.0);
         old.has_layout_snapshot = true;
+        old.last_layout_placement = Some(LayoutPlacement {
+            parent_x: 100.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 100.0,
+            available_height: 40.0,
+            viewport_width: 100.0,
+            viewport_height: 40.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(40.0),
+        });
         old.last_parent_layout_x = 100.0;
         old.last_parent_layout_y = 0.0;
         old.layout_flow_position = LayoutPosition { x: 170.0, y: 0.0 };

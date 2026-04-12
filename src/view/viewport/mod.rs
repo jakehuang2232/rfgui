@@ -2726,10 +2726,11 @@ impl Viewport {
             let mut rebuilt_roots = std::mem::take(&mut self.ui_roots);
             let canceled_tracks = self.cancel_disallowed_transition_tracks(&rebuilt_roots);
             let has_inflight_transition = self.sync_inflight_transition_state(&mut rebuilt_roots);
-            let reconciled_transition_state = super::base_component::reconcile_transition_runtime_state(
-                &mut rebuilt_roots,
-                &active_channels_by_node(&self.transition_claims),
-            );
+            let reconciled_transition_state =
+                super::base_component::reconcile_transition_runtime_state(
+                    &mut rebuilt_roots,
+                    &active_channels_by_node(&self.transition_claims),
+                );
             self.ui_roots = rebuilt_roots;
             if canceled_tracks || has_inflight_transition || reconciled_transition_state {
                 self.request_redraw();
@@ -2743,10 +2744,9 @@ impl Viewport {
             &active_channels_by_node(&self.transition_claims),
         );
         let (dt, now_seconds) = self.transition_timing();
-        let transition_changed_before_render =
-            canceled_tracks
-                || reconciled_transition_state
-                || self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
+        let transition_changed_before_render = canceled_tracks
+            || reconciled_transition_state
+            || self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
         let mut transition_changed_after_layout = false;
         if !roots.is_empty() {
             transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);

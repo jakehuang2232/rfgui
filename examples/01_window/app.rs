@@ -16,9 +16,9 @@ use crate::state::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::current_unix_timestamp;
-use crate::utils::{app_background_color, should_dispatch_keyboard_text};
 #[cfg(target_arch = "wasm32")]
 use crate::utils::should_dispatch_web_keyboard_text;
+use crate::utils::{app_background_color, should_dispatch_keyboard_text};
 #[cfg(target_arch = "wasm32")]
 use js_sys::Promise;
 #[cfg(not(target_arch = "wasm32"))]

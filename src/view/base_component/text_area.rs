@@ -29,7 +29,7 @@ use crate::view::promotion::PromotionNodeInfo;
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
+    LayoutPlacement, Layoutable, Position, Renderable, Size, UiBuildContext, round_layout_value,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -655,7 +655,7 @@ impl TextArea {
             if let Some(resolved) =
                 width.resolve_with_base(percent_base_width, viewport_width, viewport_height)
             {
-                self.size.width = resolved.max(0.0);
+                self.size.width = round_layout_value(resolved.max(0.0));
                 self.element.set_width(self.size.width);
                 self.auto_width = false;
             } else {
@@ -669,7 +669,7 @@ impl TextArea {
             if let Some(resolved) =
                 height.resolve_with_base(percent_base_height, viewport_width, viewport_height)
             {
-                self.size.height = resolved.max(0.0);
+                self.size.height = round_layout_value(resolved.max(0.0));
                 self.element.set_height(self.size.height);
                 self.auto_height = false;
             } else {
@@ -1836,10 +1836,10 @@ impl TextArea {
                 line_height = line_height_px;
             }
 
-            fragment.content_x = cursor_x;
-            fragment.content_y = cursor_y;
-            fragment.width = fragment_width.max(1.0);
-            fragment.height = fragment_height.max(line_height_px);
+            fragment.content_x = round_layout_value(cursor_x);
+            fragment.content_y = round_layout_value(cursor_y);
+            fragment.width = round_layout_value(fragment_width.max(1.0));
+            fragment.height = round_layout_value(fragment_height.max(line_height_px));
             cursor_x += fragment_width;
             line_height = line_height.max(fragment_height);
         }
@@ -2976,7 +2976,7 @@ impl Layoutable for TextArea {
         if self.auto_width {
             let intrinsic_width = line_widths.iter().copied().fold(0.0_f32, f32::max).max(1.0);
             let available = constraints.max_width.max(1.0);
-            self.size.width = intrinsic_width.min(available);
+            self.size.width = round_layout_value(intrinsic_width.min(available));
             self.element.set_width(self.size.width);
         }
 
@@ -3003,7 +3003,7 @@ impl Layoutable for TextArea {
                 1
             };
 
-            self.size.height = (line_px * resolved_lines as f32).max(1.0);
+            self.size.height = round_layout_value((line_px * resolved_lines as f32).max(1.0));
             self.element.set_height(self.size.height);
         }
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
@@ -3033,12 +3033,12 @@ impl Layoutable for TextArea {
         let layout_width = self.layout_override_width.unwrap_or(self.size.width);
         let layout_height = self.layout_override_height.unwrap_or(self.size.height);
         self.layout_size = Size {
-            width: layout_width.max(0.0).min(max_width),
-            height: layout_height.max(0.0).min(max_height),
+            width: round_layout_value(layout_width.max(0.0).min(max_width)),
+            height: round_layout_value(layout_height.max(0.0).min(max_height)),
         };
         self.layout_position = Position {
-            x: placement.parent_x + self.position.x + placement.visual_offset_x,
-            y: placement.parent_y + self.position.y + placement.visual_offset_y,
+            x: round_layout_value(placement.parent_x + self.position.x + placement.visual_offset_x),
+            y: round_layout_value(placement.parent_y + self.position.y + placement.visual_offset_y),
         };
 
         let parent_left = placement.parent_x + placement.visual_offset_x;
@@ -3120,8 +3120,9 @@ impl Renderable for TextArea {
             }
 
             for fragment in &mut self.render_fragments {
-                let screen_x = self.layout_position.x + fragment.content_x;
-                let screen_y = self.layout_position.y + fragment.content_y - self.scroll_y;
+                let screen_x = round_layout_value(self.layout_position.x + fragment.content_x);
+                let screen_y =
+                    round_layout_value(self.layout_position.y + fragment.content_y - self.scroll_y);
                 match &fragment.kind {
                     TextAreaRenderFragmentKind::Text(text)
                     | TextAreaRenderFragmentKind::Preedit(text) => {
@@ -3133,8 +3134,8 @@ impl Renderable for TextArea {
                                     content: text.clone(),
                                     x: screen_x,
                                     y: screen_y,
-                                    width: fragment.width.max(1.0),
-                                    height: fragment.height.max(1.0),
+                                    width: round_layout_value(fragment.width.max(1.0)),
+                                    height: round_layout_value(fragment.height.max(1.0)),
                                     color: self.color.to_rgba_f32(),
                                     opacity,
                                     layout_buffer: None,
@@ -3228,10 +3229,12 @@ impl Renderable for TextArea {
                 TextPassParams::single_fragment(
                     TextPassFragment {
                         content,
-                        x: self.layout_position.x,
-                        y: self.layout_position.y - self.scroll_y,
-                        width: self.layout_size.width,
-                        height: self.layout_size.height.max(self.content_height()),
+                        x: round_layout_value(self.layout_position.x),
+                        y: round_layout_value(self.layout_position.y - self.scroll_y),
+                        width: round_layout_value(self.layout_size.width),
+                        height: round_layout_value(
+                            self.layout_size.height.max(self.content_height()),
+                        ),
                         color,
                         opacity,
                         layout_buffer: Some(self.glyph_buffer.clone()),
@@ -3375,7 +3378,11 @@ fn normalize_text_area_render_projections(
     for projection in sorted {
         let mut next = Vec::new();
         for existing in normalized {
-            next.extend(subtract_projection_overlap(content, existing, &projection.range));
+            next.extend(subtract_projection_overlap(
+                content,
+                existing,
+                &projection.range,
+            ));
         }
         next.push(slice_text_area_render_projection(
             content,
@@ -3393,7 +3400,8 @@ fn subtract_projection_overlap(
     projection: TextAreaRenderProjection,
     covering_range: &Range<usize>,
 ) -> Vec<TextAreaRenderProjection> {
-    if covering_range.end <= projection.range.start || covering_range.start >= projection.range.end {
+    if covering_range.end <= projection.range.start || covering_range.start >= projection.range.end
+    {
         return vec![projection];
     }
 
@@ -3435,7 +3443,11 @@ fn update_projection_rsx_node_range(node: &mut RsxNode, content: &str, range: Ra
                 "content",
                 PropValue::String(content[start_byte..end_byte].to_string()),
             );
-            set_rsx_element_prop(element, "source_text_start", PropValue::I64(range.start as i64));
+            set_rsx_element_prop(
+                element,
+                "source_text_start",
+                PropValue::I64(range.start as i64),
+            );
             set_rsx_element_prop(element, "source_text_end", PropValue::I64(range.end as i64));
         }
     }
@@ -3448,7 +3460,11 @@ fn update_projection_rsx_node_range(node: &mut RsxNode, content: &str, range: Ra
 }
 
 fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &str, value: PropValue) {
-    if let Some((_, prop_value)) = element.props.iter_mut().rev().find(|(prop_key, _)| prop_key == key)
+    if let Some((_, prop_value)) = element
+        .props
+        .iter_mut()
+        .rev()
+        .find(|(prop_key, _)| prop_key == key)
     {
         *prop_value = value;
         return;
@@ -4192,7 +4208,8 @@ mod tests {
             area.line_height,
             &area.font_families,
         )
-        .0;
-        assert!((area.measured_size().0 - expected_width).abs() < 0.01);
+        .0
+        .round();
+        assert_eq!(area.measured_size().0, expected_width);
     }
 }

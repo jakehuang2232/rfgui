@@ -9,7 +9,7 @@ impl Element {
                 proposal.viewport_width,
                 proposal.viewport_height,
             ) {
-                self.core.set_width(resolved);
+                self.core.set_width(round_layout_value(resolved));
             }
         }
         if let SizeValue::Length(height) = self.computed_style.height {
@@ -19,7 +19,7 @@ impl Element {
                 proposal.viewport_width,
                 proposal.viewport_height,
             ) {
-                self.core.set_height(resolved);
+                self.core.set_height(round_layout_value(resolved));
             }
         }
     }
@@ -78,7 +78,7 @@ impl Element {
             if let Some(max_width) = max_width {
                 width = width.min(max_width);
             }
-            self.core.set_width(width);
+            self.core.set_width(round_layout_value(width));
         }
 
         if include_auto || self.computed_style.height != SizeValue::Auto {
@@ -86,7 +86,7 @@ impl Element {
             if let Some(max_height) = max_height {
                 height = height.min(max_height);
             }
-            self.core.set_height(height);
+            self.core.set_height(round_layout_value(height));
         }
     }
 
@@ -407,10 +407,12 @@ impl Element {
         );
 
         if self.computed_style.width == SizeValue::Auto {
-            self.core.set_width(max_w + bw_l + bw_r + p_l + p_r);
+            self.core
+                .set_width(round_layout_value(max_w + bw_l + bw_r + p_l + p_r));
         }
         if self.computed_style.height == SizeValue::Auto {
-            self.core.set_height(max_h + bw_t + bw_b + p_t + p_b);
+            self.core
+                .set_height(round_layout_value(max_h + bw_t + bw_b + p_t + p_b));
         }
     }
 
@@ -660,34 +662,31 @@ impl Element {
 
         let frame_rel_x = target_rel_x;
         let frame_rel_y = target_rel_y;
-        let frame_width = self
-            .layout_transition_override_width
-            .unwrap_or(target_width);
-        let frame_height = self
-            .layout_transition_override_height
-            .unwrap_or(target_height);
-        self.layout_flow_position = Position {
-            x: parent_x + frame_rel_x,
-            y: parent_y + frame_rel_y,
-        };
+        let frame_width = round_layout_value(
+            self.layout_transition_override_width
+                .unwrap_or(target_width),
+        );
+        let frame_height = round_layout_value(
+            self.layout_transition_override_height
+                .unwrap_or(target_height),
+        );
+        self.layout_flow_position = round_layout_position(parent_x + frame_rel_x, parent_y + frame_rel_y);
         let frame = LayoutFrame {
-            x: self.layout_flow_position.x
-                + parent_visual_offset_x
-                + self.layout_transition_visual_offset_x,
-            y: self.layout_flow_position.y
-                + parent_visual_offset_y
-                + self.layout_transition_visual_offset_y,
+            x: round_layout_value(
+                self.layout_flow_position.x
+                    + parent_visual_offset_x
+                    + self.layout_transition_visual_offset_x,
+            ),
+            y: round_layout_value(
+                self.layout_flow_position.y
+                    + parent_visual_offset_y
+                    + self.layout_transition_visual_offset_y,
+            ),
             width: frame_width,
             height: frame_height,
         };
-        self.core.layout_position = Position {
-            x: frame.x,
-            y: frame.y,
-        };
-        self.core.layout_size = Size {
-            width: frame.width,
-            height: frame.height,
-        };
+        self.core.layout_position = round_layout_position(frame.x, frame.y);
+        self.core.layout_size = round_layout_size(frame.width, frame.height);
         self.update_resolved_transform();
 
         self.absolute_clip_rect = if is_absolute {

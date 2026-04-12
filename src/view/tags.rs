@@ -440,10 +440,9 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
             node = node.with_prop("max_length", max_length);
         }
         if let Some(handler) = props.on_render {
-            let mut render_string =
-                crate::view::base_component::TextAreaRenderString::new(
-                    resolved_content.unwrap_or_default(),
-                );
+            let mut render_string = crate::view::base_component::TextAreaRenderString::new(
+                resolved_content.unwrap_or_default(),
+            );
             handler.call(&mut render_string);
             for projection in render_string.projections() {
                 let projection_node = RsxNode::element(TEXT_AREA_PROJECTION_TAG)
