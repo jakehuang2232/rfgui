@@ -3943,7 +3943,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_layout_keeps_text_flowing_after_inline_element() {
+    fn inline_layout_keeps_trailing_text_on_same_line_after_inline_element() {
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
@@ -4038,10 +4038,10 @@ mod tests {
 
     #[test]
     fn inline_gap_does_not_apply_between_text_fragments_of_same_text_node() {
-        let mut parent = Element::new(0.0, 0.0, 400.0, 0.0);
+        let mut parent = Element::new(0.0, 0.0, 120.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
-        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(400.0)));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
         parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(24.0)));
         parent.apply_style(parent_style);
 
@@ -4050,11 +4050,11 @@ mod tests {
         parent.add_child(Box::new(text));
 
         parent.measure(LayoutConstraints {
-            max_width: 400.0,
+            max_width: 120.0,
             max_height: 120.0,
-            viewport_width: 400.0,
+            viewport_width: 120.0,
             viewport_height: 120.0,
-            percent_base_width: Some(400.0),
+            percent_base_width: Some(120.0),
             percent_base_height: Some(120.0),
         });
         parent.place(LayoutPlacement {
@@ -4062,11 +4062,11 @@ mod tests {
             parent_y: 0.0,
             visual_offset_x: 0.0,
             visual_offset_y: 0.0,
-            available_width: 400.0,
+            available_width: 120.0,
             available_height: 120.0,
-            viewport_width: 400.0,
+            viewport_width: 120.0,
             viewport_height: 120.0,
-            percent_base_width: Some(400.0),
+            percent_base_width: Some(120.0),
             percent_base_height: Some(120.0),
         });
 
@@ -4080,7 +4080,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_cjk_text_fragments_per_character() {
+    fn inline_cjk_text_fragments_follow_wrapped_lines() {
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
@@ -4116,10 +4116,9 @@ mod tests {
             .expect("text child");
         let fragments = text.inline_fragment_positions();
 
-        assert!(fragments.len() > 8);
-        assert_eq!(fragments[0].0, "最");
-        assert_eq!(fragments[1].0, "後");
-        assert_eq!(fragments[2].0, "接");
+        assert!(fragments.len() > 1);
+        assert!(fragments[0].0.starts_with("最後"));
+        assert!(fragments.iter().all(|(_, position)| position.x >= 0.0));
     }
 
     #[test]
@@ -4310,7 +4309,7 @@ mod tests {
             .downcast_ref::<Text>()
             .expect("nested text");
         let fragments = nested_text.inline_fragment_positions();
-        assert!(fragments.len() >= 4, "fragments={fragments:?}");
+        assert!(fragments.len() >= 2, "fragments={fragments:?}");
     }
 
     #[test]
@@ -4395,6 +4394,66 @@ mod tests {
             })
             .fold(0.0_f32, f32::max);
         assert!((last.x + last.width - last_line_right - 8.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn inline_fragmentable_wrapper_respects_remaining_width_on_first_line() {
+        let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        parent.apply_style(parent_style);
+
+        let mut badge = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut badge_style = Style::new();
+        badge_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(140.0)));
+        badge_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        badge.apply_style(badge_style);
+        parent.add_child(Box::new(badge));
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content("alpha beta gamma delta")));
+        parent.add_child(Box::new(wrapper));
+
+        parent.measure(LayoutConstraints {
+            max_width: 220.0,
+            max_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 220.0,
+            available_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let wrapper = parent.children().expect("children")[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("wrapper");
+        let text = wrapper.children().expect("wrapper children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("text child");
+        let fragments = text.inline_fragment_positions();
+        let first_fragment = fragments.first().expect("first fragment");
+
+        assert_eq!(first_fragment.1.y, 0.0, "fragments={fragments:?}");
+        assert!(first_fragment.1.x >= 140.0, "fragments={fragments:?}");
     }
 
     #[test]

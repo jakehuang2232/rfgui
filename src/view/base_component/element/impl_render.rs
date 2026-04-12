@@ -244,17 +244,57 @@ impl Element {
             None
         };
 
-        let inline_context = InlineMeasureContext {
-            first_available_width: inner_w,
-            full_available_width: inner_w,
-            viewport_width: proposal.viewport_width,
-            viewport_height: proposal.viewport_height,
-            percent_base_width: child_percent_base_width,
-            percent_base_height: child_percent_base_height,
-        };
+        let inline_wrap = matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
+        let inline_gap = resolve_px(
+            self.computed_style.gap,
+            inner_w,
+            proposal.viewport_width,
+            proposal.viewport_height,
+        );
+        let mut current_line_width = 0.0_f32;
+        let mut line_has_content = false;
+        let mut pending_first_available_width = self
+            .pending_inline_measure_context
+            .map(|context| context.first_available_width.max(0.0).min(inner_w));
         for child in &mut self.children {
             if matches!(self.computed_style.layout, Layout::Inline) {
-                child.measure_inline(inline_context);
+                let first_available_width = if let Some(width) = pending_first_available_width.take() {
+                    width
+                } else if !line_has_content {
+                    inner_w
+                } else {
+                    (inner_w - current_line_width - inline_gap).max(0.0)
+                };
+                child.measure_inline(InlineMeasureContext {
+                    first_available_width,
+                    full_available_width: inner_w,
+                    viewport_width: proposal.viewport_width,
+                    viewport_height: proposal.viewport_height,
+                    percent_base_width: child_percent_base_width,
+                    percent_base_height: child_percent_base_height,
+                });
+
+                let node_sizes = child.get_inline_nodes_size();
+                if node_sizes.is_empty() {
+                    continue;
+                }
+                for (node_index, node) in node_sizes.into_iter().enumerate() {
+                    let item_width = node.width.max(0.0);
+                    let inserts_gap = node_index == 0 && line_has_content;
+                    let next_width = if !line_has_content {
+                        item_width
+                    } else if inserts_gap {
+                        current_line_width + inline_gap + item_width
+                    } else {
+                        current_line_width + item_width
+                    };
+                    if inline_wrap && line_has_content && next_width > inner_w {
+                        current_line_width = item_width;
+                    } else {
+                        current_line_width = next_width;
+                    }
+                    line_has_content = true;
+                }
             } else {
                 child.measure(LayoutConstraints {
                     max_width: child_available_width,
