@@ -33,7 +33,7 @@ jobs:
         with:
           workspaces: |
             . -> target
-            examples/01_window -> target
+            examples/bin/01_window -> target
 
       - name: Cache Trunk Binary
         id: cache-trunk
@@ -46,7 +46,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/trunk
-          key: ${{ runner.os }}-trunk-tools-${{ hashFiles('examples/01_window/Trunk.toml') }}
+          key: ${{ runner.os }}-trunk-tools-${{ hashFiles('examples/bin/01_window/Trunk.toml') }}
           restore-keys: |
             ${{ runner.os }}-trunk-tools-
 
@@ -55,7 +55,7 @@ jobs:
         run: cargo install trunk --locked
 
       - name: Build Web Example
-        working-directory: examples/01_window
+        working-directory: examples/bin/01_window
         run: trunk build --release --config Trunk.toml
 
       - name: Upload Pages Artifact
