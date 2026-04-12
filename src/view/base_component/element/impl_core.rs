@@ -693,14 +693,14 @@ impl Element {
     }
 
     pub fn set_layout_transition_width(&mut self, value: f32) {
-        let value = value.max(0.0);
+        let value = round_layout_value(value.max(0.0));
         self.layout_transition_override_width = Some(value);
         self.core.layout_size.width = value;
         self.mark_layout_dirty();
     }
 
     pub fn set_layout_transition_height(&mut self, value: f32) {
-        let value = value.max(0.0);
+        let value = round_layout_value(value.max(0.0));
         self.layout_transition_override_height = Some(value);
         self.core.layout_size.height = value;
         self.mark_layout_dirty();
@@ -717,18 +717,9 @@ impl Element {
         parent_layout_x: f32,
         parent_layout_y: f32,
     ) {
-        self.core.layout_position = Position {
-            x: layout_x,
-            y: layout_y,
-        };
-        self.layout_flow_position = Position {
-            x: flow_x,
-            y: flow_y,
-        };
-        self.core.layout_size = Size {
-            width: layout_width.max(0.0),
-            height: layout_height.max(0.0),
-        };
+        self.core.layout_position = round_layout_position(layout_x, layout_y);
+        self.layout_flow_position = round_layout_position(flow_x, flow_y);
+        self.core.layout_size = round_layout_size(layout_width, layout_height);
         self.update_resolved_transform();
         self.last_parent_layout_x = parent_layout_x;
         self.last_parent_layout_y = parent_layout_y;

@@ -83,6 +83,14 @@ pub(crate) fn can_reuse_promoted_subtree(node: &dyn ElementTrait, _ctx: &UiBuild
     walk(node)
 }
 
+pub(crate) fn round_layout_value(value: f32) -> f32 {
+    if value.is_finite() {
+        value.round()
+    } else {
+        value
+    }
+}
+
 pub(crate) fn get_debug_element_render_state_by_id(
     root: &dyn ElementTrait,
     node_id: u64,
@@ -830,8 +838,8 @@ pub(crate) fn reconcile_transition_runtime_state(
         let mut changed = false;
         let node_id = node.id();
         if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
-            changed |= element
-                .reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
+            changed |=
+                element.reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
         }
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut() {
@@ -1853,7 +1861,7 @@ mod tests {
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::{Viewport, ViewportControl};
-    use crate::{AnchorName, Color};
+    use crate::{AnchorName, Color, Layout};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
@@ -1949,6 +1957,7 @@ mod tests {
         let mut root = Element::new(0.0, 0.0, 400.0, 300.0);
         let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
         let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
         parent_style.set_transform(Transform::new([Rotate::z(Angle::deg(90.0))]));
         parent_style.set_transform_origin(TransformOrigin::center());
         parent.apply_style(parent_style);

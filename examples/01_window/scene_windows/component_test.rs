@@ -4,8 +4,8 @@ use crate::rfgui::{Angle, Layout, Length, Padding, Rotate, Transform};
 use crate::rfgui_components::{
     Button, ButtonVariant, Checkbox, CloseIcon, NumberField, Select, Slider, Switch, Theme,
 };
-use rfgui::{Animation, Animator, FillMode, Keyframe, ScrollDirection};
 use rfgui::Repeat::Infinite;
+use rfgui::{Animation, Animator, FillMode, Keyframe, ScrollDirection};
 use rfgui_components::Accordion;
 
 fn select_label(item: &String, _: usize) -> String {

@@ -8,13 +8,14 @@ use crate::view::render_pass::text_pass::{TextInput, TextOutput};
 use crate::view::render_pass::text_pass::{TextPassFragment, TextPassParams};
 use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
 use crate::{ColorLike, Cursor, HexColor, Style, TextAlign, TextWrap};
-use cosmic_text::Align;
+use cosmic_text::{Align, Buffer as GlyphBuffer};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, InlineMeasureContext,
     InlineNodeSize, InlinePlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
+    round_layout_value,
 };
 use crate::view::promotion::PromotionNodeInfo;
 
@@ -24,12 +25,21 @@ struct InlineTextFragment {
     width: f32,
     height: f32,
     position: Option<Position>,
+    layout_buffer: Option<GlyphBuffer>,
+}
+
+#[derive(Clone)]
+struct MeasuredTextLayout {
+    buffer: GlyphBuffer,
+    width: f32,
+    height: f32,
 }
 
 pub struct Text {
     element: Element,
     position: Position,
     size: Size,
+    render_size: Size,
     layout_position: Position,
     layout_size: Size,
     layout_override_width: Option<f32>,
@@ -48,15 +58,16 @@ pub struct Text {
     text_wrap: TextWrap,
     allow_wrap: bool,
     measure_revision: u64,
-    cached_intrinsic_width: Option<(u64, f32)>,
+    cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
+    layout_buffer: Option<GlyphBuffer>,
     inline_fragments: Vec<InlineTextFragment>,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
 }
 
 thread_local! {
-    static MEASURE_TEXT_CACHE: RefCell<HashMap<TextMeasureCacheKey, (f32, f32)>> =
+    static MEASURE_TEXT_CACHE: RefCell<HashMap<TextMeasureCacheKey, MeasuredTextLayout>> =
         RefCell::new(HashMap::new());
 }
 
@@ -132,6 +143,7 @@ impl Text {
             element: Element::new_with_id(id, x, y, width, height),
             position: Position { x, y },
             size: Size { width, height },
+            render_size: Size { width, height },
             layout_position: Position { x, y },
             layout_size: Size {
                 width: width.max(0.0),
@@ -153,8 +165,9 @@ impl Text {
             text_wrap: TextWrap::Wrap,
             allow_wrap: true,
             measure_revision: 0,
-            cached_intrinsic_width: None,
+            cached_intrinsic_layout: None,
             cached_height_for_width: None,
+            layout_buffer: None,
             inline_fragments: Vec::new(),
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
@@ -163,8 +176,9 @@ impl Text {
 
     fn mark_measure_dirty(&mut self) {
         self.measure_revision = self.measure_revision.wrapping_add(1);
-        self.cached_intrinsic_width = None;
+        self.cached_intrinsic_layout = None;
         self.cached_height_for_width = None;
+        self.layout_buffer = None;
         self.inline_fragments.clear();
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
@@ -177,6 +191,10 @@ impl Text {
 
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.size = Size { width, height };
+        self.render_size = Size {
+            width: width.max(0.0),
+            height: height.max(0.0),
+        };
         self.element.set_size(width, height);
         self.layout_override_width = None;
         self.layout_override_height = None;
@@ -187,6 +205,7 @@ impl Text {
 
     pub fn set_width(&mut self, width: f32) {
         self.size.width = width;
+        self.render_size.width = width.max(0.0);
         self.element.set_width(width);
         self.layout_override_width = None;
         self.auto_width = false;
@@ -195,6 +214,7 @@ impl Text {
 
     pub fn set_height(&mut self, height: f32) {
         self.size.height = height;
+        self.render_size.height = height.max(0.0);
         self.element.set_height(height);
         self.layout_override_height = None;
         self.auto_height = false;
@@ -271,7 +291,7 @@ impl Text {
     pub fn set_align(&mut self, align: Align) {
         if std::mem::discriminant(&self.align) != std::mem::discriminant(&align) {
             self.align = align;
-            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
+            self.mark_measure_dirty();
         }
     }
 
@@ -388,9 +408,9 @@ fn split_inline_token_by_width(
     font_weight: u16,
     align: Align,
     font_families: &[String],
-) -> Vec<(String, f32, f32)> {
+) -> Vec<(String, MeasuredTextLayout)> {
     let max_width = max_width.max(1.0);
-    let (token_width, token_height) = measure_text_size(
+    let token_layout = measure_text_layout(
         token,
         None,
         false,
@@ -400,8 +420,8 @@ fn split_inline_token_by_width(
         align,
         font_families,
     );
-    if token_width <= max_width || token.chars().count() <= 1 {
-        return vec![(token.to_string(), token_width, token_height)];
+    if token_layout.width <= max_width || token.chars().count() <= 1 {
+        return vec![(token.to_string(), token_layout)];
     }
 
     let chars = token.chars().collect::<Vec<_>>();
@@ -409,10 +429,10 @@ fn split_inline_token_by_width(
     let mut start = 0_usize;
     while start < chars.len() {
         let mut candidate = String::new();
-        let mut best: Option<(usize, f32, f32)> = None;
+        let mut best: Option<(usize, MeasuredTextLayout)> = None;
         for end in start..chars.len() {
             candidate.push(chars[end]);
-            let (width, height) = measure_text_size(
+            let layout = measure_text_layout(
                 candidate.as_str(),
                 None,
                 false,
@@ -422,8 +442,9 @@ fn split_inline_token_by_width(
                 align,
                 font_families,
             );
-            if width <= max_width || end == start {
-                best = Some((end + 1, width, height));
+            if layout.width <= max_width || end == start {
+                let width = layout.width;
+                best = Some((end + 1, layout));
                 if width > max_width {
                     break;
                 }
@@ -431,15 +452,15 @@ fn split_inline_token_by_width(
             }
             break;
         }
-        let (next_start, width, height) = best.expect("at least one char must fit");
+        let (next_start, layout) = best.expect("at least one char must fit");
         let fragment = chars[start..next_start].iter().collect::<String>();
-        fragments.push((fragment, width, height));
+        fragments.push((fragment, layout));
         start = next_start;
     }
     fragments
 }
 
-fn measure_text_size(
+fn measure_text_layout(
     content: &str,
     max_width: Option<f32>,
     allow_wrap: bool,
@@ -448,7 +469,7 @@ fn measure_text_size(
     font_weight: u16,
     align: Align,
     font_families: &[String],
-) -> (f32, f32) {
+) -> MeasuredTextLayout {
     let cache_key = make_measure_cache_key(
         content,
         max_width,
@@ -458,7 +479,7 @@ fn measure_text_size(
         align,
         font_families,
     );
-    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied()) {
+    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned()) {
         return cached;
     }
 
@@ -475,16 +496,69 @@ fn measure_text_size(
             align,
             font_families,
         );
-        let measured = measure_buffer_size(&buffer);
+        let (width, height) = measure_buffer_size(&buffer);
+        let measured = MeasuredTextLayout {
+            buffer,
+            width,
+            height,
+        };
         MEASURE_TEXT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
-            cache.insert(cache_key, measured);
+            cache.insert(cache_key, measured.clone());
             if cache.len() > 4096 {
                 cache.clear();
             }
         });
         measured
     })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn measure_text_size(
+    content: &str,
+    max_width: Option<f32>,
+    allow_wrap: bool,
+    font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+    align: Align,
+    font_families: &[String],
+) -> (f32, f32) {
+    let measured = measure_text_layout(
+        content,
+        max_width,
+        allow_wrap,
+        font_size,
+        line_height,
+        font_weight,
+        align,
+        font_families,
+    );
+    (measured.width, measured.height)
+}
+
+impl Text {
+    fn build_layout_buffer_for_content(
+        &self,
+        content: &str,
+        width: Option<f32>,
+        allow_wrap: bool,
+    ) -> GlyphBuffer {
+        with_shared_font_system(|font_system| {
+            build_text_buffer(
+                font_system,
+                content,
+                width.map(|value| value.max(1.0)),
+                None,
+                allow_wrap,
+                self.font_size,
+                self.line_height,
+                self.font_weight,
+                self.align,
+                self.font_families.as_slice(),
+            )
+        })
+    }
 }
 
 impl ElementTrait for Text {
@@ -724,6 +798,7 @@ impl Layoutable for Text {
                 width: 0.0,
                 height: 0.0,
             };
+            self.render_size = self.size;
             self.element.set_size(0.0, 0.0);
             self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT).union(
                 super::DirtyFlags::PLACE
@@ -736,7 +811,7 @@ impl Layoutable for Text {
 
         let max_fragment_width = context.full_available_width.max(1.0);
         let fragments = if self.text_wrap == TextWrap::NoWrap {
-            let (width, height) = measure_text_size(
+            let layout = measure_text_layout(
                 self.content.as_str(),
                 None,
                 false,
@@ -748,14 +823,15 @@ impl Layoutable for Text {
             );
             vec![InlineTextFragment {
                 content: self.content.clone(),
-                width,
-                height,
+                width: layout.width,
+                height: layout.height,
                 position: None,
+                layout_buffer: Some(layout.buffer),
             }]
         } else {
             let mut fragments = Vec::new();
             for token in tokenize_inline_content(self.content.as_str()) {
-                for (content, width, height) in split_inline_token_by_width(
+                for (content, layout) in split_inline_token_by_width(
                     token.as_str(),
                     max_fragment_width,
                     self.font_size,
@@ -766,9 +842,10 @@ impl Layoutable for Text {
                 ) {
                     fragments.push(InlineTextFragment {
                         content,
-                        width,
-                        height,
+                        width: layout.width,
+                        height: layout.height,
                         position: None,
+                        layout_buffer: Some(layout.buffer),
                     });
                 }
             }
@@ -780,9 +857,14 @@ impl Layoutable for Text {
         });
         self.inline_fragments = fragments;
         self.size = Size {
-            width: max_width,
-            height: max_height,
+            width: round_layout_value(max_width),
+            height: round_layout_value(max_height),
         };
+        self.render_size = Size {
+            width: max_width.max(0.0),
+            height: max_height.max(0.0),
+        };
+        self.layout_buffer = None;
         self.element.set_size(self.size.width, self.size.height);
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT).union(
             super::DirtyFlags::PLACE
@@ -808,8 +890,8 @@ impl Layoutable for Text {
                 fragment.position = None;
             }
             self.layout_position = Position {
-                x: placement.x,
-                y: placement.y,
+                x: round_layout_value(placement.x),
+                y: round_layout_value(placement.y),
             };
             self.layout_size = Size {
                 width: 0.0,
@@ -822,8 +904,8 @@ impl Layoutable for Text {
             return;
         };
         fragment.position = Some(Position {
-            x: placement.x,
-            y: placement.y,
+            x: round_layout_value(placement.x),
+            y: round_layout_value(placement.y),
         });
 
         let left = placement.x;
@@ -838,10 +920,13 @@ impl Layoutable for Text {
             self.layout_size.width = current_right.max(right) - self.layout_position.x;
             self.layout_size.height = current_bottom.max(bottom) - self.layout_position.y;
         } else {
-            self.layout_position = Position { x: left, y: top };
+            self.layout_position = Position {
+                x: round_layout_value(left),
+                y: round_layout_value(top),
+            };
             self.layout_size = Size {
-                width: (right - left).max(0.0),
-                height: (bottom - top).max(0.0),
+                width: round_layout_value((right - left).max(0.0)),
+                height: round_layout_value((bottom - top).max(0.0)),
             };
         }
         self.should_render = self.layout_size.width > 0.0 && self.layout_size.height > 0.0;
@@ -861,17 +946,26 @@ impl Layoutable for Text {
         if self.allow_wrap != next_allow_wrap {
             self.allow_wrap = next_allow_wrap;
         }
+        self.layout_buffer = None;
 
         if !self.auto_width && !self.auto_height {
+            self.layout_buffer = Some(self.build_layout_buffer_for_content(
+                self.content.as_str(),
+                Some(self.size.width.max(1.0)),
+                self.allow_wrap,
+            ));
             self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
             return;
         }
+        let mut intrinsic_layout: Option<MeasuredTextLayout> = None;
         if self.auto_width {
-            let intrinsic_width = if let Some((revision, width)) = self.cached_intrinsic_width {
-                if revision == self.measure_revision {
-                    width
+            let next_intrinsic_layout = if let Some((revision, layout)) =
+                self.cached_intrinsic_layout.as_ref()
+            {
+                if *revision == self.measure_revision {
+                    layout.clone()
                 } else {
-                    let (width, _) = measure_text_size(
+                    let layout = measure_text_layout(
                         self.content.as_str(),
                         None,
                         false,
@@ -881,11 +975,11 @@ impl Layoutable for Text {
                         self.align,
                         self.font_families.as_slice(),
                     );
-                    self.cached_intrinsic_width = Some((self.measure_revision, width));
-                    width
+                    self.cached_intrinsic_layout = Some((self.measure_revision, layout.clone()));
+                    layout
                 }
             } else {
-                let (width, _) = measure_text_size(
+                let layout = measure_text_layout(
                     self.content.as_str(),
                     None,
                     false,
@@ -895,62 +989,68 @@ impl Layoutable for Text {
                     self.align,
                     self.font_families.as_slice(),
                 );
-                self.cached_intrinsic_width = Some((self.measure_revision, width));
-                width
+                self.cached_intrinsic_layout = Some((self.measure_revision, layout.clone()));
+                layout
             };
+            let intrinsic_width = next_intrinsic_layout.width;
+            intrinsic_layout = Some(next_intrinsic_layout);
             let available = if parent_width_is_constrained {
                 constraints.max_width.max(1.0)
             } else {
                 f32::INFINITY
             };
-            self.size.width = intrinsic_width.min(available);
+            self.size.width = round_layout_value(intrinsic_width.min(available));
+            self.render_size.width = intrinsic_width.min(available).max(0.0);
             self.element.set_width(self.size.width);
         }
         if self.auto_height {
             let effective_width = if self.auto_width {
-                self.size.width.max(1.0)
+                self.render_size.width.max(1.0)
             } else {
                 self.size.width.min(constraints.max_width.max(1.0)).max(1.0)
             };
-            let measured_height = if let Some((revision, cached_width, cached_height)) =
-                self.cached_height_for_width
+            if let Some(layout) = intrinsic_layout.as_ref()
+                && !self.allow_wrap
+                && (effective_width - layout.width.max(1.0)).abs() <= 0.01
             {
-                if revision == self.measure_revision
-                    && (cached_width - effective_width).abs() < 0.01
-                {
-                    cached_height
-                } else {
-                    let (_, height) = measure_text_size(
-                        self.content.as_str(),
-                        Some(effective_width),
-                        self.allow_wrap,
-                        self.font_size,
-                        self.line_height,
-                        self.font_weight,
-                        self.align,
-                        self.font_families.as_slice(),
-                    );
-                    self.cached_height_for_width =
-                        Some((self.measure_revision, effective_width, height));
-                    height
-                }
+                self.cached_height_for_width =
+                    Some((self.measure_revision, effective_width, layout.height));
+                self.size.height = round_layout_value(layout.height.max(1.0));
+                self.render_size.height = layout.height.max(1.0);
+                self.element.set_height(self.size.height);
+                self.layout_buffer = Some(layout.buffer.clone());
             } else {
-                let (_, height) = measure_text_size(
+                let buffer = self.build_layout_buffer_for_content(
                     self.content.as_str(),
                     Some(effective_width),
                     self.allow_wrap,
-                    self.font_size,
-                    self.line_height,
-                    self.font_weight,
-                    self.align,
-                    self.font_families.as_slice(),
                 );
+                let (_, measured_height) = measure_buffer_size(&buffer);
                 self.cached_height_for_width =
-                    Some((self.measure_revision, effective_width, height));
-                height
+                    Some((self.measure_revision, effective_width, measured_height));
+                self.size.height = round_layout_value(measured_height.max(1.0));
+                self.render_size.height = measured_height.max(1.0);
+                self.element.set_height(self.size.height);
+                self.layout_buffer = Some(buffer);
+            }
+        } else {
+            let final_width = if self.auto_width {
+                self.render_size.width.max(1.0)
+            } else {
+                self.size.width.max(1.0)
             };
-            self.size.height = measured_height.max(1.0);
-            self.element.set_height(self.size.height);
+            if let Some(layout) = intrinsic_layout
+                && !self.allow_wrap
+                && (final_width - layout.width.max(1.0)).abs() <= 0.01
+            {
+                self.layout_buffer = Some(layout.buffer);
+            } else {
+                self.layout_buffer = Some(self.build_layout_buffer_for_content(
+                    self.content.as_str(),
+                    Some(final_width),
+                    self.allow_wrap,
+                ));
+            }
         }
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
     }
@@ -971,12 +1071,12 @@ impl Layoutable for Text {
         let layout_width = self.layout_override_width.unwrap_or(self.size.width);
         let layout_height = self.layout_override_height.unwrap_or(self.size.height);
         self.layout_size = Size {
-            width: layout_width.max(0.0).min(max_width),
-            height: layout_height.max(0.0).min(max_height),
+            width: round_layout_value(layout_width.max(0.0).min(max_width)),
+            height: round_layout_value(layout_height.max(0.0).min(max_height)),
         };
         self.layout_position = Position {
-            x: placement.parent_x + self.position.x + placement.visual_offset_x,
-            y: placement.parent_y + self.position.y + placement.visual_offset_y,
+            x: round_layout_value(placement.parent_x + self.position.x + placement.visual_offset_x),
+            y: round_layout_value(placement.parent_y + self.position.y + placement.visual_offset_y),
         };
 
         let parent_left = placement.parent_x + placement.visual_offset_x;
@@ -1020,38 +1120,50 @@ impl Renderable for Text {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        let inline_fragments = self
+        let inline_fragment_indices = self
             .inline_fragments
             .iter()
-            .filter(|fragment| fragment.position.is_some() && !fragment.content.is_empty())
+            .enumerate()
+            .filter(|(_, fragment)| fragment.position.is_some() && !fragment.content.is_empty())
+            .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        let has_inline_fragments = !inline_fragments.is_empty();
+        let has_inline_fragments = !inline_fragment_indices.is_empty();
         let fragments = if !has_inline_fragments {
+            let layout_buffer = self
+                .layout_buffer
+                .as_ref()
+                .expect("text layout buffer should be prepared during layout")
+                .clone();
             vec![TextPassFragment {
                 content: self.content.clone(),
-                x: self.layout_position.x,
-                y: self.layout_position.y,
-                width: self.layout_size.width,
-                height: self.layout_size.height,
+                x: round_layout_value(self.layout_position.x),
+                y: round_layout_value(self.layout_position.y),
+                width: self.render_size.width.max(self.layout_size.width),
+                height: self.render_size.height.max(self.layout_size.height),
                 color: self.color.to_rgba_f32(),
                 opacity,
-                layout_buffer: None,
+                layout_buffer: Some(layout_buffer),
             }]
         } else {
-            inline_fragments
+            inline_fragment_indices
                 .into_iter()
-                .map(|fragment| {
-                    let position = fragment.position.expect("filtered above");
-                    TextPassFragment {
-                        content: fragment.content.clone(),
-                        x: position.x,
-                        y: position.y,
-                        width: fragment.width.max(1.0),
-                        height: fragment.height.max(1.0),
+                .filter_map(|index| {
+                    let fragment = self.inline_fragments.get(index)?;
+                    let position = fragment.position?;
+                    let content = fragment.content.clone();
+                    let width = fragment.width;
+                    let height = fragment.height;
+                    let layout_buffer = fragment.layout_buffer.clone()?;
+                    Some(TextPassFragment {
+                        content,
+                        x: round_layout_value(position.x),
+                        y: round_layout_value(position.y),
+                        width: round_layout_value(width.max(1.0)),
+                        height: round_layout_value(height.max(1.0)),
                         color: self.color.to_rgba_f32(),
                         opacity,
-                        layout_buffer: None,
-                    }
+                        layout_buffer: Some(layout_buffer),
+                    })
                 })
                 .collect::<Vec<_>>()
         };
@@ -1083,11 +1195,12 @@ impl Renderable for Text {
 
 #[cfg(test)]
 mod tests {
-    use super::{ElementTrait, Layoutable, Text};
+    use super::{ElementTrait, Layoutable, Text, measure_text_size};
     use crate::view::base_component::{
         DirtyFlags, InlineMeasureContext, LayoutConstraints, LayoutPlacement,
     };
     use crate::{Length, TextWrap};
+    use cosmic_text::Align;
 
     #[test]
     fn layout_clamps_to_parent_available_area() {
@@ -1416,5 +1529,86 @@ mod tests {
         });
 
         assert!(!text.local_dirty_flags().intersects(DirtyFlags::LAYOUT));
+    }
+
+    #[test]
+    fn auto_measured_text_size_is_rounded_to_integer_pixels() {
+        let mut text = Text::from_content("rounded measurement");
+        text.measure(LayoutConstraints {
+            max_width: 300.0,
+            max_height: 200.0,
+            viewport_width: 300.0,
+            percent_base_width: Some(300.0),
+            percent_base_height: Some(200.0),
+            viewport_height: 200.0,
+        });
+
+        let (width, height) = text.measured_size();
+        assert_eq!(width.fract(), 0.0);
+        assert_eq!(height.fract(), 0.0);
+    }
+
+    #[test]
+    fn inline_measure_does_not_split_word_when_available_width_matches_precise_measurement() {
+        let content = "Reset";
+        let (precise_width, _) =
+            measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
+        let mut text = Text::from_content(content);
+        text.measure_inline(InlineMeasureContext {
+            first_available_width: precise_width,
+            full_available_width: precise_width,
+            viewport_width: 400.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(precise_width),
+            percent_base_height: Some(200.0),
+        });
+
+        let nodes = text.get_inline_nodes_size();
+        assert_eq!(
+            nodes.len(),
+            1,
+            "word should stay on one line when precise width fits"
+        );
+    }
+
+    #[test]
+    fn auto_height_uses_precise_auto_width_to_avoid_spurious_wrap_height() {
+        let content = "Start";
+        let (precise_width, precise_height) =
+            measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
+        let mut text = Text::from_content(content);
+        text.measure(LayoutConstraints {
+            max_width: precise_width.ceil(),
+            max_height: 200.0,
+            viewport_width: 400.0,
+            percent_base_width: Some(precise_width.ceil()),
+            percent_base_height: Some(200.0),
+            viewport_height: 200.0,
+        });
+
+        assert_eq!(text.measured_size().1, precise_height.round());
+    }
+
+    #[test]
+    fn placed_text_box_is_rounded_to_integer_pixels() {
+        let mut text = Text::new(1.4, 2.6, 10.4, 20.6, "demo");
+        text.place(LayoutPlacement {
+            parent_x: 3.2,
+            parent_y: 4.7,
+            visual_offset_x: 0.3,
+            visual_offset_y: -0.2,
+            available_width: 100.0,
+            available_height: 100.0,
+            viewport_width: 100.0,
+            percent_base_width: Some(100.0),
+            percent_base_height: Some(100.0),
+            viewport_height: 100.0,
+        });
+
+        let snapshot = text.box_model_snapshot();
+        assert_eq!(snapshot.x.fract(), 0.0);
+        assert_eq!(snapshot.y.fract(), 0.0);
+        assert_eq!(snapshot.width.fract(), 0.0);
+        assert_eq!(snapshot.height.fract(), 0.0);
     }
 }

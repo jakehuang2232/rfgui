@@ -1,5 +1,71 @@
 # AGENTS.md
 
+Core Capabilities
+1. Question Routing
+
+Route Rust questions to appropriate skills:
+
+    Ownership/borrowing → m01-ownership
+    Smart pointers → m02-resource
+    Error handling → m06-error-handling
+    Concurrency → m07-concurrency
+    Unsafe code → unsafe-checker
+
+2. Code Style
+
+Follow Rust coding guidelines:
+
+    Use snake_case for variables and functions
+    Use PascalCase for types and traits
+    Use SCREAMING_SNAKE_CASE for constants
+    Max line length: 100 characters
+    Use ? operator instead of unwrap() in library code
+
+3. Error Handling
+
+// Good: Use Result with context
+fn read_config() -> Result<Config, ConfigError> {
+let content = std::fs::read_to_string("config.toml")
+.map_err(|e| ConfigError::Io(e))?;
+toml::from_str(&content)
+.map_err(|e| ConfigError::Parse(e))
+}
+
+// Avoid: unwrap() in library code
+fn read_config() -> Config {
+let content = std::fs::read_to_string("config.toml").unwrap(); // Bad
+toml::from_str(&content).unwrap() // Bad
+}
+
+5. Common Error Fixes
+   Error 	Cause 	Fix
+   E0382 	Use of moved value 	Clone, borrow, or use reference
+   E0597 	Lifetime too short 	Extend lifetime or restructure
+   E0502 	Borrow conflict 	Split borrows or use RefCell
+   E0499 	Multiple mut borrows 	Restructure to single mut borrow
+   E0277 	Missing trait impl 	Add trait bound or implement trait
+
+Quick Reference
+Ownership
+
+    Each value has one owner
+    Borrowing: &T (shared) or &mut T (exclusive)
+    Lifetimes: 'a annotations for references
+
+Smart Pointers
+
+    Box<T>: Heap allocation
+    Rc<T>: Reference counting (single-threaded)
+    Arc<T>: Atomic reference counting (thread-safe)
+    RefCell<T>: Interior mutability
+
+Concurrency
+
+    Send: Safe to transfer between threads
+    Sync: Safe to share references between threads
+    Mutex<T>: Mutual exclusion
+    RwLock<T>: Reader-writer lock
+
 This document defines the core UI / Style / Layout / Component conventions for this project (`rust-gui`) and serves as the single source of truth for implementation and refactoring.
 
 ## 1. Three-layer Style Model

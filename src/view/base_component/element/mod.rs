@@ -23,6 +23,7 @@ use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
     MouseDownEvent, MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent,
 };
+use crate::view::base_component::round_layout_value;
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{AttachmentTarget, FrameGraph, ResourceLifetime, TextureDesc};
 use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
@@ -216,6 +217,20 @@ fn css_perspective_matrix(depth: f32) -> Mat4 {
 
 fn hash_f32<H: Hasher>(state: &mut H, value: f32) {
     value.to_bits().hash(state);
+}
+
+fn round_layout_position(x: f32, y: f32) -> Position {
+    Position {
+        x: round_layout_value(x),
+        y: round_layout_value(y),
+    }
+}
+
+fn round_layout_size(width: f32, height: f32) -> Size {
+    Size {
+        width: round_layout_value(width.max(0.0)),
+        height: round_layout_value(height.max(0.0)),
+    }
 }
 
 pub(crate) fn promoted_layer_stable_key(node_id: u64) -> u64 {

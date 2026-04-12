@@ -3,8 +3,18 @@ struct ScreenUniform {
     _pad: vec2<f32>,
 }
 
+struct FragmentUniform {
+    origin: vec2<f32>,
+    clip_min: vec2<f32>,
+    clip_max: vec2<f32>,
+    _pad: vec2<f32>,
+}
+
 @group(0) @binding(0)
 var<uniform> screen: ScreenUniform;
+
+@group(0) @binding(1)
+var<storage, read> fragments: array<FragmentUniform>;
 
 @group(1) @binding(0)
 var glyph_atlas: texture_2d<f32>;
@@ -13,13 +23,14 @@ var glyph_atlas: texture_2d<f32>;
 var glyph_sampler: sampler;
 
 struct GlyphInstance {
-    @location(0) pos: vec2<f32>,
+    @location(0) local_pos: vec2<f32>,
     @location(1) size: vec2<f32>,
     @location(2) uv_min: vec2<f32>,
     @location(3) uv_max: vec2<f32>,
     @location(4) color: vec4<f32>,
     @location(5) opacity: f32,
     @location(6) content_kind: f32,
+    @location(7) fragment_index: u32,
 }
 
 struct VsOut {
@@ -28,6 +39,9 @@ struct VsOut {
     @location(1) color: vec4<f32>,
     @location(2) opacity: f32,
     @location(3) content_kind: f32,
+    @location(4) pixel: vec2<f32>,
+    @location(5) clip_min: vec2<f32>,
+    @location(6) clip_max: vec2<f32>,
 }
 
 @vertex
@@ -42,7 +56,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
     );
 
     let corner = corners[vertex_index];
-    let pixel = glyph.pos + corner * glyph.size;
+    let fragment = fragments[glyph.fragment_index];
+    let pixel = fragment.origin + glyph.local_pos + corner * glyph.size;
     let ndc_x = (pixel.x / screen.screen_size.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y / screen.screen_size.y) * 2.0;
 
@@ -52,19 +67,19 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
     out.color = glyph.color;
     out.opacity = glyph.opacity;
     out.content_kind = glyph.content_kind;
+    out.pixel = pixel;
+    out.clip_min = fragment.clip_min;
+    out.clip_max = fragment.clip_max;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let texel_size = 1.0 / vec2<f32>(textureDimensions(glyph_atlas));
-    let half_texel = texel_size * 0.5;
-    let texel = (
-        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>(-half_texel.x, -half_texel.y)) +
-        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>( half_texel.x, -half_texel.y)) +
-        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>(-half_texel.x,  half_texel.y)) +
-        textureSample(glyph_atlas, glyph_sampler, in.uv + vec2<f32>( half_texel.x,  half_texel.y))
-    ) * 0.25;
+    if in.pixel.x < in.clip_min.x || in.pixel.y < in.clip_min.y ||
+       in.pixel.x > in.clip_max.x || in.pixel.y > in.clip_max.y {
+        discard;
+    }
+    let texel = textureSample(glyph_atlas, glyph_sampler, in.uv);
     if in.content_kind > 0.5 {
         let out_alpha = texel.a * in.opacity * in.color.a;
         return vec4<f32>(texel.rgb * out_alpha, out_alpha);

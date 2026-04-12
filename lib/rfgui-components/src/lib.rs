@@ -605,7 +605,10 @@ mod tests {
         restore_snapshots(&mut second_roots, &snapshots);
         let second_boxes = measure_and_place(&mut second_roots);
 
-        assert_eq!(first_boxes, second_boxes, "switch boxes changed after rebuild");
+        assert_eq!(
+            first_boxes, second_boxes,
+            "switch boxes changed after rebuild"
+        );
         assert!(
             second_boxes.iter().any(|(_, _, width, height, _)| {
                 (*width - 44.0).abs() < 0.01 && (*height - 18.0).abs() < 0.01

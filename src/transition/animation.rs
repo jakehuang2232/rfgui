@@ -707,8 +707,16 @@ mod tests {
         assert!(result.keep_running);
 
         let samples = plugin.take_style_samples();
-        assert!(samples.iter().any(|sample| sample.field == StyleField::Color));
-        assert!(samples.iter().any(|sample| sample.field == StyleField::Opacity));
+        assert!(
+            samples
+                .iter()
+                .any(|sample| sample.field == StyleField::Color)
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|sample| sample.field == StyleField::Opacity)
+        );
     }
 
     #[test]

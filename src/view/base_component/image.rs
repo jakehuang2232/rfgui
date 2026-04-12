@@ -641,8 +641,8 @@ mod tests {
         let children = parent.children().expect("children after first layout");
         let image_snapshot = children[0].box_model_snapshot();
         let sibling_snapshot = children[1].box_model_snapshot();
-        assert!((image_snapshot.width - 14.285_714).abs() < 0.01);
-        assert!((sibling_snapshot.width - 85.714_29).abs() < 0.01);
+        assert_eq!(image_snapshot.width, 14.0);
+        assert_eq!(sibling_snapshot.width, 86.0);
 
         parent.mark_layout_dirty();
         parent.measure(constraints);
@@ -650,7 +650,7 @@ mod tests {
         let children = parent.children().expect("children after second layout");
         let image_snapshot = children[0].box_model_snapshot();
         let sibling_snapshot = children[1].box_model_snapshot();
-        assert!((image_snapshot.width - 14.285_714).abs() < 0.01);
-        assert!((sibling_snapshot.width - 85.714_29).abs() < 0.01);
+        assert_eq!(image_snapshot.width, 14.0);
+        assert_eq!(sibling_snapshot.width, 86.0);
     }
 }

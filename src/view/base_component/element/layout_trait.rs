@@ -200,18 +200,18 @@ impl Layoutable for Element {
         let inset_right = border_right + self.padding.right.max(0.0);
         let inset_top = border_top + self.padding.top.max(0.0);
         let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
-        self.layout_flow_inner_position = Position {
-            x: self.layout_flow_position.x + inset_left,
-            y: self.layout_flow_position.y + inset_top,
-        };
-        self.layout_inner_position = Position {
-            x: self.core.layout_position.x + inset_left,
-            y: self.core.layout_position.y + inset_top,
-        };
-        self.layout_inner_size = Size {
-            width: (self.core.layout_size.width - inset_left - inset_right).max(0.0),
-            height: (self.core.layout_size.height - inset_top - inset_bottom).max(0.0),
-        };
+        self.layout_flow_inner_position = round_layout_position(
+            self.layout_flow_position.x + inset_left,
+            self.layout_flow_position.y + inset_top,
+        );
+        self.layout_inner_position = round_layout_position(
+            self.core.layout_position.x + inset_left,
+            self.core.layout_position.y + inset_top,
+        );
+        self.layout_inner_size = round_layout_size(
+            self.core.layout_size.width - inset_left - inset_right,
+            self.core.layout_size.height - inset_top - inset_bottom,
+        );
 
         let is_axis_layout = matches!(
             self.computed_style.layout,
@@ -470,18 +470,9 @@ impl Layoutable for Element {
 
             if placement.node_index == 0 {
                 self.inline_paint_fragments.clear();
-                self.layout_flow_position = Position {
-                    x: placement.x,
-                    y: placement.y,
-                };
-                self.core.layout_position = Position {
-                    x: placement.x,
-                    y: placement.y,
-                };
-                self.core.layout_size = Size {
-                    width: 0.0,
-                    height: 0.0,
-                };
+                self.layout_flow_position = round_layout_position(placement.x, placement.y);
+                self.core.layout_position = self.layout_flow_position;
+                self.core.layout_size = round_layout_size(0.0, 0.0);
                 self.layout_inner_position = self.core.layout_position;
                 self.layout_flow_inner_position = self.layout_flow_position;
                 self.layout_inner_size = self.core.layout_size;
@@ -522,29 +513,31 @@ impl Layoutable for Element {
                     fragment.height = fragment_bottom.max(bottom) - fragment.y;
                 }
             } else {
-                self.inline_paint_fragments.push(Rect {
-                    x: left,
-                    y: top,
-                    width: (right - left).max(0.0),
-                    height: (bottom - top).max(0.0),
-                });
+                let rounded = Rect {
+                    x: round_layout_value(left),
+                    y: round_layout_value(top),
+                    width: round_layout_value((right - left).max(0.0)),
+                    height: round_layout_value((bottom - top).max(0.0)),
+                };
+                self.inline_paint_fragments.push(rounded);
             }
             if self.core.should_render {
                 let current_right = self.core.layout_position.x + self.core.layout_size.width;
                 let current_bottom = self.core.layout_position.y + self.core.layout_size.height;
-                self.core.layout_position.x = self.core.layout_position.x.min(left);
-                self.core.layout_position.y = self.core.layout_position.y.min(top);
+                self.core.layout_position.x =
+                    round_layout_value(self.core.layout_position.x.min(left));
+                self.core.layout_position.y =
+                    round_layout_value(self.core.layout_position.y.min(top));
                 self.layout_flow_position = self.core.layout_position;
-                self.core.layout_size.width = current_right.max(right) - self.core.layout_position.x;
+                self.core.layout_size.width =
+                    round_layout_value(current_right.max(right) - self.core.layout_position.x);
                 self.core.layout_size.height =
-                    current_bottom.max(bottom) - self.core.layout_position.y;
+                    round_layout_value(current_bottom.max(bottom) - self.core.layout_position.y);
             } else {
-                self.core.layout_position = Position { x: left, y: top };
+                self.core.layout_position = round_layout_position(left, top);
                 self.layout_flow_position = self.core.layout_position;
-                self.core.layout_size = Size {
-                    width: (right - left).max(0.0),
-                    height: (bottom - top).max(0.0),
-                };
+                self.core.layout_size =
+                    round_layout_size(right - left, bottom - top);
             }
             self.layout_inner_position = self.core.layout_position;
             self.layout_flow_inner_position = self.layout_flow_position;

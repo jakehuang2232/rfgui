@@ -94,7 +94,7 @@ pub fn MainScene() -> RsxNode {
         }],
         (760.0, 520.0),
     );
-    
+
     window_manager.push("About", vec![build_about_panel(&theme)], (360.0, 280.0));
     RsxNode::fragment(window_manager.into_nodes(window_z_order.binding()))
 }
