@@ -1339,13 +1339,17 @@ impl TextArea {
             return None;
         }
         if self.uses_projection_rendering() {
+            if !self.ime_preedit.is_empty() {
+                for fragment in &self.render_fragments {
+                    if let TextAreaRenderFragmentKind::Preedit(text) = &fragment.kind
+                        && cursor_char == fragment.source_range.start
+                    {
+                        return self.preedit_fragment_caret_screen_position(fragment, text.as_str());
+                    }
+                }
+            }
             for fragment_index in 0..self.render_fragments.len() {
                 let fragment = self.render_fragments[fragment_index].clone();
-                if let TextAreaRenderFragmentKind::Preedit(text) = &fragment.kind
-                    && cursor_char == fragment.source_range.start
-                {
-                    return self.preedit_fragment_caret_screen_position(&fragment, text.as_str());
-                }
                 if cursor_char <= fragment.source_range.start {
                     return Some((
                         self.layout_position.x + fragment.content_x,
@@ -3744,6 +3748,42 @@ mod tests {
             &fragment.kind,
             TextAreaRenderFragmentKind::Preedit(text) if text == "中文"
         )));
+    }
+
+    #[test]
+    fn ime_preedit_outside_projection_updates_caret_position() {
+        let mut area = TextArea::from_content("ab {{x}}");
+        area.on_render(|render| {
+            render.range(3..8, |text_area_node| text_area_node);
+        });
+        area.is_focused = true;
+        area.cursor_char = 1;
+        area.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 240.0,
+            available_height: 64.0,
+            viewport_width: 240.0,
+            viewport_height: 64.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(64.0),
+        });
+
+        area.set_preedit("中文".to_string(), Some((0, 0)));
+        area.layout_render_fragments(240.0, 64.0);
+        let caret_at_start = area
+            .caret_screen_position()
+            .expect("caret position at preedit start");
+
+        area.set_preedit("中文".to_string(), Some(("中文".len(), "中文".len())));
+        area.layout_render_fragments(240.0, 64.0);
+        let caret_at_end = area
+            .caret_screen_position()
+            .expect("caret position at preedit end");
+
+        assert!(caret_at_end.0 > caret_at_start.0);
     }
 
     #[test]
