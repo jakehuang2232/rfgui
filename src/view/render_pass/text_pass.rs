@@ -218,9 +218,9 @@ impl TextPass {
 
     fn prepare_signature(
         &self,
-        text_areas: &[TextArea<'_>],
         scale: f32,
         screen_size: (u32, u32),
+        target_origin: (u32, u32),
     ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -234,7 +234,10 @@ impl TextPass {
         self.params.stencil_clip_id.hash(&mut hasher);
         scale.to_bits().hash(&mut hasher);
         screen_size.hash(&mut hasher);
+        target_origin.hash(&mut hasher);
         for fragment in &self.params.fragments {
+            fragment.x.to_bits().hash(&mut hasher);
+            fragment.y.to_bits().hash(&mut hasher);
             fragment.content.hash(&mut hasher);
             fragment.width.to_bits().hash(&mut hasher);
             fragment.height.to_bits().hash(&mut hasher);
@@ -242,12 +245,6 @@ impl TextPass {
             for channel in fragment.color {
                 channel.to_bits().hash(&mut hasher);
             }
-        }
-        for text_area in text_areas {
-            text_area.clip_min[0].to_bits().hash(&mut hasher);
-            text_area.clip_min[1].to_bits().hash(&mut hasher);
-            text_area.clip_max[0].to_bits().hash(&mut hasher);
-            text_area.clip_max[1].to_bits().hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -307,6 +304,22 @@ impl GraphicsPass for TextPass {
         let scale = viewport.scale_factor();
         let format = viewport.surface_format();
         with_text_resources(&device, &queue, format, |resources| {
+            let renderer_key = TextRendererKey {
+                sample_count: output_sample_count,
+                stencil_enabled: self.input.pass_context.uses_depth_stencil,
+            };
+            let atlas_generation = resources.atlas_generations();
+            let prepare_signature =
+                self.prepare_signature(scale, (screen_w, screen_h), target_origin);
+            if let Some(prepared) = self.prepared.as_mut() {
+                if prepared.renderer_key == renderer_key
+                    && prepared.prepare_signature == prepare_signature
+                    && prepared.atlas_generation == atlas_generation
+                {
+                    prepared.stencil_clip_id = self.params.stencil_clip_id;
+                    return;
+                }
+            }
             let physical_scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
                 logical_scissor_to_target_physical(
                     viewport,
@@ -401,22 +414,6 @@ impl GraphicsPass for TextPass {
                     fragment_bounds,
                     to_cosmic_color(fragment.color, fragment.opacity),
                 ));
-            }
-            let prepare_signature =
-                self.prepare_signature(&text_areas, scale, (screen_w, screen_h));
-            let renderer_key = TextRendererKey {
-                sample_count: output_sample_count,
-                stencil_enabled: self.input.pass_context.uses_depth_stencil,
-            };
-            let atlas_generation = resources.atlas_generations();
-            if let Some(prepared) = self.prepared.as_mut() {
-                if prepared.renderer_key == renderer_key
-                    && prepared.prepare_signature == prepare_signature
-                    && prepared.atlas_generation == atlas_generation
-                {
-                    prepared.stencil_clip_id = self.params.stencil_clip_id;
-                    return;
-                }
             }
             let existing_globals = self.prepared.as_ref().map(|prepared| {
                 (

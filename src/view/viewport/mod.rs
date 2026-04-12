@@ -465,11 +465,7 @@ impl Viewport {
 
     fn present_mode_from_env() -> wgpu::PresentMode {
         let Ok(raw) = std::env::var("RFGUI_PRESENT_MODE") else {
-            return if cfg!(debug_assertions) {
-                wgpu::PresentMode::AutoNoVsync
-            } else {
-                wgpu::PresentMode::AutoVsync
-            };
+            return wgpu::PresentMode::AutoVsync;
         };
         match raw.trim().to_ascii_lowercase().as_str() {
             "auto_novsync" | "auto-no-vsync" | "no_vsync" | "no-vsync" | "novsync" => {
