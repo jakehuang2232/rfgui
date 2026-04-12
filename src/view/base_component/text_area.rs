@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::time::{Duration, Instant};
 use crate::ui::MouseButton as UiMouseButton;
 use crate::view::font_system::create_font_system;
@@ -29,7 +30,7 @@ use crate::view::promotion::PromotionNodeInfo;
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Position, Renderable, Size, UiBuildContext, round_layout_value,
+    LayoutPlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -655,7 +656,7 @@ impl TextArea {
             if let Some(resolved) =
                 width.resolve_with_base(percent_base_width, viewport_width, viewport_height)
             {
-                self.size.width = round_layout_value(resolved.max(0.0));
+                self.size.width = resolved.max(0.0);
                 self.element.set_width(self.size.width);
                 self.auto_width = false;
             } else {
@@ -669,7 +670,7 @@ impl TextArea {
             if let Some(resolved) =
                 height.resolve_with_base(percent_base_height, viewport_width, viewport_height)
             {
-                self.size.height = round_layout_value(resolved.max(0.0));
+                self.size.height = resolved.max(0.0);
                 self.element.set_height(self.size.height);
                 self.auto_height = false;
             } else {
@@ -1836,10 +1837,10 @@ impl TextArea {
                 line_height = line_height_px;
             }
 
-            fragment.content_x = round_layout_value(cursor_x);
-            fragment.content_y = round_layout_value(cursor_y);
-            fragment.width = round_layout_value(fragment_width.max(1.0));
-            fragment.height = round_layout_value(fragment_height.max(line_height_px));
+            fragment.content_x = cursor_x;
+            fragment.content_y = cursor_y;
+            fragment.width = fragment_width.max(1.0);
+            fragment.height = fragment_height.max(line_height_px);
             cursor_x += fragment_width;
             line_height = line_height.max(fragment_height);
         }
@@ -2976,7 +2977,7 @@ impl Layoutable for TextArea {
         if self.auto_width {
             let intrinsic_width = line_widths.iter().copied().fold(0.0_f32, f32::max).max(1.0);
             let available = constraints.max_width.max(1.0);
-            self.size.width = round_layout_value(intrinsic_width.min(available));
+            self.size.width = intrinsic_width.min(available).max(0.0);
             self.element.set_width(self.size.width);
         }
 
@@ -3003,7 +3004,7 @@ impl Layoutable for TextArea {
                 1
             };
 
-            self.size.height = round_layout_value((line_px * resolved_lines as f32).max(1.0));
+            self.size.height = (line_px * resolved_lines as f32).max(1.0);
             self.element.set_height(self.size.height);
         }
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
@@ -3033,12 +3034,12 @@ impl Layoutable for TextArea {
         let layout_width = self.layout_override_width.unwrap_or(self.size.width);
         let layout_height = self.layout_override_height.unwrap_or(self.size.height);
         self.layout_size = Size {
-            width: round_layout_value(layout_width.max(0.0).min(max_width)),
-            height: round_layout_value(layout_height.max(0.0).min(max_height)),
+            width: layout_width.max(0.0).min(max_width),
+            height: layout_height.max(0.0).min(max_height),
         };
         self.layout_position = Position {
-            x: round_layout_value(placement.parent_x + self.position.x + placement.visual_offset_x),
-            y: round_layout_value(placement.parent_y + self.position.y + placement.visual_offset_y),
+            x: placement.parent_x + self.position.x + placement.visual_offset_x,
+            y: placement.parent_y + self.position.y + placement.visual_offset_y,
         };
 
         let parent_left = placement.parent_x + placement.visual_offset_x;
@@ -3120,9 +3121,8 @@ impl Renderable for TextArea {
             }
 
             for fragment in &mut self.render_fragments {
-                let screen_x = round_layout_value(self.layout_position.x + fragment.content_x);
-                let screen_y =
-                    round_layout_value(self.layout_position.y + fragment.content_y - self.scroll_y);
+                let screen_x = self.layout_position.x + fragment.content_x;
+                let screen_y = self.layout_position.y + fragment.content_y - self.scroll_y;
                 match &fragment.kind {
                     TextAreaRenderFragmentKind::Text(text)
                     | TextAreaRenderFragmentKind::Preedit(text) => {
@@ -3134,8 +3134,8 @@ impl Renderable for TextArea {
                                     content: text.clone(),
                                     x: screen_x,
                                     y: screen_y,
-                                    width: round_layout_value(fragment.width.max(1.0)),
-                                    height: round_layout_value(fragment.height.max(1.0)),
+                                    width: fragment.width.max(1.0),
+                                    height: fragment.height.max(1.0),
                                     color: self.color.to_rgba_f32(),
                                     opacity,
                                     layout_buffer: None,
@@ -3223,21 +3223,19 @@ impl Renderable for TextArea {
             }
             let ime_underline_rects = self.ime_preedit_underline_rects(content.as_str());
 
-            push_text_pass_explicit(
+                push_text_pass_explicit(
                 graph,
                 &mut ctx,
                 TextPassParams::single_fragment(
                     TextPassFragment {
                         content,
-                        x: round_layout_value(self.layout_position.x),
-                        y: round_layout_value(self.layout_position.y - self.scroll_y),
-                        width: round_layout_value(self.layout_size.width),
-                        height: round_layout_value(
-                            self.layout_size.height.max(self.content_height()),
-                        ),
+                        x: self.layout_position.x,
+                        y: self.layout_position.y - self.scroll_y,
+                        width: self.layout_size.width,
+                        height: self.layout_size.height.max(self.content_height()),
                         color,
                         opacity,
-                        layout_buffer: Some(self.glyph_buffer.clone()),
+                        layout_buffer: Some(Arc::new(self.glyph_buffer.clone())),
                     },
                     self.font_size,
                     self.line_height,
@@ -4208,8 +4206,41 @@ mod tests {
             area.line_height,
             &area.font_families,
         )
-        .0
-        .round();
-        assert_eq!(area.measured_size().0, expected_width);
+        .0;
+        assert!((area.measured_size().0 - expected_width).abs() < 0.01);
+    }
+
+    #[test]
+    fn text_area_layout_preserves_fractional_metrics() {
+        let mut area = TextArea::from_content("hello");
+        area.set_style_width(Some(Length::px(100.5)));
+        area.set_style_height(Some(Length::px(40.5)));
+
+        area.measure(LayoutConstraints {
+            max_width: 200.0,
+            max_height: 100.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(100.0),
+            viewport_height: 100.0,
+        });
+        area.place(LayoutPlacement {
+            parent_x: 4.1,
+            parent_y: 5.3,
+            visual_offset_x: 0.2,
+            visual_offset_y: -0.1,
+            available_width: 200.0,
+            available_height: 100.0,
+            viewport_width: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(100.0),
+            viewport_height: 100.0,
+        });
+
+        let snapshot = area.box_model_snapshot();
+        assert!((snapshot.x - 4.3).abs() < 0.01);
+        assert!((snapshot.y - 5.2).abs() < 0.01);
+        assert!((snapshot.width - 100.5).abs() < 0.01);
+        assert!((snapshot.height - 40.5).abs() < 0.01);
     }
 }

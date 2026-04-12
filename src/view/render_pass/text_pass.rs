@@ -1,4 +1,3 @@
-use crate::view::base_component::round_layout_value;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
@@ -15,6 +14,7 @@ use cosmic_text::{
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::num::NonZeroU64;
 use wgpu::util::DeviceExt;
 pub struct TextPass {
@@ -54,7 +54,7 @@ pub struct TextPassFragment {
     pub height: f32,
     pub color: [f32; 4],
     pub opacity: f32,
-    pub layout_buffer: Option<Buffer>,
+    pub layout_buffer: Option<Arc<Buffer>>,
 }
 
 pub struct TextPassParams {
@@ -371,8 +371,8 @@ impl GraphicsPass for TextPass {
                 };
                 let buffer = fragment
                     .layout_buffer
-                    .as_ref()
-                    .or_else(|| resolved_buffers[index].as_ref())
+                    .as_deref()
+                    .or_else(|| resolved_buffers[index].as_deref())
                     .expect("buffer should be resolved for visible text fragment");
                 text_areas.push(build_text_area(
                     buffer,
@@ -1028,7 +1028,7 @@ struct TextResources {
     format: wgpu::TextureFormat,
     screen_bind_group_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<TextRendererKey, wgpu::RenderPipeline>,
-    layout_buffers: HashMap<u64, Buffer>,
+    layout_buffers: HashMap<u64, Arc<Buffer>>,
     layout_buffer_lru: VecDeque<u64>,
     prepared_draws: HashMap<PreparedTextDrawKey, PreparedTextDraw>,
     prepared_draw_lru: VecDeque<PreparedTextDrawKey>,
@@ -1379,10 +1379,8 @@ impl TextResources {
                 if y + height > bounds_bottom {
                     height = bounds_bottom - y;
                 }
-                x = round_layout_value(x);
-                y = round_layout_value(y);
-                width = round_layout_value(width.max(0.0));
-                height = round_layout_value(height.max(0.0));
+                width = width.max(0.0);
+                height = height.max(0.0);
                 if width <= 0.0 || height <= 0.0 {
                     continue;
                 }
@@ -1427,12 +1425,12 @@ impl TextResources {
         font_families: &[String],
         align: Align,
         allow_wrap: bool,
-    ) -> Buffer {
+    ) -> Arc<Buffer> {
         if let Some(buffer) = self.layout_buffers.get(&signature) {
             self.layout_buffer_lru
                 .retain(|current_signature| *current_signature != signature);
             self.layout_buffer_lru.push_back(signature);
-            return buffer.clone();
+            return Arc::clone(buffer);
         }
         let buffer = with_shared_font_system(|font_system| {
             build_text_buffer(
@@ -1448,7 +1446,8 @@ impl TextResources {
                 font_families,
             )
         });
-        self.layout_buffers.insert(signature, buffer.clone());
+        let buffer = Arc::new(buffer);
+        self.layout_buffers.insert(signature, Arc::clone(&buffer));
         self.layout_buffer_lru
             .retain(|current_signature| *current_signature != signature);
         self.layout_buffer_lru.push_back(signature);
@@ -1533,7 +1532,7 @@ fn build_text_debug_overlay(
 
 fn build_text_debug_overlay_multi(
     fragments: &[TextPassFragment],
-    resolved_buffers: &[Option<Buffer>],
+    resolved_buffers: &[Option<Arc<Buffer>>],
     resolved_bounds: &[Option<TextBounds>],
     scale: f32,
     target_origin: (u32, u32),
@@ -1551,8 +1550,8 @@ fn build_text_debug_overlay_multi(
         };
         let Some(buffer) = fragment
             .layout_buffer
-            .as_ref()
-            .or_else(|| resolved_buffers[index].as_ref())
+            .as_deref()
+            .or_else(|| resolved_buffers[index].as_deref())
         else {
             continue;
         };
@@ -1831,8 +1830,8 @@ pub fn clear_text_resources_cache() {
 #[cfg(test)]
 mod tests {
     use super::{
-        TextBounds, TextDebugOverlay, build_text_debug_overlay, physical_scissor_rect,
-        text_pixel_to_ndc,
+        TextBounds, TextDebugOverlay, TextGlyphVertex, build_text_debug_overlay,
+        physical_scissor_rect, text_pixel_to_ndc,
     };
     use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, Weight, Wrap};
 
@@ -1919,5 +1918,24 @@ mod tests {
     fn text_pixel_to_ndc_maps_screen_corners() {
         assert_eq!(text_pixel_to_ndc(0.0, 0.0, 200.0, 100.0), [-1.0, 1.0]);
         assert_eq!(text_pixel_to_ndc(200.0, 100.0, 200.0, 100.0), [1.0, -1.0]);
+    }
+
+    #[test]
+    fn glyph_vertices_can_preserve_fractional_positions() {
+        let vertex = TextGlyphVertex {
+            local_pos: [10.25, 20.75],
+            size: [8.5, 12.25],
+            uv_min: [0.0, 0.0],
+            uv_max: [1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            opacity: 1.0,
+            content_kind: 0.0,
+            fragment_index: 0,
+        };
+
+        assert!((vertex.local_pos[0] - 10.25).abs() < 0.001);
+        assert!((vertex.local_pos[1] - 20.75).abs() < 0.001);
+        assert!((vertex.size[0] - 8.5).abs() < 0.001);
+        assert!((vertex.size[1] - 12.25).abs() < 0.001);
     }
 }
