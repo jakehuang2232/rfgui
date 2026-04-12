@@ -99,9 +99,6 @@ struct TextPreparedState {
     renderer_key: TextRendererKey,
     mask_draw: Option<PreparedTextDraw>,
     color_draw: Option<PreparedTextDraw>,
-    screen_buffer: wgpu::Buffer,
-    fragment_buffer: wgpu::Buffer,
-    fragment_capacity: usize,
     globals_bind_group: wgpu::BindGroup,
     prepare_signature: u64,
     atlas_generation: AtlasGenerations,
@@ -320,6 +317,28 @@ impl GraphicsPass for TextPass {
                     return;
                 }
             }
+            // Fast path: if both the globals bind group and the glyph vertex draw are cached,
+            // skip the fragment loop entirely.
+            let cached_globals = resources
+                .globals_bind_groups
+                .get(&prepare_signature)
+                .cloned();
+            if let Some(ref globals) = cached_globals {
+                if let Some(draw) =
+                    resources.take_prepared_draw(renderer_key, prepare_signature, atlas_generation)
+                {
+                    self.prepared = Some(TextPreparedState {
+                        renderer_key,
+                        mask_draw: draw.mask_draw,
+                        color_draw: draw.color_draw,
+                        globals_bind_group: globals.bind_group.clone(),
+                        prepare_signature,
+                        atlas_generation,
+                        stencil_clip_id: self.params.stencil_clip_id,
+                    });
+                    return;
+                }
+            }
             let physical_scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
                 logical_scissor_to_target_physical(
                     viewport,
@@ -415,22 +434,14 @@ impl GraphicsPass for TextPass {
                     to_cosmic_color(fragment.color, fragment.opacity),
                 ));
             }
-            let existing_globals = self.prepared.as_ref().map(|prepared| {
-                (
-                    &prepared.screen_buffer,
-                    &prepared.fragment_buffer,
-                    &prepared.globals_bind_group,
-                    prepared.fragment_capacity,
-                )
-            });
-            let (screen_buffer, fragment_buffer, globals_bind_group, fragment_capacity) = resources
-                .create_globals_bind_group(
+            let (_, _, globals_bind_group, _) = resources
+                .get_or_create_globals_bind_group(
                     &device,
                     &queue,
                     screen_w as f32,
                     screen_h as f32,
                     &text_areas,
-                    existing_globals,
+                    prepare_signature,
                 );
             if let Some(draw) =
                 resources.take_prepared_draw(renderer_key, prepare_signature, atlas_generation)
@@ -439,9 +450,6 @@ impl GraphicsPass for TextPass {
                     renderer_key,
                     mask_draw: draw.mask_draw,
                     color_draw: draw.color_draw,
-                    screen_buffer,
-                    fragment_buffer,
-                    fragment_capacity,
                     globals_bind_group,
                     prepare_signature,
                     atlas_generation,
@@ -538,9 +546,6 @@ impl GraphicsPass for TextPass {
                 renderer_key,
                 mask_draw: prepared_draw.mask_draw,
                 color_draw: prepared_draw.color_draw,
-                screen_buffer,
-                fragment_buffer,
-                fragment_capacity,
                 globals_bind_group,
                 prepare_signature,
                 atlas_generation,
@@ -1101,6 +1106,8 @@ struct TextResources {
     layout_buffer_lru: VecDeque<u64>,
     prepared_draws: HashMap<PreparedTextDrawKey, PreparedTextDrawSet>,
     prepared_draw_lru: VecDeque<PreparedTextDrawKey>,
+    globals_bind_groups: HashMap<u64, CachedGlobalsBindGroup>,
+    globals_bind_group_lru: VecDeque<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1108,6 +1115,14 @@ struct PreparedTextDrawKey {
     renderer_key: TextRendererKey,
     prepare_signature: u64,
     atlas_generation: AtlasGenerations,
+}
+
+#[derive(Clone)]
+struct CachedGlobalsBindGroup {
+    screen_buffer: wgpu::Buffer,
+    fragment_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    capacity: usize,
 }
 
 impl TextResources {
@@ -1171,6 +1186,8 @@ impl TextResources {
             layout_buffer_lru: VecDeque::new(),
             prepared_draws: HashMap::new(),
             prepared_draw_lru: VecDeque::new(),
+            globals_bind_groups: HashMap::new(),
+            globals_bind_group_lru: VecDeque::new(),
         }
     }
 
@@ -1390,6 +1407,49 @@ impl TextResources {
             bind_group,
             capacity.max(fragment_capacity),
         )
+    }
+
+    fn get_or_create_globals_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen_w: f32,
+        screen_h: f32,
+        text_areas: &[TextArea<'_>],
+        prepare_signature: u64,
+    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, usize) {
+        if let Some(cached) = self.globals_bind_groups.get(&prepare_signature) {
+            let result = (
+                cached.screen_buffer.clone(),
+                cached.fragment_buffer.clone(),
+                cached.bind_group.clone(),
+                cached.capacity,
+            );
+            self.globals_bind_group_lru
+                .retain(|k| *k != prepare_signature);
+            self.globals_bind_group_lru.push_back(prepare_signature);
+            return result;
+        }
+        let (screen_buffer, fragment_buffer, bind_group, capacity) =
+            self.create_globals_bind_group(device, queue, screen_w, screen_h, text_areas, None);
+        self.globals_bind_groups.insert(
+            prepare_signature,
+            CachedGlobalsBindGroup {
+                screen_buffer: screen_buffer.clone(),
+                fragment_buffer: fragment_buffer.clone(),
+                bind_group: bind_group.clone(),
+                capacity,
+            },
+        );
+        self.globals_bind_group_lru
+            .retain(|k| *k != prepare_signature);
+        self.globals_bind_group_lru.push_back(prepare_signature);
+        while self.globals_bind_group_lru.len() > 512 {
+            if let Some(old_key) = self.globals_bind_group_lru.pop_front() {
+                self.globals_bind_groups.remove(&old_key);
+            }
+        }
+        (screen_buffer, fragment_buffer, bind_group, capacity)
     }
 
     fn prepare_text_area(
