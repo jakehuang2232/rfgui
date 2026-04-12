@@ -10,7 +10,7 @@ repository = "https://github.com/jakehuang2232/rfgui"
 members = [
     "rsx-macro",
     "lib/rfgui-components",
-    "examples/01_window",
+    "examples",
 ]
 
 [dependencies]
