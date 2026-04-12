@@ -29,8 +29,7 @@ struct GlyphInstance {
     @location(3) uv_max: vec2<f32>,
     @location(4) color: vec4<f32>,
     @location(5) opacity: f32,
-    @location(6) content_kind: f32,
-    @location(7) fragment_index: u32,
+    @location(6) fragment_index: u32,
 }
 
 struct VsOut {
@@ -38,10 +37,9 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) opacity: f32,
-    @location(3) content_kind: f32,
-    @location(4) pixel: vec2<f32>,
-    @location(5) clip_min: vec2<f32>,
-    @location(6) clip_max: vec2<f32>,
+    @location(3) pixel: vec2<f32>,
+    @location(4) clip_min: vec2<f32>,
+    @location(5) clip_max: vec2<f32>,
 }
 
 @vertex
@@ -66,7 +64,6 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
     out.uv = glyph.uv_min + (glyph.uv_max - glyph.uv_min) * corner;
     out.color = glyph.color;
     out.opacity = glyph.opacity;
-    out.content_kind = glyph.content_kind;
     out.pixel = pixel;
     out.clip_min = fragment.clip_min;
     out.clip_max = fragment.clip_max;
@@ -74,17 +71,23 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
 }
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_mask(in: VsOut) -> @location(0) vec4<f32> {
+    if in.pixel.x < in.clip_min.x || in.pixel.y < in.clip_min.y ||
+       in.pixel.x > in.clip_max.x || in.pixel.y > in.clip_max.y {
+        discard;
+    }
+    let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
+    let out_alpha = coverage * in.opacity * in.color.a;
+    return vec4<f32>(in.color.rgb * out_alpha, out_alpha);
+}
+
+@fragment
+fn fs_color(in: VsOut) -> @location(0) vec4<f32> {
     if in.pixel.x < in.clip_min.x || in.pixel.y < in.clip_min.y ||
        in.pixel.x > in.clip_max.x || in.pixel.y > in.clip_max.y {
         discard;
     }
     let texel = textureSample(glyph_atlas, glyph_sampler, in.uv);
-    if in.content_kind > 0.5 {
-        let out_alpha = texel.a * in.opacity * in.color.a;
-        return vec4<f32>(texel.rgb * out_alpha, out_alpha);
-    }
-
     let out_alpha = texel.a * in.opacity * in.color.a;
-    return vec4<f32>(in.color.rgb * out_alpha, out_alpha);
+    return vec4<f32>(texel.rgb * out_alpha, out_alpha);
 }
