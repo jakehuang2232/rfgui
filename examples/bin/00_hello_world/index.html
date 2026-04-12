@@ -181,7 +181,13 @@
         formatBootError,
       };
     </script>
-    <link data-trunk rel="rust" data-initializer="bootstrap.js" />
+    <link
+      data-trunk
+      rel="rust"
+      href="../../Cargo.toml"
+      data-bin="00_hello_world"
+      data-initializer="bootstrap.js"
+    />
     <script>
       window.addEventListener("error", () => {
         setBootError("Loading failed. Please refresh the page.");
