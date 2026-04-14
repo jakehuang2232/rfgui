@@ -1351,10 +1351,7 @@ impl Layoutable for Text {
             self.layout_size.width = current_right.max(right) - self.layout_position.x;
             self.layout_size.height = current_bottom.max(bottom) - self.layout_position.y;
         } else {
-            self.layout_position = Position {
-                x: left,
-                y: top,
-            };
+            self.layout_position = Position { x: left, y: top };
             self.layout_size = Size {
                 width: (right - left).max(0.0),
                 height: (bottom - top).max(0.0),

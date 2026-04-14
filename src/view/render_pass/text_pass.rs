@@ -14,8 +14,8 @@ use cosmic_text::{
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 pub struct TextPass {
     params: TextPassParams,
@@ -434,15 +434,14 @@ impl GraphicsPass for TextPass {
                     to_cosmic_color(fragment.color, fragment.opacity),
                 ));
             }
-            let (_, _, globals_bind_group, _) = resources
-                .get_or_create_globals_bind_group(
-                    &device,
-                    &queue,
-                    screen_w as f32,
-                    screen_h as f32,
-                    &text_areas,
-                    prepare_signature,
-                );
+            let (_, _, globals_bind_group, _) = resources.get_or_create_globals_bind_group(
+                &device,
+                &queue,
+                screen_w as f32,
+                screen_h as f32,
+                &text_areas,
+                prepare_signature,
+            );
             if let Some(draw) =
                 resources.take_prepared_draw(renderer_key, prepare_signature, atlas_generation)
             {
@@ -951,12 +950,11 @@ impl TextAtlas {
         self.cursor_x = self.cursor_x.saturating_add(padded_width);
         self.row_height = self.row_height.max(padded_height);
 
-        let mut padded_data = vec![
-            0_u8;
-            padded_width as usize
-                * padded_height as usize
-                * self.bytes_per_pixel as usize
-        ];
+        let mut padded_data =
+            vec![
+                0_u8;
+                padded_width as usize * padded_height as usize * self.bytes_per_pixel as usize
+            ];
         for row in 0..height as usize {
             let row_bytes = width as usize * self.bytes_per_pixel as usize;
             let source_start = row * row_bytes;
@@ -1007,10 +1005,11 @@ impl TextAtlas {
             }
 
             let row_width = row_right - row_x;
-            let mut row_data = vec![
-                0_u8;
-                row_width as usize * row_height as usize * self.bytes_per_pixel as usize
-            ];
+            let mut row_data =
+                vec![
+                    0_u8;
+                    row_width as usize * row_height as usize * self.bytes_per_pixel as usize
+                ];
             for upload in &uploads[index..end] {
                 for row in 0..upload.height as usize {
                     let row_bytes = upload.width as usize * self.bytes_per_pixel as usize;
@@ -1489,49 +1488,47 @@ impl TextResources {
                 };
                 let (atlas_glyph, atlas_size, is_color_glyph) = match image.content {
                     SwashContent::Color => {
-                        let atlas_glyph =
-                            if let Some(atlas_glyph) = self.color_atlas.get_glyph(
+                        let atlas_glyph = if let Some(atlas_glyph) =
+                            self.color_atlas.get_glyph(physical_glyph.cache_key)
+                        {
+                            atlas_glyph
+                        } else {
+                            let Some(atlas_glyph) = self.color_atlas.cache_glyph(
                                 physical_glyph.cache_key,
-                            ) {
-                                atlas_glyph
-                            } else {
-                                let Some(atlas_glyph) = self.color_atlas.cache_glyph(
-                                    physical_glyph.cache_key,
-                                    swash_color_image_to_rgba(&image),
-                                    image.placement.width,
-                                    image.placement.height,
-                                    image.placement.left,
-                                    image.placement.top,
-                                    raster_scale,
-                                )?
-                                else {
-                                    continue;
-                                };
-                                atlas_glyph
+                                swash_color_image_to_rgba(&image),
+                                image.placement.width,
+                                image.placement.height,
+                                image.placement.left,
+                                image.placement.top,
+                                raster_scale,
+                            )?
+                            else {
+                                continue;
                             };
+                            atlas_glyph
+                        };
                         (atlas_glyph, self.color_atlas.size as f32, true)
                     }
                     SwashContent::Mask | SwashContent::SubpixelMask => {
-                        let atlas_glyph =
-                            if let Some(atlas_glyph) = self.mask_atlas.get_glyph(
+                        let atlas_glyph = if let Some(atlas_glyph) =
+                            self.mask_atlas.get_glyph(physical_glyph.cache_key)
+                        {
+                            atlas_glyph
+                        } else {
+                            let Some(atlas_glyph) = self.mask_atlas.cache_glyph(
                                 physical_glyph.cache_key,
-                            ) {
-                                atlas_glyph
-                            } else {
-                                let Some(atlas_glyph) = self.mask_atlas.cache_glyph(
-                                    physical_glyph.cache_key,
-                                    swash_mask_image_to_r8(&image),
-                                    image.placement.width,
-                                    image.placement.height,
-                                    image.placement.left,
-                                    image.placement.top,
-                                    raster_scale,
-                                )?
-                                else {
-                                    continue;
-                                };
-                                atlas_glyph
+                                swash_mask_image_to_r8(&image),
+                                image.placement.width,
+                                image.placement.height,
+                                image.placement.left,
+                                image.placement.top,
+                                raster_scale,
+                            )?
+                            else {
+                                continue;
                             };
+                            atlas_glyph
+                        };
                         (atlas_glyph, self.mask_atlas.size as f32, false)
                     }
                 };

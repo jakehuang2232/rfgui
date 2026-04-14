@@ -12,9 +12,9 @@ pub(crate) use builder::{
     BufferReadUsage, ComputePassBuilder, GraphicsPassBuilder, TransferPassBuilder,
 };
 pub(crate) use frame_graph::{
-    AllocationId, AttachmentLoadOp, AttachmentTarget, CompileProfile, ComputeRecordContext,
-    ExternalSinkKind, FrameGraph, FrameResourceContext, GraphicsColorAttachmentOps,
-    GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext, ResourceCache,
-    ResourceLifetime, SampleCountPolicy, TransferRecordContext,
+    AllocationId, AttachmentLoadOp, AttachmentTarget, CompileProfile, CompiledGraph,
+    ComputeRecordContext, ExternalSinkKind, FrameGraph, FrameResourceContext,
+    GraphicsColorAttachmentOps, GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext,
+    ResourceCache, ResourceLifetime, SampleCountPolicy, TransferRecordContext,
 };
 pub(crate) use texture_resource::TextureDesc;

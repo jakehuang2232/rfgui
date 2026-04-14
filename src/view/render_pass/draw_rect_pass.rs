@@ -357,7 +357,7 @@ impl DrawRectPass {
                     .push_debug_overlay_geometry(&overlay_vertices, &debug_indices);
             }
         }
-        let Some((buffer, dynamic_offset)) = ctx.viewport.upload_draw_rect_uniform(
+        let Some((_, dynamic_offset, pool_index)) = ctx.viewport.upload_draw_rect_uniform(
             bytemuck::bytes_of(&params),
             RECT_UNIFORM_SLOT_SIZE,
             RECT_UNIFORM_SLOT_SIZE * RECT_UNIFORM_SLOT_COUNT as u64,
@@ -386,7 +386,10 @@ impl DrawRectPass {
             self.color_write_enabled,
             self.render_mode,
         );
-        with_draw_rect_resources_cache(|cache| {
+
+        // Get or create the pipeline resources, then extract the bind group layout.
+        // The layout is stable for the lifetime of the resources and cheap to clone.
+        let bind_group_layout = with_draw_rect_resources_cache(|cache| {
             let resources = cache.get_or_insert_with(cache_key, || {
                 create_draw_rect_resources(
                     &device,
@@ -415,19 +418,18 @@ impl DrawRectPass {
                     self.render_mode,
                 );
             }
-            self.prepared_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("DrawRect Bind Group (Prepared)"),
-                layout: &resources.bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &buffer,
-                        offset: 0,
-                        size: Some(NonZeroU64::new(RECT_UNIFORM_SLOT_SIZE).unwrap()),
-                    }),
-                }],
-            }));
+            resources.bind_group_layout.clone()
         });
+
+        // Reuse a cached bind group for this pool buffer + layout combination.
+        // The bind group binds at offset 0 / size = slot_size; the per-draw dynamic
+        // offset is passed separately, so one bind group covers all slots in the buffer.
+        self.prepared_bind_group = ctx.viewport.get_or_create_draw_rect_bind_group(
+            pool_index,
+            cache_key,
+            &bind_group_layout,
+            RECT_UNIFORM_SLOT_SIZE,
+        );
         self.prepared_dynamic_offset = dynamic_offset;
     }
 }

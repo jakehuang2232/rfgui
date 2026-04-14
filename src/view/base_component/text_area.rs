@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::time::{Duration, Instant};
 use crate::ui::MouseButton as UiMouseButton;
 use crate::view::font_system::create_font_system;
@@ -22,6 +21,7 @@ use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::{Bound, Range, RangeBounds};
+use std::sync::Arc;
 
 use crate::ui::Binding;
 use crate::ui::PropValue;
@@ -1057,8 +1057,8 @@ impl TextArea {
         let composed = self.composed_text();
         let scale = self.glyph_cache_scale_factor.max(0.0001);
         self.ensure_glyph_layout(composed.as_str(), scale);
-        let hit_x = local_x.max(0.0) * scale;
-        let hit_y = (local_y + self.scroll_y).max(0.0) * scale;
+        let hit_x = local_x.max(0.0);
+        let hit_y = (local_y + self.scroll_y).max(0.0);
         if let Some(cursor) = self.glyph_buffer.hit(hit_x, hit_y) {
             let composed_char = self.cursor_char_from_line_index_for_text(
                 composed.as_str(),
@@ -1210,8 +1210,7 @@ impl TextArea {
                     layout_cursor.layout,
                 ) && let Some(x) = caret_x_in_layout_run(cursor_index, &run)
                 {
-                    let scale = self.glyph_cache_scale_factor.max(0.0001);
-                    return x / scale;
+                    return x;
                 }
             }
         }
@@ -1344,7 +1343,8 @@ impl TextArea {
                     if let TextAreaRenderFragmentKind::Preedit(text) = &fragment.kind
                         && cursor_char == fragment.source_range.start
                     {
-                        return self.preedit_fragment_caret_screen_position(fragment, text.as_str());
+                        return self
+                            .preedit_fragment_caret_screen_position(fragment, text.as_str());
                     }
                 }
             }
@@ -1401,8 +1401,8 @@ impl TextArea {
             ) {
                 if let Some(x) = caret_x_in_layout_run(cursor_index, &run) {
                     return Some((
-                        self.layout_position.x + x / scale,
-                        self.layout_position.y + run.line_top / scale - self.scroll_y,
+                        self.layout_position.x + x,
+                        self.layout_position.y + run.line_top - self.scroll_y,
                     ));
                 }
             }
@@ -1412,7 +1412,7 @@ impl TextArea {
             fallback_line_top_for_cursor_line(&self.glyph_buffer, cursor_line).unwrap_or(0.0);
         Some((
             self.layout_position.x,
-            self.layout_position.y + fallback_y / scale - self.scroll_y,
+            self.layout_position.y + fallback_y - self.scroll_y,
         ))
     }
 
@@ -1474,10 +1474,10 @@ impl TextArea {
             }
             rects.push((
                 [
-                    self.layout_position.x + left / scale,
-                    self.layout_position.y + run.line_top / scale - self.scroll_y,
+                    self.layout_position.x + left,
+                    self.layout_position.y + run.line_top - self.scroll_y,
                 ],
-                [width / scale, (run.line_height / scale).max(1.0)],
+                [width, run.line_height.max(1.0)],
             ));
         }
         rects
@@ -1797,7 +1797,6 @@ impl TextArea {
         let font_size = self.font_size;
         let line_height_ratio = self.line_height;
         let font_families = self.font_families.clone();
-        let scale = self.glyph_cache_scale_factor.max(0.0001);
         let mut cursor_x = 0.0_f32;
         let mut cursor_y = 0.0_f32;
         let mut line_height = line_height_px;
@@ -1811,11 +1810,10 @@ impl TextArea {
                         font_size,
                         line_height_ratio,
                         &font_families,
-                        scale,
                     );
                     let measured = measure_buffer_size(&buffer);
                     fragment.layout_buffer = Some(buffer);
-                    (measured.0 / scale, measured.1 / scale)
+                    (measured.0, measured.1)
                 }
                 TextAreaRenderFragmentKind::Projection(index) => {
                     fragment.layout_buffer = None;
@@ -1958,9 +1956,9 @@ impl TextArea {
 
     fn ensure_glyph_layout(&mut self, text: &str, scale_factor: f32) {
         let scale = scale_factor.max(0.0001);
-        let width = self.effective_width() * scale;
-        let font_size = self.font_size.max(1.0) * scale;
-        let line_height_px = (self.font_size * self.line_height.max(0.8)).max(1.0) * scale;
+        let width = self.effective_width();
+        let font_size = self.font_size.max(1.0);
+        let line_height_px = (self.font_size * self.line_height.max(0.8)).max(1.0);
         let needs_rebuild = !self.glyph_layout_valid
             || self.glyph_cache_text != text
             || (self.glyph_cache_width - width).abs() > 0.01
@@ -2029,7 +2027,6 @@ impl TextArea {
         font_size: f32,
         line_height: f32,
         font_families: &[String],
-        scale: f32,
     ) -> GlyphBuffer {
         Self::with_shared_font_system(|font_system| {
             build_text_buffer(
@@ -2038,7 +2035,7 @@ impl TextArea {
                 None,
                 None,
                 false,
-                font_size * scale,
+                font_size,
                 line_height,
                 400,
                 Align::Left,
@@ -3227,7 +3224,7 @@ impl Renderable for TextArea {
             }
             let ime_underline_rects = self.ime_preedit_underline_rects(content.as_str());
 
-                push_text_pass_explicit(
+            push_text_pass_explicit(
                 graph,
                 &mut ctx,
                 TextPassParams::single_fragment(
@@ -4196,7 +4193,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_layout_scales_with_hidpi_factor() {
+    fn glyph_layout_keeps_logical_font_size_under_hidpi() {
         let mut area = TextArea::from_content("abc");
         area.set_font_size(16.0);
         area.place(LayoutPlacement {
@@ -4221,9 +4218,9 @@ mod tests {
         let width_2x = area.glyph_cache_width;
 
         assert!((metrics_1x.font_size - 16.0).abs() < 0.01);
-        assert!((metrics_2x.font_size - 32.0).abs() < 0.01);
+        assert!((metrics_2x.font_size - 16.0).abs() < 0.01);
         assert!((width_1x - 100.0).abs() < 0.01);
-        assert!((width_2x - 200.0).abs() < 0.01);
+        assert!((width_2x - 100.0).abs() < 0.01);
     }
 
     #[test]

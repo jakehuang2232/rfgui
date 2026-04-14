@@ -752,6 +752,9 @@ pub struct CompileProfile {
     pub prepare_upload_ms: f64,
     pub setup_pass_count: usize,
     pub prepare_pass_count: usize,
+    /// True when `annotate_resource_versions` + `build_compiled_graph` were skipped
+    /// because the topology hash matched the cached result from the previous frame.
+    pub topology_cache_hit: bool,
     pub graph: CompileGraphProfile,
 }
 
@@ -1034,12 +1037,210 @@ impl FrameGraph {
             prepare_upload_ms: 0.0,
             setup_pass_count: self.passes.len(),
             prepare_pass_count: 0,
+            topology_cache_hit: false,
             graph: graph_profile,
         })
     }
 
     pub fn compile(&mut self) -> Result<(), FrameGraphError> {
         self.compile_profiled_internal().map(|_| ())
+    }
+
+    /// Compute a hash of the graph topology after setup() has populated usages.
+    /// Covers pass names, kinds, resource usages (excluding annotated versions),
+    /// external sinks, and resource counts.
+    fn compute_topology_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.passes.len().hash(&mut hasher);
+        for node in &self.passes {
+            node.descriptor.name.hash(&mut hasher);
+            node.descriptor.kind.hash(&mut hasher);
+            node.usages.len().hash(&mut hasher);
+            for usage in &node.usages {
+                // Hash only the resource+usage pair; read_version/write_version come
+                // from annotate_resource_versions() and are not yet populated here.
+                usage.resource.hash(&mut hasher);
+                usage.usage.hash(&mut hasher);
+            }
+        }
+        self.external_sinks.hash(&mut hasher);
+        self.textures.len().hash(&mut hasher);
+        self.buffers.len().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Run annotate + build_compiled_graph phases; returns the compiled graph and timings.
+    fn compile_annotate_and_build(
+        &mut self,
+    ) -> Result<(CompiledGraph, f64, f64, CompileGraphProfile), FrameGraphError> {
+        let annotate_started_at = Instant::now();
+        self.annotate_resource_versions();
+        let annotate_resource_versions_ms = annotate_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let build_started_at = Instant::now();
+        let (compiled_graph, graph_profile) = self.build_compiled_graph_profiled()?;
+        let build_compiled_graph_ms = build_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        Ok((
+            compiled_graph,
+            annotate_resource_versions_ms,
+            build_compiled_graph_ms,
+            graph_profile,
+        ))
+    }
+
+    /// Like [`compile_with_upload`] but accepts an optional cached `(topology_hash, CompiledGraph)`.
+    /// When the topology hash of the current frame matches the cached hash, the expensive
+    /// `annotate_resource_versions` + `build_compiled_graph_profiled` phases are skipped.
+    /// Returns `(profile, topology_hash, compiled_graph)` so the caller can cache the result.
+    pub fn compile_with_upload_cached(
+        &mut self,
+        viewport: &mut Viewport,
+        cache: Option<(u64, CompiledGraph)>,
+    ) -> Result<(CompileProfile, u64, CompiledGraph), FrameGraphError> {
+        let compile_started_at = Instant::now();
+        self.order.clear();
+        self.compiled_graph = None;
+        self.compiled = false;
+
+        for node in &mut self.passes {
+            node.usages.clear();
+        }
+
+        let mut textures = std::mem::take(&mut self.textures);
+        let mut buffers = std::mem::take(&mut self.buffers);
+        let mut texture_metadata = std::mem::take(&mut self.texture_metadata);
+        let mut buffer_metadata = std::mem::take(&mut self.buffer_metadata);
+        let mut build_errors: Vec<FrameGraphError> = Vec::new();
+
+        let setup_started_at = Instant::now();
+        for node in &mut self.passes {
+            let mut builder = PassBuilderState {
+                descriptor: &mut node.descriptor,
+                textures: &mut textures,
+                texture_attachment_pairs: &self.texture_attachment_pairs,
+                buffers: &mut buffers,
+                texture_metadata: &mut texture_metadata,
+                buffer_metadata: &mut buffer_metadata,
+                usages: &mut node.usages,
+                build_errors: &mut build_errors,
+            };
+            node.pass.setup(&mut builder);
+        }
+        let setup_passes_ms = setup_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        self.textures = textures;
+        self.buffers = buffers;
+        self.texture_metadata = texture_metadata;
+        self.buffer_metadata = buffer_metadata;
+        self.build_errors = build_errors;
+
+        if let Some(err) = self.build_errors.pop() {
+            return Err(err);
+        }
+
+        // Compute topology hash after setup has populated usages.
+        let topology_hash = self.compute_topology_hash();
+
+        // Try to reuse cached CompiledGraph; fall back to full compile on miss.
+        let mut topology_cache_hit = false;
+        let (compiled_graph, annotate_resource_versions_ms, build_compiled_graph_ms, graph_profile) =
+            if let Some((cached_hash, cached_graph)) = cache {
+                if cached_hash == topology_hash {
+                    topology_cache_hit = true;
+                    (
+                        cached_graph,
+                        0.0_f64,
+                        0.0_f64,
+                        CompileGraphProfile::default(),
+                    )
+                } else {
+                    self.compile_annotate_and_build()?
+                }
+            } else {
+                self.compile_annotate_and_build()?
+            };
+
+        self.order = compiled_graph.execution_plan.ordered_passes.clone();
+        self.execute_steps = compiled_graph
+            .execution_plan
+            .steps
+            .iter()
+            .map(|step| match *step {
+                CompiledExecuteStep::GraphicsPass { pass_index } => {
+                    ExecuteStep::GraphicsPass { index: pass_index }
+                }
+                CompiledExecuteStep::GraphicsPassGroup(ref group) => {
+                    ExecuteStep::GraphicsPassGroup(group.clone())
+                }
+                CompiledExecuteStep::ComputePass { pass_index } => {
+                    ExecuteStep::ComputePass { index: pass_index }
+                }
+                CompiledExecuteStep::TransferPass { pass_index } => {
+                    ExecuteStep::TransferPass { index: pass_index }
+                }
+            })
+            .collect();
+
+        if batch_trace_enabled() {
+            for (pos, &pass_index) in self.order.iter().enumerate() {
+                let pass = &self.passes[pass_index].pass;
+                if is_rect_pass_name(pass.name()) {
+                    eprintln!(
+                        "[batch][compile] pos={} pass={} key={:?}",
+                        pos,
+                        pass.name(),
+                        render_pass_compatibility_key(&self.passes[pass_index].descriptor)
+                    );
+                }
+            }
+        }
+
+        self.compiled_graph = Some(compiled_graph.clone());
+        self.compiled = true;
+
+        // Prepare phase
+        let textures = self.textures.clone();
+        let buffers = self.buffers.clone();
+        let (texture_allocations, texture_stable_keys, buffer_allocations) = {
+            let compiled = self
+                .compiled_graph
+                .as_ref()
+                .expect("compiled graph should exist");
+            (
+                compiled.texture_allocation_ids.clone(),
+                compiled.texture_stable_keys.clone(),
+                compiled.buffer_allocation_ids.clone(),
+            )
+        };
+        let prepare_started_at = Instant::now();
+        let mut ctx = PrepareContext::new(
+            viewport,
+            &textures,
+            &buffers,
+            &texture_allocations,
+            &texture_stable_keys,
+            &buffer_allocations,
+        );
+        for &index in &self.order {
+            self.passes[index].pass.prepare(&mut ctx);
+        }
+        let prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let profile = CompileProfile {
+            total_ms: compile_started_at.elapsed().as_secs_f64() * 1000.0,
+            setup_passes_ms,
+            annotate_resource_versions_ms,
+            build_compiled_graph_ms,
+            prepare_upload_ms,
+            setup_pass_count: self.passes.len(),
+            prepare_pass_count: self.order.len(),
+            topology_cache_hit,
+            graph: graph_profile,
+        };
+
+        Ok((profile, topology_hash, compiled_graph))
     }
 
     pub fn compile_with_upload(
@@ -1327,8 +1528,7 @@ impl FrameGraph {
             * 1000.0;
 
         let toposort_live_passes_started_at = Instant::now();
-        let ordered_passes =
-            self.toposort_live_passes(&live_passes, &graph_edges, &indegree)?;
+        let ordered_passes = self.toposort_live_passes(&live_passes, &graph_edges, &indegree)?;
         let toposort_live_passes_ms =
             toposort_live_passes_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -1501,7 +1701,9 @@ impl FrameGraph {
                 continue;
             }
             for usage in &self.passes[pass_index].usages {
-                let Some(version) = usage.read_version else { continue };
+                let Some(version) = usage.read_version else {
+                    continue;
+                };
                 if let Some(&producer) = version_producers.get(&version) {
                     if producer != pass_index {
                         stack.push(producer);
@@ -1528,7 +1730,9 @@ impl FrameGraph {
 
         for &index in live_passes {
             for usage in &self.passes[index].usages {
-                let Some(version) = usage.read_version else { continue };
+                let Some(version) = usage.read_version else {
+                    continue;
+                };
                 if let Some(&producer) = version_producers.get(&version)
                     && producer != index
                     && graph_edges[producer].insert(index)
@@ -1593,7 +1797,6 @@ impl FrameGraph {
         latest
     }
 
-
     fn pass_consumed_versions(&self, pass_index: usize) -> Vec<ConsumedVersion> {
         let mut seen = HashSet::new();
         let mut versions = Vec::new();
@@ -1655,9 +1858,9 @@ impl FrameGraph {
                 if !live_passes.contains(&consumer) || info[consumer].anchor_pass_index.is_none() {
                     continue;
                 }
-                if best_downstream_consumer
-                    .is_none_or(|best| info[consumer].distance_to_anchor < info[best].distance_to_anchor)
-                {
+                if best_downstream_consumer.is_none_or(|best| {
+                    info[consumer].distance_to_anchor < info[best].distance_to_anchor
+                }) {
                     best_downstream_consumer = Some(consumer);
                 }
             }
@@ -3294,11 +3497,13 @@ fn select_next_ready_node(
             continue;
         };
         let distance = batch_anchor_info[idx].distance_to_anchor;
-        let entry = anchor_groups.entry(anchor_signature).or_insert(AnchorGroupBest {
-            count: 0,
-            best_distance: 0,
-            best_idx: usize::MAX,
-        });
+        let entry = anchor_groups
+            .entry(anchor_signature)
+            .or_insert(AnchorGroupBest {
+                count: 0,
+                best_distance: 0,
+                best_idx: usize::MAX,
+            });
         entry.count += 1;
         if distance > entry.best_distance
             || (distance == entry.best_distance && idx < entry.best_idx)

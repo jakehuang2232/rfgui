@@ -4623,6 +4623,87 @@ mod tests {
     }
 
     #[test]
+    fn inline_fragmentable_element_places_all_nested_inline_children_across_wrapped_lines() {
+        let mut parent = Element::new(0.0, 0.0, 180.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
+        parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
+        parent.apply_style(parent_style);
+        parent.add_child(Box::new(Text::from_content("lead-in text")));
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.set_padding(crate::Padding::uniform(Length::px(6.0)));
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content("first child text that wraps")));
+        wrapper.add_child(Box::new(Text::from_content("second child text also wraps")));
+        parent.add_child(Box::new(wrapper));
+        parent.add_child(Box::new(Text::from_content("tail")));
+
+        parent.measure(LayoutConstraints {
+            max_width: 180.0,
+            max_height: 240.0,
+            viewport_width: 180.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(180.0),
+            percent_base_height: Some(240.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 180.0,
+            available_height: 240.0,
+            viewport_width: 180.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(180.0),
+            percent_base_height: Some(240.0),
+        });
+
+        let wrapper = parent.children().expect("children")[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("wrapper");
+        assert!(
+            wrapper.inline_paint_fragments.len() >= 2,
+            "paint_fragments={:?}",
+            wrapper.inline_paint_fragments
+        );
+
+        let first = wrapper.children().expect("wrapper children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("first text");
+        let second = wrapper.children().expect("wrapper children")[1]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("second text");
+
+        let first_expected = first.get_inline_nodes_size().len();
+        let second_expected = second.get_inline_nodes_size().len();
+        let first_actual = first.inline_fragment_positions().len();
+        let second_actual = second.inline_fragment_positions().len();
+
+        assert_eq!(
+            first_actual,
+            first_expected,
+            "first fragments={:?}",
+            first.inline_fragment_positions()
+        );
+        assert_eq!(
+            second_actual,
+            second_expected,
+            "second fragments={:?}",
+            second.inline_fragment_positions()
+        );
+    }
+
+    #[test]
     fn measure_recomputes_when_child_layout_dirty_under_same_proposal() {
         let constraints = LayoutConstraints {
             max_width: 240.0,
