@@ -35,7 +35,7 @@ mod tests {
     fn shared_element_style(node: &RsxElementNode) -> Option<rfgui::view::ElementStylePropSchema> {
         node.props
             .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
+            .find_map(|(key, value)| match (*key, value) {
                 ("style", PropValue::Shared(shared)) => shared
                     .value()
                     .downcast::<rfgui::view::ElementStylePropSchema>()

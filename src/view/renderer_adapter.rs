@@ -357,12 +357,14 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
                 let RsxNode::Element(element) = target else {
                     return Err("cannot update props on non-element node".to_string());
                 };
-                element.props.retain(|(k, _)| !removed.contains(k));
+                let element = std::rc::Rc::make_mut(element);
+                let props = std::rc::Rc::make_mut(&mut element.props);
+                props.retain(|(k, _)| !removed.contains(k));
                 for &(key, ref value) in changed {
-                    if let Some((_, v)) = element.props.iter_mut().find(|(k, _)| *k == key) {
+                    if let Some((_, v)) = props.iter_mut().find(|(k, _)| *k == key) {
                         *v = value.clone();
                     } else {
-                        element.props.push((key, value.clone()));
+                        props.push((key, value.clone()));
                     }
                 }
             }
@@ -371,7 +373,7 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
                 let RsxNode::Text(node) = target else {
                     return Err("cannot set text on non-text node".to_string());
                 };
-                node.content = text.clone();
+                std::rc::Rc::make_mut(node).content = text.clone();
             }
             Patch::InsertChild {
                 parent_path,
@@ -715,7 +717,7 @@ fn convert_container_element(
     let mut child_inherited_text_style = inherited_text_style.clone();
     let mut user_style = Style::new();
     let mut has_user_style = false;
-    for (key, value) in &node.props {
+    for (key, value) in node.props.iter() {
         if *key == "style" {
             let style = as_element_style(value, key)?;
             if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
@@ -754,7 +756,7 @@ fn convert_container_element(
         base_style
     };
     element.apply_style(effective_style);
-    for (key, value) in &node.props {
+    for (key, value) in node.props.iter() {
         if *key == "key" {
             continue;
         }
@@ -823,8 +825,10 @@ fn convert_container_element(
 
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
     child_path.extend_from_slice(path);
-    let current_global_path =
-        current_global_node_path(&RsxNode::Element(node.clone()), global_path.as_ref());
+    let current_global_path = current_global_node_path(
+        &RsxNode::Element(std::rc::Rc::new(node.clone())),
+        global_path.as_ref(),
+    );
     let mut ordinals = HashMap::<&'static str, usize>::new();
     for child in &node.children {
         let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
@@ -902,7 +906,7 @@ fn convert_text_element(
     let mut has_explicit_cursor = false;
     let mut has_explicit_text_wrap = false;
 
-    for (key, value) in &node.props {
+    for (key, value) in node.props.iter() {
         if *key == "key" {
             continue;
         }
@@ -1116,7 +1120,7 @@ fn convert_text_area_element(
     let mut has_explicit_font_size = false;
     let mut has_explicit_color = false;
 
-    for (key, value) in &node.props {
+    for (key, value) in node.props.iter() {
         if *key == "key" {
             continue;
         }
@@ -1273,7 +1277,7 @@ fn convert_text_area_projection_child(
 
     let mut start = None;
     let mut end = None;
-    for (key, value) in &element.props {
+    for (key, value) in element.props.iter() {
         match *key {
             "source_text_start" => start = as_usize(value, key)?,
             "source_text_end" => end = as_usize(value, key)?,
@@ -1392,7 +1396,7 @@ fn convert_image_element(
     let mut loading = Vec::new();
     let mut error = Vec::new();
 
-    for (key, value) in &node.props {
+    for (key, value) in node.props.iter() {
         if *key == "key" {
             continue;
         }
@@ -1456,7 +1460,7 @@ fn convert_svg_element(
     let mut loading = Vec::new();
     let mut error = Vec::new();
 
-    for (key, value) in &node.props {
+    for (key, value) in node.props.iter() {
         if *key == "key" {
             continue;
         }

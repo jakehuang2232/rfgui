@@ -23,7 +23,7 @@ impl RsxComponent<MaterialSymbolIconProps> for MaterialSymbolIcon {
         let ligature = children
             .into_iter()
             .find_map(|child| match child {
-                RsxNode::Text(text) => Some(text.content),
+                RsxNode::Text(text) => Some(text.content.clone()),
                 _ => None,
             })
             .unwrap_or_default();

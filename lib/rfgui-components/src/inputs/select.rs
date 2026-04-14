@@ -226,7 +226,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     };
 
     if is_open && let RsxNode::Element(root_node) = &mut root {
-        root_node
+        std::rc::Rc::make_mut(root_node)
             .children
             .push(build_menu_node(&menu_items, SELECT_TRIGGER_ANCHOR));
     }

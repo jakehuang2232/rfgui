@@ -2006,6 +2006,15 @@ pub fn prewarm_text_pipeline(
     format: wgpu::TextureFormat,
     sample_count: u32,
 ) {
+    // Prewarm kicks a full render, which stalls startup on wasm and gives no
+    // measurable benefit there. Native keeps the prewarm to warm the pipeline
+    // cache before the first user frame.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (device, queue, format, sample_count);
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     with_text_resources(device, queue, format, |resources| {
         let regular_key = TextRendererKey {
             sample_count,

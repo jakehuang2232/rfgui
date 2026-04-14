@@ -453,7 +453,7 @@ where
         let mut node = T::create_node(props, children, key.clone());
         node.set_identity(RsxNodeIdentity::new(std::any::type_name::<T>(), key));
         if let RsxNode::Element(element) = &mut node {
-            element.tag_descriptor = Some(RsxTagDescriptor::of::<T>());
+            std::rc::Rc::make_mut(element).tag_descriptor = Some(RsxTagDescriptor::of::<T>());
         }
         node
     })

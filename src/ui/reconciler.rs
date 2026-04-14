@@ -5,6 +5,7 @@
 use crate::ui::{PropValue, RsxElementNode, RsxNode, RsxNodeIdentity};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
@@ -152,6 +153,14 @@ fn reconcile_node(
     path: &mut Vec<usize>,
     patches: &mut Vec<Patch>,
 ) {
+    // Fast path: if both variants hold the exact same `Rc` allocation, the
+    // entire subtree is guaranteed structurally identical — no patches needed.
+    // Enables memoized components (Step D) and any caller that reuses an
+    // `Rc<RsxNode>` across renders to skip subtree reconciliation entirely.
+    if RsxNode::ptr_eq(old, new) {
+        return;
+    }
+
     if old.identity() != new.identity() {
         if path.is_empty() {
             patches.push(Patch::ReplaceRoot(new.clone()));
@@ -193,8 +202,8 @@ fn reconcile_node(
 }
 
 fn reconcile_element(
-    old: &RsxElementNode,
-    new: &RsxElementNode,
+    old: &Rc<RsxElementNode>,
+    new: &Rc<RsxElementNode>,
     path: &mut Vec<usize>,
     patches: &mut Vec<Patch>,
 ) {
@@ -205,39 +214,46 @@ fn reconcile_element(
 
     if !same_tag {
         if path.is_empty() {
-            patches.push(Patch::ReplaceRoot(RsxNode::Element(new.clone())));
+            patches.push(Patch::ReplaceRoot(RsxNode::Element(Rc::clone(new))));
         } else {
             patches.push(Patch::ReplaceNode {
                 path: path.to_vec(),
-                node: RsxNode::Element(new.clone()),
+                node: RsxNode::Element(Rc::clone(new)),
             });
         }
         return;
     }
 
-    // Diff props: find changed/added keys and removed keys.
-    let mut changed = Vec::new();
-    let mut removed = Vec::new();
+    // Fast path: if both props point to the same `Rc` allocation, no prop diff
+    // is needed — this is the common case when a component reuses its props
+    // object across renders.
+    if !Rc::ptr_eq(&old.props, &new.props) {
+        // Diff props: find changed/added keys and removed keys.
+        let mut changed = Vec::new();
+        let mut removed = Vec::new();
 
-    for &(old_key, ref old_val) in &old.props {
-        match new.props.iter().find(|&&(k, _)| k == old_key) {
-            Some((_, new_val)) if new_val != old_val => changed.push((old_key, new_val.clone())),
-            None => removed.push(old_key),
-            _ => {}
+        for &(old_key, ref old_val) in old.props.iter() {
+            match new.props.iter().find(|&&(k, _)| k == old_key) {
+                Some((_, new_val)) if new_val != old_val => {
+                    changed.push((old_key, new_val.clone()))
+                }
+                None => removed.push(old_key),
+                _ => {}
+            }
         }
-    }
-    for &(new_key, ref new_val) in &new.props {
-        if !old.props.iter().any(|&(k, _)| k == new_key) {
-            changed.push((new_key, new_val.clone()));
+        for &(new_key, ref new_val) in new.props.iter() {
+            if !old.props.iter().any(|&(k, _)| k == new_key) {
+                changed.push((new_key, new_val.clone()));
+            }
         }
-    }
 
-    if !changed.is_empty() || !removed.is_empty() {
-        patches.push(Patch::UpdateElementProps {
-            path: path.to_vec(),
-            changed,
-            removed,
-        });
+        if !changed.is_empty() || !removed.is_empty() {
+            patches.push(Patch::UpdateElementProps {
+                path: path.to_vec(),
+                changed,
+                removed,
+            });
+        }
     }
 
     reconcile_children(&old.children, &new.children, path, patches);
@@ -433,4 +449,66 @@ fn reconcile_children(
     }
 
     // `guard` drops here, clearing the scratch and returning it to the pool.
+}
+
+#[cfg(test)]
+mod bailout_tests {
+    use super::*;
+    use crate::ui::{RsxFragmentNode, RsxNodeIdentity};
+
+    fn element_with_children(children: Vec<RsxNode>) -> RsxNode {
+        RsxNode::Fragment(Rc::new(RsxFragmentNode {
+            identity: RsxNodeIdentity::new("Fragment", None),
+            children,
+        }))
+    }
+
+    #[test]
+    fn ptr_eq_node_is_skipped_without_patches() {
+        let shared = RsxNode::text("hello");
+        let old = element_with_children(vec![shared.clone(), RsxNode::text("b")]);
+        // Reuse the exact same Rc for the first child; change the second.
+        let new = element_with_children(vec![shared, RsxNode::text("B")]);
+
+        let patches = reconcile(Some(&old), &new);
+        // Only the second child should produce a patch; the first is bailed
+        // out by the `Rc::ptr_eq` fast path in `reconcile_node`.
+        assert_eq!(patches.len(), 1);
+        assert!(matches!(patches[0], Patch::SetText { .. }));
+    }
+
+    #[test]
+    fn ptr_eq_whole_tree_yields_no_patches() {
+        let tree = element_with_children(vec![RsxNode::text("a"), RsxNode::text("b")]);
+        let patches = reconcile(Some(&tree), &tree.clone());
+        assert!(patches.is_empty(), "got patches: {patches:?}");
+    }
+
+    #[test]
+    fn shared_props_rc_skips_prop_diff() {
+        use crate::ui::{PropValue, RsxElementNode, RsxElementProps};
+
+        // Build shared props: an `Rc<Vec<_>>` reused across two distinct
+        // element allocations. The reconciler must take the `Rc::ptr_eq`
+        // fast path and emit NO `UpdateElementProps` patch.
+        let shared_props: RsxElementProps =
+            Rc::new(vec![("width", PropValue::I64(100)), ("color", PropValue::I64(1))]);
+
+        let make = |children: Vec<RsxNode>| {
+            RsxNode::Element(Rc::new(RsxElementNode {
+                identity: RsxNodeIdentity::new("Element", None),
+                tag: "Element",
+                tag_descriptor: None,
+                props: shared_props.clone(),
+                children,
+            }))
+        };
+
+        let old = make(vec![RsxNode::text("a")]);
+        let new = make(vec![RsxNode::text("b")]);
+        let patches = reconcile(Some(&old), &new);
+        // Only SetText for the changed child; no UpdateElementProps.
+        assert_eq!(patches.len(), 1, "got patches: {patches:?}");
+        assert!(matches!(patches[0], Patch::SetText { .. }));
+    }
 }

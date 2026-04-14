@@ -188,6 +188,9 @@ macro_rules! style {
 }
 
 mod style;
+/// Platform abstraction traits (surface target, clipboard, cursor sink, ...).
+/// Phase 0 of the viewport-decoupling work. No backend code lives here.
+pub mod platform;
 pub mod time {
     pub use std::time::Duration;
     #[cfg(not(target_arch = "wasm32"))]

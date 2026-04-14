@@ -156,10 +156,7 @@ impl App {
         let size = window.inner_size();
         viewport.set_size(size.width, size.height);
         viewport.set_clear_color(background_color);
-        let cursor_window = window.clone();
-        viewport.set_cursor_handler(move |cursor| {
-            cursor_window.set_cursor(map_cursor_icon(cursor));
-        });
+        let _ = window;
         viewport
     }
 
@@ -171,12 +168,7 @@ impl App {
         let mut viewport = Viewport::new();
         viewport.set_msaa_sample_count(1);
         viewport.set_clear_color(background_color);
-        let canvas = canvas.clone();
-        viewport.set_cursor_handler(move |cursor| {
-            let _ = canvas
-                .style()
-                .set_property("cursor", web_cursor_name(cursor));
-        });
+        let _ = canvas;
         viewport
     }
 
@@ -236,23 +228,25 @@ impl App {
             });
         }
 
-        let mut should_schedule_redraw = false;
         self.with_viewport_mut(|viewport| {
             if REQUEST_DUMP_FRAME_GRAPH_DOT.load(Ordering::Acquire) {
                 viewport.request_redraw();
             }
-            if viewport.take_redraw_request() {
-                should_schedule_redraw = true;
-            }
         });
+        let platform_requests = self
+            .with_viewport_mut(|viewport| viewport.drain_platform_requests())
+            .unwrap_or_default();
         if let Some(window) = &self.window {
-            if should_schedule_redraw {
+            if let Some(cursor) = platform_requests.cursor {
+                window.set_cursor(map_cursor_icon(cursor));
+            }
+            if platform_requests.request_redraw {
                 window.request_redraw();
             }
-            should_schedule_redraw = false;
         }
+        let _ = platform_requests.clipboard_write;
         self.sync_ime_state(false);
-        should_schedule_redraw
+        false
     }
 
     fn sync_theme_visuals(&mut self) {
@@ -396,7 +390,7 @@ impl ApplicationHandler for App {
         {
             let mut viewport =
                 Self::configure_viewport(window.clone(), self.background_color.clone());
-            pollster::block_on(viewport.set_window(window.clone()));
+            pollster::block_on(viewport.attach(window.clone()));
             pollster::block_on(viewport.create_surface());
             viewport.request_redraw();
             self.viewport.borrow_mut().replace(viewport);
@@ -409,7 +403,7 @@ impl ApplicationHandler for App {
             let async_window = window.clone();
             spawn_local(async move {
                 let mut viewport = App::configure_viewport(async_window.clone(), background_color);
-                viewport.set_window(async_window.clone()).await;
+                viewport.attach(async_window.clone()).await;
                 viewport.create_surface().await;
                 viewport.request_redraw();
                 viewport_slot.borrow_mut().replace(viewport);
@@ -842,7 +836,14 @@ fn run_web() {
                     .take()
                     .expect("viewport should exist")
             };
-            viewport.set_canvas(canvas.clone()).await;
+            viewport.set_surface_format_preference(
+                rfgui::SurfaceFormatPreference::PreferNonSrgb,
+            );
+            viewport
+                .attach(rfgui::platform::web::WebCanvasSurfaceTarget::new(
+                    canvas.clone(),
+                ))
+                .await;
             viewport.create_surface().await;
             viewport.request_redraw();
             {

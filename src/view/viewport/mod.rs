@@ -43,15 +43,6 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::ops::Sub;
 use std::sync::Arc;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsValue;
-#[cfg(target_arch = "wasm32")]
-use web_sys::HtmlCanvasElement;
-#[cfg(target_arch = "wasm32")]
-use wgpu::rwh::{
-    DisplayHandle as BorrowedDisplayHandle, HandleError, RawDisplayHandle, RawWindowHandle,
-    WebCanvasWindowHandle, WebDisplayHandle, WindowHandle as BorrowedWindowHandle,
-};
 use wgpu::util::StagingBelt;
 use wgpu::{
     Instance, Queue, TextureUsages,
@@ -78,49 +69,31 @@ use self::input::{
     InputState, PendingClick, ViewportMouseUpListener, is_valid_click_candidate, to_ui_mouse_button,
 };
 pub use self::input::{MouseButton, ViewportDebugOptions};
+use crate::platform::{
+    PlatformImePreedit, PlatformKeyEvent, PlatformMouseButton, PlatformMouseEvent,
+    PlatformMouseEventKind, PlatformRequests, PlatformTextInput, PlatformWheelEvent,
+};
 
 pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
 impl<T: HasWindowHandle + HasDisplayHandle> WindowHandle for T {}
 
 pub type Window = Arc<dyn WindowHandle + Send + Sync>;
-type CursorHandler = Box<dyn FnMut(Cursor)>;
 
-enum SurfaceInitTarget {
-    #[cfg(not(target_arch = "wasm32"))]
-    Window(Window),
-    #[cfg(target_arch = "wasm32")]
-    Canvas(HtmlCanvasElement),
+/// How the viewport should pick a surface format from the adapter's
+/// capabilities. Native normally prefers sRGB; the browser surface on wasm
+/// usually wants a non-sRGB format for correct color reproduction. The
+/// preference is data — the viewport itself has no `cfg(wasm32)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceFormatPreference {
+    PreferSrgb,
+    PreferNonSrgb,
 }
 
-#[cfg(target_arch = "wasm32")]
-struct WebCanvasSurfaceTarget {
-    canvas: HtmlCanvasElement,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl HasWindowHandle for WebCanvasSurfaceTarget {
-    fn window_handle(&self) -> Result<BorrowedWindowHandle<'_>, HandleError> {
-        let value: &JsValue = self.canvas.as_ref();
-        let raw = RawWindowHandle::WebCanvas(WebCanvasWindowHandle::new(
-            std::ptr::NonNull::from(value).cast(),
-        ));
-        Ok(unsafe { BorrowedWindowHandle::borrow_raw(raw) })
+impl Default for SurfaceFormatPreference {
+    fn default() -> Self {
+        Self::PreferSrgb
     }
 }
-
-#[cfg(target_arch = "wasm32")]
-impl HasDisplayHandle for WebCanvasSurfaceTarget {
-    fn display_handle(&self) -> Result<BorrowedDisplayHandle<'_>, HandleError> {
-        Ok(unsafe {
-            BorrowedDisplayHandle::borrow_raw(RawDisplayHandle::Web(WebDisplayHandle::new()))
-        })
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-type ClipboardBackend = arboard::Clipboard;
-#[cfg(target_arch = "wasm32")]
-type ClipboardBackend = ();
 
 pub struct ViewportControl<'a> {
     viewport: &'a mut Viewport,
@@ -264,8 +237,7 @@ pub struct Viewport {
     device: Option<wgpu::Device>,
     instance: Option<Instance>,
     window: Option<Window>,
-    #[cfg(target_arch = "wasm32")]
-    web_canvas: Option<HtmlCanvasElement>,
+    surface_format_preference: SurfaceFormatPreference,
     queue: Option<Queue>,
     msaa_sample_count: u32,
     surface_msaa_texture: Option<wgpu::Texture>,
@@ -295,8 +267,6 @@ pub struct Viewport {
     debug_previous_subtree_signatures: HashMap<u64, (u64, u64, u64, bool)>,
     promoted_reuse_cooldown_frames: u8,
     input_state: InputState,
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    clipboard: Option<ClipboardBackend>,
     clipboard_fallback: Option<String>,
     dispatched_focus_node_id: Option<u64>,
     ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
@@ -313,9 +283,9 @@ pub struct Viewport {
     scroll_transition: ScrollTransition,
     last_transition_tick: Option<Instant>,
     transition_epoch: Option<Instant>,
-    cursor_handler: Option<CursorHandler>,
     cursor_override: Option<Cursor>,
-    last_notified_cursor: Option<Cursor>,
+    last_recorded_cursor: Option<Cursor>,
+    pending_platform_requests: PlatformRequests,
     frame_presented: bool,
     last_frame_graph: Option<FrameGraph>,
     compile_cache: Option<CachedCompiledGraph>,
@@ -360,16 +330,6 @@ impl Viewport {
     const PROMOTED_REUSE_COOLDOWN_FRAMES: u8 = 2;
     const SAMPLED_TEXTURE_PRESSURE_BYTES: u64 = 128 * 1024 * 1024;
     const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 96 * 1024 * 1024;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn create_clipboard() -> Option<ClipboardBackend> {
-        ClipboardBackend::new().ok()
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn create_clipboard() -> Option<ClipboardBackend> {
-        None
-    }
 
     fn invalidate_promoted_layer_reuse(&mut self) {
         self.promoted_base_signatures.clear();
@@ -1605,8 +1565,7 @@ impl Viewport {
             device: None,
             instance: None,
             window: None,
-            #[cfg(target_arch = "wasm32")]
-            web_canvas: None,
+            surface_format_preference: SurfaceFormatPreference::default(),
             queue: None,
             msaa_sample_count: Self::DEFAULT_MSAA_SAMPLE_COUNT,
             surface_msaa_texture: None,
@@ -1636,7 +1595,6 @@ impl Viewport {
             debug_previous_subtree_signatures: HashMap::new(),
             promoted_reuse_cooldown_frames: 0,
             input_state: InputState::default(),
-            clipboard: Self::create_clipboard(),
             clipboard_fallback: None,
             dispatched_focus_node_id: None,
             ui_roots: Vec::new(),
@@ -1673,9 +1631,9 @@ impl Viewport {
             scroll_transition: ScrollTransition::new(250).ease_out(),
             last_transition_tick: None,
             transition_epoch: None,
-            cursor_handler: None,
             cursor_override: None,
-            last_notified_cursor: None,
+            last_recorded_cursor: None,
+            pending_platform_requests: PlatformRequests::default(),
             frame_presented: false,
             last_frame_graph: None,
             compile_cache: None,
@@ -1851,6 +1809,26 @@ impl Viewport {
         }
     }
 
+    /// Attach a surface target to the viewport.
+    ///
+    /// Accepts any `SurfaceTarget` — on native this is typically
+    /// `Arc<winit::window::Window>`, on wasm it is
+    /// `crate::platform::web::WebCanvasSurfaceTarget`. Both paths go through
+    /// the same entry point; the viewport itself has no knowledge of the
+    /// concrete type.
+    pub async fn attach<T>(&mut self, target: T)
+    where
+        T: WindowHandle + Send + Sync + 'static,
+    {
+        self.window = Some(Arc::new(target));
+        if self.device.is_some() {
+            self.create_surface().await;
+        }
+    }
+
+    /// Legacy entry point kept as a thin wrapper over `attach` for
+    /// back-compat with existing examples. New code should call `attach`.
+    #[deprecated(note = "use Viewport::attach")]
     pub async fn set_window(&mut self, window: Window) {
         self.window = Some(window);
         if self.device.is_some() {
@@ -1858,12 +1836,8 @@ impl Viewport {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub async fn set_canvas(&mut self, canvas: HtmlCanvasElement) {
-        self.web_canvas = Some(canvas);
-        if self.device.is_some() {
-            self.create_surface().await;
-        }
+    pub fn set_surface_format_preference(&mut self, pref: SurfaceFormatPreference) {
+        self.surface_format_preference = pref;
     }
 
     pub fn set_size(&mut self, mut width: u32, mut height: u32) {
@@ -1899,16 +1873,46 @@ impl Viewport {
         self.clear_color = clear_color;
     }
 
-    pub fn set_cursor_handler<F>(&mut self, handler: F)
-    where
-        F: FnMut(Cursor) + 'static,
-    {
-        self.cursor_handler = Some(Box::new(handler));
-        self.last_notified_cursor = None;
-    }
-
     pub fn set_cursor(&mut self, cursor: Option<Cursor>) {
         self.cursor_override = cursor;
+    }
+
+    /// Push text the viewport wants written to the host clipboard into the
+    /// pending platform request queue, and mirror it to the in-memory
+    /// fallback so immediate reads from within this frame still see it.
+    pub fn set_clipboard_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.clipboard_fallback = Some(text.clone());
+        self.pending_platform_requests.clipboard_write = Some(text);
+    }
+
+    /// Return the in-memory clipboard fallback. Actual host-clipboard reads
+    /// are the backend's responsibility; the backend is expected to push
+    /// their results in via `set_clipboard_fallback` before dispatching
+    /// events.
+    pub fn clipboard_text(&mut self) -> Option<String> {
+        self.clipboard_fallback.clone()
+    }
+
+    /// Seed the viewport's clipboard fallback with text the backend just
+    /// read from the host clipboard. Called by the platform backend before
+    /// dispatching an event that may ask for clipboard contents (e.g. a
+    /// paste shortcut).
+    pub fn set_clipboard_fallback(&mut self, text: Option<String>) {
+        self.clipboard_fallback = text;
+    }
+
+    /// Drain the outbound platform requests accumulated since the last
+    /// drain. Backends call this after each render/event batch and apply
+    /// the results to the real window/clipboard.
+    pub fn drain_platform_requests(&mut self) -> PlatformRequests {
+        // Fold the internal `redraw_requested` flag into the drain so the
+        // backend only has to look in one place.
+        if self.redraw_requested {
+            self.pending_platform_requests.request_redraw = true;
+            self.redraw_requested = false;
+        }
+        std::mem::take(&mut self.pending_platform_requests)
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
@@ -1983,15 +1987,10 @@ impl Viewport {
     }
 
     pub async fn create_surface(&mut self) {
-        #[cfg(target_arch = "wasm32")]
-        let surface_target = self
-            .web_canvas
-            .clone()
-            .map(|canvas| SurfaceInitTarget::Canvas(canvas));
-        #[cfg(not(target_arch = "wasm32"))]
-        let surface_target = self.window.clone().map(SurfaceInitTarget::Window);
-
-        if let Some(surface_target) = surface_target {
+        let Some(surface_target) = self.window.clone() else {
+            return;
+        };
+        {
             let backends = wgpu::Backends::all();
 
             let instance = Instance::new(wgpu::InstanceDescriptor {
@@ -2002,14 +2001,7 @@ impl Viewport {
                 display: None,
             });
 
-            let surface = match surface_target {
-                #[cfg(target_arch = "wasm32")]
-                SurfaceInitTarget::Canvas(canvas) => instance
-                    .create_surface(WebCanvasSurfaceTarget { canvas })
-                    .unwrap(),
-                #[cfg(not(target_arch = "wasm32"))]
-                SurfaceInitTarget::Window(window) => instance.create_surface(window).unwrap(),
-            };
+            let surface = instance.create_surface(surface_target).unwrap();
 
             let Ok(adapter) = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
@@ -2036,55 +2028,17 @@ impl Viewport {
                 .unwrap();
 
             let caps = surface.get_capabilities(&adapter);
-            #[cfg(target_arch = "wasm32")]
-            {
-                web_sys::console::log_1(
-                    &format!("[rfgui] web surface formats: {:?}", caps.formats).into(),
-                );
-                web_sys::console::log_1(
-                    &format!("[rfgui] web surface alpha modes: {:?}", caps.alpha_modes).into(),
-                );
-            }
-            #[cfg(target_arch = "wasm32")]
-            let preferred_format = self.surface_config.format;
-            #[cfg(target_arch = "wasm32")]
-            let format = caps
-                .formats
-                .iter()
-                .copied()
-                .find(|f| *f == preferred_format)
-                .or_else(|| caps.formats.iter().copied().find(|f| !f.is_srgb()))
-                .or_else(|| caps.formats.iter().copied().find(|f| f.is_srgb()))
-                .or_else(|| caps.formats.first().copied());
-            #[cfg(not(target_arch = "wasm32"))]
-            let format = caps
-                .formats
-                .iter()
-                .copied()
-                .find(|f| f.is_srgb())
-                .or_else(|| caps.formats.first().copied());
+            let format = Self::pick_surface_format(
+                &caps.formats,
+                self.surface_format_preference,
+                self.surface_config.format,
+            );
             let Some(format) = format else {
                 eprintln!("[warn] surface reported no supported formats");
                 return;
             };
-            #[cfg(target_arch = "wasm32")]
-            {
-                web_sys::console::log_1(
-                    &format!("[rfgui] web selected surface format: {:?}", format).into(),
-                );
-            }
             self.surface_config.format = format;
             self.surface_config.alpha_mode = Self::alpha_mode_from_capabilities(&caps.alpha_modes);
-            #[cfg(target_arch = "wasm32")]
-            {
-                web_sys::console::log_1(
-                    &format!(
-                        "[rfgui] web selected alpha mode: {:?}",
-                        self.surface_config.alpha_mode
-                    )
-                    .into(),
-                );
-            }
             self.surface_config.view_formats = vec![self.surface_config.format];
             if let Some((width, height)) = self.pending_size.take() {
                 self.surface_config.width = width;
@@ -2101,7 +2055,6 @@ impl Viewport {
             self.invalidate_promoted_layer_reuse();
             self.create_frame_attachments();
             self.needs_reconfigure = false;
-            #[cfg(not(target_arch = "wasm32"))]
             if let Some(device) = self.device.as_ref() {
                 if let Some(queue) = self.queue.as_ref() {
                     crate::view::render_pass::prewarm_text_pipeline(
@@ -2112,6 +2065,40 @@ impl Viewport {
                     );
                 }
             }
+        }
+    }
+
+    /// Data-driven surface format selection. `preference` decides whether
+    /// sRGB or non-sRGB formats win in the tiebreaker; `current` is kept if
+    /// it's present in the capability list, otherwise the first matching
+    /// format by preference wins. No `cfg` — the viewport has no platform
+    /// knowledge; callers supply the preference.
+    fn pick_surface_format(
+        available: &[wgpu::TextureFormat],
+        preference: SurfaceFormatPreference,
+        current: wgpu::TextureFormat,
+    ) -> Option<wgpu::TextureFormat> {
+        match preference {
+            // Native default. Match the pre-phase-2 behavior exactly: first
+            // srgb format, else first available. The caller's `current`
+            // default (`Bgra8Unorm`) is ignored on purpose — it's
+            // non-srgb and would wash out colors if picked on a device
+            // that also advertises the srgb variant.
+            SurfaceFormatPreference::PreferSrgb => available
+                .iter()
+                .copied()
+                .find(|f| f.is_srgb())
+                .or_else(|| available.first().copied()),
+            // Web/wasm default. Prefer a non-srgb format so the browser
+            // compositor doesn't double-apply gamma. Honors `current` if it
+            // is advertised by the surface (matches pre-phase-2 wasm code).
+            SurfaceFormatPreference::PreferNonSrgb => available
+                .iter()
+                .copied()
+                .find(|f| *f == current)
+                .or_else(|| available.iter().copied().find(|f| !f.is_srgb()))
+                .or_else(|| available.iter().copied().find(|f| f.is_srgb()))
+                .or_else(|| available.first().copied()),
         }
     }
 
@@ -2136,7 +2123,6 @@ impl Viewport {
         self.release_render_resource_caches();
         self.invalidate_promoted_layer_reuse();
         self.create_frame_attachments();
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(queue) = self.queue.as_ref() {
             crate::view::render_pass::prewarm_text_pipeline(
                 &device_for_prewarm,
@@ -3446,26 +3432,6 @@ impl Viewport {
         self.input_state.pressed_keys.iter().map(String::as_str)
     }
 
-    pub fn set_clipboard_text(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        self.clipboard_fallback = Some(text.clone());
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(clipboard) = self.clipboard.as_mut() {
-            let _ = clipboard.set_text(text);
-        }
-    }
-
-    pub fn clipboard_text(&mut self) -> Option<String> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(clipboard) = self.clipboard.as_mut() {
-            if let Ok(text) = clipboard.get_text() {
-                self.clipboard_fallback = Some(text.clone());
-                return Some(text);
-            }
-        }
-        self.clipboard_fallback.clone()
-    }
-
     pub fn clear_input_state(&mut self) {
         self.set_focused_node_id(None);
         self.sync_focus_dispatch();
@@ -4137,6 +4103,54 @@ impl Viewport {
         handled
     }
 
+    /// Dispatch a platform-neutral mouse event.
+    ///
+    /// Canonical entry point for backends (winit, web, headless). Internally
+    /// forwards to the legacy primitive-argument `dispatch_mouse_*` methods;
+    /// those remain public for now so component tests and existing callers
+    /// keep working. New backend code should only ever see this method.
+    pub fn dispatch_platform_mouse_event(&mut self, event: &PlatformMouseEvent) -> bool {
+        match event.kind {
+            PlatformMouseEventKind::Down(button) => {
+                self.dispatch_mouse_down_event(mouse_button_from_platform(button))
+            }
+            PlatformMouseEventKind::Up(button) => {
+                self.dispatch_mouse_up_event(mouse_button_from_platform(button))
+            }
+            PlatformMouseEventKind::Move { x, y } => {
+                self.set_mouse_position_viewport(x, y);
+                self.dispatch_mouse_move_event()
+            }
+            PlatformMouseEventKind::Click(button) => {
+                self.dispatch_click_event(mouse_button_from_platform(button))
+            }
+        }
+    }
+
+    pub fn dispatch_platform_wheel_event(&mut self, event: &PlatformWheelEvent) -> bool {
+        self.dispatch_mouse_wheel_event(event.delta_x, event.delta_y)
+    }
+
+    pub fn dispatch_platform_key_event(&mut self, event: &PlatformKeyEvent) -> bool {
+        if event.pressed {
+            self.dispatch_key_down_event(event.key.clone(), event.code.clone(), event.repeat)
+        } else {
+            self.dispatch_key_up_event(event.key.clone(), event.code.clone(), event.repeat)
+        }
+    }
+
+    pub fn dispatch_platform_text_input(&mut self, event: &PlatformTextInput) -> bool {
+        self.dispatch_text_input_event(event.text.clone())
+    }
+
+    pub fn dispatch_platform_ime_preedit(&mut self, event: &PlatformImePreedit) -> bool {
+        let cursor = match (event.cursor_start, event.cursor_end) {
+            (Some(start), Some(end)) => Some((start, end)),
+            _ => None,
+        };
+        self.dispatch_ime_preedit_event(event.text.clone(), cursor)
+    }
+
     fn current_ui_mouse_buttons(&self) -> UiMouseButtons {
         UiMouseButtons {
             left: self.is_mouse_button_pressed(MouseButton::Left),
@@ -4221,15 +4235,16 @@ impl Viewport {
         Cursor::Default
     }
 
+    /// Record the currently-desired cursor into the pending platform
+    /// request queue. Deduped against the last value recorded — the backend
+    /// only sees changes.
     fn notify_cursor_handler(&mut self) {
         let cursor = self.resolve_cursor();
-        if self.last_notified_cursor == Some(cursor) {
+        if self.last_recorded_cursor == Some(cursor) {
             return;
         }
-        self.last_notified_cursor = Some(cursor);
-        if let Some(handler) = self.cursor_handler.as_mut() {
-            handler(cursor);
-        }
+        self.last_recorded_cursor = Some(cursor);
+        self.pending_platform_requests.cursor = Some(cursor);
     }
 
     fn begin_frame(&mut self) -> Option<BeginFrameProfile> {
@@ -4349,6 +4364,21 @@ impl Viewport {
             submit_ms,
             present_ms,
         }
+    }
+}
+
+/// Convert a platform-neutral mouse button into the viewport-internal
+/// `MouseButton` enum. Kept as a free function (rather than `From`) so the
+/// viewport owns the mapping without leaking its internal type into the
+/// platform crate.
+fn mouse_button_from_platform(button: PlatformMouseButton) -> MouseButton {
+    match button {
+        PlatformMouseButton::Left => MouseButton::Left,
+        PlatformMouseButton::Right => MouseButton::Right,
+        PlatformMouseButton::Middle => MouseButton::Middle,
+        PlatformMouseButton::Back => MouseButton::Back,
+        PlatformMouseButton::Forward => MouseButton::Forward,
+        PlatformMouseButton::Other(code) => MouseButton::Other(code),
     }
 }
 

@@ -3435,6 +3435,7 @@ fn slice_text_area_render_projection(
 fn update_projection_rsx_node_range(node: &mut RsxNode, content: &str, range: Range<usize>) {
     if let RsxNode::Element(element) = node {
         if element.tag == "TextArea" {
+            let element = std::rc::Rc::make_mut(element);
             let start_byte = byte_index_at_char(content, range.start);
             let end_byte = byte_index_at_char(content, range.end);
             set_rsx_element_prop(
@@ -3459,8 +3460,8 @@ fn update_projection_rsx_node_range(node: &mut RsxNode, content: &str, range: Ra
 }
 
 fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &'static str, value: PropValue) {
-    if let Some((_, prop_value)) = element
-        .props
+    let props = std::rc::Rc::make_mut(&mut element.props);
+    if let Some((_, prop_value)) = props
         .iter_mut()
         .rev()
         .find(|(prop_key, _)| *prop_key == key)
@@ -3468,7 +3469,7 @@ fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &'static s
         *prop_value = value;
         return;
     }
-    element.props.push((key, value));
+    props.push((key, value));
 }
 
 fn find_first_text_area_mut(node: &mut dyn ElementTrait) -> Option<&mut TextArea> {
