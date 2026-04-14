@@ -644,7 +644,7 @@ mod tests {
     fn extract_element_style(node: &crate::ui::RsxElementNode) -> crate::Style {
         node.props
             .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
+            .find_map(|(key, value)| match (*key, value) {
                 ("style", crate::ui::PropValue::Shared(shared)) => shared
                     .value()
                     .downcast::<crate::view::ElementStylePropSchema>()
@@ -1075,8 +1075,8 @@ mod tests {
             panic!("expected element node");
         };
         assert_eq!(node.props.len(), 10);
-        assert!(node.props.iter().any(|(key, _)| key == "on_click"));
-        assert!(node.props.iter().any(|(key, _)| key == "on_key_down"));
+        assert!(node.props.iter().any(|(key, _)| *key == "on_click"));
+        assert!(node.props.iter().any(|(key, _)| *key == "on_key_down"));
     }
 
     #[test]
@@ -1090,7 +1090,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        assert!(node.props.iter().any(|(key, _)| key == "on_change"));
+        assert!(node.props.iter().any(|(key, _)| *key == "on_change"));
     }
 
     #[test]
@@ -1104,7 +1104,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        assert!(node.props.iter().any(|(key, _)| key == "on_focus"));
+        assert!(node.props.iter().any(|(key, _)| *key == "on_focus"));
     }
 
     #[test]
@@ -1118,7 +1118,7 @@ mod tests {
         let RsxNode::Element(node) = node else {
             panic!("expected element node");
         };
-        assert!(node.props.iter().any(|(key, _)| key == "on_blur"));
+        assert!(node.props.iter().any(|(key, _)| *key == "on_blur"));
     }
 
     #[test]
@@ -1133,7 +1133,7 @@ mod tests {
             panic!("expected element node");
         };
         let Some((_, PropValue::OnClick(handler))) =
-            node.props.iter().find(|(key, _)| key == "on_click")
+            node.props.iter().find(|(key, _)| *key == "on_click")
         else {
             panic!("missing on_click prop");
         };
@@ -1166,7 +1166,7 @@ mod tests {
             panic!("expected element node");
         };
         let Some((_, PropValue::OnKeyDown(handler))) =
-            node.props.iter().find(|(key, _)| key == "on_key_down")
+            node.props.iter().find(|(key, _)| *key == "on_key_down")
         else {
             panic!("missing on_key_down prop");
         };
@@ -1200,7 +1200,7 @@ mod tests {
             panic!("expected element node");
         };
         let Some((_, PropValue::OnClick(handler))) =
-            node.props.iter().find(|(key, _)| key == "on_click")
+            node.props.iter().find(|(key, _)| *key == "on_click")
         else {
             panic!("missing on_click prop");
         };

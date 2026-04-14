@@ -457,8 +457,8 @@ mod tests {
     fn find_style(node: &RsxElementNode) -> rfgui::Style {
         node.props
             .iter()
-            .find_map(|(key, value)| match (key.as_str(), value) {
-                ("style", PropValue::Shared(shared)) => shared
+            .find_map(|(key, value)| match (key, value) {
+                (&"style", PropValue::Shared(shared)) => shared
                     .value()
                     .downcast::<rfgui::view::ElementStylePropSchema>()
                     .ok()
@@ -716,7 +716,7 @@ mod tests {
 
         let textarea = find_first_element_by_tag(&tree, "TextArea").expect("textarea node");
         let Some((_, PropValue::OnChange(handler))) =
-            textarea.props.iter().find(|(key, _)| key == "on_change")
+            textarea.props.iter().find(|(key, _)| *key == "on_change")
         else {
             panic!("missing on_change prop");
         };

@@ -3568,8 +3568,334 @@ mod tests {
         assert_eq!(transition_inner.width, 40.0);
         assert_eq!(transition_inner.height, 30.0);
         let inner = el.inner_clip_rect();
-        assert_eq!(inner.width, 20.0);
-        assert_eq!(inner.height, 20.0);
+        assert_eq!(inner.width, 40.0);
+        assert_eq!(inner.height, 30.0);
+    }
+
+    #[test]
+    fn child_hit_test_clip_uses_parent_transition_inner_size() {
+        let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(
+                [
+                    Transition::new(TransitionProperty::Width, 200),
+                    Transition::new(TransitionProperty::Height, 200),
+                ]
+                .into(),
+            ),
+        );
+        parent_style.set_border(Border::uniform(Length::px(10.0), &Color::hex("#000000")));
+        parent.apply_style(parent_style);
+        parent.set_padding_left(5.0);
+        parent.set_padding_right(15.0);
+        parent.set_padding_top(7.0);
+        parent.set_padding_bottom(13.0);
+        parent.layout_transition_override_width = Some(320.0);
+        parent.layout_transition_override_height = Some(180.0);
+
+        parent.add_child(Box::new(Element::new(0.0, 0.0, 40.0, 40.0)));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let child = parent.children().expect("child")[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("element child");
+        let clip = child.hit_test_clip_rect.expect("hit-test clip");
+
+        assert_eq!(clip.x, 15.0);
+        assert_eq!(clip.y, 17.0);
+        assert_eq!(clip.width, 280.0);
+        assert_eq!(clip.height, 140.0);
+    }
+
+    #[test]
+    fn absolute_parent_clip_uses_parent_transition_inner_size() {
+        let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(
+                [
+                    Transition::new(TransitionProperty::Width, 200),
+                    Transition::new(TransitionProperty::Height, 200),
+                ]
+                .into(),
+            ),
+        );
+        parent_style.set_border(Border::uniform(Length::px(10.0), &Color::hex("#000000")));
+        parent.apply_style(parent_style);
+        parent.set_padding_left(5.0);
+        parent.set_padding_right(15.0);
+        parent.set_padding_top(7.0);
+        parent.set_padding_bottom(13.0);
+        parent.layout_transition_override_width = Some(320.0);
+        parent.layout_transition_override_height = Some(180.0);
+
+        let mut child = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(Position::absolute().clip(ClipMode::Parent)),
+        );
+        child.apply_style(child_style);
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let child = parent.children().expect("child")[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("element child");
+        let clip = child.absolute_clip_rect.expect("absolute clip");
+
+        assert_eq!(clip.x, 15.0);
+        assert_eq!(clip.y, 17.0);
+        assert_eq!(clip.width, 280.0);
+        assert_eq!(clip.height, 140.0);
+    }
+
+    #[test]
+    fn anchor_parent_clip_uses_transitioning_parent_inner_size() {
+        let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(100.0)));
+        parent_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(
+                [
+                    Transition::new(TransitionProperty::Width, 200),
+                    Transition::new(TransitionProperty::Height, 200),
+                ]
+                .into(),
+            ),
+        );
+        parent_style.set_border(Border::uniform(Length::px(10.0), &Color::hex("#000000")));
+        parent.apply_style(parent_style);
+        parent.set_padding_left(5.0);
+        parent.set_padding_right(15.0);
+        parent.set_padding_top(7.0);
+        parent.set_padding_bottom(13.0);
+        parent.layout_transition_override_width = Some(320.0);
+        parent.layout_transition_override_height = Some(180.0);
+
+        let mut anchor = Element::new(30.0, 20.0, 40.0, 20.0);
+        anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
+
+        let mut child = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor("menu_button")
+                    .left(Length::px(10.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        child.apply_style(child_style);
+
+        parent.add_child(Box::new(anchor));
+        parent.add_child(Box::new(child));
+
+        parent.measure(LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        });
+
+        let child = parent.children().expect("children")[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("element child");
+        let clip = child.absolute_clip_rect.expect("absolute clip");
+
+        assert_eq!(clip.x, 15.0);
+        assert_eq!(clip.y, 17.0);
+        assert_eq!(clip.width, 280.0);
+        assert_eq!(clip.height, 140.0);
+    }
+
+    #[test]
+    fn anchored_absolute_child_uses_anchor_visual_position_during_transition() {
+        let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(500.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(200.0)));
+        parent.apply_style(parent_style);
+
+        let mut anchor = Element::new(300.0, 20.0, 40.0, 20.0);
+        let mut anchor_style = Style::new();
+        anchor_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(300.0))
+                    .top(Length::px(20.0)),
+            ),
+        );
+        anchor_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(
+                Transitions::single(Transition::new(TransitionProperty::Position, 200)),
+            ),
+        );
+        anchor.apply_style(anchor_style);
+        anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
+
+        let mut child = Element::new(0.0, 0.0, 80.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor("menu_button")
+                    .left(Length::px(10.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        child.apply_style(child_style);
+
+        parent.add_child(Box::new(anchor));
+        parent.add_child(Box::new(child));
+
+        let constraints = LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+        let placement = LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        };
+
+        parent.measure(constraints);
+        parent.place(placement);
+        let _ = parent.take_layout_transition_requests();
+        let _ = parent.take_visual_transition_requests();
+
+        let anchor = parent.children_mut().expect("children")[0]
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("anchor");
+        let mut next_anchor_style = Style::new();
+        next_anchor_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(340.0))
+                    .top(Length::px(20.0)),
+            ),
+        );
+        next_anchor_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(
+                Transitions::single(Transition::new(TransitionProperty::Position, 200)),
+            ),
+        );
+        anchor.apply_style(next_anchor_style);
+        anchor.layout_transition_visual_offset_x = -40.0;
+        anchor.layout_transition_target_x = Some(340.0);
+
+        parent.mark_layout_dirty();
+        parent.measure(constraints);
+        parent.place(placement);
+
+        let children = parent.children().expect("children");
+        let anchor = children[0]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("anchor");
+        let child = children[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("child");
+
+        assert!(
+            (anchor.core.layout_position.x - 300.0).abs() < 0.01,
+            "anchor_x={}, child_x={}",
+            anchor.core.layout_position.x,
+            child.core.layout_position.x
+        );
+        assert!(
+            (child.core.layout_position.x - 310.0).abs() < 0.01,
+            "anchor_x={}, child_x={}",
+            anchor.core.layout_position.x,
+            child.core.layout_position.x
+        );
     }
 
     #[test]

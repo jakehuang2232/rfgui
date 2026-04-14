@@ -358,14 +358,13 @@ impl Element {
     }
 
     fn current_clip_layout_size(&self) -> (f32, f32) {
-        (
-            self.layout_assigned_width
-                .unwrap_or(self.core.size.width)
-                .max(0.0),
-            self.layout_assigned_height
-                .unwrap_or(self.core.size.height)
-                .max(0.0),
-        )
+        let has_active_layout_transition = self.layout_transition_override_width.is_some()
+            || self.layout_transition_override_height.is_some();
+        if has_active_layout_transition {
+            self.current_layout_transition_size()
+        } else {
+            self.current_layout_target_size()
+        }
     }
 
     fn current_layout_target_size(&self) -> (f32, f32) {

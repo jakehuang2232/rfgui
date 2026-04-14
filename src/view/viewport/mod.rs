@@ -742,47 +742,45 @@ impl Viewport {
         }
     }
 
-    fn extract_style_prop(props: &[(String, PropValue)]) -> Result<Option<Style>, String> {
-        let Some((_, value)) = props.iter().find(|(key, _)| key == "style") else {
+    fn extract_style_prop(props: &[(&'static str, PropValue)]) -> Result<Option<Style>, String> {
+        let Some((_, value)) = props.iter().find(|(key, _)| *key == "style") else {
             return Ok(None);
         };
+        Self::extract_style_from_value(value)
+    }
+
+    fn extract_style_from_value(value: &PropValue) -> Result<Option<Style>, String> {
         let schema = ElementStylePropSchema::from_prop_value(value.clone())
             .map_err(|_| "prop `style` expects ElementStylePropSchema value".to_string())?;
         Ok(Some(schema.to_style()))
     }
 
-    fn props_match_except_transform(
-        old_props: &[(String, PropValue)],
-        new_props: &[(String, PropValue)],
+    /// Returns `Ok(true)` when the only difference between old props and `changed`/`removed`
+    /// is a change to transform/transform-origin inside the `style` prop.
+    fn is_transform_only_update(
+        old_props: &[(&'static str, PropValue)],
+        changed: &[(&'static str, PropValue)],
+        removed: &[&'static str],
     ) -> Result<bool, String> {
-        if old_props.len() != new_props.len() {
+        // Removals or extra changes mean it's more than a transform update.
+        if !removed.is_empty() || changed.len() != 1 || changed[0].0 != "style" {
             return Ok(false);
         }
-        for ((old_key, old_value), (new_key, new_value)) in old_props.iter().zip(new_props.iter()) {
-            if old_key != new_key {
-                return Ok(false);
-            }
-            if old_key == "style" {
-                let old_style = Self::extract_style_prop(old_props)?.unwrap_or_default();
-                let new_style = Self::extract_style_prop(new_props)?.unwrap_or_default();
-                let ignored = [PropertyId::Transform, PropertyId::TransformOrigin];
-                if old_style.clone().without_properties_recursive(&ignored)
-                    != new_style.clone().without_properties_recursive(&ignored)
-                {
-                    return Ok(false);
-                }
-                let old_transform = old_style.get(PropertyId::Transform);
-                let new_transform = new_style.get(PropertyId::Transform);
-                let old_origin = old_style.get(PropertyId::TransformOrigin);
-                let new_origin = new_style.get(PropertyId::TransformOrigin);
-                if old_transform == new_transform && old_origin == new_origin {
-                    return Ok(false);
-                }
-                continue;
-            }
-            if old_value != new_value {
-                return Ok(false);
-            }
+        let old_style = Self::extract_style_prop(old_props)?.unwrap_or_default();
+        let new_style = Self::extract_style_from_value(&changed[0].1)?.unwrap_or_default();
+        let ignored = [PropertyId::Transform, PropertyId::TransformOrigin];
+        if old_style.clone().without_properties_recursive(&ignored)
+            != new_style.clone().without_properties_recursive(&ignored)
+        {
+            return Ok(false);
+        }
+        let old_transform = old_style.get(PropertyId::Transform);
+        let new_transform = new_style.get(PropertyId::Transform);
+        let old_origin = old_style.get(PropertyId::TransformOrigin);
+        let new_origin = new_style.get(PropertyId::TransformOrigin);
+        // Transform is in the diff but hasn't actually changed — nothing to do.
+        if old_transform == new_transform && old_origin == new_origin {
+            return Ok(false);
         }
         Ok(true)
     }
@@ -824,7 +822,7 @@ impl Viewport {
 
         let mut updates = Vec::new();
         for patch in &patches {
-            let Patch::UpdateElementProps { path, props } = patch else {
+            let Patch::UpdateElementProps { path, changed, removed } = patch else {
                 return Ok(false);
             };
             let old_node = Self::rsx_node_by_index_path(previous_root, path)
@@ -832,10 +830,10 @@ impl Viewport {
             let RsxNode::Element(old_element) = old_node else {
                 return Ok(false);
             };
-            if !Self::props_match_except_transform(&old_element.props, props)? {
+            if !Self::is_transform_only_update(&old_element.props, changed, removed)? {
                 return Ok(false);
             }
-            let style = Self::extract_style_prop(props)?.unwrap_or_default();
+            let style = Self::extract_style_from_value(&changed[0].1)?.unwrap_or_default();
             let node_id = super::renderer_adapter::rendered_node_id_by_index_path(root, path)?
                 .ok_or_else(|| "target redraw patch resolved to a fragment".to_string())?;
             updates.push((node_id, style));

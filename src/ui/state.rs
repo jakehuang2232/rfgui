@@ -55,49 +55,54 @@ struct BindingPropPayload<T: 'static> {
 
 #[derive(Clone)]
 pub struct Binding<T: 'static> {
-    cell: Rc<RefCell<T>>,
-    dirty_state: UiDirtyState,
+    prop_payload: Rc<BindingPropPayload<T>>,
 }
 
 impl<T: 'static> Binding<T> {
     pub fn new(initial: T) -> Self {
-        Self {
-            cell: Rc::new(RefCell::new(initial)),
-            dirty_state: UiDirtyState::REBUILD,
-        }
+        Self::from_cell(Rc::new(RefCell::new(initial)), UiDirtyState::REBUILD)
     }
 
     pub fn new_with_dirty_state(initial: T, dirty_state: UiDirtyState) -> Self {
-        Self {
-            cell: Rc::new(RefCell::new(initial)),
-            dirty_state,
-        }
+        Self::from_cell(Rc::new(RefCell::new(initial)), dirty_state)
     }
 
     pub(crate) fn from_cell(cell: Rc<RefCell<T>>, dirty_state: UiDirtyState) -> Self {
-        Self { cell, dirty_state }
+        Self::from_payload(Rc::new(BindingPropPayload { cell, dirty_state }))
+    }
+
+    fn from_payload(prop_payload: Rc<BindingPropPayload<T>>) -> Self {
+        Self { prop_payload }
+    }
+
+    fn cell(&self) -> &Rc<RefCell<T>> {
+        &self.prop_payload.cell
+    }
+
+    fn dirty_state(&self) -> UiDirtyState {
+        self.prop_payload.dirty_state
     }
 }
 
 impl<T: Clone + PartialEq + 'static> Binding<T> {
     pub fn get(&self) -> T {
-        self.cell.borrow().clone()
+        self.cell().borrow().clone()
     }
 
     pub fn set(&self, value: T) {
-        let mut current = self.cell.borrow_mut();
+        let mut current = self.cell().borrow_mut();
         if *current != value {
             *current = value;
-            notify_state_changed(self.dirty_state);
+            notify_state_changed(self.dirty_state());
         }
     }
 
     pub fn update(&self, updater: impl FnOnce(&mut T)) {
-        let mut current = self.cell.borrow_mut();
+        let mut current = self.cell().borrow_mut();
         let previous = current.clone();
         updater(&mut current);
         if *current != previous {
-            notify_state_changed(self.dirty_state);
+            notify_state_changed(self.dirty_state());
         }
     }
 }
@@ -110,40 +115,39 @@ impl<T: 'static> fmt::Debug for Binding<T> {
 
 impl<T: 'static> PartialEq for Binding<T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.cell, &other.cell)
+        Rc::ptr_eq(&self.prop_payload, &other.prop_payload)
     }
 }
 
 #[derive(Clone)]
 pub struct State<T: 'static> {
-    cell: Rc<RefCell<T>>,
-    dirty_state: UiDirtyState,
+    payload: Rc<BindingPropPayload<T>>,
 }
 
 impl<T: Clone + PartialEq + 'static> State<T> {
     pub fn get(&self) -> T {
-        self.cell.borrow().clone()
+        self.payload.cell.borrow().clone()
     }
 
     pub fn set(&self, value: T) {
-        let mut current = self.cell.borrow_mut();
+        let mut current = self.payload.cell.borrow_mut();
         if *current != value {
             *current = value;
-            notify_state_changed(self.dirty_state);
+            notify_state_changed(self.payload.dirty_state);
         }
     }
 
     pub fn update(&self, updater: impl FnOnce(&mut T)) {
-        let mut current = self.cell.borrow_mut();
+        let mut current = self.payload.cell.borrow_mut();
         let previous = current.clone();
         updater(&mut current);
         if *current != previous {
-            notify_state_changed(self.dirty_state);
+            notify_state_changed(self.payload.dirty_state);
         }
     }
 
     pub fn binding(&self) -> Binding<T> {
-        Binding::from_cell(self.cell.clone(), self.dirty_state)
+        Binding::from_payload(self.payload.clone())
     }
 }
 
@@ -155,7 +159,7 @@ impl<T: 'static> fmt::Debug for State<T> {
 
 impl<T: 'static> PartialEq for State<T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.cell, &other.cell)
+        Rc::ptr_eq(&self.payload, &other.payload)
     }
 }
 
@@ -248,34 +252,33 @@ thread_local! {
 
 #[derive(Clone)]
 pub struct GlobalState<T: 'static> {
-    cell: Rc<RefCell<T>>,
-    dirty_state: UiDirtyState,
+    payload: Rc<BindingPropPayload<T>>,
 }
 
 impl<T: Clone + PartialEq + 'static> GlobalState<T> {
     pub fn get(&self) -> T {
-        self.cell.borrow().clone()
+        self.payload.cell.borrow().clone()
     }
 
     pub fn set(&self, value: T) {
-        let mut current = self.cell.borrow_mut();
+        let mut current = self.payload.cell.borrow_mut();
         if *current != value {
             *current = value;
-            notify_state_changed(self.dirty_state);
+            notify_state_changed(self.payload.dirty_state);
         }
     }
 
     pub fn update(&self, updater: impl FnOnce(&mut T)) {
-        let mut current = self.cell.borrow_mut();
+        let mut current = self.payload.cell.borrow_mut();
         let previous = current.clone();
         updater(&mut current);
         if *current != previous {
-            notify_state_changed(self.dirty_state);
+            notify_state_changed(self.payload.dirty_state);
         }
     }
 
     pub fn binding(&self) -> Binding<T> {
-        Binding::from_cell(self.cell.clone(), self.dirty_state)
+        Binding::from_payload(self.payload.clone())
     }
 }
 
@@ -287,7 +290,7 @@ impl<T: 'static> fmt::Debug for GlobalState<T> {
 
 impl<T: 'static> PartialEq for GlobalState<T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.cell, &other.cell)
+        Rc::ptr_eq(&self.payload, &other.payload)
     }
 }
 
@@ -476,13 +479,17 @@ pub fn use_state_with_dirty_state<T: Clone + PartialEq + 'static>(
             let value = (init_opt
                 .take()
                 .expect("use_state initializer should only run once"))();
-            slots.push(Box::new(Rc::new(RefCell::new(value))));
+            let payload: Rc<BindingPropPayload<T>> = Rc::new(BindingPropPayload {
+                cell: Rc::new(RefCell::new(value)),
+                dirty_state,
+            });
+            slots.push(Box::new(payload));
         }
-        let cell = slots[slot_index]
-            .downcast_ref::<Rc<RefCell<T>>>()
+        let payload = slots[slot_index]
+            .downcast_ref::<Rc<BindingPropPayload<T>>>()
             .unwrap_or_else(|| panic!("use_state slot type mismatch at index {}", slot_index))
             .clone();
-        State { cell, dirty_state }
+        State { payload }
     })
 }
 
@@ -591,9 +598,9 @@ pub fn run_due_timers(now: Instant) {
     }
 }
 
-fn global_cell_with_init<T: Clone + PartialEq + 'static>(
+fn global_payload_with_init<T: Clone + PartialEq + 'static>(
     init: impl FnOnce() -> T,
-) -> Rc<RefCell<T>> {
+) -> Rc<BindingPropPayload<T>> {
     let mut init_opt = Some(init);
     GLOBAL_STORE.with(|store| {
         let mut store = store.borrow_mut();
@@ -602,23 +609,27 @@ fn global_cell_with_init<T: Clone + PartialEq + 'static>(
             let value = (init_opt
                 .take()
                 .expect("global_state initializer should only run once"))();
-            store.insert(type_id, Box::new(Rc::new(RefCell::new(value))));
+            let payload: Rc<BindingPropPayload<T>> = Rc::new(BindingPropPayload {
+                cell: Rc::new(RefCell::new(value)),
+                dirty_state: UiDirtyState::REBUILD,
+            });
+            store.insert(type_id, Box::new(payload));
         }
         store[&type_id]
-            .downcast_ref::<Rc<RefCell<T>>>()
+            .downcast_ref::<Rc<BindingPropPayload<T>>>()
             .unwrap_or_else(|| panic!("global_state type mismatch for {:?}", type_id))
             .clone()
     })
 }
 
-fn global_cell<T: Clone + PartialEq + 'static>() -> Option<Rc<RefCell<T>>> {
+fn global_payload<T: Clone + PartialEq + 'static>() -> Option<Rc<BindingPropPayload<T>>> {
     GLOBAL_STORE.with(|store| {
         let store = store.borrow();
         let type_id = TypeId::of::<T>();
         let value = store.get(&type_id)?;
         Some(
             value
-                .downcast_ref::<Rc<RefCell<T>>>()
+                .downcast_ref::<Rc<BindingPropPayload<T>>>()
                 .unwrap_or_else(|| panic!("global_state type mismatch for {:?}", type_id))
                 .clone(),
         )
@@ -627,8 +638,7 @@ fn global_cell<T: Clone + PartialEq + 'static>() -> Option<Rc<RefCell<T>>> {
 
 pub fn global_state<T: Clone + PartialEq + 'static>(init: impl FnOnce() -> T) -> GlobalState<T> {
     GlobalState {
-        cell: global_cell_with_init(init),
-        dirty_state: UiDirtyState::REBUILD,
+        payload: global_payload_with_init(init),
     }
 }
 
@@ -638,16 +648,13 @@ pub fn globalState<T: Clone + PartialEq + 'static>(init: impl FnOnce() -> T) -> 
 }
 
 pub fn use_global_state<T: Clone + PartialEq + 'static>() -> GlobalState<T> {
-    let cell = global_cell::<T>().unwrap_or_else(|| {
+    let payload = global_payload::<T>().unwrap_or_else(|| {
         panic!(
             "use_global_state::<{}>() called before global_state/globalState initialization",
             std::any::type_name::<T>()
         )
     });
-    GlobalState {
-        cell,
-        dirty_state: UiDirtyState::REBUILD,
-    }
+    GlobalState { payload }
 }
 
 #[cfg(test)]
@@ -900,10 +907,7 @@ fn notify_state_changed(dirty_state: UiDirtyState) {
 
 impl<T: Clone + PartialEq + 'static> IntoPropValue for Binding<T> {
     fn into_prop_value(self) -> PropValue {
-        let erased: Rc<dyn Any> = Rc::new(BindingPropPayload {
-            cell: self.cell.clone(),
-            dirty_state: self.dirty_state,
-        });
+        let erased: Rc<dyn Any> = self.prop_payload.clone();
         PropValue::Shared(SharedPropValue::new(erased))
     }
 }
@@ -914,17 +918,11 @@ impl<T: Clone + PartialEq + 'static> FromPropValue for Binding<T> {
             PropValue::Shared(shared) => {
                 let erased = shared.value();
                 if let Ok(payload) = Rc::downcast::<BindingPropPayload<T>>(erased.clone()) {
-                    return Ok(Self {
-                        cell: payload.cell.clone(),
-                        dirty_state: payload.dirty_state,
-                    });
+                    return Ok(Self::from_payload(payload));
                 }
                 let cell = Rc::downcast::<RefCell<T>>(erased)
                     .map_err(|_| "expected Binding value with matching type".to_string())?;
-                Ok(Self {
-                    cell,
-                    dirty_state: UiDirtyState::REBUILD,
-                })
+                Ok(Self::from_cell(cell, UiDirtyState::REBUILD))
             }
             _ => Err("expected Binding value".to_string()),
         }
