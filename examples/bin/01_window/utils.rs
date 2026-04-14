@@ -126,8 +126,8 @@ pub fn output_image_source(file_name: &str) -> ImageSource {
     #[cfg(target_arch = "wasm32")]
     {
         let bytes = match file_name {
-            "rfgui-logo.png" => include_bytes!("../assets/rfgui-logo.png").as_slice(),
-            "test.png" => include_bytes!("../assets/test.png").as_slice(),
+            "rfgui-logo.png" => include_bytes!("../../assets/rfgui-logo.png").as_slice(),
+            "test.png" => include_bytes!("../../assets/test.png").as_slice(),
             other => panic!("unsupported embedded asset: {other}"),
         };
         let decoded = image::load_from_memory(bytes).expect("failed to decode embedded image");
