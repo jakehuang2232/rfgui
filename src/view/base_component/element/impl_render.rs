@@ -251,11 +251,17 @@ impl Element {
             proposal.viewport_width,
             proposal.viewport_height,
         );
+        let inline_horizontal_insets =
+            (bw_l + bw_r + p_l + p_r).max(0.0);
         let mut current_line_width = 0.0_f32;
         let mut line_has_content = false;
         let mut pending_first_available_width = self
             .pending_inline_measure_context
-            .map(|context| context.first_available_width.max(0.0).min(inner_w));
+            .map(|context| {
+                (context.first_available_width - inline_horizontal_insets)
+                    .max(0.0)
+                    .min(inner_w)
+            });
         for child in &mut self.children {
             if matches!(self.computed_style.layout, Layout::Inline) {
                 let first_available_width = if let Some(width) = pending_first_available_width.take() {

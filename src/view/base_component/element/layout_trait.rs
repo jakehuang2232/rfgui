@@ -16,8 +16,13 @@ impl Layoutable for Element {
             crate::view::base_component::subtree_dirty_flags(child.as_ref())
                 .intersects(DirtyFlags::LAYOUT)
         });
+        let inline_measure_context_changed = self.is_fragmentable_inline_element()
+            && self.pending_inline_measure_context != self.last_inline_measure_context;
 
-        if !self.layout_dirty && !child_layout_dirty && self.last_layout_proposal == Some(proposal)
+        if !self.layout_dirty
+            && !child_layout_dirty
+            && !inline_measure_context_changed
+            && self.last_layout_proposal == Some(proposal)
         {
             return;
         }
@@ -140,6 +145,7 @@ impl Layoutable for Element {
         self.apply_size_constraints(proposal, true);
 
         self.last_layout_proposal = Some(proposal);
+        self.last_inline_measure_context = self.pending_inline_measure_context;
         self.layout_dirty = false;
         self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
     }
@@ -432,8 +438,6 @@ impl Layoutable for Element {
         if self.is_fragmentable_inline_element() {
             let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
-            let top_inset = (self.border_widths.top + self.padding.top).max(0.0);
-            let bottom_inset = (self.border_widths.bottom + self.padding.bottom).max(0.0);
             let inline_child_count = self
                 .children
                 .iter()
@@ -454,9 +458,9 @@ impl Layoutable for Element {
                                 } else {
                                     0.0
                                 },
-                            height: info.line_cross_max[line_idx].max(0.0)
-                                + top_inset
-                                + bottom_inset,
+                            // Match CSS inline formatting: vertical padding/border paints
+                            // outside the line box and must not increase line height.
+                            height: info.line_cross_max[line_idx].max(0.0),
                         })
                         .collect();
                 }

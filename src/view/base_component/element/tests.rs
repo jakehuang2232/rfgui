@@ -4496,6 +4496,69 @@ mod tests {
     }
 
     #[test]
+    fn inline_fragmentable_wrapper_padding_reduces_first_line_content_width() {
+        let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        parent.apply_style(parent_style);
+
+        let mut leading = Element::new(0.0, 0.0, 180.0, 20.0);
+        let mut leading_style = Style::new();
+        leading_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
+        leading_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        leading.apply_style(leading_style);
+        parent.add_child(Box::new(leading));
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content(
+            "Permission is hereby granted, free of charge, to any person obtaining a copy",
+        )));
+        parent.add_child(Box::new(wrapper));
+
+        parent.measure(LayoutConstraints {
+            max_width: 220.0,
+            max_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+        parent.place(LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 220.0,
+            available_height: 200.0,
+            viewport_width: 220.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(220.0),
+            percent_base_height: Some(200.0),
+        });
+
+        let wrapper = parent.children().expect("children")[1]
+            .as_any()
+            .downcast_ref::<Element>()
+            .expect("wrapper");
+        let text = wrapper.children().expect("wrapper children")[0]
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("text child");
+        let fragments = text.inline_fragment_positions();
+        let first_fragment = fragments.first().expect("first fragment");
+
+        assert_eq!(first_fragment.1.y, 0.0, "fragments={fragments:?}");
+        assert!(first_fragment.1.x >= 188.0, "fragments={fragments:?}");
+    }
+
+    #[test]
     fn inline_fragmentable_element_vertical_padding_does_not_shift_inline_content_y() {
         let mut parent = Element::new(0.0, 0.0, 280.0, 0.0);
         let mut parent_style = Style::new();
@@ -4555,10 +4618,12 @@ mod tests {
         let badge_y = nested_text.inline_fragment_positions()[0].1.y;
         let trailing_y = trailing.inline_fragment_positions()[0].1.y;
         let paint_top = wrapper.inline_paint_fragments[0].y;
+        let inline_node_height = wrapper.get_inline_nodes_size()[0].height;
         let (_, text_height) = nested_text.measured_size();
         let paint_height = wrapper.inline_paint_fragments[0].height;
         assert!((badge_y - trailing_y).abs() < 0.5);
         assert!((badge_y - paint_top - 12.0).abs() < 0.5);
+        assert!((inline_node_height - text_height).abs() < 0.5);
         assert!((paint_height - (text_height + 24.0)).abs() < 0.5);
     }
 
@@ -4737,6 +4802,45 @@ mod tests {
         wrapper.measure(constraints);
         let (after_width, _) = wrapper.measured_size();
         assert!(after_width > before_width + 1.0);
+    }
+
+    #[test]
+    fn fragmentable_inline_element_remeasures_when_first_available_width_changes() {
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper.apply_style(wrapper_style);
+        wrapper.add_child(Box::new(Text::from_content(
+            "Permission is hereby granted, free of charge, to any person obtaining a copy",
+        )));
+
+        wrapper.measure_inline(super::InlineMeasureContext {
+            first_available_width: 200.0,
+            full_available_width: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(120.0),
+        });
+        let wide_nodes = wrapper.get_inline_nodes_size();
+
+        wrapper.measure_inline(super::InlineMeasureContext {
+            first_available_width: 40.0,
+            full_available_width: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(120.0),
+        });
+        let narrow_first_line_nodes = wrapper.get_inline_nodes_size();
+
+        assert_ne!(
+            wide_nodes,
+            narrow_first_line_nodes,
+            "fragmentable inline element should remeasure when only first_available_width changes"
+        );
     }
 
     #[test]
