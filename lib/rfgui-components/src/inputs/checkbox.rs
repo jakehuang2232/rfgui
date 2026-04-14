@@ -1,10 +1,10 @@
-use crate::use_theme;
+use crate::{CheckIcon, use_theme};
 use rfgui::ui::{
     Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxChildrenPolicy,
     RsxComponent, RsxNode, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{Align, Border, Color, Layout, Transition, TransitionProperty};
+use rfgui::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};
 
 pub struct Checkbox;
 
@@ -78,20 +78,17 @@ impl RsxComponent<CheckboxProps> for Checkbox {
                         Border::uniform(checkbox_theme.border_width, theme.color.border.as_ref())
                     },
                     transition: [Transition::new(TransitionProperty::BackgroundColor, 180).timing(theme.motion.easing.standard)],
+                    layout: Layout::flex().justify_content(JustifyContent::Center).align(Align::Center),
                 }} >
-                    <Element
-                        style={{
-                            color: if checked {
-                                if disabled { theme.color.text.disabled.clone() } else { theme.color.surface.on.clone() }
-                            }else {
-                                Color::transparent()
-                            },
-                            font_size: theme.typography.size.md,
-                            transition: [Transition::new(TransitionProperty::Color, 180).timing(theme.motion.easing.standard)]
-                        }}
-                    >
-                        {"✓"}
-                    </Element>
+                    <CheckIcon style={{
+                        color: if checked {
+                            if disabled { theme.color.text.disabled.clone() } else { theme.color.surface.on.clone() }
+                        }else {
+                            Color::transparent()
+                        },
+                        font_size: theme.typography.size.md,
+                        transition: [Transition::new(TransitionProperty::Color, 180).timing(theme.motion.easing.standard)]
+                    }}/>
                 </Element>
                 <Text
                     font_size={theme.typography.size.sm}

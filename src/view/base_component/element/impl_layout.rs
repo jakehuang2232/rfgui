@@ -422,13 +422,16 @@ impl Element {
         parent_visual_offset_x: f32,
         parent_visual_offset_y: f32,
     ) {
-        let parent_rect = Rect {
+        let fallback_parent_rect = Rect {
             x: parent_x + parent_visual_offset_x,
             y: parent_y + parent_visual_offset_y,
             width: proposal.width.max(0.0),
             height: proposal.height.max(0.0),
         };
-        self.anchor_parent_clip_rect = Some(parent_rect);
+        let parent_clip_rect = self
+            .current_parent_hit_test_clip_rect()
+            .unwrap_or(fallback_parent_rect);
+        self.anchor_parent_clip_rect = Some(parent_clip_rect);
         // The current layout pass must always start from the latest assigned size.
         // Active transition targets are historical state used only for retarget detection.
         let mut target_width = self
@@ -449,7 +452,7 @@ impl Element {
                 y: parent_y,
                 width: proposal.width.max(0.0),
                 height: proposal.height.max(0.0),
-                parent_clip_rect: parent_rect,
+                parent_clip_rect,
             };
             let anchor = self.resolve_anchor_snapshot(fallback_anchor);
             let left = self.computed_style.position.left_inset().and_then(|v| {
@@ -529,7 +532,7 @@ impl Element {
             let clip_mode = self.computed_style.position.clip_mode();
             let has_anchor = self.computed_style.position.anchor_name().is_some();
             absolute_clip_rect = Some(match clip_mode {
-                ClipMode::Parent => parent_rect,
+                ClipMode::Parent => parent_clip_rect,
                 ClipMode::Viewport => {
                     let (vw, vh) = self.viewport_size_from_runtime(proposal.width, proposal.height);
                     Rect {
@@ -540,7 +543,7 @@ impl Element {
                     }
                 }
                 ClipMode::AnchorParent if has_anchor => anchor.parent_clip_rect,
-                ClipMode::AnchorParent => parent_rect,
+                ClipMode::AnchorParent => parent_clip_rect,
             });
             apply_collision(
                 self.computed_style.position.collision_mode(),
@@ -699,7 +702,7 @@ impl Element {
         };
         let inherited_hit_test_clip = self
             .current_parent_hit_test_clip_rect()
-            .unwrap_or(parent_rect);
+            .unwrap_or(parent_clip_rect);
         self.hit_test_clip_rect = Some(if is_absolute {
             match self.computed_style.position.clip_mode() {
                 ClipMode::Viewport => absolute_clip_rect.unwrap_or(inherited_hit_test_clip),
@@ -711,9 +714,9 @@ impl Element {
             inherited_hit_test_clip
         });
         let cull_rect = if is_absolute {
-            absolute_clip_rect.unwrap_or(parent_rect)
+            absolute_clip_rect.unwrap_or(parent_clip_rect)
         } else {
-            self.current_parent_child_clip_rect().unwrap_or(parent_rect)
+            self.current_parent_child_clip_rect().unwrap_or(parent_clip_rect)
         };
         let transformed_frame_bounds = self.transformed_frame_bounding_rect(frame);
         let intersects_parent_clip = transformed_frame_bounds.intersects(cull_rect);

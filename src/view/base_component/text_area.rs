@@ -3458,17 +3458,17 @@ fn update_projection_rsx_node_range(node: &mut RsxNode, content: &str, range: Ra
     }
 }
 
-fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &str, value: PropValue) {
+fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &'static str, value: PropValue) {
     if let Some((_, prop_value)) = element
         .props
         .iter_mut()
         .rev()
-        .find(|(prop_key, _)| prop_key == key)
+        .find(|(prop_key, _)| *prop_key == key)
     {
         *prop_value = value;
         return;
     }
-    element.props.push((key.to_string(), value));
+    element.props.push((key, value));
 }
 
 fn find_first_text_area_mut(node: &mut dyn ElementTrait) -> Option<&mut TextArea> {

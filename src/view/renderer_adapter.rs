@@ -49,11 +49,11 @@ pub fn register_tag_element_factory<T: 'static>(factory: ElementFactory) {
 fn element_runtime_name(node: &RsxElementNode) -> &str {
     node.tag_descriptor
         .map(|descriptor| descriptor.type_name)
-        .unwrap_or(node.tag.as_str())
+        .unwrap_or(node.tag)
 }
 
 fn element_display_name(node: &RsxElementNode) -> &str {
-    node.tag.as_str()
+    node.tag
 }
 
 fn is_text_descriptor(descriptor: RsxTagDescriptor) -> bool {
@@ -243,7 +243,7 @@ pub struct ViewportRenderBackend<'a> {
 struct RenderedGlobalKeyEntry {
     path: Vec<u64>,
     node_id: Option<u64>,
-    invocation_type: String,
+    invocation_type: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -352,12 +352,19 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
                 let target = Self::node_mut_by_path(root_node, path)?;
                 *target = node.clone();
             }
-            Patch::UpdateElementProps { path, props } => {
+            Patch::UpdateElementProps { path, changed, removed } => {
                 let target = Self::node_mut_by_path(root_node, path)?;
                 let RsxNode::Element(element) = target else {
                     return Err("cannot update props on non-element node".to_string());
                 };
-                element.props = props.clone();
+                element.props.retain(|(k, _)| !removed.contains(k));
+                for &(key, ref value) in changed {
+                    if let Some((_, v)) = element.props.iter_mut().find(|(k, _)| *k == key) {
+                        *v = value.clone();
+                    } else {
+                        element.props.push((key, value.clone()));
+                    }
+                }
             }
             Patch::SetText { path, text } => {
                 let target = Self::node_mut_by_path(root_node, path)?;
@@ -457,7 +464,7 @@ fn collect_global_key_registry_with_path(
         let entry = RenderedGlobalKeyEntry {
             path: path.clone(),
             node_id: rendered_node_id(node, path, current_global_path.as_ref()),
-            invocation_type: node.identity().invocation_type.clone(),
+            invocation_type: node.identity().invocation_type,
         };
         if registry.insert(global_key, entry).is_some() {
             return Err("duplicate GlobalKey detected in renderer registry".to_string());
@@ -465,7 +472,7 @@ fn collect_global_key_registry_with_path(
     }
 
     if let Some(children) = node.children() {
-        let mut ordinals = HashMap::<String, usize>::new();
+        let mut ordinals = HashMap::<&'static str, usize>::new();
         for child in children {
             let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
             let token = child_identity_token(child, ordinal);
@@ -499,7 +506,7 @@ fn rendered_node_id_by_index_path_impl(
         .ok_or_else(|| format!("invalid node path index: {index}"))?;
 
     let current_global_path = current_global_node_path(node, global_path.as_ref());
-    let mut ordinals = HashMap::<String, usize>::new();
+    let mut ordinals = HashMap::<&'static str, usize>::new();
     for (child_index, candidate) in children.iter().enumerate() {
         let ordinal = next_identity_ordinal(&mut ordinals, candidate.identity());
         let token = child_identity_token(candidate, ordinal);
@@ -547,7 +554,7 @@ fn append_nodes_with_path(
     match node {
         RsxNode::Fragment(fragment) => {
             let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = HashMap::<String, usize>::new();
+            let mut ordinals = HashMap::<&'static str, usize>::new();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
                 let token = child_identity_token(child, ordinal);
@@ -583,7 +590,7 @@ fn append_nodes_with_path_lossy(
     match node {
         RsxNode::Fragment(fragment) => {
             let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = HashMap::<String, usize>::new();
+            let mut ordinals = HashMap::<&'static str, usize>::new();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
                 let token = child_identity_token(child, ordinal);
@@ -675,7 +682,7 @@ fn convert_element(
         if let Some(factory) = map.get(element_runtime_name(node)) {
             return factory(node, path);
         }
-        if let Some(factory) = map.get(&node.tag) {
+        if let Some(factory) = map.get(node.tag) {
             return factory(node, path);
         }
     }
@@ -709,7 +716,7 @@ fn convert_container_element(
     let mut user_style = Style::new();
     let mut has_user_style = false;
     for (key, value) in &node.props {
-        if key.as_str() == "style" {
+        if *key == "style" {
             let style = as_element_style(value, key)?;
             if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
                 child_inherited_text_style.font_families = font_family.as_slice().to_vec();
@@ -748,10 +755,10 @@ fn convert_container_element(
     };
     element.apply_style(effective_style);
     for (key, value) in &node.props {
-        if key.as_str() == "key" {
+        if *key == "key" {
             continue;
         }
-        match key.as_str() {
+        match *key {
             "anchor" => {
                 element.set_anchor_name(Some(AnchorName::new(as_owned_string(value, key)?)))
             }
@@ -818,7 +825,7 @@ fn convert_container_element(
     child_path.extend_from_slice(path);
     let current_global_path =
         current_global_node_path(&RsxNode::Element(node.clone()), global_path.as_ref());
-    let mut ordinals = HashMap::<String, usize>::new();
+    let mut ordinals = HashMap::<&'static str, usize>::new();
     for child in &node.children {
         let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
         let token = child_identity_token(child, ordinal);
@@ -849,7 +856,7 @@ fn append_child_nodes_flattening_fragments(
             let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
             child_path.extend_from_slice(path);
             let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = HashMap::<String, usize>::new();
+            let mut ordinals = HashMap::<&'static str, usize>::new();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
                 let token = child_identity_token(child, ordinal);
@@ -896,10 +903,10 @@ fn convert_text_element(
     let mut has_explicit_text_wrap = false;
 
     for (key, value) in &node.props {
-        if key.as_str() == "key" {
+        if *key == "key" {
             continue;
         }
-        match key.as_str() {
+        match *key {
             "style" => style = Some(as_text_style(value, key)?),
             "font_size" => {
                 text.set_font_size(as_font_size_px(
@@ -1110,10 +1117,10 @@ fn convert_text_area_element(
     let mut has_explicit_color = false;
 
     for (key, value) in &node.props {
-        if key.as_str() == "key" {
+        if *key == "key" {
             continue;
         }
-        match key.as_str() {
+        match *key {
             "style" => style = Some(as_element_style(value, key)?),
             "on_focus" => {
                 let handler = as_text_area_focus_handler(value, key)?;
@@ -1267,7 +1274,7 @@ fn convert_text_area_projection_child(
     let mut start = None;
     let mut end = None;
     for (key, value) in &element.props {
-        match key.as_str() {
+        match *key {
             "source_text_start" => start = as_usize(value, key)?,
             "source_text_end" => end = as_usize(value, key)?,
             _ => {
@@ -1386,10 +1393,10 @@ fn convert_image_element(
     let mut error = Vec::new();
 
     for (key, value) in &node.props {
-        if key.as_str() == "key" {
+        if *key == "key" {
             continue;
         }
-        match key.as_str() {
+        match *key {
             "source" => source = Some(ImageSource::from_prop_value(value.clone())?),
             "fit" => fit = ImageFit::from_prop_value(value.clone())?,
             "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
@@ -1450,10 +1457,10 @@ fn convert_svg_element(
     let mut error = Vec::new();
 
     for (key, value) in &node.props {
-        if key.as_str() == "key" {
+        if *key == "key" {
             continue;
         }
-        match key.as_str() {
+        match *key {
             "source" => source = Some(SvgSource::from_prop_value(value.clone())?),
             "fit" => fit = ImageFit::from_prop_value(value.clone())?,
             "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
@@ -1661,11 +1668,11 @@ fn child_global_node_path(
 }
 
 fn next_identity_ordinal(
-    ordinals: &mut HashMap<String, usize>,
+    ordinals: &mut HashMap<&'static str, usize>,
     identity: &RsxNodeIdentity,
 ) -> usize {
     let entry = ordinals
-        .entry(identity.invocation_type.clone())
+        .entry(identity.invocation_type)
         .or_insert(0);
     let ordinal = *entry;
     *entry += 1;
@@ -2081,7 +2088,7 @@ mod tests {
             &RenderedGlobalKeyEntry {
                 path: Vec::new(),
                 node_id: None,
-                invocation_type: "Button".to_string(),
+                invocation_type: "Button",
             }
         );
     }

@@ -41,22 +41,22 @@ impl GlobalKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RsxKey {
     Local(u64),
     Global(GlobalKey),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RsxNodeIdentity {
-    pub invocation_type: String,
+    pub invocation_type: &'static str,
     pub key: Option<RsxKey>,
 }
 
 impl RsxNodeIdentity {
-    pub fn new(invocation_type: impl Into<String>, key: Option<RsxKey>) -> Self {
+    pub fn new(invocation_type: &'static str, key: Option<RsxKey>) -> Self {
         Self {
-            invocation_type: invocation_type.into(),
+            invocation_type,
             key,
         }
     }
@@ -87,9 +87,9 @@ impl RsxTagDescriptor {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RsxElementNode {
     pub identity: RsxNodeIdentity,
-    pub tag: String,
+    pub tag: &'static str,
     pub tag_descriptor: Option<RsxTagDescriptor>,
-    pub props: Vec<(String, PropValue)>,
+    pub props: Vec<(&'static str, PropValue)>,
     pub children: Vec<RsxNode>,
 }
 
@@ -107,17 +107,12 @@ pub struct RsxFragmentNode {
 
 #[derive(Clone)]
 pub struct SharedPropValue {
-    id: u64,
     value: Rc<dyn Any>,
 }
 
 impl SharedPropValue {
     pub fn new(value: Rc<dyn Any>) -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            value,
-        }
+        Self { value }
     }
 
     pub fn value(&self) -> Rc<dyn Any> {
@@ -128,20 +123,20 @@ impl SharedPropValue {
 impl fmt::Debug for SharedPropValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SharedPropValue")
-            .field("id", &self.id)
+            .field("ptr", &Rc::as_ptr(&self.value))
             .finish()
     }
 }
 
 impl PartialEq for SharedPropValue {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        Rc::ptr_eq(&self.value, &other.value)
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RsxProps {
-    entries: Vec<(String, PropValue)>,
+    entries: Vec<(&'static str, PropValue)>,
 }
 
 impl RsxProps {
@@ -149,16 +144,16 @@ impl RsxProps {
         Self::default()
     }
 
-    pub fn push(&mut self, key: impl Into<String>, value: PropValue) {
-        self.entries.push((key.into(), value));
+    pub fn push(&mut self, key: &'static str, value: PropValue) {
+        self.entries.push((key, value));
     }
 
-    pub fn into_entries(self) -> Vec<(String, PropValue)> {
+    pub fn into_entries(self) -> Vec<(&'static str, PropValue)> {
         self.entries
     }
 
     pub fn remove_raw(&mut self, key: &str) -> Option<PropValue> {
-        let index = self.entries.iter().position(|(k, _)| k == key)?;
+        let index = self.entries.iter().position(|(k, _)| *k == key)?;
         let (_, value) = self.entries.swap_remove(index);
         Some(value)
     }
@@ -171,7 +166,7 @@ impl RsxProps {
     }
 
     pub fn remove_string(&mut self, key: &str) -> Result<Option<String>, String> {
-        if let Some(index) = self.entries.iter().position(|(k, _)| k == key) {
+        if let Some(index) = self.entries.iter().position(|(k, _)| *k == key) {
             let (_, value) = self.entries.swap_remove(index);
             return match value {
                 PropValue::String(v) => Ok(Some(v)),
@@ -182,7 +177,7 @@ impl RsxProps {
     }
 
     pub fn remove_f64(&mut self, key: &str) -> Result<Option<f64>, String> {
-        if let Some(index) = self.entries.iter().position(|(k, _)| k == key) {
+        if let Some(index) = self.entries.iter().position(|(k, _)| *k == key) {
             let (_, value) = self.entries.swap_remove(index);
             return match value {
                 PropValue::I64(v) => Ok(Some(v as f64)),
@@ -194,7 +189,7 @@ impl RsxProps {
     }
 
     pub fn remove_bool(&mut self, key: &str) -> Result<Option<bool>, String> {
-        if let Some(index) = self.entries.iter().position(|(k, _)| k == key) {
+        if let Some(index) = self.entries.iter().position(|(k, _)| *k == key) {
             let (_, value) = self.entries.swap_remove(index);
             return match value {
                 PropValue::Bool(v) => Ok(Some(v)),
@@ -213,10 +208,9 @@ impl RsxProps {
 }
 
 impl RsxNode {
-    pub fn element(tag: impl Into<String>) -> Self {
-        let tag = tag.into();
+    pub fn element(tag: &'static str) -> Self {
         Self::Element(RsxElementNode {
-            identity: RsxNodeIdentity::new(tag.clone(), None),
+            identity: RsxNodeIdentity::new(tag, None),
             tag,
             tag_descriptor: None,
             props: Vec::new(),
@@ -224,8 +218,7 @@ impl RsxNode {
         })
     }
 
-    pub fn tagged(tag: impl Into<String>, descriptor: RsxTagDescriptor) -> Self {
-        let tag = tag.into();
+    pub fn tagged(tag: &'static str, descriptor: RsxTagDescriptor) -> Self {
         Self::Element(RsxElementNode {
             identity: RsxNodeIdentity::new(descriptor.type_name, None),
             tag,
@@ -270,23 +263,23 @@ impl RsxNode {
         self
     }
 
-    pub fn with_invocation_type(mut self, invocation_type: impl Into<String>) -> Self {
-        let mut identity = self.identity().clone();
-        identity.invocation_type = invocation_type.into();
+    pub fn with_invocation_type(mut self, invocation_type: &'static str) -> Self {
+        let mut identity = *self.identity();
+        identity.invocation_type = invocation_type;
         self.set_identity(identity);
         self
     }
 
     pub fn with_key(mut self, key: impl Into<RsxKey>) -> Self {
-        let mut identity = self.identity().clone();
+        let mut identity = *self.identity();
         identity.key = Some(key.into());
         self.set_identity(identity);
         self
     }
 
-    pub fn with_prop(mut self, key: impl Into<String>, value: impl Into<PropValue>) -> Self {
+    pub fn with_prop(mut self, key: &'static str, value: impl Into<PropValue>) -> Self {
         if let Self::Element(node) = &mut self {
-            node.props.push((key.into(), value.into()));
+            node.props.push((key, value.into()));
         }
         self
     }
