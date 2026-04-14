@@ -1243,6 +1243,7 @@ pub struct Element {
     scroll_offset: Position,
     content_size: Size,
     pending_inline_measure_context: Option<InlineMeasureContext>,
+    last_inline_measure_context: Option<InlineMeasureContext>,
     inline_paint_fragments: Vec<Rect>,
     scrollbar_drag: Option<ScrollbarDragState>,
     last_scrollbar_interaction: Option<Instant>,

@@ -450,6 +450,7 @@ impl Element {
                 height: 0.0,
             },
             pending_inline_measure_context: None,
+            last_inline_measure_context: None,
             inline_paint_fragments: Vec::new(),
             scrollbar_drag: None,
             last_scrollbar_interaction: None,
