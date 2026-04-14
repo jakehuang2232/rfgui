@@ -3,7 +3,6 @@ use rfgui::{Align, Element, JustifyContent, Layout, Length};
 
 #[component]
 pub fn MainScene() -> RsxNode {
-
     rsx! {
         <Element
             style={{

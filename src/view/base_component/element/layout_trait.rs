@@ -17,7 +17,8 @@ impl Layoutable for Element {
                 .intersects(DirtyFlags::LAYOUT)
         });
 
-        if !self.layout_dirty && !child_layout_dirty && self.last_layout_proposal == Some(proposal) {
+        if !self.layout_dirty && !child_layout_dirty && self.last_layout_proposal == Some(proposal)
+        {
             return;
         }
 
@@ -144,15 +145,16 @@ impl Layoutable for Element {
     }
 
     fn place(&mut self, placement: LayoutPlacement) {
-        let child_dirty_flags = self
-            .children
-            .iter()
-            .fold(DirtyFlags::NONE, |flags, child| {
-                flags.union(crate::view::base_component::subtree_dirty_flags(child.as_ref()))
-            });
+        let child_dirty_flags = self.children.iter().fold(DirtyFlags::NONE, |flags, child| {
+            flags.union(crate::view::base_component::subtree_dirty_flags(
+                child.as_ref(),
+            ))
+        });
         let runtime_dirty = self.dirty_flags.union(child_dirty_flags);
         if !runtime_dirty.intersects(
-            DirtyFlags::PLACE.union(DirtyFlags::BOX_MODEL).union(DirtyFlags::HIT_TEST),
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
         ) && self.last_layout_placement == Some(placement)
         {
             return;
@@ -253,16 +255,17 @@ impl Layoutable for Element {
             child_layout_inner_size.width,
             child_layout_inner_size.height,
         );
-        let place_children_elapsed_ms =
-            place_children_started_at.elapsed().as_secs_f64() * 1000.0;
+        let place_children_elapsed_ms = place_children_started_at.elapsed().as_secs_f64() * 1000.0;
         LAYOUT_PLACE_PROFILE.with(|profile| {
             profile.borrow_mut().place_children_ms += place_children_elapsed_ms;
         });
         self.end_place_scope();
         self.last_layout_placement = Some(placement);
-        self.dirty_flags = self
-            .dirty_flags
-            .without(DirtyFlags::PLACE.union(DirtyFlags::BOX_MODEL).union(DirtyFlags::HIT_TEST));
+        self.dirty_flags = self.dirty_flags.without(
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
+        );
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -308,9 +311,15 @@ impl Layoutable for Element {
         };
         let has_cross_transition = self.computed_style.transition.as_slice().iter().any(|t| {
             if is_row {
-                matches!(t.property, TransitionProperty::All | TransitionProperty::Height)
+                matches!(
+                    t.property,
+                    TransitionProperty::All | TransitionProperty::Height
+                )
             } else {
-                matches!(t.property, TransitionProperty::All | TransitionProperty::Width)
+                matches!(
+                    t.property,
+                    TransitionProperty::All | TransitionProperty::Width
+                )
             }
         });
         let transition_active = if is_row {
@@ -396,8 +405,7 @@ impl Layoutable for Element {
     }
 
     fn measure_inline(&mut self, context: InlineMeasureContext) {
-        if self.is_fragmentable_inline_element()
-        {
+        if self.is_fragmentable_inline_element() {
             self.pending_inline_measure_context = Some(context);
             self.measure(LayoutConstraints {
                 max_width: context.full_available_width.max(0.0),
@@ -421,8 +429,39 @@ impl Layoutable for Element {
     }
 
     fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
-        if self.is_fragmentable_inline_element()
-        {
+        if self.is_fragmentable_inline_element() {
+            let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
+            let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
+            let top_inset = (self.border_widths.top + self.padding.top).max(0.0);
+            let bottom_inset = (self.border_widths.bottom + self.padding.bottom).max(0.0);
+            let inline_child_count = self
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| !self.child_is_absolute(*idx))
+                .count();
+            if inline_child_count > 1 {
+                if let Some(info) = self.flex_info.as_ref() {
+                    return info
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .map(|(line_idx, _)| InlineNodeSize {
+                            width: info.line_main_sum[line_idx].max(0.0)
+                                + if line_idx == 0 { left_inset } else { 0.0 }
+                                + if line_idx + 1 == info.lines.len() {
+                                    right_inset
+                                } else {
+                                    0.0
+                                },
+                            height: info.line_cross_max[line_idx].max(0.0)
+                                + top_inset
+                                + bottom_inset,
+                        })
+                        .collect();
+                }
+                return Vec::new();
+            }
             let mut nodes = Vec::new();
             for (idx, child) in self.children.iter().enumerate() {
                 if self.child_is_absolute(idx) {
@@ -430,8 +469,6 @@ impl Layoutable for Element {
                 }
                 nodes.extend(child.get_inline_nodes_size());
             }
-            let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
-            let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
             if let Some(first) = nodes.first_mut() {
                 first.width += left_inset;
             }
@@ -445,28 +482,11 @@ impl Layoutable for Element {
     }
 
     fn place_inline(&mut self, placement: InlinePlacement) {
-        if self.is_fragmentable_inline_element()
-        {
+        if self.is_fragmentable_inline_element() {
             let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
             let top_inset = (self.border_widths.top + self.padding.top).max(0.0);
             let bottom_inset = (self.border_widths.bottom + self.padding.bottom).max(0.0);
-            let mut current = 0_usize;
-            let mut total_nodes = 0_usize;
-            let mut target: Option<(usize, usize, f32, f32)> = None;
-            for (child_idx, child) in self.children.iter().enumerate() {
-                if self.child_is_absolute(child_idx) {
-                    continue;
-                }
-                let nodes = child.get_inline_nodes_size();
-                total_nodes += nodes.len();
-                if target.is_none() && placement.node_index < current + nodes.len() {
-                    let local_index = placement.node_index - current;
-                    let node = nodes[local_index];
-                    target = Some((child_idx, local_index, node.width, node.height));
-                }
-                current += nodes.len();
-            }
 
             if placement.node_index == 0 {
                 self.inline_paint_fragments.clear();
@@ -485,24 +505,123 @@ impl Layoutable for Element {
                 self.core.should_render = false;
             }
 
-            let Some((child_idx, local_index, width, height)) = target else {
-                return;
+            let inline_child_count = self
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| !self.child_is_absolute(*idx))
+                .count();
+            let is_row = matches!(
+                self.computed_style.layout_axis_direction(),
+                FlowDirection::Row
+            );
+            let align = self.computed_style.layout_axis_align();
+
+            let (line_width, line_height, total_nodes) = if inline_child_count > 1 {
+                let Some(info) = self.flex_info.as_ref() else {
+                    return;
+                };
+                let total_nodes = info.lines.len();
+                let Some(line) = info.lines.get(placement.node_index) else {
+                    return;
+                };
+                let line_width = info
+                    .line_main_sum
+                    .get(placement.node_index)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                let line_height = info
+                    .line_cross_max
+                    .get(placement.node_index)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                let mut main_cursor = 0.0_f32;
+                let mut prev_child_index: Option<usize> = None;
+                let gap = resolve_px(
+                    self.computed_style.gap,
+                    line_width.max(0.0),
+                    placement.viewport_width,
+                    placement.viewport_height,
+                );
+
+                for item in line {
+                    if prev_child_index != Some(item.child_index) && prev_child_index.is_some() {
+                        main_cursor += gap;
+                    }
+                    let align_offset =
+                        cross_item_offset(line_height, item.cross.max(0.0), align);
+                    let content_origin_x = placement.x
+                        + if placement.node_index == 0 {
+                            left_inset
+                        } else {
+                            0.0
+                        };
+                    let (x, y) = if is_row {
+                        (
+                            content_origin_x + main_cursor + item.main_offset,
+                            placement.y + align_offset + item.cross_offset,
+                        )
+                    } else {
+                        (
+                            placement.x + align_offset + item.cross_offset,
+                            placement.y + main_cursor + item.main_offset,
+                        )
+                    };
+                    self.children[item.child_index].place_inline(InlinePlacement {
+                        x,
+                        y,
+                        node_index: item.node_index,
+                        ..placement
+                    });
+                    main_cursor += item.main.max(0.0);
+                    prev_child_index = Some(item.child_index);
+                }
+
+                (line_width, line_height, total_nodes)
+            } else {
+                let mut current = 0_usize;
+                let mut total_nodes = 0_usize;
+                let mut target: Option<(usize, usize, f32, f32)> = None;
+                for (child_idx, child) in self.children.iter().enumerate() {
+                    if self.child_is_absolute(child_idx) {
+                        continue;
+                    }
+                    let nodes = child.get_inline_nodes_size();
+                    total_nodes += nodes.len();
+                    if target.is_none() && placement.node_index < current + nodes.len() {
+                        let local_index = placement.node_index - current;
+                        let node = nodes[local_index];
+                        target = Some((child_idx, local_index, node.width, node.height));
+                    }
+                    current += nodes.len();
+                }
+                let Some((child_idx, local_index, width, height)) = target else {
+                    return;
+                };
+                self.children[child_idx].place_inline(InlinePlacement {
+                    x: placement.x
+                        + if placement.node_index == 0 {
+                            left_inset
+                        } else {
+                            0.0
+                        },
+                    y: placement.y,
+                    node_index: local_index,
+                    ..placement
+                });
+                (width.max(0.0), height.max(0.0), total_nodes)
             };
+
             let is_first_fragment = placement.node_index == 0;
             let is_last_fragment = placement.node_index + 1 == total_nodes;
-            self.children[child_idx].place_inline(InlinePlacement {
-                x: placement.x + if is_first_fragment { left_inset } else { 0.0 },
-                y: placement.y,
-                node_index: local_index,
-                ..placement
-            });
-
             let left = placement.x;
             let top = placement.y - top_inset;
-            let outer_width = width.max(0.0)
+            let outer_width = line_width
                 + if is_first_fragment { left_inset } else { 0.0 }
                 + if is_last_fragment { right_inset } else { 0.0 };
-            let outer_height = height.max(0.0) + top_inset + bottom_inset;
+            let outer_height = line_height + top_inset + bottom_inset;
             let right = placement.x + outer_width;
             let bottom = top + outer_height;
             let should_extend_existing = self
@@ -550,9 +669,11 @@ impl Layoutable for Element {
             self.content_size = self.core.layout_size;
             self.core.should_render =
                 self.core.layout_size.width > 0.0 && self.core.layout_size.height > 0.0;
-            self.dirty_flags = self
-                .dirty_flags
-                .without(DirtyFlags::PLACE.union(DirtyFlags::BOX_MODEL).union(DirtyFlags::HIT_TEST));
+            self.dirty_flags = self.dirty_flags.without(
+                DirtyFlags::PLACE
+                    .union(DirtyFlags::BOX_MODEL)
+                    .union(DirtyFlags::HIT_TEST),
+            );
         } else {
             self.set_layout_offset(placement.offset_x, placement.offset_y);
             self.place(LayoutPlacement {

@@ -318,10 +318,16 @@ pub struct Viewport {
     last_notified_cursor: Option<Cursor>,
     frame_presented: bool,
     last_frame_graph: Option<FrameGraph>,
+    compile_cache: Option<CachedCompiledGraph>,
     debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
     debug_overlay_indices: Vec<u32>,
     viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
     viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
+}
+
+struct CachedCompiledGraph {
+    topology_hash: u64,
+    graph: super::frame_graph::CompiledGraph,
 }
 
 #[derive(Clone)]
@@ -331,10 +337,13 @@ struct FrameBufferEntry {
     usage: wgpu::BufferUsages,
 }
 
-#[derive(Clone)]
 struct DrawRectUniformBufferEntry {
     buffer: wgpu::Buffer,
     size: u64,
+    /// Cached bind groups keyed by layout_cache_key.  The bind group binds the buffer
+    /// at offset 0 / size=slot_size; the per-draw dynamic offset is supplied separately,
+    /// so one bind group is valid for *all* slots in this buffer.
+    bind_groups: HashMap<u64, wgpu::BindGroup>,
 }
 
 struct SampledTextureEntry {
@@ -1671,6 +1680,7 @@ impl Viewport {
             last_notified_cursor: None,
             frame_presented: false,
             last_frame_graph: None,
+            compile_cache: None,
             debug_overlay_vertices: Vec::new(),
             debug_overlay_indices: Vec::new(),
             viewport_mouse_move_listeners: Vec::new(),
@@ -2326,7 +2336,10 @@ impl Viewport {
         let relayout_after_transition_elapsed_ms =
             relayout_after_transition_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        let update_promotion_started_at = Instant::now();
         self.update_promotion_state(roots);
+        let update_promotion_elapsed_ms =
+            update_promotion_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let build_graph_started_at = Instant::now();
         self.clear_debug_overlay_geometry();
@@ -2531,15 +2544,27 @@ impl Viewport {
 
         let mut compile_elapsed_ms = 0.0_f64;
         let mut compile_children: Vec<TraceRenderNode> = Vec::new();
-        let compiled = match graph.compile_with_upload(self) {
-            Ok(profile) => {
+        // Take the cache out (moves ownership) so we can pass self mutably to compile.
+        // On cache hit the graph is reused in-place; on miss it is dropped. Either way
+        // the returned compiled_graph is stored back for the next frame.
+        let prior_cache = self
+            .compile_cache
+            .take()
+            .map(|c| (c.topology_hash, c.graph));
+        let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
+            Ok((profile, topology_hash, compiled_graph)) => {
                 compile_elapsed_ms = profile.total_ms;
                 compile_children =
                     build_compile_trace_nodes(&profile, self.debug_trace_compile_detail());
+                self.compile_cache = Some(CachedCompiledGraph {
+                    topology_hash,
+                    graph: compiled_graph,
+                });
                 true
             }
             Err(err) => {
                 eprintln!("[warn] frame graph compile failed: {:?}", err);
+                // compile_cache already cleared by take() above
                 false
             }
         };
@@ -2719,6 +2744,7 @@ impl Viewport {
                             ),
                         ],
                     ),
+                    TraceRenderNode::new("update_promotion_state", update_promotion_elapsed_ms),
                     TraceRenderNode::new("build_graph", build_graph_elapsed_ms),
                     TraceRenderNode::with_children("compile", compile_elapsed_ms, compile_children),
                     TraceRenderNode::with_children(
@@ -3113,7 +3139,7 @@ impl Viewport {
         data: &[u8],
         slot_size: u64,
         chunk_size: u64,
-    ) -> Option<(wgpu::Buffer, u32)> {
+    ) -> Option<(wgpu::Buffer, u32, usize)> {
         if data.is_empty() || data.len() as u64 > slot_size {
             return None;
         }
@@ -3146,12 +3172,13 @@ impl Viewport {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.draw_rect_uniform_pool
-                .push(DrawRectUniformBufferEntry {
-                    buffer,
-                    size: required_size,
-                });
+            self.draw_rect_uniform_pool.push(DrawRectUniformBufferEntry {
+                buffer,
+                size: required_size,
+                bind_groups: HashMap::new(),
+            });
         } else if self.draw_rect_uniform_pool[target_index].size < required_size {
+            // Buffer reallocated — invalidate all cached bind groups for this slot.
             self.draw_rect_uniform_pool[target_index] = DrawRectUniformBufferEntry {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("DrawRect Uniform Ring Buffer"),
@@ -3160,6 +3187,7 @@ impl Viewport {
                     mapped_at_creation: false,
                 }),
                 size: required_size,
+                bind_groups: HashMap::new(),
             };
         }
         let dynamic_offset = self.draw_rect_uniform_offset;
@@ -3175,7 +3203,43 @@ impl Viewport {
         mapped.slice(..data.len()).copy_from_slice(data);
         drop(mapped);
         self.draw_rect_uniform_offset = self.draw_rect_uniform_offset.saturating_add(slot_size);
-        Some((buffer, dynamic_offset as u32))
+        Some((buffer, dynamic_offset as u32, target_index))
+    }
+
+    /// Return a cached bind group for the given uniform pool slot and pipeline layout key,
+    /// creating and storing it on the first call.  Bind groups bind the pool buffer at
+    /// offset 0 / size=slot_size; dynamic offsets are supplied per-draw, so one bind group
+    /// is valid for every slot in the same pool buffer.
+    pub(crate) fn get_or_create_draw_rect_bind_group(
+        &mut self,
+        pool_index: usize,
+        layout_cache_key: u64,
+        layout: &wgpu::BindGroupLayout,
+        slot_size: u64,
+    ) -> Option<wgpu::BindGroup> {
+        let entry = self.draw_rect_uniform_pool.get(pool_index)?;
+        if let Some(bg) = entry.bind_groups.get(&layout_cache_key) {
+            return Some(bg.clone());
+        }
+        let device = self.device.as_ref()?;
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("DrawRect Bind Group (Cached)"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &entry.buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(slot_size),
+                }),
+            }],
+        });
+        // Re-borrow mutably to insert (split borrow is not possible across Option).
+        self.draw_rect_uniform_pool
+            .get_mut(pool_index)?
+            .bind_groups
+            .insert(layout_cache_key, bg.clone());
+        Some(bg)
     }
 
     pub fn release_render_resource_caches(&mut self) {

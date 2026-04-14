@@ -285,7 +285,7 @@ pub(super) fn build_compile_trace_nodes(
         ));
     }
 
-    vec![
+    let mut nodes = vec![
         TraceRenderNode::new(
             format!("setup_passes (passes={})", profile.setup_pass_count),
             profile.setup_passes_ms,
@@ -310,7 +310,14 @@ pub(super) fn build_compile_trace_nodes(
             format!("prepare_upload (passes={})", profile.prepare_pass_count),
             profile.prepare_upload_ms,
         ),
-    ]
+    ];
+    if profile.topology_cache_hit {
+        nodes.insert(
+            0,
+            TraceRenderNode::new("topology_cache [HIT]", 0.0),
+        );
+    }
+    nodes
 }
 
 pub(super) fn build_layout_place_trace_nodes(
