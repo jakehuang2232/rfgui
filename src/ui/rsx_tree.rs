@@ -64,9 +64,26 @@ impl RsxNodeIdentity {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RsxNode {
-    Element(RsxElementNode),
-    Text(RsxTextNode),
-    Fragment(RsxFragmentNode),
+    Element(Rc<RsxElementNode>),
+    Text(Rc<RsxTextNode>),
+    Fragment(Rc<RsxFragmentNode>),
+}
+
+impl RsxNode {
+    /// Fast pointer-equality check between two nodes.
+    ///
+    /// Returns `true` only when both variants hold an [`Rc`] to the exact same
+    /// allocation. Used by the reconciler as a bailout fast-path: if the caller
+    /// can guarantee a subtree has not been rebuilt, the whole subtree diff can
+    /// be skipped.
+    pub fn ptr_eq(a: &RsxNode, b: &RsxNode) -> bool {
+        match (a, b) {
+            (RsxNode::Element(x), RsxNode::Element(y)) => Rc::ptr_eq(x, y),
+            (RsxNode::Text(x), RsxNode::Text(y)) => Rc::ptr_eq(x, y),
+            (RsxNode::Fragment(x), RsxNode::Fragment(y)) => Rc::ptr_eq(x, y),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -84,12 +101,20 @@ impl RsxTagDescriptor {
     }
 }
 
+/// Shared, reference-counted element props.
+///
+/// Stored as `Rc<Vec<_>>` so that props can be cheaply cloned and so the
+/// reconciler can take a `Rc::ptr_eq` fast path — two elements that reuse the
+/// same props allocation (e.g. from a memoized component) skip the O(n) prop
+/// diff entirely. Mutation uses `Rc::make_mut` (copy-on-write).
+pub type RsxElementProps = Rc<Vec<(&'static str, PropValue)>>;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RsxElementNode {
     pub identity: RsxNodeIdentity,
     pub tag: &'static str,
     pub tag_descriptor: Option<RsxTagDescriptor>,
-    pub props: Vec<(&'static str, PropValue)>,
+    pub props: RsxElementProps,
     pub children: Vec<RsxNode>,
 }
 
@@ -209,37 +234,37 @@ impl RsxProps {
 
 impl RsxNode {
     pub fn element(tag: &'static str) -> Self {
-        Self::Element(RsxElementNode {
+        Self::Element(Rc::new(RsxElementNode {
             identity: RsxNodeIdentity::new(tag, None),
             tag,
             tag_descriptor: None,
-            props: Vec::new(),
+            props: Rc::new(Vec::new()),
             children: Vec::new(),
-        })
+        }))
     }
 
     pub fn tagged(tag: &'static str, descriptor: RsxTagDescriptor) -> Self {
-        Self::Element(RsxElementNode {
+        Self::Element(Rc::new(RsxElementNode {
             identity: RsxNodeIdentity::new(descriptor.type_name, None),
             tag,
             tag_descriptor: Some(descriptor),
-            props: Vec::new(),
+            props: Rc::new(Vec::new()),
             children: Vec::new(),
-        })
+        }))
     }
 
     pub fn text(content: impl Into<String>) -> Self {
-        Self::Text(RsxTextNode {
+        Self::Text(Rc::new(RsxTextNode {
             identity: RsxNodeIdentity::new("Text", None),
             content: content.into(),
-        })
+        }))
     }
 
     pub fn fragment(children: Vec<RsxNode>) -> Self {
-        Self::Fragment(RsxFragmentNode {
+        Self::Fragment(Rc::new(RsxFragmentNode {
             identity: RsxNodeIdentity::new("Fragment", None),
             children,
-        })
+        }))
     }
 
     pub fn identity(&self) -> &RsxNodeIdentity {
@@ -252,9 +277,9 @@ impl RsxNode {
 
     pub fn set_identity(&mut self, identity: RsxNodeIdentity) {
         match self {
-            Self::Element(node) => node.identity = identity,
-            Self::Text(node) => node.identity = identity,
-            Self::Fragment(node) => node.identity = identity,
+            Self::Element(node) => Rc::make_mut(node).identity = identity,
+            Self::Text(node) => Rc::make_mut(node).identity = identity,
+            Self::Fragment(node) => Rc::make_mut(node).identity = identity,
         }
     }
 
@@ -279,14 +304,15 @@ impl RsxNode {
 
     pub fn with_prop(mut self, key: &'static str, value: impl Into<PropValue>) -> Self {
         if let Self::Element(node) = &mut self {
-            node.props.push((key, value.into()));
+            let node = Rc::make_mut(node);
+            Rc::make_mut(&mut node.props).push((key, value.into()));
         }
         self
     }
 
     pub fn with_child(mut self, child: impl IntoRsxNode) -> Self {
         if let Self::Element(node) = &mut self {
-            node.children.push(child.into_rsx_node());
+            Rc::make_mut(node).children.push(child.into_rsx_node());
         }
         self
     }
@@ -301,8 +327,8 @@ impl RsxNode {
 
     pub fn children_mut(&mut self) -> Option<&mut Vec<RsxNode>> {
         match self {
-            Self::Element(node) => Some(&mut node.children),
-            Self::Fragment(node) => Some(&mut node.children),
+            Self::Element(node) => Some(&mut Rc::make_mut(node).children),
+            Self::Fragment(node) => Some(&mut Rc::make_mut(node).children),
             Self::Text(_) => None,
         }
     }

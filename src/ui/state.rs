@@ -51,6 +51,12 @@ impl UiDirtyState {
 struct BindingPropPayload<T: 'static> {
     cell: Rc<RefCell<T>>,
     dirty_state: UiDirtyState,
+    /// The component that owns this state slot (if any). Used by the memo
+    /// cache to invalidate only that component's cached render when the slot
+    /// changes. `None` means the state is not owned by a specific component
+    /// (e.g. a free-standing `Binding` or a `GlobalState`) and conservatively
+    /// flushes the entire memo cache on change.
+    owner_component: Option<ComponentKey>,
 }
 
 #[derive(Clone)]
@@ -68,7 +74,11 @@ impl<T: 'static> Binding<T> {
     }
 
     pub(crate) fn from_cell(cell: Rc<RefCell<T>>, dirty_state: UiDirtyState) -> Self {
-        Self::from_payload(Rc::new(BindingPropPayload { cell, dirty_state }))
+        Self::from_payload(Rc::new(BindingPropPayload {
+            cell,
+            dirty_state,
+            owner_component: None,
+        }))
     }
 
     fn from_payload(prop_payload: Rc<BindingPropPayload<T>>) -> Self {
@@ -93,7 +103,10 @@ impl<T: Clone + PartialEq + 'static> Binding<T> {
         let mut current = self.cell().borrow_mut();
         if *current != value {
             *current = value;
-            notify_state_changed(self.dirty_state());
+            notify_state_changed(
+                self.dirty_state(),
+                self.prop_payload.owner_component.clone(),
+            );
         }
     }
 
@@ -102,7 +115,10 @@ impl<T: Clone + PartialEq + 'static> Binding<T> {
         let previous = current.clone();
         updater(&mut current);
         if *current != previous {
-            notify_state_changed(self.dirty_state());
+            notify_state_changed(
+                self.dirty_state(),
+                self.prop_payload.owner_component.clone(),
+            );
         }
     }
 }
@@ -133,7 +149,10 @@ impl<T: Clone + PartialEq + 'static> State<T> {
         let mut current = self.payload.cell.borrow_mut();
         if *current != value {
             *current = value;
-            notify_state_changed(self.payload.dirty_state);
+            notify_state_changed(
+                self.payload.dirty_state,
+                self.payload.owner_component.clone(),
+            );
         }
     }
 
@@ -142,7 +161,10 @@ impl<T: Clone + PartialEq + 'static> State<T> {
         let previous = current.clone();
         updater(&mut current);
         if *current != previous {
-            notify_state_changed(self.payload.dirty_state);
+            notify_state_changed(
+                self.payload.dirty_state,
+                self.payload.owner_component.clone(),
+            );
         }
     }
 
@@ -204,6 +226,43 @@ struct StateStore {
     global_component_keys: HashMap<GlobalKey, ComponentKey>,
     active_build_global_keys: HashSet<GlobalKey>,
     components_rendered_in_build: bool,
+    /// Component-memoization cache. Entries are keyed by `ComponentKey` and
+    /// store the last props/output pair plus the set of descendant keys that
+    /// were registered during that render, so we can keep them alive on a
+    /// memo hit without re-entering the render function.
+    memo_cache: HashMap<ComponentKey, MemoEntry>,
+    /// Components whose own state slots changed since their last render.
+    /// A memo hit for a key in this set is forbidden — we must re-render.
+    dirty_memo_components: HashSet<ComponentKey>,
+}
+
+/// A cached component render. `props` holds a type-erased clone of the last
+/// props value, compared via the monomorphized `props_eq` function pointer.
+struct MemoEntry {
+    props: Box<dyn Any>,
+    node: crate::ui::RsxNode,
+    props_eq: fn(&dyn Any, &dyn Any) -> bool,
+    live_keys: HashSet<ComponentKey>,
+    live_global_keys: HashSet<GlobalKey>,
+    live_timer_hooks: HashSet<TimerHookKey>,
+}
+
+/// A scope that captures which keys/hooks were registered during a render
+/// inside a memoized component. Pushed by `render_memoized_component` and
+/// popped once the render returns; the captured sets are stored in the
+/// resulting [`MemoEntry`].
+#[derive(Default)]
+struct MemoFrame {
+    live_keys: HashSet<ComponentKey>,
+    live_global_keys: HashSet<GlobalKey>,
+    live_timer_hooks: HashSet<TimerHookKey>,
+}
+
+fn memo_props_eq<P: PartialEq + 'static>(a: &dyn Any, b: &dyn Any) -> bool {
+    match (a.downcast_ref::<P>(), b.downcast_ref::<P>()) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Eq)]
@@ -248,6 +307,38 @@ thread_local! {
     static STATE_DIRTY: Cell<UiDirtyState> = const { Cell::new(UiDirtyState::NONE) };
     static TIMER_STORE: RefCell<HashMap<TimerHookKey, TimerEntry>> = RefCell::new(HashMap::new());
     static LIVE_TIMER_HOOKS: RefCell<HashSet<TimerHookKey>> = RefCell::new(HashSet::new());
+    /// Stack of in-progress memoized-component renders. Every registration of
+    /// a `ComponentKey`, `GlobalKey`, or timer hook while this stack is
+    /// non-empty is also recorded on the innermost frame so it can be
+    /// reattached on a future memo hit.
+    static MEMO_STACK: RefCell<Vec<MemoFrame>> = const { RefCell::new(Vec::new()) };
+}
+
+fn memo_stack_record_component_key(key: &ComponentKey) {
+    MEMO_STACK.with(|s| {
+        let mut stack = s.borrow_mut();
+        if let Some(top) = stack.last_mut() {
+            top.live_keys.insert(key.clone());
+        }
+    });
+}
+
+fn memo_stack_record_global_key(key: GlobalKey) {
+    MEMO_STACK.with(|s| {
+        let mut stack = s.borrow_mut();
+        if let Some(top) = stack.last_mut() {
+            top.live_global_keys.insert(key);
+        }
+    });
+}
+
+fn memo_stack_record_timer_hook(key: &TimerHookKey) {
+    MEMO_STACK.with(|s| {
+        let mut stack = s.borrow_mut();
+        if let Some(top) = stack.last_mut() {
+            top.live_timer_hooks.insert(key.clone());
+        }
+    });
 }
 
 #[derive(Clone)]
@@ -264,7 +355,10 @@ impl<T: Clone + PartialEq + 'static> GlobalState<T> {
         let mut current = self.payload.cell.borrow_mut();
         if *current != value {
             *current = value;
-            notify_state_changed(self.payload.dirty_state);
+            notify_state_changed(
+                self.payload.dirty_state,
+                self.payload.owner_component.clone(),
+            );
         }
     }
 
@@ -273,7 +367,10 @@ impl<T: Clone + PartialEq + 'static> GlobalState<T> {
         let previous = current.clone();
         updater(&mut current);
         if *current != previous {
-            notify_state_changed(self.payload.dirty_state);
+            notify_state_changed(
+                self.payload.dirty_state,
+                self.payload.owner_component.clone(),
+            );
         }
     }
 
@@ -320,6 +417,8 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
             store
                 .global_component_keys
                 .retain(|key, _| live_global.contains(key));
+            // Prune memo cache of components that did not render this build.
+            store.memo_cache.retain(|k, _| live.contains(k));
             LIVE_TIMER_HOOKS.with(|hooks| {
                 let live_hooks = hooks.borrow().clone();
                 TIMER_STORE.with(|timers| {
@@ -378,7 +477,10 @@ fn current_rsx_key() -> Option<RsxKey> {
     COMPONENT_KEY_STACK.with(|stack| stack.borrow().last().cloned().flatten())
 }
 
-pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
+/// Compute the `ComponentKey` for the next component invocation using the
+/// same path algorithm as [`render_component`]. Advances parent/root cursors
+/// as a side effect, so this must be called exactly once per component.
+fn next_component_key<T: 'static>() -> ComponentKey {
     const KEYED_PATH_MARKER: usize = usize::MAX;
     const GLOBAL_KEYED_PATH_MARKER: usize = usize::MAX - 1;
     let path = CONTEXT.with(|context| {
@@ -414,11 +516,14 @@ pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
             })
         }
     });
-
-    let key = ComponentKey {
+    ComponentKey {
         type_id: TypeId::of::<T>(),
         path,
-    };
+    }
+}
+
+pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
+    let key = next_component_key::<T>();
 
     STORE.with(|store| {
         let mut store = store.borrow_mut();
@@ -429,6 +534,10 @@ pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
             store.global_component_keys.insert(global_key, key.clone());
         }
     });
+    memo_stack_record_component_key(&key);
+    if let Some(RsxKey::Global(global_key)) = current_rsx_key() {
+        memo_stack_record_global_key(global_key);
+    }
 
     CONTEXT.with(|context| {
         context.borrow_mut().frames.push(Frame {
@@ -446,6 +555,164 @@ pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
     });
 
     out
+}
+
+/// Render a component with prop-based memoization.
+///
+/// Semantics (React `memo` equivalent):
+/// 1. Compute the `ComponentKey` just like [`render_component`].
+/// 2. If the component is NOT marked dirty (its own `use_state` slots are
+///    unchanged since the last render) AND the cached props compare equal to
+///    `props`, return a clone of the cached `RsxNode` and replay the set of
+///    descendant component/global keys and timer hooks so the GC in
+///    [`build_scope`] keeps them alive.
+/// 3. Otherwise, push a `MemoFrame` and a component `Frame`, invoke `render`,
+///    capture all keys registered underneath, store the new `MemoEntry` and
+///    return the rendered node.
+///
+/// The caller is responsible for supplying a `Props` type that is
+/// `PartialEq + Clone + 'static`. If two consecutive renders pass structurally
+/// equal props, the render closure is skipped entirely and (combined with the
+/// reconciler's `Rc::ptr_eq` bailout) the entire subtree is also bypassed
+/// during diffing.
+pub fn render_memoized_component<T, P>(
+    props: P,
+    render: impl FnOnce(&P) -> crate::ui::RsxNode,
+) -> crate::ui::RsxNode
+where
+    T: 'static,
+    P: PartialEq + Clone + 'static,
+{
+    let key = next_component_key::<T>();
+    let current_key = current_rsx_key();
+
+    // Register this component as live regardless of memo hit / miss — it
+    // executed during this build, so its slots must survive the GC sweep.
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        store.components_rendered_in_build = true;
+        store.live_keys.insert(key.clone());
+        if let Some(RsxKey::Global(global_key)) = current_key {
+            store.live_global_keys.insert(global_key);
+            store.global_component_keys.insert(global_key, key.clone());
+        }
+    });
+    memo_stack_record_component_key(&key);
+    if let Some(RsxKey::Global(global_key)) = current_key {
+        memo_stack_record_global_key(global_key);
+    }
+
+    // Can we take the fast path? Only if: the component is NOT dirty AND the
+    // cached props match the new props.
+    let cached_hit = STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let was_dirty = store.dirty_memo_components.remove(&key);
+        if was_dirty {
+            return None;
+        }
+        let entry = store.memo_cache.get(&key)?;
+        let eq = (entry.props_eq)(&*entry.props, &props as &dyn Any);
+        if !eq {
+            return None;
+        }
+        Some((
+            entry.node.clone(),
+            entry.live_keys.clone(),
+            entry.live_global_keys.clone(),
+            entry.live_timer_hooks.clone(),
+        ))
+    });
+
+    if let Some((node, lk, lgk, lth)) = cached_hit {
+        // Replay descendants — both into the thread-local live sets that
+        // `build_scope` uses for GC, and into any enclosing memo frame.
+        STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            for k in &lk {
+                store.live_keys.insert(k.clone());
+            }
+            for k in &lgk {
+                store.live_global_keys.insert(*k);
+            }
+        });
+        LIVE_TIMER_HOOKS.with(|hooks| {
+            let mut hooks = hooks.borrow_mut();
+            for k in &lth {
+                hooks.insert(k.clone());
+            }
+        });
+        MEMO_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if let Some(top) = stack.last_mut() {
+                for k in &lk {
+                    top.live_keys.insert(k.clone());
+                }
+                for k in &lgk {
+                    top.live_global_keys.insert(*k);
+                }
+                for k in &lth {
+                    top.live_timer_hooks.insert(k.clone());
+                }
+            }
+        });
+        return node;
+    }
+
+    // Miss — run the render closure under a fresh `MemoFrame` so we can
+    // capture every descendant key that gets registered.
+    MEMO_STACK.with(|stack| {
+        stack.borrow_mut().push(MemoFrame::default());
+    });
+    CONTEXT.with(|context| {
+        context.borrow_mut().frames.push(Frame {
+            key: key.clone(),
+            path: key.path.clone(),
+            child_cursor: 0,
+            hook_cursor: 0,
+        });
+    });
+
+    let node = render(&props);
+
+    CONTEXT.with(|context| {
+        let _ = context.borrow_mut().frames.pop();
+    });
+    let frame = MEMO_STACK
+        .with(|stack| stack.borrow_mut().pop())
+        .unwrap_or_default();
+
+    // Propagate the captured descendants into any enclosing memo frame so
+    // a memo hit on an outer component keeps our subtree alive too.
+    MEMO_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(top) = stack.last_mut() {
+            for k in &frame.live_keys {
+                top.live_keys.insert(k.clone());
+            }
+            for k in &frame.live_global_keys {
+                top.live_global_keys.insert(*k);
+            }
+            for k in &frame.live_timer_hooks {
+                top.live_timer_hooks.insert(k.clone());
+            }
+        }
+    });
+
+    STORE.with(|store| {
+        store.borrow_mut().memo_cache.insert(
+            key,
+            MemoEntry {
+                props: Box::new(props),
+                node: node.clone(),
+                props_eq: memo_props_eq::<P>,
+                live_keys: frame.live_keys,
+                live_global_keys: frame.live_global_keys,
+                live_timer_hooks: frame.live_timer_hooks,
+            },
+        );
+    });
+
+    node
 }
 
 pub fn use_state<T: Clone + PartialEq + 'static>(init: impl FnOnce() -> T) -> State<T> {
@@ -472,6 +739,7 @@ pub fn use_state_with_dirty_state<T: Clone + PartialEq + 'static>(
     });
 
     let mut init_opt = Some(init);
+    let owner_key = key.clone();
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         let slots = store.slots.entry(key).or_default();
@@ -482,6 +750,7 @@ pub fn use_state_with_dirty_state<T: Clone + PartialEq + 'static>(
             let payload: Rc<BindingPropPayload<T>> = Rc::new(BindingPropPayload {
                 cell: Rc::new(RefCell::new(value)),
                 dirty_state,
+                owner_component: Some(owner_key.clone()),
             });
             slots.push(Box::new(payload));
         }
@@ -515,6 +784,7 @@ where
     LIVE_TIMER_HOOKS.with(|hooks| {
         hooks.borrow_mut().insert(key.clone());
     });
+    memo_stack_record_timer_hook(&key);
 
     TIMER_STORE.with(|timers| {
         let mut timers = timers.borrow_mut();
@@ -612,6 +882,7 @@ fn global_payload_with_init<T: Clone + PartialEq + 'static>(
             let payload: Rc<BindingPropPayload<T>> = Rc::new(BindingPropPayload {
                 cell: Rc::new(RefCell::new(value)),
                 dirty_state: UiDirtyState::REBUILD,
+                owner_component: None,
             });
             store.insert(type_id, Box::new(payload));
         }
@@ -660,8 +931,9 @@ pub fn use_global_state<T: Clone + PartialEq + 'static>() -> GlobalState<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        UiDirtyState, build_scope, next_timer_deadline, run_due_timers, take_state_dirty,
-        use_interval, use_redraw_state, use_state, use_timeout, with_component_key,
+        UiDirtyState, build_scope, next_timer_deadline, render_memoized_component,
+        run_due_timers, take_state_dirty, use_interval, use_redraw_state, use_state,
+        use_timeout, with_component_key,
     };
     use crate::time::{Duration, Instant};
     use crate::ui::{GlobalKey, RsxKey, RsxNode};
@@ -867,6 +1139,74 @@ mod tests {
         assert_eq!(state.get(), "unchanged");
         assert_eq!(take_state_dirty(), UiDirtyState::NONE);
     }
+
+    struct MemoProbeComponent;
+
+    #[test]
+    fn memoized_component_skips_render_when_props_equal() {
+        let renders = Rc::new(Cell::new(0));
+
+        let run = |props: i32| -> RsxNode {
+            let counter = renders.clone();
+            build_scope(|| {
+                render_memoized_component::<MemoProbeComponent, _>(props, |_| {
+                    counter.set(counter.get() + 1);
+                    RsxNode::text("hit")
+                })
+            })
+        };
+
+        let first = run(1);
+        assert_eq!(renders.get(), 1);
+
+        // Same props → cached, render closure NOT invoked.
+        let second = run(1);
+        assert_eq!(renders.get(), 1);
+
+        // Fast path returns the exact same `Rc` allocation, so the reconciler
+        // bailout can short-circuit the entire subtree.
+        assert!(
+            RsxNode::ptr_eq(&first, &second),
+            "memo hit should reuse the cached `Rc<RsxNode>`"
+        );
+
+        // Different props → render closure re-runs.
+        let _ = run(2);
+        assert_eq!(renders.get(), 2);
+    }
+
+    #[test]
+    fn memoized_component_reruns_when_its_own_state_changes() {
+        let renders = Rc::new(Cell::new(0));
+        let captured_state: Rc<std::cell::RefCell<Option<super::State<i32>>>> =
+            Rc::new(std::cell::RefCell::new(None));
+
+        let run = || -> RsxNode {
+            let counter = renders.clone();
+            let captured = captured_state.clone();
+            build_scope(|| {
+                render_memoized_component::<MemoProbeComponent, _>((), move |_| {
+                    counter.set(counter.get() + 1);
+                    let s = use_state(|| 0_i32);
+                    *captured.borrow_mut() = Some(s);
+                    RsxNode::text("hit")
+                })
+            })
+        };
+
+        let _ = run();
+        assert_eq!(renders.get(), 1);
+
+        // Same props, untouched state → cache hit, no re-render.
+        let _ = run();
+        assert_eq!(renders.get(), 1);
+
+        // Mutating the component's own state must invalidate its memo entry.
+        captured_state.borrow().as_ref().unwrap().set(7);
+        let _ = take_state_dirty();
+        let _ = run();
+        assert_eq!(renders.get(), 2);
+    }
 }
 
 pub fn set_redraw_callback<F>(callback: F)
@@ -896,8 +1236,27 @@ pub fn take_state_dirty() -> UiDirtyState {
     })
 }
 
-fn notify_state_changed(dirty_state: UiDirtyState) {
+fn notify_state_changed(dirty_state: UiDirtyState, owner: Option<ComponentKey>) {
     STATE_DIRTY.with(|dirty| dirty.set(dirty.get().union(dirty_state)));
+    if dirty_state.needs_rebuild() {
+        STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            match owner {
+                Some(key) => {
+                    // Targeted invalidation: only this component's memo entry
+                    // is stale. Sibling/ancestor memos stay valid.
+                    store.memo_cache.remove(&key);
+                    store.dirty_memo_components.insert(key);
+                }
+                None => {
+                    // Conservative flush: unowned state (global state, free
+                    // bindings) could affect anything we have cached.
+                    store.memo_cache.clear();
+                    store.dirty_memo_components.clear();
+                }
+            }
+        });
+    }
     REDRAW_CALLBACK.with(|slot| {
         if let Some(callback) = slot.borrow().as_ref() {
             callback();
