@@ -79,6 +79,7 @@ struct Runner<A: App> {
     needs_rebuild: bool,
     ready_dispatched: bool,
     boot_overlay_hidden: bool,
+    resize_listener: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
     /// Set when async viewport init kicks off. Reset once the viewport
     /// actually appears in the shared cell. Prevents re-entry from a
     /// second `resumed` call.
@@ -102,6 +103,7 @@ impl<A: App> Runner<A> {
             needs_rebuild: true,
             ready_dispatched: false,
             boot_overlay_hidden: false,
+            resize_listener: None,
             init_in_flight: false,
         }
     }
@@ -114,15 +116,19 @@ impl<A: App> Runner<A> {
             return;
         };
         self.init_in_flight = true;
-        let scale = window.scale_factor() as f32;
-        let size = window.inner_size();
+        // winit's wasm `Window::inner_size()` reports the canvas backing
+        // store size, which starts at the HTML default (300×150) until
+        // something writes `canvas.width`/`canvas.height`. Read the live
+        // CSS dimensions instead and sync them onto the canvas so the
+        // surface gets configured at the actual on-screen size.
+        let (physical_size, scale) = sync_canvas_size(lookup_app_canvas().as_ref(), window.scale_factor() as f32);
         let clear_color = self.config.clear_color;
         let viewport_slot = self.viewport.clone();
         spawn_local(async move {
             let mut viewport = Viewport::new();
             viewport.set_msaa_sample_count(1);
             viewport.set_scale_factor(scale);
-            viewport.set_size(size.width, size.height);
+            viewport.set_size(physical_size.0, physical_size.1);
             viewport.set_surface_format_preference(SurfaceFormatPreference::PreferNonSrgb);
             if let Some(color) = clear_color {
                 viewport.set_clear_color(Box::new(color));
@@ -133,6 +139,34 @@ impl<A: App> Runner<A> {
             // Wake the event loop so the first frame paints.
             window.request_redraw();
         });
+    }
+
+    fn install_resize_listener(&mut self) {
+        if self.resize_listener.is_some() {
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let Some(web_window) = web_sys::window() else {
+            return;
+        };
+        let viewport_slot = self.viewport.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+            let canvas = lookup_app_canvas();
+            let (size, scale) =
+                sync_canvas_size(canvas.as_ref(), window.scale_factor() as f32);
+            if let Some(viewport) = viewport_slot.borrow_mut().as_mut() {
+                viewport.set_scale_factor(scale);
+                viewport.set_size(size.0, size.1);
+            }
+            window.request_redraw();
+        }) as Box<dyn FnMut()>);
+        let _ = web_window.add_event_listener_with_callback(
+            "resize",
+            closure.as_ref().unchecked_ref(),
+        );
+        self.resize_listener = Some(closure);
     }
 
     fn ensure_ready(&mut self) {
@@ -372,6 +406,7 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
         }
         self.window = Some(window);
         self.ensure_viewport();
+        self.install_resize_listener();
     }
 
     fn window_event(
@@ -566,6 +601,35 @@ fn lookup_app_canvas() -> Option<HtmlCanvasElement> {
     let document = window()?.document()?;
     let element = document.get_element_by_id("app-canvas")?;
     element.dyn_into::<HtmlCanvasElement>().ok()
+}
+
+/// Read the canvas's CSS box, multiply by the device pixel ratio, and write
+/// the result back into `canvas.width` / `canvas.height` so the wgpu surface
+/// is configured at the same physical resolution the browser is composing.
+/// Returns `(physical_size, scale_factor)` for the caller to push into the
+/// viewport.
+fn sync_canvas_size(
+    canvas: Option<&HtmlCanvasElement>,
+    fallback_scale: f32,
+) -> ((u32, u32), f32) {
+    let Some(canvas) = canvas else {
+        return ((1, 1), fallback_scale);
+    };
+    let dpr = window()
+        .map(|w| w.device_pixel_ratio() as f32)
+        .filter(|v| *v > 0.0)
+        .unwrap_or(fallback_scale);
+    let client_w = canvas.client_width().max(1) as f32;
+    let client_h = canvas.client_height().max(1) as f32;
+    let physical_w = (client_w * dpr).round().max(1.0) as u32;
+    let physical_h = (client_h * dpr).round().max(1.0) as u32;
+    if canvas.width() != physical_w {
+        canvas.set_width(physical_w);
+    }
+    if canvas.height() != physical_h {
+        canvas.set_height(physical_h);
+    }
+    ((physical_w, physical_h), dpr)
 }
 
 fn key_to_string(key: &Key) -> String {
