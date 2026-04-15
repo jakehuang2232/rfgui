@@ -208,7 +208,14 @@ struct Frame {
     key: ComponentKey,
     path: Vec<usize>,
     child_cursor: usize,
+    /// Monotonic index for keyed hooks (timers, mounts) whose identity is
+    /// derived from `(component, hook_index)`. Does NOT track `use_state`
+    /// slots — those use `state_cursor` instead so inserting a timer or
+    /// mount hook between two `use_state` calls does not shift slot
+    /// indices and corrupt the `StateStore::slots` vec.
     hook_cursor: usize,
+    /// Monotonic index for `use_state` slots within this component frame.
+    state_cursor: usize,
 }
 
 #[derive(Default)]
@@ -298,6 +305,59 @@ struct TimerEntry {
     callback: Rc<RefCell<dyn FnMut()>>,
 }
 
+#[derive(Clone, Eq)]
+struct MountHookKey {
+    component: ComponentKey,
+    hook_index: usize,
+}
+
+impl PartialEq for MountHookKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.component == other.component && self.hook_index == other.hook_index
+    }
+}
+
+impl Hash for MountHookKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.component.hash(state);
+        self.hook_index.hash(state);
+    }
+}
+
+struct MountEntry {
+    cleanup: Option<Box<dyn FnOnce()>>,
+}
+
+impl Drop for MountEntry {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+/// Result type returned from a `use_mount` closure. Returning `()` means no
+/// cleanup; returning an `FnOnce() + 'static` closure registers it as cleanup
+/// to run on component unmount.
+pub trait MountCleanup {
+    fn into_cleanup(self) -> Option<Box<dyn FnOnce()>>;
+}
+
+impl MountCleanup for () {
+    fn into_cleanup(self) -> Option<Box<dyn FnOnce()>> {
+        None
+    }
+}
+
+impl<F> MountCleanup for F
+where
+    F: FnOnce() + 'static,
+{
+    fn into_cleanup(self) -> Option<Box<dyn FnOnce()>> {
+        Some(Box::new(self))
+    }
+}
+
 thread_local! {
     static STORE: RefCell<StateStore> = RefCell::new(StateStore::default());
     static GLOBAL_STORE: RefCell<HashMap<TypeId, Box<dyn Any>>> = RefCell::new(HashMap::new());
@@ -307,6 +367,9 @@ thread_local! {
     static STATE_DIRTY: Cell<UiDirtyState> = const { Cell::new(UiDirtyState::NONE) };
     static TIMER_STORE: RefCell<HashMap<TimerHookKey, TimerEntry>> = RefCell::new(HashMap::new());
     static LIVE_TIMER_HOOKS: RefCell<HashSet<TimerHookKey>> = RefCell::new(HashSet::new());
+    static MOUNT_STORE: RefCell<HashMap<MountHookKey, MountEntry>> = RefCell::new(HashMap::new());
+    static LIVE_MOUNT_HOOKS: RefCell<HashSet<MountHookKey>> = RefCell::new(HashSet::new());
+    static PENDING_MOUNTS: RefCell<Vec<Box<dyn FnOnce()>>> = const { RefCell::new(Vec::new()) };
     /// Stack of in-progress memoized-component renders. Every registration of
     /// a `ComponentKey`, `GlobalKey`, or timer hook while this stack is
     /// non-empty is also recorded on the innermost frame so it can be
@@ -401,6 +464,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
             store.active_build_global_keys.clear();
             store.components_rendered_in_build = false;
             LIVE_TIMER_HOOKS.with(|hooks| hooks.borrow_mut().clear());
+            LIVE_MOUNT_HOOKS.with(|hooks| hooks.borrow_mut().clear());
         }
         store.build_depth += 1;
     });
@@ -427,6 +491,18 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
                         .retain(|key, _| live_hooks.contains(key));
                 });
             });
+            // Prune mount entries for unmounted components first so their
+            // cleanups (via MountEntry::Drop) run before the newly queued
+            // mount callbacks for surviving components execute.
+            LIVE_MOUNT_HOOKS.with(|hooks| {
+                let live_hooks = hooks.borrow().clone();
+                MOUNT_STORE.with(|mounts| {
+                    mounts
+                        .borrow_mut()
+                        .retain(|key, _| live_hooks.contains(key));
+                });
+            });
+            drain_pending_mounts();
         }
     });
 
@@ -545,6 +621,7 @@ pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
             path: key.path.clone(),
             child_cursor: 0,
             hook_cursor: 0,
+            state_cursor: 0,
         });
     });
 
@@ -669,6 +746,7 @@ where
             path: key.path.clone(),
             child_cursor: 0,
             hook_cursor: 0,
+            state_cursor: 0,
         });
     });
 
@@ -733,8 +811,8 @@ pub fn use_state_with_dirty_state<T: Clone + PartialEq + 'static>(
             .frames
             .last_mut()
             .expect("use_state() must be called inside #[component] render");
-        let index = frame.hook_cursor;
-        frame.hook_cursor += 1;
+        let index = frame.state_cursor;
+        frame.state_cursor += 1;
         (frame.key.clone(), index)
     });
 
@@ -830,6 +908,81 @@ where
     F: FnMut() + 'static,
 {
     use_timer(TimerMode::Interval, enabled, interval, callback);
+}
+
+/// Run a mount callback exactly once when the component first renders. If
+/// `mount` returns a closure, that closure is registered as cleanup and runs
+/// when the component unmounts. Subsequent re-renders of the same component
+/// are no-ops.
+pub fn use_mount<F, R>(mount: F)
+where
+    F: FnOnce() -> R + 'static,
+    R: MountCleanup + 'static,
+{
+    let (component, hook_index) = CONTEXT.with(|context| {
+        let mut context = context.borrow_mut();
+        let frame = context
+            .frames
+            .last_mut()
+            .expect("use_mount() must be called inside #[component] render");
+        let index = frame.hook_cursor;
+        frame.hook_cursor += 1;
+        (frame.key.clone(), index)
+    });
+
+    let key = MountHookKey {
+        component,
+        hook_index,
+    };
+    LIVE_MOUNT_HOOKS.with(|hooks| {
+        hooks.borrow_mut().insert(key.clone());
+    });
+
+    let is_first = MOUNT_STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        if store.contains_key(&key) {
+            false
+        } else {
+            store.insert(key.clone(), MountEntry { cleanup: None });
+            true
+        }
+    });
+
+    if !is_first {
+        return;
+    }
+
+    let run_key = key;
+    let runner: Box<dyn FnOnce()> = Box::new(move || {
+        let new_cleanup = mount().into_cleanup();
+        MOUNT_STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            if let Some(entry) = store.get_mut(&run_key) {
+                entry.cleanup = new_cleanup;
+            } else if let Some(cleanup) = new_cleanup {
+                // Entry was pruned before drain (component unmounted mid-build);
+                // run cleanup immediately to honor symmetry.
+                cleanup();
+            }
+        });
+    });
+
+    PENDING_MOUNTS.with(|pending| pending.borrow_mut().push(runner));
+}
+
+fn drain_pending_mounts() {
+    loop {
+        let batch: Vec<Box<dyn FnOnce()>> = PENDING_MOUNTS.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            std::mem::take(&mut *pending)
+        });
+        if batch.is_empty() {
+            break;
+        }
+        for runner in batch {
+            runner();
+        }
+    }
 }
 
 pub fn next_timer_deadline() -> Option<Instant> {
@@ -932,8 +1085,8 @@ pub fn use_global_state<T: Clone + PartialEq + 'static>() -> GlobalState<T> {
 mod tests {
     use super::{
         UiDirtyState, build_scope, next_timer_deadline, render_memoized_component,
-        run_due_timers, take_state_dirty, use_interval, use_redraw_state, use_state,
-        use_timeout, with_component_key,
+        run_due_timers, take_state_dirty, use_interval, use_mount, use_redraw_state,
+        use_state, use_timeout, with_component_key,
     };
     use crate::time::{Duration, Instant};
     use crate::ui::{GlobalKey, RsxKey, RsxNode};
@@ -1173,6 +1326,42 @@ mod tests {
         // Different props → render closure re-runs.
         let _ = run(2);
         assert_eq!(renders.get(), 2);
+    }
+
+    #[test]
+    fn use_mount_runs_once_and_cleans_up_on_unmount() {
+        let mounts = Rc::new(Cell::new(0));
+        let cleanups = Rc::new(Cell::new(0));
+
+        let build = |mounts: Rc<Cell<i32>>, cleanups: Rc<Cell<i32>>| {
+            build_scope(|| {
+                crate::ui::render_component::<u16, _>(|| {
+                    let mounts = mounts.clone();
+                    let cleanups = cleanups.clone();
+                    use_mount(move || {
+                        mounts.set(mounts.get() + 1);
+                        move || cleanups.set(cleanups.get() + 1)
+                    });
+                })
+            });
+        };
+
+        // Mount — callback fires once, no cleanup yet.
+        build(mounts.clone(), cleanups.clone());
+        assert_eq!(mounts.get(), 1);
+        assert_eq!(cleanups.get(), 0);
+
+        // Re-render — mount is a no-op.
+        build(mounts.clone(), cleanups.clone());
+        assert_eq!(mounts.get(), 1);
+        assert_eq!(cleanups.get(), 0);
+
+        // Unmount (a different component renders instead) — cleanup fires.
+        build_scope(|| {
+            crate::ui::render_component::<u32, _>(|| {});
+        });
+        assert_eq!(mounts.get(), 1);
+        assert_eq!(cleanups.get(), 1);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
+use crate::rfgui::ColorLike;
+use crate::rfgui::ui::{RsxNode, component, rsx, use_mount, use_state, use_viewport};
 use crate::rfgui_components::use_theme;
 use crate::scene_windows::about_panel::build as build_about_panel;
 use crate::scene_windows::component_test::ComponentTest;
@@ -14,6 +15,12 @@ pub fn MainScene() -> RsxNode {
     let window_positions = use_state(Vec::<(f32, f32)>::new);
 
     let (theme, _) = use_theme();
+
+    let background = theme.color.background.base.clone();
+    let viewport = use_viewport();
+    use_mount(move || {
+        viewport.set_clear_color(background.to_style_color().to_color());
+    });
 
     let mut window_manager = WindowManager::new(window_positions.binding());
     window_manager.push(

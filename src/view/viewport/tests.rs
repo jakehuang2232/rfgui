@@ -380,6 +380,7 @@ fn viewport_registers_box_shadow_transition_channel() {
     let viewport = Viewport::new();
     assert!(
         viewport
+            .transitions
             .transition_channels
             .contains(&CHANNEL_STYLE_BOX_SHADOW)
     );
