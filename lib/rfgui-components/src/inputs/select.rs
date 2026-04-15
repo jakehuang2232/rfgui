@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::{ExpandMoreIcon, use_theme};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
-    MouseDownHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode, component, props, rsx,
+    MouseDownHandlerProp, RsxComponent, RsxNode, component, props, rsx,
     use_state,
 };
 use rfgui::view::{Element, Text};
@@ -14,7 +14,9 @@ use rfgui::{
     flex,
 };
 
-pub struct Select;
+pub struct Select<DataType = (), ValueType = ()>(std::marker::PhantomData<(DataType, ValueType)>)
+where
+    ValueType: 'static;
 
 #[props]
 pub struct SelectProps<DataType, ValueType: 'static> {
@@ -34,7 +36,8 @@ struct SelectMenuItem {
     on_select: ClickHandlerProp,
 }
 
-impl<DataType, ValueType> RsxComponent<SelectProps<DataType, ValueType>> for Select
+impl<DataType, ValueType> RsxComponent<SelectProps<DataType, ValueType>>
+    for Select<DataType, ValueType>
 where
     DataType: Clone + 'static,
     ValueType: Clone + PartialEq + 'static,
@@ -85,8 +88,26 @@ where
     }
 }
 
-impl RsxChildrenPolicy for Select {
+impl<DataType, ValueType> rfgui::ui::RsxTag for Select<DataType, ValueType>
+where
+    DataType: Clone + 'static,
+    ValueType: Clone + PartialEq + 'static,
+{
+    type Props = __SelectPropsInit<DataType, ValueType>;
+    type StrictProps = SelectProps<DataType, ValueType>;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<SelectProps<DataType, ValueType>>>::render(props, children)
+    }
 }
 
 #[component]

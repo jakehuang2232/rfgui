@@ -6,8 +6,8 @@ use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, FromPropValue, IntoPropValue,
     KeyDownHandlerProp, KeyUpHandlerProp, MouseDownHandlerProp, MouseEnterHandlerProp,
-    MouseLeaveHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp, RsxChildrenPolicy,
-    RsxComponent, RsxPropsStyleSchema, RsxStyleSchema, SharedPropValue, TextAreaFocusHandlerProp,
+    MouseLeaveHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp,
+    RsxComponent, SharedPropValue, TextAreaFocusHandlerProp,
     TextAreaRenderHandlerProp, TextChangeHandlerProp, props,
 };
 use crate::{
@@ -199,33 +199,6 @@ pub struct BorderStylePropSchema {
     pub color: Option<Box<dyn ColorLike>>,
 }
 
-impl RsxStyleSchema for ElementStylePropSchema {
-    type SelectionSchema = SelectionStylePropSchema;
-}
-
-impl RsxStyleSchema for TextStylePropSchema {
-    type SelectionSchema = SelectionStylePropSchema;
-}
-
-impl RsxPropsStyleSchema for ElementPropSchema {
-    type StyleSchema = ElementStylePropSchema;
-}
-
-impl RsxPropsStyleSchema for TextPropSchema {
-    type StyleSchema = TextStylePropSchema;
-}
-
-impl RsxPropsStyleSchema for TextAreaPropSchema {
-    type StyleSchema = ElementStylePropSchema;
-}
-
-impl RsxPropsStyleSchema for ImagePropSchema {
-    type StyleSchema = ElementStylePropSchema;
-}
-
-impl RsxPropsStyleSchema for SvgPropSchema {
-    type StyleSchema = ElementStylePropSchema;
-}
 
 #[props]
 pub struct TextPropSchema {
@@ -531,24 +504,449 @@ impl RsxComponent<SvgPropSchema> for Svg {
     }
 }
 
-impl RsxChildrenPolicy for Element {
-    const ACCEPTS_CHILDREN: bool = true;
+#[doc(hidden)]
+pub mod v2_bench {
+    use super::*;
+
+    #[inline(never)]
+    pub fn bench_v1_20() -> RsxNode {
+        crate::ui::rsx! {
+            <Element>
+                <Element>a00</Element>
+                <Element>a01</Element>
+                <Element>a02</Element>
+                <Element>a03</Element>
+                <Element>a04</Element>
+                <Element>a05</Element>
+                <Element>a06</Element>
+                <Element>a07</Element>
+                <Element>a08</Element>
+                <Element>a09</Element>
+                <Element>a10</Element>
+                <Element>a11</Element>
+                <Element>a12</Element>
+                <Element>a13</Element>
+                <Element>a14</Element>
+                <Element>a15</Element>
+                <Element>a16</Element>
+                <Element>a17</Element>
+                <Element>a18</Element>
+                <Element>a19</Element>
+            </Element>
+        }
+    }
+
+    #[inline(never)]
+    pub fn bench_v2_20() -> RsxNode {
+        crate::ui::rsx! {
+            <Element>
+                <Element>a00</Element>
+                <Element>a01</Element>
+                <Element>a02</Element>
+                <Element>a03</Element>
+                <Element>a04</Element>
+                <Element>a05</Element>
+                <Element>a06</Element>
+                <Element>a07</Element>
+                <Element>a08</Element>
+                <Element>a09</Element>
+                <Element>a10</Element>
+                <Element>a11</Element>
+                <Element>a12</Element>
+                <Element>a13</Element>
+                <Element>a14</Element>
+                <Element>a15</Element>
+                <Element>a16</Element>
+                <Element>a17</Element>
+                <Element>a18</Element>
+                <Element>a19</Element>
+            </Element>
+        }
+    }
 }
 
-impl RsxChildrenPolicy for Text {
-    const ACCEPTS_CHILDREN: bool = true;
+#[cfg(test)]
+mod v2_poc_tests {
+    use super::*;
+    use crate::ui::{
+        __rsx_default_from_phantom, __rsx_infer_inner_option, create_element,
+    };
+    #[allow(unused_imports)]
+    use crate::ui::RsxTag;
+
+    // Test A: explicit type annotations — baseline.
+    #[test]
+    fn v2_element_build_explicit() {
+        let node = create_element::<Element>(
+            {
+                let mut init: ElementPropSchema = Default::default();
+                init.style = Some({
+                    let mut s: ElementStylePropSchema = Default::default();
+                    s.background_color = Some(Box::new(crate::Color::hex("#000000")));
+                    s
+                });
+                init
+            },
+            Vec::new(),
+            None,
+        );
+        match node {
+            RsxNode::Element(_) => {}
+            _ => panic!("expected element node"),
+        }
+    }
+
+    // Test B: phantom-guided inference, no type name appears.
+    #[test]
+    fn v2_element_build_inferred() {
+        let node = create_element::<Element>(
+            {
+                let mut init: ElementPropSchema = Default::default();
+                init.style = Some({
+                    let mut s = __rsx_default_from_phantom(__rsx_infer_inner_option(&init.style));
+                    s.background_color = Some(Box::new(crate::Color::hex("#000000")));
+                    s
+                });
+                init
+            },
+            Vec::new(),
+            None,
+        );
+        match node {
+            RsxNode::Element(_) => {}
+            _ => panic!("expected element node"),
+        }
+    }
+
+    // Test C: nested hover — phantom fallback all the way.
+    #[test]
+    fn v2_element_build_inferred_nested_hover() {
+        let node = create_element::<Element>(
+            {
+                let mut init: ElementPropSchema = Default::default();
+                init.style = Some({
+                    let mut s = __rsx_default_from_phantom(__rsx_infer_inner_option(&init.style));
+                    s.background_color = Some(Box::new(crate::Color::hex("#111111")));
+                    s.hover = Some({
+                        let mut h = __rsx_default_from_phantom(__rsx_infer_inner_option(&s.hover));
+                        h.background_color = Some(Box::new(crate::Color::hex("#222222")));
+                        h
+                    });
+                    s
+                });
+                init
+            },
+            Vec::new(),
+            None,
+        );
+        match node {
+            RsxNode::Element(_) => {}
+            _ => panic!("expected element node"),
+        }
+    }
+
+    // Verified manually: writing `s.not_a_real_field = ...` above produces
+    // `E0609: no field 'not_a_real_field' on type ElementStylePropSchema`.
+    // Compile-time field checks survive the phantom-fallback inference.
+
+    // ---------- rsx! macro end-to-end tests ----------
+    use crate::ui::rsx;
+    use crate::Length;
+
+    #[test]
+    fn rsx_simple_element() {
+        let node = rsx! { <Element /> };
+        match node {
+            RsxNode::Element(_) => {}
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn rsx_element_with_style_object() {
+        let node = rsx! {
+            <Element style={{
+                width: Length::px(100.0),
+                background_color: crate::Color::hex("#111111"),
+            }}>
+                <Element />
+                <Element />
+            </Element>
+        };
+        match node {
+            RsxNode::Element(ref el) => {
+                assert_eq!(el.children.len(), 2);
+            }
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn rsx_nested_hover_object() {
+        let node = rsx! {
+            <Element style={{
+                background_color: crate::Color::hex("#111111"),
+                hover: {
+                    background_color: crate::Color::hex("#222222"),
+                },
+            }} />
+        };
+        match node {
+            RsxNode::Element(_) => {}
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn bench_v1_v2_produce_equivalent_output() {
+        let a = super::v2_bench::bench_v1_20();
+        let b = super::v2_bench::bench_v2_20();
+        match (&a, &b) {
+            (RsxNode::Element(ae), RsxNode::Element(be)) => {
+                assert_eq!(ae.children.len(), be.children.len());
+            }
+            _ => panic!("expected elements"),
+        }
+    }
+
+    // ---------- #[component] + rsx end-to-end ----------
+
+    #[crate::ui::component]
+    pub fn V2PanelLabel(text: String, color: Option<crate::Color>) -> RsxNode {
+        // Render path doesn't matter for this test; just return an empty element.
+        // Intentionally use old `rsx!` inside component body to confirm
+        // v1 body still compiles within a v2-tagged component.
+        let _ = text;
+        let _ = color;
+        crate::ui::rsx! { <Element /> }
+    }
+
+    #[crate::ui::component]
+    pub fn V2ContainerOnly(children: Vec<RsxNode>) -> RsxNode {
+        crate::ui::rsx! { <Element>{children}</Element> }
+    }
+
+    #[test]
+    fn rsx_user_component_with_required_prop() {
+        let node = rsx! {
+            <V2PanelLabel text={"hello".to_string()} />
+        };
+        match node {
+            RsxNode::Element(_) => {}
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn rsx_user_component_optional_prop() {
+        let node = rsx! {
+            <V2PanelLabel
+                text={"greet".to_string()}
+                color={crate::Color::hex("#aabbcc")} />
+        };
+        match node {
+            RsxNode::Element(_) => {}
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "missing required prop `text`")]
+    fn rsx_user_component_missing_required_panics() {
+        // Bypass the rsx macro; directly construct init struct and feed to
+        // create_element to hit the From impl panic path.
+        let init: <V2PanelLabel as crate::ui::RsxTag>::Props = Default::default();
+        let _ = crate::ui::create_element::<V2PanelLabel>(init, Vec::new(), None);
+    }
+
+    #[test]
+    fn rsx_user_component_with_children() {
+        let node = rsx! {
+            <V2ContainerOnly>
+                <Element />
+                <Element />
+                <Element />
+            </V2ContainerOnly>
+        };
+        // V2ContainerOnly's body `rsx! { <Element>{children}</Element> }` flattens
+        // the Vec<RsxNode> into the outer Element's children via IntoRsxChildren,
+        // so the returned element has 3 children.
+        match node {
+            RsxNode::Element(ref el) => assert_eq!(el.children.len(), 3),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn rsx_text_with_literal() {
+        let node = rsx! {
+            <Element>
+                <Text>{"hello"}</Text>
+            </Element>
+        };
+        match node {
+            RsxNode::Element(ref el) => assert_eq!(el.children.len(), 1),
+            _ => panic!(),
+        }
+    }
+
+    // Test D: 4000 siblings via new path — share single monomorphization.
+    #[test]
+    fn v2_element_4000_siblings() {
+        let mut children = Vec::with_capacity(4000);
+        for _ in 0..4000 {
+            children.push(create_element::<Element>(
+                Default::default(),
+                Vec::new(),
+                None,
+            ));
+        }
+        let root = create_element::<Element>(Default::default(), children, None);
+        match root {
+            RsxNode::Element(ref el) => assert_eq!(el.children.len(), 4000),
+            _ => panic!(),
+        }
+    }
 }
 
-impl RsxChildrenPolicy for TextArea {
-    const ACCEPTS_CHILDREN: bool = true;
+// ---------- v2 path: trivial RsxTag for all-Option schemas ----------
+macro_rules! impl_rsx_tag_v2_trivial {
+    ($tag:ty, $props:ty, $accepts:expr) => {
+        impl crate::ui::RsxTag for $tag {
+            type Props = $props;
+            type StrictProps = $props;
+            const ACCEPTS_CHILDREN: bool = $accepts;
+
+            fn into_strict(props: Self::Props) -> Self::StrictProps {
+                props
+            }
+
+            fn create_node(
+                props: Self::StrictProps,
+                children: Vec<RsxNode>,
+                _key: Option<crate::ui::RsxKey>,
+            ) -> RsxNode {
+                <$tag as RsxComponent<$props>>::render(props, children)
+            }
+        }
+    };
 }
 
-impl RsxChildrenPolicy for Image {
+impl_rsx_tag_v2_trivial!(Element, ElementPropSchema, true);
+impl_rsx_tag_v2_trivial!(Text, TextPropSchema, true);
+impl_rsx_tag_v2_trivial!(TextArea, TextAreaPropSchema, true);
+
+// ---------- v2 path: Init struct pattern for tags with required props ----------
+#[doc(hidden)]
+pub struct __ImagePropsInit {
+    pub source: Option<ImageSource>,
+    pub style: Option<ElementStylePropSchema>,
+    pub fit: Option<ImageFit>,
+    pub sampling: Option<ImageSampling>,
+    pub loading: Option<RsxNode>,
+    pub error: Option<RsxNode>,
+}
+
+impl Default for __ImagePropsInit {
+    fn default() -> Self {
+        Self {
+            source: None,
+            style: None,
+            fit: None,
+            sampling: None,
+            loading: None,
+            error: None,
+        }
+    }
+}
+
+impl From<__ImagePropsInit> for ImagePropSchema {
+    fn from(i: __ImagePropsInit) -> Self {
+        Self {
+            source: i
+                .source
+                .expect("missing required prop `source` on <Image>"),
+            style: i.style,
+            fit: i.fit,
+            sampling: i.sampling,
+            loading: i.loading,
+            error: i.error,
+        }
+    }
+}
+
+impl crate::ui::RsxTag for Image {
+    type Props = __ImagePropsInit;
+    type StrictProps = ImagePropSchema;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<RsxNode>,
+        _key: Option<crate::ui::RsxKey>,
+    ) -> RsxNode {
+        <Image as RsxComponent<ImagePropSchema>>::render(props, children)
+    }
 }
 
-impl RsxChildrenPolicy for Svg {
+#[doc(hidden)]
+pub struct __SvgPropsInit {
+    pub source: Option<SvgSource>,
+    pub style: Option<ElementStylePropSchema>,
+    pub fit: Option<ImageFit>,
+    pub sampling: Option<ImageSampling>,
+    pub loading: Option<RsxNode>,
+    pub error: Option<RsxNode>,
+}
+
+impl Default for __SvgPropsInit {
+    fn default() -> Self {
+        Self {
+            source: None,
+            style: None,
+            fit: None,
+            sampling: None,
+            loading: None,
+            error: None,
+        }
+    }
+}
+
+impl From<__SvgPropsInit> for SvgPropSchema {
+    fn from(i: __SvgPropsInit) -> Self {
+        Self {
+            source: i
+                .source
+                .expect("missing required prop `source` on <Svg>"),
+            style: i.style,
+            fit: i.fit,
+            sampling: i.sampling,
+            loading: i.loading,
+            error: i.error,
+        }
+    }
+}
+
+impl crate::ui::RsxTag for Svg {
+    type Props = __SvgPropsInit;
+    type StrictProps = SvgPropSchema;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<RsxNode>,
+        _key: Option<crate::ui::RsxKey>,
+    ) -> RsxNode {
+        <Svg as RsxComponent<SvgPropSchema>>::render(props, children)
+    }
 }
 
 fn into_shared_prop_value<T: 'static>(value: T) -> crate::ui::PropValue {

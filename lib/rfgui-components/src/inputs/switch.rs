@@ -1,6 +1,6 @@
 use crate::use_theme;
 use rfgui::ui::{
-    Binding, RsxChildrenPolicy, RsxComponent, RsxNode, on_click, props, rsx, use_state,
+    Binding, RsxComponent, RsxNode, on_click, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{Align, Layout, Length, Operator, Transition, TransitionProperty};
@@ -114,6 +114,20 @@ impl RsxComponent<SwitchProps> for Switch {
     }
 }
 
-impl RsxChildrenPolicy for Switch {
+impl rfgui::ui::RsxTag for Switch {
+    type Props = __SwitchPropsInit;
+    type StrictProps = SwitchProps;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<SwitchProps>>::render(props, children)
+    }
 }

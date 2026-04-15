@@ -8,6 +8,10 @@ use rfgui::Repeat::Infinite;
 use rfgui::{Animation, Animator, FillMode, Keyframe, ScrollDirection};
 use rfgui_components::Accordion;
 
+fn select_value_identity(item: &String, _: usize) -> String {
+    item.clone()
+}
+
 fn select_label(item: &String, _: usize) -> String {
     item.clone()
 }
@@ -102,14 +106,14 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
                 </Element>
             </Accordion>
             <Accordion title="Number Field">
-                <NumberField
+                <NumberField::<i32>
                     binding={int_number.binding()}
                     min=0
                     max=100
                     step=1
                     label="I32 Number"
                 />
-                <NumberField
+                <NumberField::<f64>
                     binding={float_number.binding()}
                     min=0.0
                     max=100.0
@@ -173,10 +177,10 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
                 binding={switch_state.binding()}
             />
 
-            <Select
+            <Select::<String, String>
                 data={options}
-                to_label={select_label}
-                to_value={|item, _| item.clone()}
+                to_label={select_label as fn(&String, usize) -> String}
+                to_value={select_value_identity as fn(&String, usize) -> String}
                 value={selected.binding()}
             />
             <Slider

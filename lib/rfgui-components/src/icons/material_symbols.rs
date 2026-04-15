@@ -1,4 +1,4 @@
-use rfgui::ui::{RsxChildrenPolicy, RsxComponent, RsxNode, build_typed_prop, props, rsx};
+use rfgui::ui::{RsxComponent, RsxNode, props, rsx};
 use rfgui::view::{Element, ElementStylePropSchema, Text};
 use rfgui::{FontFamily, FontSize, TextWrap, register_font_bytes};
 use std::sync::Once;
@@ -31,8 +31,22 @@ impl RsxComponent<MaterialSymbolIconProps> for MaterialSymbolIcon {
     }
 }
 
-impl RsxChildrenPolicy for MaterialSymbolIcon {
+impl rfgui::ui::RsxTag for MaterialSymbolIcon {
+    type Props = __MaterialSymbolIconPropsInit;
+    type StrictProps = MaterialSymbolIconProps;
     const ACCEPTS_CHILDREN: bool = true;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> RsxNode {
+        <Self as RsxComponent<MaterialSymbolIconProps>>::render(props, children)
+    }
 }
 
 pub fn ensure_material_symbols_outlined_registered() {
@@ -57,7 +71,7 @@ pub(crate) fn render_material_symbol_icon(
 }
 
 fn material_symbol_icon_style(style: Option<ElementStylePropSchema>) -> ElementStylePropSchema {
-    let mut style = style.unwrap_or_else(|| build_typed_prop::<ElementStylePropSchema, _>(|_| {}));
+    let mut style = style.unwrap_or_default();
     if style.font.is_none() {
         style.font = Some(FontFamily::new([MATERIAL_SYMBOLS_OUTLINED_FONT_FAMILY]));
     }

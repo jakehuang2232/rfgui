@@ -1967,11 +1967,11 @@ mod tests {
     }
 
     fn empty_element_style() -> ElementStylePropSchema {
-        crate::ui::build_typed_prop::<ElementStylePropSchema, _>(|_| {})
+        ElementStylePropSchema::default()
     }
 
     fn empty_text_style() -> TextStylePropSchema {
-        crate::ui::build_typed_prop::<TextStylePropSchema, _>(|_| {})
+        TextStylePropSchema::default()
     }
 
     #[test]

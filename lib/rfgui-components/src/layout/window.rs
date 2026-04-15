@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::use_theme;
 use rfgui::ClipMode::Viewport;
 use rfgui::ui::{
-    BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp, RsxChildrenPolicy,
+    BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp,
     RsxComponent, RsxNode, ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
@@ -253,8 +253,22 @@ impl RsxComponent<WindowProps> for Window {
     }
 }
 
-impl RsxChildrenPolicy for Window {
+impl rfgui::ui::RsxTag for Window {
+    type Props = __WindowPropsInit;
+    type StrictProps = WindowProps;
     const ACCEPTS_CHILDREN: bool = true;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<WindowProps>>::render(props, children)
+    }
 }
 
 #[rfgui::ui::component]
