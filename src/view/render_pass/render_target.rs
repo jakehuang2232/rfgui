@@ -125,9 +125,10 @@ pub(crate) struct OffscreenRenderTargetPool {
 }
 
 impl OffscreenRenderTargetPool {
-    const MAX_ENTRIES: usize = 128;
-    const MAX_TOTAL_PIXELS: u64 = 32_000_000;
-    const EVICT_UNUSED_AFTER_FRAMES: u64 = 180;
+    const MAX_ENTRIES: usize = 64;
+    const MAX_TOTAL_PIXELS: u64 = 16_000_000;
+    /// ~1 s @60 fps (Chromium tile manager evicts after 1 s idle).
+    const EVICT_UNUSED_AFTER_FRAMES: u64 = 60;
 
     pub fn new() -> Self {
         Self {

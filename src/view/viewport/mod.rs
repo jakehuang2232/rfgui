@@ -44,8 +44,7 @@ use crate::view::promotion_builder::{
 };
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 use crate::{
-    ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style, Transform,
-    TransformOrigin,
+    ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style,
 };
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -59,7 +58,7 @@ use wgpu::{
 
 pub(crate) use self::debug::{
     DebugReusePathContext, DebugReusePathRecord, begin_debug_reuse_path_frame,
-    record_debug_reuse_path,
+    record_debug_reuse_path, set_debug_trace_enabled,
 };
 use self::debug::{
     DebugStyleSampleRecord, PostLayoutTransitionResult, TraceRenderNode, build_compile_trace_nodes,
@@ -69,7 +68,7 @@ use self::debug::{
     format_style_promotion_trace, format_style_request_trace, format_style_sample_trace,
     format_style_value, format_trace_render_tree, record_debug_style_promotion,
     record_debug_style_request, record_debug_style_sample, record_debug_style_sample_record,
-    snapshot_debug_reuse_path, snapshot_debug_style_sample_records, style_field_requires_relayout,
+    take_debug_reuse_path, take_debug_style_sample_records, style_field_requires_relayout,
     trace_promoted_build_frame_marker,
 };
 pub use self::frame::FrameParts;
@@ -427,8 +426,11 @@ pub(super) struct SampledTextureEntry {
 impl Viewport {
     const DEFAULT_MSAA_SAMPLE_COUNT: u32 = 4;
     const PROMOTED_REUSE_COOLDOWN_FRAMES: u8 = 2;
-    const SAMPLED_TEXTURE_PRESSURE_BYTES: u64 = 128 * 1024 * 1024;
-    const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 96 * 1024 * 1024;
+    /// Skia GrResourceCache default: 96 MB.
+    const SAMPLED_TEXTURE_PRESSURE_BYTES: u64 = 96 * 1024 * 1024;
+    const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 72 * 1024 * 1024;
+    /// Evict unreferenced textures idle for this many ticks (~5 s @60 fps).
+    const SAMPLED_TEXTURE_STALE_TICKS: u64 = 300;
 
     fn normalize_msaa_sample_count(sample_count: u32) -> u32 {
         match sample_count {

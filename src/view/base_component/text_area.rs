@@ -101,7 +101,6 @@ struct TextAreaRenderFragment {
     content_y: f32,
     width: f32,
     height: f32,
-    layout_buffer: Option<GlyphBuffer>,
 }
 
 struct TextAreaProjectionNode {
@@ -169,6 +168,28 @@ pub struct TextArea {
 
 thread_local! {
     static SHARED_TEXT_AREA_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(create_font_system());
+    static GLYPH_BUFFER_POOL: RefCell<Vec<GlyphBuffer>> = RefCell::new(Vec::new());
+}
+
+const GLYPH_BUFFER_POOL_MAX: usize = 8;
+
+/// Take a `GlyphBuffer` from the thread-local pool, or create a new one.
+fn take_pooled_glyph_buffer(font_system: &mut FontSystem, font_size: f32, line_height: f32) -> GlyphBuffer {
+    let mut buffer = GLYPH_BUFFER_POOL.with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_else(|| GlyphBuffer::new(font_system, Metrics::new(font_size, font_size * line_height)));
+    buffer.set_metrics(font_system, Metrics::new(font_size, font_size * line_height));
+    buffer
+}
+
+/// Return a `GlyphBuffer` to the pool for reuse.
+fn return_pooled_glyph_buffer(buffer: GlyphBuffer) {
+    GLYPH_BUFFER_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < GLYPH_BUFFER_POOL_MAX {
+            pool.push(buffer);
+        }
+        // else: drop the buffer, pool is full
+    });
 }
 
 #[derive(Clone, Debug)]
@@ -1184,34 +1205,49 @@ impl TextArea {
             return 0.0;
         }
 
-        if let Some(buffer) = fragment.layout_buffer.as_ref() {
-            let mut buffer = buffer.clone();
+        let text = match &fragment.kind {
+            TextAreaRenderFragmentKind::Text(text)
+            | TextAreaRenderFragmentKind::Preedit(text) => text.as_str(),
+            TextAreaRenderFragmentKind::Projection(_) => "",
+        };
+        if !text.is_empty() {
+            let font_size = self.font_size;
+            let line_height = self.line_height;
+            let font_families = &self.font_families;
             let local_char = cursor_char.clamp(start, end).saturating_sub(start);
-            let text = match &fragment.kind {
-                TextAreaRenderFragmentKind::Text(text)
-                | TextAreaRenderFragmentKind::Preedit(text) => text.as_str(),
-                TextAreaRenderFragmentKind::Projection(_) => "",
-            };
             let caret_byte = byte_index_at_char(text, local_char.min(text.chars().count()));
             let (cursor_line, cursor_index) = line_and_index_from_byte(text, caret_byte);
-            for affinity in [Affinity::Before, Affinity::After] {
-                let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
-                let Some(layout_cursor) = Self::with_shared_font_system(|font_system| {
-                    buffer.layout_cursor(font_system, cursor)
-                }) else {
-                    continue;
-                };
-                if layout_cursor.line != cursor_line {
-                    continue;
-                }
-                if let Some(run) = find_layout_run_by_line_layout(
-                    &buffer,
-                    layout_cursor.line,
-                    layout_cursor.layout,
-                ) && let Some(x) = caret_x_in_layout_run(cursor_index, &run)
-                {
-                    return x;
-                }
+            let result = Self::with_pooled_text_buffer(
+                text,
+                font_size,
+                line_height,
+                font_families,
+                |buffer, font_system| {
+                    for affinity in [Affinity::Before, Affinity::After] {
+                        let cursor =
+                            Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
+                        let Some(layout_cursor) =
+                            buffer.layout_cursor(font_system, cursor)
+                        else {
+                            continue;
+                        };
+                        if layout_cursor.line != cursor_line {
+                            continue;
+                        }
+                        if let Some(run) = find_layout_run_by_line_layout(
+                            buffer,
+                            layout_cursor.line,
+                            layout_cursor.layout,
+                        ) && let Some(x) = caret_x_in_layout_run(cursor_index, &run)
+                        {
+                            return Some(x);
+                        }
+                    }
+                    None
+                },
+            );
+            if let Some(x) = result {
+                return x;
             }
         }
 
@@ -1563,7 +1599,6 @@ impl TextArea {
                 content_y: 0.0,
                 width: 0.0,
                 height: 0.0,
-                layout_buffer: None,
             });
             cursor = projection.range.end;
         }
@@ -1635,7 +1670,6 @@ impl TextArea {
                     content_y: 0.0,
                     width: 0.0,
                     height: 0.0,
-                    layout_buffer: None,
                 });
             }
             cursor = projection.end;
@@ -1805,18 +1839,15 @@ impl TextArea {
             let (fragment_width, fragment_height) = match &fragment.kind {
                 TextAreaRenderFragmentKind::Text(text)
                 | TextAreaRenderFragmentKind::Preedit(text) => {
-                    let buffer = Self::build_render_text_buffer_with_style(
+                    let measured = Self::measure_text_with_pool(
                         text.as_str(),
                         font_size,
                         line_height_ratio,
                         &font_families,
                     );
-                    let measured = measure_buffer_size(&buffer);
-                    fragment.layout_buffer = Some(buffer);
                     (measured.0, measured.1)
                 }
                 TextAreaRenderFragmentKind::Projection(index) => {
-                    fragment.layout_buffer = None;
                     let Some(node) = self.render_nodes.get_mut(*index) else {
                         continue;
                     };
@@ -2022,25 +2053,54 @@ impl TextArea {
         })
     }
 
-    fn build_render_text_buffer_with_style(
+    /// Measure text dimensions using a pooled GlyphBuffer (no allocation if pool non-empty).
+    fn measure_text_with_pool(
         text: &str,
         font_size: f32,
         line_height: f32,
         font_families: &[String],
-    ) -> GlyphBuffer {
+    ) -> (f32, f32) {
         Self::with_shared_font_system(|font_system| {
-            build_text_buffer(
-                font_system,
-                text,
-                None,
-                None,
-                false,
-                font_size,
-                line_height,
-                400,
-                Align::Left,
-                font_families,
-            )
+            let mut buffer = take_pooled_glyph_buffer(font_system, font_size, line_height);
+            let content = if text.is_empty() { " " } else { text };
+            let attrs = if let Some(first) = font_families.first() {
+                Attrs::new().family(Family::Name(first.as_str()))
+            } else {
+                Attrs::new()
+            };
+            buffer.set_wrap(font_system, Wrap::WordOrGlyph);
+            buffer.set_size(font_system, None, None);
+            buffer.set_text(font_system, content, &attrs, Shaping::Advanced, Some(Align::Left));
+            buffer.shape_until_scroll(font_system, false);
+            let measured = measure_buffer_size(&buffer);
+            return_pooled_glyph_buffer(buffer);
+            measured
+        })
+    }
+
+    /// Build a temporary GlyphBuffer from pool for hit testing, returning it after use.
+    fn with_pooled_text_buffer<R>(
+        text: &str,
+        font_size: f32,
+        line_height: f32,
+        font_families: &[String],
+        f: impl FnOnce(&mut GlyphBuffer, &mut FontSystem) -> R,
+    ) -> R {
+        Self::with_shared_font_system(|font_system| {
+            let mut buffer = take_pooled_glyph_buffer(font_system, font_size, line_height);
+            let content = if text.is_empty() { " " } else { text };
+            let attrs = if let Some(first) = font_families.first() {
+                Attrs::new().family(Family::Name(first.as_str()))
+            } else {
+                Attrs::new()
+            };
+            buffer.set_wrap(font_system, Wrap::WordOrGlyph);
+            buffer.set_size(font_system, None, None);
+            buffer.set_text(font_system, content, &attrs, Shaping::Advanced, Some(Align::Left));
+            buffer.shape_until_scroll(font_system, false);
+            let result = f(&mut buffer, font_system);
+            return_pooled_glyph_buffer(buffer);
+            result
         })
     }
 
@@ -3343,7 +3403,6 @@ fn append_plain_render_fragments(
         content_y: 0.0,
         width: 0.0,
         height: 0.0,
-        layout_buffer: None,
     });
 }
 
@@ -3362,7 +3421,6 @@ fn append_preedit_render_fragment(
         content_y: 0.0,
         width: 0.0,
         height: 0.0,
-        layout_buffer: None,
     });
 }
 

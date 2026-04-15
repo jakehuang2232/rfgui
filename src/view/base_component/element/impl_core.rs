@@ -454,10 +454,7 @@ impl Element {
             scrollbar_drag: None,
             last_scrollbar_interaction: None,
             scrollbar_shadow_blur_radius: 3.0,
-            pending_style_transition_requests: Vec::new(),
-            pending_animation_requests: Vec::new(),
-            pending_layout_transition_requests: Vec::new(),
-            pending_visual_transition_requests: Vec::new(),
+            transition_requests: None,
             last_started_animator: None,
             has_style_snapshot: false,
             has_layout_snapshot: false,
@@ -474,16 +471,7 @@ impl Element {
             layout_assigned_width: None,
             layout_assigned_height: None,
             is_hovered: false,
-            mouse_down_handlers: Vec::new(),
-            mouse_up_handlers: Vec::new(),
-            mouse_move_handlers: Vec::new(),
-            mouse_enter_handlers: Vec::new(),
-            mouse_leave_handlers: Vec::new(),
-            click_handlers: Vec::new(),
-            key_down_handlers: Vec::new(),
-            key_up_handlers: Vec::new(),
-            focus_handlers: Vec::new(),
-            blur_handlers: Vec::new(),
+            event_handlers: None,
             layout_dirty: true,
             dirty_flags: DirtyFlags::ALL,
             last_layout_placement: None,
@@ -825,7 +813,8 @@ impl Element {
     }
 
     pub fn apply_style(&mut self, style: Style) {
-        self.parsed_style = self.parsed_style.clone() + style;
+        let base = std::mem::take(&mut self.parsed_style);
+        self.parsed_style = base + style;
         self.recompute_style();
     }
 
@@ -835,15 +824,19 @@ impl Element {
 
     fn recompute_style(&mut self) {
         let previous_snapshot = self.has_style_snapshot.then(|| self.capture_style_snapshot());
+        let old_computed = self.computed_style.clone();
+        let merged_hover;
         let effective_style = if self.is_hovered {
-            match self.parsed_style.hover() {
-                Some(hover_style) => self.parsed_style.clone() + hover_style.clone(),
-                None => self.parsed_style.clone(),
+            if let Some(hover_style) = self.parsed_style.hover() {
+                merged_hover = self.parsed_style.clone() + hover_style.clone();
+                &merged_hover
+            } else {
+                &self.parsed_style
             }
         } else {
-            self.parsed_style.clone()
+            &self.parsed_style
         };
-        self.computed_style = compute_style(&effective_style, None);
+        self.computed_style = compute_style(effective_style, None);
         if let Some(previous_snapshot) = previous_snapshot.as_ref() {
             self.collect_style_transition_requests(&previous_snapshot);
         }
@@ -853,7 +846,11 @@ impl Element {
         }
         self.sync_animator_requests();
         self.has_style_snapshot = true;
-        self.mark_layout_dirty();
+        if !old_computed.layout_eq(&self.computed_style) {
+            self.mark_layout_dirty();
+        } else if old_computed != self.computed_style {
+            self.mark_place_dirty();
+        }
     }
 
     fn sync_animator_requests(&mut self) {
@@ -864,7 +861,7 @@ impl Element {
         let animator = next_animator
             .clone()
             .unwrap_or_else(|| crate::Animator::from_vec(Vec::new()));
-        self.pending_animation_requests
+        self.transition_requests.get_or_insert_with(Default::default).animation
             .push(crate::transition::AnimationRequest {
                 target: self.core.id,
                 animator,
@@ -874,13 +871,13 @@ impl Element {
 
     fn preserve_transform_transition_baseline(&mut self, previous: &ElementStyleSnapshot) {
         let preserve_transform = self
-            .pending_style_transition_requests
-            .iter()
-            .any(|request| request.field == StyleField::Transform);
+            .transition_requests
+            .as_ref()
+            .is_some_and(|r| r.style.iter().any(|req| req.field == StyleField::Transform));
         let preserve_transform_origin = self
-            .pending_style_transition_requests
-            .iter()
-            .any(|request| request.field == StyleField::TransformOrigin);
+            .transition_requests
+            .as_ref()
+            .is_some_and(|r| r.style.iter().any(|req| req.field == StyleField::TransformOrigin));
 
         if preserve_transform {
             self.transform = previous.transform.clone();
@@ -904,7 +901,7 @@ impl Element {
             match transition.property {
                 TransitionProperty::All => {
                     for field in &changed_fields {
-                        self.pending_style_transition_requests.push(StyleTrackRequest {
+                        self.transition_requests.get_or_insert_with(Default::default).style.push(StyleTrackRequest {
                             target: self.core.id,
                             field: *field,
                             from: previous.value_for(*field),
@@ -915,7 +912,7 @@ impl Element {
                 }
                 TransitionProperty::Opacity => {
                     if changed_fields.contains(&StyleField::Opacity) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Opacity,
@@ -930,7 +927,7 @@ impl Element {
                 }
                 TransitionProperty::BorderRadius => {
                     if changed_fields.contains(&StyleField::BorderRadius) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderRadius,
@@ -945,7 +942,7 @@ impl Element {
                 }
                 TransitionProperty::BackgroundColor => {
                     if changed_fields.contains(&StyleField::BackgroundColor) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BackgroundColor,
@@ -960,7 +957,7 @@ impl Element {
                 }
                 TransitionProperty::Color => {
                     if changed_fields.contains(&StyleField::Color) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Color,
@@ -975,7 +972,7 @@ impl Element {
                 }
                 TransitionProperty::BoxShadow => {
                     if changed_fields.contains(&StyleField::BoxShadow) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BoxShadow,
@@ -990,7 +987,7 @@ impl Element {
                 }
                 TransitionProperty::Transform => {
                     if changed_fields.contains(&StyleField::Transform) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Transform,
@@ -1005,7 +1002,7 @@ impl Element {
                 }
                 TransitionProperty::TransformOrigin => {
                     if changed_fields.contains(&StyleField::TransformOrigin) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::TransformOrigin,
@@ -1020,7 +1017,7 @@ impl Element {
                 }
                 TransitionProperty::BorderColor => {
                     if changed_fields.contains(&StyleField::BorderTopColor) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderTopColor,
@@ -1033,7 +1030,7 @@ impl Element {
                             });
                     }
                     if changed_fields.contains(&StyleField::BorderRightColor) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderRightColor,
@@ -1046,7 +1043,7 @@ impl Element {
                             });
                     }
                     if changed_fields.contains(&StyleField::BorderBottomColor) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderBottomColor,
@@ -1059,7 +1056,7 @@ impl Element {
                             });
                     }
                     if changed_fields.contains(&StyleField::BorderLeftColor) {
-                        self.pending_style_transition_requests
+                        self.transition_requests.get_or_insert_with(Default::default).style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BorderLeftColor,

@@ -146,6 +146,37 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// Returns `true` when all layout-affecting (measure-pass) fields match.
+    ///
+    /// Position insets (left/top/right/bottom), colors, opacity, transform,
+    /// border-radius, cursor, box-shadow, transition, and animator are excluded
+    /// because they only affect the place or paint passes.
+    pub fn layout_eq(&self, other: &Self) -> bool {
+        self.layout == other.layout
+            && self.cross_size == other.cross_size
+            && self.align == other.align
+            && self.flex_grow == other.flex_grow
+            && self.flex_shrink == other.flex_shrink
+            && self.flex_basis == other.flex_basis
+            && self.position.mode() == other.position.mode()
+            && self.width == other.width
+            && self.height == other.height
+            && self.min_width == other.min_width
+            && self.min_height == other.min_height
+            && self.max_width == other.max_width
+            && self.max_height == other.max_height
+            && self.margin == other.margin
+            && self.padding == other.padding
+            && self.gap == other.gap
+            && self.scroll_direction == other.scroll_direction
+            && self.font_families == other.font_families
+            && self.font_size == other.font_size
+            && self.font_weight == other.font_weight
+            && self.line_height == other.line_height
+            && self.text_wrap == other.text_wrap
+            && self.border_widths == other.border_widths
+    }
+
     pub const fn layout_axis_direction(&self) -> crate::FlowDirection {
         match self.layout {
             Layout::Flex { direction, .. } | Layout::Flow { direction, .. } => direction,

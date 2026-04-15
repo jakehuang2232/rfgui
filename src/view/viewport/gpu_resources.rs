@@ -120,11 +120,9 @@ impl Viewport {
 
     fn evict_sampled_textures_under_pressure(&mut self) {
         let mut total_bytes = self.total_sampled_texture_bytes();
-        if total_bytes <= Self::SAMPLED_TEXTURE_PRESSURE_BYTES {
-            return;
-        }
 
-        let mut candidates = self
+        // Collect unreferenced candidates with their last-access tick.
+        let mut candidates: Vec<(u64, u64)> = self
             .frame
             .sampled_texture_cache
             .keys()
@@ -133,7 +131,30 @@ impl Viewport {
                     .or_else(|| crate::view::svg_resource::svg_asset_retention_info(*key))?;
                 (retention.ref_count == 0).then_some((*key, retention.last_access_tick))
             })
-            .collect::<Vec<_>>();
+            .collect();
+
+        // --- Time-based eviction (Chromium TileManager-style) ---
+        // Evict stale entries even when under the pressure threshold.
+        if !candidates.is_empty() {
+            let newest_tick = candidates.iter().map(|(_, t)| *t).max().unwrap_or(0);
+            let stale_keys: Vec<u64> = candidates
+                .iter()
+                .filter(|(_, tick)| newest_tick.saturating_sub(*tick) > Self::SAMPLED_TEXTURE_STALE_TICKS)
+                .map(|(key, _)| *key)
+                .collect();
+            for key in &stale_keys {
+                if let Some(entry) = self.frame.sampled_texture_cache.remove(key) {
+                    total_bytes = total_bytes.saturating_sub(entry.byte_size);
+                }
+            }
+            candidates.retain(|(key, _)| !stale_keys.contains(key));
+        }
+
+        // --- Pressure-based eviction (Skia GrResourceCache-style) ---
+        if total_bytes <= Self::SAMPLED_TEXTURE_PRESSURE_BYTES {
+            return;
+        }
+
         candidates.sort_by_key(|(_, tick)| *tick);
 
         for (key, _) in candidates {

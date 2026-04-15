@@ -9,8 +9,10 @@ impl EventTarget for Element {
             event.meta.stop_propagation();
             return;
         }
-        for handler in &mut self.mouse_down_handlers {
-            handler(event, control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.mouse_down {
+                handler(event, control);
+            }
         }
     }
 
@@ -19,8 +21,10 @@ impl EventTarget for Element {
             event.meta.stop_propagation();
             return;
         }
-        for handler in &mut self.mouse_up_handlers {
-            handler(event, control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.mouse_up {
+                handler(event, control);
+            }
         }
     }
 
@@ -33,8 +37,10 @@ impl EventTarget for Element {
             event.meta.stop_propagation();
             return;
         }
-        for handler in &mut self.mouse_move_handlers {
-            handler(event, control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.mouse_move {
+                handler(event, control);
+            }
         }
     }
 
@@ -43,32 +49,42 @@ impl EventTarget for Element {
             event.meta.stop_propagation();
             return;
         }
-        for handler in &mut self.click_handlers {
-            handler(event, control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.click {
+                handler(event, control);
+            }
         }
     }
 
     fn dispatch_key_down(&mut self, event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
-        for handler in &mut self.key_down_handlers {
-            handler(event, _control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.key_down {
+                handler(event, _control);
+            }
         }
     }
 
     fn dispatch_key_up(&mut self, event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {
-        for handler in &mut self.key_up_handlers {
-            handler(event, _control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.key_up {
+                handler(event, _control);
+            }
         }
     }
 
     fn dispatch_focus(&mut self, event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {
-        for handler in &mut self.focus_handlers {
-            handler(event, _control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.focus {
+                handler(event, _control);
+            }
         }
     }
 
     fn dispatch_blur(&mut self, event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {
-        for handler in &mut self.blur_handlers {
-            handler(event, _control);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.blur {
+                handler(event, _control);
+            }
         }
     }
 
@@ -89,14 +105,18 @@ impl EventTarget for Element {
     }
 
     fn dispatch_mouse_enter(&mut self, event: &mut MouseEnterEvent) {
-        for handler in &mut self.mouse_enter_handlers {
-            handler(event);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.mouse_enter {
+                handler(event);
+            }
         }
     }
 
     fn dispatch_mouse_leave(&mut self, event: &mut MouseLeaveEvent) {
-        for handler in &mut self.mouse_leave_handlers {
-            handler(event);
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.mouse_leave {
+                handler(event);
+            }
         }
     }
 
@@ -177,18 +197,26 @@ impl EventTarget for Element {
     }
 
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
-        std::mem::take(&mut self.pending_style_transition_requests)
+        self.transition_requests
+            .as_mut()
+            .map_or_else(Vec::new, |r| std::mem::take(&mut r.style))
     }
 
     fn take_animation_requests(&mut self) -> Vec<crate::transition::AnimationRequest> {
-        std::mem::take(&mut self.pending_animation_requests)
+        self.transition_requests
+            .as_mut()
+            .map_or_else(Vec::new, |r| std::mem::take(&mut r.animation))
     }
 
     fn take_layout_transition_requests(&mut self) -> Vec<LayoutTrackRequest> {
-        std::mem::take(&mut self.pending_layout_transition_requests)
+        self.transition_requests
+            .as_mut()
+            .map_or_else(Vec::new, |r| std::mem::take(&mut r.layout))
     }
 
     fn take_visual_transition_requests(&mut self) -> Vec<VisualTrackRequest> {
-        std::mem::take(&mut self.pending_visual_transition_requests)
+        self.transition_requests
+            .as_mut()
+            .map_or_else(Vec::new, |r| std::mem::take(&mut r.visual))
     }
 }

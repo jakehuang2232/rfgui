@@ -38,7 +38,7 @@ impl Viewport {
             let subtree_signatures =
                 collect_debug_subtree_signatures(roots, &self.compositor.promotion_state.promoted_node_ids);
             let previous_subtree_signatures = &self.compositor.debug_previous_subtree_signatures;
-            let mut sampled_roots = snapshot_debug_style_sample_records()
+            let mut sampled_roots = take_debug_style_sample_records()
                 .into_iter()
                 .filter_map(|record| record.promoted_root.map(|root| (record.target, root)))
                 .collect::<Vec<_>>();

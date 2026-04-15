@@ -56,7 +56,10 @@ impl Viewport {
         }
     }
 
-    fn push_debug_reuse_overlay_geometry(&mut self) {
+    fn push_debug_reuse_overlay_geometry(
+        &mut self,
+        reuse_records: &[DebugReusePathRecord],
+    ) {
         if !self.debug_options.trace_reuse_path {
             return;
         }
@@ -71,7 +74,7 @@ impl Viewport {
             .collect::<HashMap<_, _>>();
         let mut overlay_batches = Vec::new();
         let promoted_node_ids = self.compositor.promotion_state.promoted_node_ids.clone();
-        for record in snapshot_debug_reuse_path() {
+        for record in reuse_records {
             let Some(snapshot) = snapshots_by_id.get(&record.node_id).copied() else {
                 continue;
             };
@@ -274,6 +277,7 @@ impl Viewport {
         now_seconds: f64,
     ) -> bool {
         let frame_start = Instant::now();
+        set_debug_trace_enabled(self.debug_options.trace_reuse_path);
         trace_promoted_build_frame_marker();
         begin_debug_reuse_path_frame();
         let begin_frame_profile = match self.begin_frame() {
@@ -508,7 +512,8 @@ impl Viewport {
                 deferred_node_ids.extend(newly_deferred);
             }
         }
-        self.push_debug_reuse_overlay_geometry();
+        let reuse_records = take_debug_reuse_path();
+        self.push_debug_reuse_overlay_geometry(&reuse_records);
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
             let present_pass = crate::view::render_pass::present_surface_pass::PresentSurfacePass::new(
@@ -590,7 +595,8 @@ impl Viewport {
         }
         crate::view::base_component::set_text_measure_profile_enabled(false);
         if self.debug_options.trace_reuse_path {
-            println!("{}", format_reuse_path_trace());
+            let mut reuse_records = reuse_records;
+            println!("{}", format_reuse_path_trace(&mut reuse_records));
             println!("{}", format_style_request_trace());
             println!("{}", format_style_sample_trace());
             println!("{}", format_style_promotion_trace());
@@ -617,8 +623,7 @@ impl Viewport {
         let root_changed = self.scene.last_rsx_root.as_ref() != Some(root);
         let mut needs_rebuild = state_dirty.needs_rebuild() || root_changed;
         if root_changed
-            && state_dirty.is_redraw_only()
-            && self.try_apply_redraw_only_transform_updates(root)?
+            && self.try_apply_placement_updates(root)?
         {
             needs_rebuild = false;
         }
