@@ -222,17 +222,17 @@ fn wheel_uses_only_topmost_hit_target_ancestry() {
     place_root(&mut foreground, 100.0, 100.0);
 
     let mut viewport = Viewport::new();
-    viewport.ui_roots.push(Box::new(background));
-    viewport.ui_roots.push(Box::new(foreground));
+    viewport.scene.ui_roots.push(Box::new(background));
+    viewport.scene.ui_roots.push(Box::new(foreground));
     viewport.set_mouse_position_viewport(50.0, 50.0);
 
     assert_eq!(
-        Viewport::find_scroll_handler_at_pointer(&viewport.ui_roots, 50.0, 50.0, 0.0, 24.0),
+        Viewport::find_scroll_handler_at_pointer(&viewport.scene.ui_roots, 50.0, 50.0, 0.0, 24.0),
         None
     );
     assert!(!viewport.dispatch_mouse_wheel_event(0.0, 24.0));
     assert_eq!(
-        get_scroll_offset_by_id(viewport.ui_roots[0].as_ref(), background_id),
+        get_scroll_offset_by_id(viewport.scene.ui_roots[0].as_ref(), background_id),
         Some((0.0, 0.0))
     );
 }
@@ -269,20 +269,20 @@ fn wheel_bubbles_to_ancestor_when_child_is_at_scroll_limit() {
     assert_eq!(get_scroll_offset_by_id(&root, root_id), Some((0.0, 0.0)));
 
     let mut viewport = Viewport::new();
-    viewport.ui_roots.push(Box::new(root));
+    viewport.scene.ui_roots.push(Box::new(root));
     viewport.set_mouse_position_viewport(50.0, 50.0);
 
     assert_eq!(
-        Viewport::find_scroll_handler_at_pointer(&viewport.ui_roots, 50.0, 50.0, 0.0, 24.0),
+        Viewport::find_scroll_handler_at_pointer(&viewport.scene.ui_roots, 50.0, 50.0, 0.0, 24.0),
         Some((0, root_id))
     );
     assert!(viewport.dispatch_mouse_wheel_event(0.0, 24.0));
     assert_eq!(
-        get_scroll_offset_by_id(viewport.ui_roots[0].as_ref(), child_id),
+        get_scroll_offset_by_id(viewport.scene.ui_roots[0].as_ref(), child_id),
         Some((0.0, 200.0))
     );
     assert_eq!(
-        get_scroll_offset_by_id(viewport.ui_roots[0].as_ref(), root_id),
+        get_scroll_offset_by_id(viewport.scene.ui_roots[0].as_ref(), root_id),
         Some((0.0, 0.0))
     );
 }
@@ -310,16 +310,16 @@ fn hover_transform_transition_updates_live_element_in_viewport_flow() {
     place_root(&mut root, 240.0, 240.0);
 
     let mut viewport = Viewport::new();
-    viewport.ui_roots.push(Box::new(root));
+    viewport.scene.ui_roots.push(Box::new(root));
 
     let hover_changed = Viewport::sync_hover_visual_only(
-        &mut viewport.ui_roots,
+        &mut viewport.scene.ui_roots,
         &mut viewport.input_state.hovered_node_id,
         Some(child_id),
     );
     assert!(hover_changed);
 
-    let mut roots = std::mem::take(&mut viewport.ui_roots);
+    let mut roots = std::mem::take(&mut viewport.scene.ui_roots);
     let result = viewport.run_post_layout_transitions(&mut roots, 0.5, 0.5);
     assert!(result.redraw_changed);
 
@@ -329,7 +329,7 @@ fn hover_transform_transition_updates_live_element_in_viewport_flow() {
         child.debug_transform(),
         &Transform::new([Translate::x(Length::px(40.0))])
     );
-    viewport.ui_roots = roots;
+    viewport.scene.ui_roots = roots;
 }
 
 fn redraw_only_transform_root(toggle: &Binding<bool>) -> RsxNode {
@@ -360,14 +360,14 @@ fn redraw_only_transform_sync_updates_live_tree_without_rebuild() {
     viewport
         .render_rsx(&first)
         .expect("initial render should succeed");
-    let original_id = viewport.ui_roots[0].id();
+    let original_id = viewport.scene.ui_roots[0].id();
 
     viewport
         .render_rsx(&second)
         .expect("redraw-only transform render should succeed");
 
-    assert_eq!(viewport.ui_roots[0].id(), original_id);
-    let element = element_by_id_mut(viewport.ui_roots[0].as_mut(), original_id)
+    assert_eq!(viewport.scene.ui_roots[0].id(), original_id);
+    let element = element_by_id_mut(viewport.scene.ui_roots[0].as_mut(), original_id)
         .expect("root element should remain live");
     assert_eq!(
         element.debug_transform(),
