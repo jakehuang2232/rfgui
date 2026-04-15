@@ -541,91 +541,6 @@ fn normalize_text(input: &str) -> String {
     out.trim().to_string()
 }
 
-fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
-    let tag = &element.tag;
-    let close_tag = &element.close_tag;
-    let has_children = !element.children.is_empty();
-    let child_appends = element.children.iter().map(expand_child_append);
-    let diagnostics = &element.diagnostics;
-
-    let prop_schema_checks = element
-        .props
-        .iter()
-        .filter(|p| p.key != "key")
-        .map(expand_builder_prop_schema_check);
-    let builder_assignments = element
-        .props
-        .iter()
-        .filter(|p| p.key != "key")
-        .map(|prop| expand_builder_assignment(&element.tag, prop));
-    let component_key = component_key_tokens(element);
-    let children_schema_check = if has_children {
-        quote! {
-            let _: [(); 1] = [(); <#tag as ::rfgui::ui::RsxChildrenPolicy>::ACCEPTS_CHILDREN as usize];
-        }
-    } else {
-        quote! {}
-    };
-    let children_value = if has_children {
-        quote! {{
-            let mut __rsx_children = ::std::vec::Vec::new();
-            #(#child_appends)*
-            __rsx_children
-        }}
-    } else {
-        quote! { ::std::vec::Vec::new() }
-    };
-    quote! {
-        {
-            #(#diagnostics)*
-            let _ = ::core::marker::PhantomData::<#close_tag>;
-            fn __rsx_builder_for_props<__RsxComponentProps>() -> <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::Builder
-            where
-                __RsxComponentProps: ::rfgui::ui::RsxPropsBuilder,
-                #tag: ::rfgui::ui::RsxTag<__RsxComponentProps>,
-            {
-                <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::builder()
-            }
-            fn __rsx_build_props<__RsxComponentProps>(
-                builder: <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::Builder,
-            ) -> ::core::result::Result<__RsxComponentProps, ::std::string::String>
-            where
-                __RsxComponentProps: ::rfgui::ui::RsxPropsBuilder,
-                #tag: ::rfgui::ui::RsxTag<__RsxComponentProps>,
-            {
-                <__RsxComponentProps as ::rfgui::ui::RsxPropsBuilder>::build(builder)
-            }
-            let mut __rsx_props_builder = __rsx_builder_for_props::<_>();
-            #(#prop_schema_checks)*
-            #children_schema_check
-            #(#builder_assignments)*
-            let __rsx_props = __rsx_build_props(__rsx_props_builder)
-                .expect(concat!("rsx build error on <", stringify!(#tag), ">"));
-            ::rfgui::ui::create_tag_element_with_key::<#tag, _, _>(
-                __rsx_props,
-                #children_value,
-                #component_key,
-            )
-        }
-    }
-}
-
-fn expand_child_append(child: &Child) -> proc_macro2::TokenStream {
-    match child {
-        Child::Expr(expr) => {
-            quote! {
-                ::rfgui::ui::append_rsx_child_node(&mut __rsx_children, #expr);
-            }
-        }
-        _ => {
-            let node = expand_node(child);
-            quote! {
-                __rsx_children.push(#node);
-            }
-        }
-    }
-}
-
 fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
     let Some(prop) = element.props.iter().find(|p| p.key == "key") else {
         return quote! { ::core::option::Option::None };
@@ -656,7 +571,7 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
 
 fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
     let struct_ident = &input_struct.ident;
-    let builder_ident = format_ident!("__RsxPropsBuilderFor{}", struct_ident);
+    let init_ident = format_ident!("__{}Init", struct_ident);
     let generics = &input_struct.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -671,13 +586,12 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
         }
     };
 
+    let struct_name_str = struct_ident.to_string();
     let mut default_fields = Vec::new();
-    let mut builder_default_fields = Vec::new();
+    let mut init_fields = Vec::new();
+    let mut init_default_fields = Vec::new();
+    let mut from_init_fields = Vec::new();
     let mut all_optional = true;
-    let mut builder_fields = Vec::new();
-    let mut builder_setters = Vec::new();
-    let mut builder_prop_type_methods = Vec::new();
-    let mut build_fields = Vec::new();
     for field in fields {
         let field_ident = match &field.ident {
             Some(ident) => ident,
@@ -694,131 +608,42 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
             )
             .to_compile_error();
         }
-        builder_fields.push(quote! {
-            pub #field_ident: ::core::option::Option<#field_ty>,
+        let (init_inner, is_already_option) = match option_inner_type(field_ty) {
+            Some(inner) => (inner.clone(), true),
+            None => (field_ty.clone(), false),
+        };
+        init_fields.push(quote! {
+            pub #field_ident: ::core::option::Option<#init_inner>,
         });
-        builder_default_fields.push(quote! {
+        init_default_fields.push(quote! {
             #field_ident: ::core::option::Option::None,
         });
-        if let Some(inner_ty) = option_inner_type(field_ty) {
-            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
-            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
-            builder_prop_type_methods.push(quote! {
-                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#inner_ty> {
-                    ::core::marker::PhantomData
-                }
-
-                pub fn #object_schema_method_ident<F>(&self, _: F)
-                where
-                    F: ::core::ops::FnOnce(&#inner_ty),
-                {}
+        if is_already_option {
+            default_fields.push(quote! {
+                #field_ident: ::core::option::Option::None,
             });
-            if is_style_type(inner_ty) {
-                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
-                let selection_schema_method_ident =
-                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
-                builder_prop_type_methods.push(quote! {
-                    pub fn #style_schema_method_ident<F>(&self, _: F)
-                    where
-                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
-                        ),
-                    {}
-
-                    pub fn #selection_schema_method_ident<F>(&self, _: F)
-                    where
-                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
-                        ),
-                    {}
-                });
-            }
-            default_fields.push(quote! { #field_ident: ::core::option::Option::None, });
-            if is_fn_pointer_type(inner_ty) {
-                builder_setters.push(quote! {
-                    pub fn #field_ident(&mut self, value: #inner_ty) {
-                        self.#field_ident = ::core::option::Option::Some(::core::option::Option::Some(value));
-                    }
-                });
-            } else {
-                builder_setters.push(quote! {
-                    pub fn #field_ident<V>(&mut self, value: V)
-                    where
-                        V: ::rfgui::ui::IntoOptionalProp<#inner_ty>,
-                    {
-                        self.#field_ident = ::core::option::Option::Some(value.into_optional_prop());
-                    }
-                });
-            }
-            build_fields.push(quote! {
-                #field_ident: builder.#field_ident.unwrap_or(::core::option::Option::None),
+            from_init_fields.push(quote! {
+                #field_ident: __init.#field_ident,
             });
         } else {
-            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
-            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
-            builder_prop_type_methods.push(quote! {
-                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#field_ty> {
-                    ::core::marker::PhantomData
-                }
-
-                pub fn #object_schema_method_ident<F>(&self, _: F)
-                where
-                    F: ::core::ops::FnOnce(&#field_ty),
-                {}
-            });
-            if is_style_type(field_ty) {
-                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
-                let selection_schema_method_ident =
-                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
-                builder_prop_type_methods.push(quote! {
-                    pub fn #style_schema_method_ident<F>(&self, _: F)
-                    where
-                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
-                        ),
-                    {}
-
-                    pub fn #selection_schema_method_ident<F>(&self, _: F)
-                    where
-                        #struct_ident: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<<#struct_ident as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
-                        ),
-                    {}
-                });
-            }
             all_optional = false;
-            if is_fn_pointer_type(field_ty) {
-                builder_setters.push(quote! {
-                    pub fn #field_ident(&mut self, value: #field_ty) {
-                        self.#field_ident = ::core::option::Option::Some(value);
-                    }
-                });
-            } else {
-                builder_setters.push(quote! {
-                    pub fn #field_ident<V>(&mut self, value: V)
-                    where
-                        V: ::core::convert::Into<#field_ty>,
-                    {
-                        self.#field_ident = ::core::option::Option::Some(value.into());
-                    }
-                });
-            }
             let field_name = field_ident.to_string();
-            build_fields.push(quote! {
-                #field_ident: builder.#field_ident.ok_or_else(|| {
-                    format!("missing required prop `{}` on <{}>", #field_name, stringify!(#struct_ident))
-                })?,
+            from_init_fields.push(quote! {
+                #field_ident: __init.#field_ident.expect(concat!(
+                    "missing required prop `",
+                    #field_name,
+                    "` on <",
+                    #struct_name_str,
+                    ">"
+                )),
             });
         }
     }
+
     let optional_default_impl = if all_optional {
         quote! {
-            impl #impl_generics ::rfgui::ui::OptionalDefault for #struct_ident #ty_generics #where_clause {
-                fn optional_default() -> Self {
+            impl #impl_generics ::core::default::Default for #struct_ident #ty_generics #where_clause {
+                fn default() -> Self {
                     Self {
                         #(#default_fields)*
                     }
@@ -828,38 +653,28 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
     } else {
         quote! {}
     };
+
     quote! {
         #input_struct
 
         #[doc(hidden)]
-        pub struct #builder_ident #generics {
-            #(#builder_fields)*
+        pub struct #init_ident #generics {
+            #(#init_fields)*
         }
 
-        impl #impl_generics ::core::default::Default for #builder_ident #ty_generics #where_clause {
+        impl #impl_generics ::core::default::Default for #init_ident #ty_generics #where_clause {
             fn default() -> Self {
                 Self {
-                    #(#builder_default_fields)*
+                    #(#init_default_fields)*
                 }
             }
         }
 
-        impl #impl_generics #builder_ident #ty_generics #where_clause {
-            #(#builder_setters)*
-            #(#builder_prop_type_methods)*
-        }
-
-        impl #impl_generics ::rfgui::ui::RsxPropsBuilder for #struct_ident #ty_generics #where_clause {
-            type Builder = #builder_ident #ty_generics;
-
-            fn builder() -> Self::Builder {
-                ::core::default::Default::default()
-            }
-
-            fn build(builder: Self::Builder) -> ::core::result::Result<Self, ::std::string::String> {
-                Ok(Self {
-                    #(#build_fields)*
-                })
+        impl #impl_generics ::core::convert::From<#init_ident #ty_generics> for #struct_ident #ty_generics #where_clause {
+            fn from(__init: #init_ident #ty_generics) -> Self {
+                Self {
+                    #(#from_init_fields)*
+                }
             }
         }
 
@@ -909,42 +724,6 @@ fn is_children_field(field_ident: &Ident, field_ty: &Type) -> bool {
     path.segments.last().is_some_and(|s| s.ident == "RsxNode")
 }
 
-fn is_fn_pointer_type(ty: &Type) -> bool {
-    matches!(ty, Type::BareFn(_))
-}
-
-fn is_style_type(ty: &Type) -> bool {
-    let Type::Path(TypePath { qself: None, path }) = ty else {
-        return false;
-    };
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.ident == "Style")
-}
-
-fn expand_builder_assignment(tag: &Path, prop: &Prop) -> proc_macro2::TokenStream {
-    let key_ident = &prop.key;
-    if matches!(prop.value, PropValueExpr::Missing) {
-        let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
-        return quote! {
-            __rsx_props_builder.#key_ident(
-                ::rfgui::ui::boolean_prop_shorthand(__rsx_props_builder.#type_method_ident())
-            );
-        };
-    }
-    let value = expand_builder_value_expr(tag, prop, quote!(__rsx_props_builder));
-    quote! {
-        __rsx_props_builder.#key_ident(#value);
-    }
-}
-
-fn expand_builder_value_expr(
-    tag: &Path,
-    prop: &Prop,
-    builder_ident: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    expand_prop_value_expr_for_builder(tag, &prop.key, &prop.value, builder_ident)
-}
 
 fn is_text_area_tag(tag: &Path) -> bool {
     path_key(tag).ends_with("TextArea")
@@ -1021,6 +800,7 @@ fn wrap_event_expr(tag: &Path, key: &Ident, expr: &Expr) -> proc_macro2::TokenSt
     };
     match expr {
         Expr::Closure(closure) if is_zero_arg_closure(expr) => {
+            let _ = closure;
             quote! { #converter(::rfgui::ui::no_arg_handler(#expr)) }
         }
         Expr::Closure(closure) => {
@@ -1041,170 +821,6 @@ fn wrap_event_expr(tag: &Path, key: &Ident, expr: &Expr) -> proc_macro2::TokenSt
         }
         _ => quote! { #expr },
     }
-}
-
-fn expand_builder_prop_schema_check(prop: &Prop) -> proc_macro2::TokenStream {
-    let key_ident = &prop.key;
-    quote! {
-        let _ = &__rsx_props_builder.#key_ident;
-    }
-}
-
-fn expand_prop_value_expr_for_builder(
-    tag: &Path,
-    key: &Ident,
-    value: &PropValueExpr,
-    builder_ident: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match value {
-        PropValueExpr::Expr(value) => wrap_event_expr(tag, key, value),
-        PropValueExpr::Macro(tokens) => quote! { #tokens },
-        PropValueExpr::StyleObject(entries) => {
-            expand_style_object_for_builder(key, entries, builder_ident)
-        }
-        PropValueExpr::Object(entries) => {
-            expand_object_value_for_builder(key, entries, builder_ident)
-        }
-        PropValueExpr::Missing => quote_spanned! {key.span()=>
-            compile_error!("internal rsx error: missing prop value reached value expansion");
-        },
-        PropValueExpr::Invalid(error_tokens) => {
-            quote! {{
-                #error_tokens
-                unreachable!("invalid rsx prop value")
-            }}
-        }
-    }
-}
-
-fn expand_style_object_for_builder(
-    key: &Ident,
-    entries: &[StyleEntry],
-    builder_ident: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
-    let assignments = entries
-        .iter()
-        .map(|entry| expand_style_assignment(entry, quote!(__rsx_style_builder)));
-    quote! {{
-        ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_style_builder| {
-            #(#assignments)*
-        })
-    }}
-}
-
-fn expand_object_value_for_builder(
-    key: &Ident,
-    entries: &[ObjectEntry],
-    builder_ident: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
-    let assignments = entries
-        .iter()
-        .map(|entry| expand_object_assignment(entry, quote!(__rsx_object_builder)));
-    quote! {{
-        ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_object_builder| {
-            #(#assignments)*
-        })
-    }}
-}
-
-fn expand_object_assignment(
-    entry: &ObjectEntry,
-    builder_ident: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let key_ident = &entry.key;
-    let value = expand_object_value_expr(key_ident, &entry.value, builder_ident.clone());
-    quote! {
-        let _ = &#builder_ident.#key_ident;
-        #builder_ident.#key_ident(#value);
-    }
-}
-
-fn expand_object_value_expr(
-    key: &Ident,
-    value: &ObjectValueExpr,
-    builder_ident: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match value {
-        ObjectValueExpr::Expr(value) => quote! { #value },
-        ObjectValueExpr::StyleObject(entries) => {
-            expand_style_object_for_builder(key, entries, builder_ident)
-        }
-        ObjectValueExpr::Object(entries) => {
-            let type_method_ident = format_ident!("__rsx_prop_type_{}", key);
-            let assignments = entries
-                .iter()
-                .map(|entry| expand_object_assignment(entry, quote!(__rsx_nested_builder)));
-            quote! {{
-                ::rfgui::ui::build_typed_prop_for(#builder_ident.#type_method_ident(), |__rsx_nested_builder| {
-                    #(#assignments)*
-                })
-            }}
-        }
-    }
-}
-
-fn expand_style_assignment(
-    entry: &StyleEntry,
-    builder_ident: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let key_ident = &entry.key;
-    let key = entry.key.to_string();
-    let key_probe = quote! {
-        let _ = &#builder_ident.#key_ident;
-    };
-    if matches!(&entry.value, StyleValueExpr::Missing) {
-        return quote! {
-            #key_probe
-            compile_error!(concat!(
-                "style key `",
-                #key,
-                "` is incomplete; expected `:` and a value"
-            ));
-        };
-    }
-    if let StyleValueExpr::Expr(expr) = &entry.value
-        && is_string_literal_expr(expr)
-        && !is_color_style_key(&key)
-    {
-        return quote_spanned! {entry.key.span()=>
-            compile_error!("string style values are unsupported for this key; use typed values (colors are the only string exception)");
-        };
-    }
-    let style_value_tokens = match &entry.value {
-        StyleValueExpr::Expr(value) => expand_maybe_none_style_expr(value, |inner| {
-            quote! {
-                #builder_ident.#key_ident(#inner);
-            }
-        }),
-        StyleValueExpr::StyleObject(entries) => {
-            let type_method_ident = format_ident!("__rsx_prop_type_{}", key_ident);
-            let assignments = entries
-                .iter()
-                .map(|nested| expand_style_assignment(nested, quote!(__rsx_nested_style_builder)));
-            quote! {
-                #builder_ident.#key_ident(
-                    ::rfgui::ui::build_typed_prop_for(
-                        #builder_ident.#type_method_ident(),
-                        |__rsx_nested_style_builder| {
-                            #(#assignments)*
-                        }
-                    )
-                );
-            }
-        }
-        StyleValueExpr::Missing => unreachable!("missing style value handled above"),
-    };
-
-    quote! {
-        #key_probe
-        #style_value_tokens
-    }
-}
-
-fn is_color_style_key(key: &str) -> bool {
-    matches!(key, "background" | "background_color" | "color")
 }
 
 fn block_single_expr(block: &syn::Block) -> Option<&Expr> {
@@ -1234,106 +850,6 @@ fn is_none_expr(expr: &Expr) -> bool {
     }
 }
 
-fn expand_maybe_none_style_expr<F>(value: &Expr, expand_insert: F) -> proc_macro2::TokenStream
-where
-    F: Fn(&Expr) -> proc_macro2::TokenStream,
-{
-    if is_none_expr(value) {
-        return quote! {};
-    }
-
-    fn expand_conditional_style_expr<F>(
-        expr: &Expr,
-        expand_insert: &F,
-    ) -> Option<proc_macro2::TokenStream>
-    where
-        F: Fn(&Expr) -> proc_macro2::TokenStream,
-    {
-        if is_none_expr(expr) {
-            return Some(quote! {});
-        }
-        if let Expr::If(expr_if) = expr {
-            let then_expr = block_single_expr(&expr_if.then_branch)?;
-            let cond = &expr_if.cond;
-            let then_tokens = expand_conditional_style_expr(then_expr, expand_insert)?;
-            if let Some((_, else_expr)) = &expr_if.else_branch {
-                let else_tokens = expand_conditional_style_expr(else_expr, expand_insert)?;
-                return Some(quote! {
-                    if #cond {
-                        #then_tokens
-                    } else {
-                        #else_tokens
-                    }
-                });
-            }
-            return Some(quote! {
-                if #cond {
-                    #then_tokens
-                }
-            });
-        }
-        if let Expr::Block(expr_block) = expr
-            && let Some(inner_expr) = block_single_expr(&expr_block.block)
-        {
-            return expand_conditional_style_expr(inner_expr, expand_insert);
-        }
-        if let Expr::Match(expr_match) = expr {
-            let match_expr = &expr_match.expr;
-            let arms = expr_match.arms.iter().map(|arm| {
-                let pat = &arm.pat;
-                let guard = arm
-                    .guard
-                    .as_ref()
-                    .map(|(_, guard_expr)| quote! { if #guard_expr });
-                let body_tokens = expand_conditional_style_expr(&arm.body, expand_insert)
-                    .unwrap_or_else(|| quote! { #arm.body });
-                quote! {
-                    #pat #guard => {
-                        #body_tokens
-                    }
-                }
-            });
-            return Some(quote! {
-                match #match_expr {
-                    #(#arms),*
-                }
-            });
-        }
-        Some(expand_insert(expr))
-    }
-
-    if let Some(tokens) = expand_conditional_style_expr(value, &expand_insert) {
-        return tokens;
-    }
-
-    expand_insert(value)
-}
-
-fn is_string_literal_expr(expr: &Expr) -> bool {
-    matches!(expr, Expr::Lit(expr_lit) if matches!(&expr_lit.lit, Lit::Str(_)))
-}
-
-fn expand_node(child: &Child) -> proc_macro2::TokenStream {
-    match child {
-        Child::Element(element) => expand_element(element),
-        Child::TextLiteral(text) => {
-            quote! {
-                ::rfgui::ui::RsxNode::text(#text)
-            }
-        }
-        Child::TextRaw(text) => {
-            quote! {
-                ::rfgui::ui::RsxNode::text(#text)
-            }
-        }
-        Child::Expr(expr) => {
-            quote! {
-                ::rfgui::ui::IntoRsxNode::into_rsx_node(#expr)
-            }
-        }
-    }
-}
-
 fn path_key(path: &Path) -> String {
     path.to_token_stream().to_string().replace(' ', "")
 }
@@ -1343,7 +859,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     let comp_name = &input_fn.sig.ident;
     let helper_name = format_ident!("__rsx_component_impl_{}", comp_name);
     let props_name = format_ident!("{}Props", comp_name);
-    let builder_name = format_ident!("__RsxPropsBuilderFor{}", props_name);
+    let init_name = format_ident!("__{}Init", props_name);
     let fn_generics = &input_fn.sig.generics;
     let (impl_generics, ty_generics, where_clause) = fn_generics.split_for_impl();
     let has_generics = !input_fn.sig.generics.params.is_empty();
@@ -1354,16 +870,12 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     };
 
     let mut prop_fields = Vec::new();
-    let mut builder_fields = Vec::new();
-    let mut builder_setters = Vec::new();
-    let mut builder_prop_type_methods = Vec::new();
-    let mut builder_default_fields = Vec::new();
-    let mut build_fields = Vec::new();
-    let mut optional_default_fields = Vec::new();
-    let mut all_optional = true;
     let mut helper_args = Punctuated::<FnArg, Token![,]>::new();
     let mut helper_call_args = Vec::new();
     let mut accepts_children = false;
+    let mut init_fields = Vec::new();
+    let mut init_default_fields = Vec::new();
+    let mut from_init_fields = Vec::new();
 
     for arg in &input_fn.sig.inputs {
         let FnArg::Typed(pat_ty) = arg else {
@@ -1396,126 +908,31 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             ty.clone()
         };
         prop_fields.push(quote!(pub #field_ident: #props_field_ty));
-        builder_fields.push(quote! {
-            pub #field_ident: ::core::option::Option<#props_field_ty>
+        let (init_inner, is_already_option) = match option_inner_type(&props_field_ty) {
+            Some(inner) => (inner.clone(), true),
+            None => (props_field_ty.clone(), false),
+        };
+        init_fields.push(quote! {
+            pub #field_ident: ::core::option::Option<#init_inner>,
         });
-        builder_default_fields.push(quote! {
+        init_default_fields.push(quote! {
             #field_ident: ::core::option::Option::None,
         });
-        if let Some(inner_ty) = option_inner_type(&props_field_ty) {
-            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
-            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
-            builder_prop_type_methods.push(quote! {
-                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#inner_ty> {
-                    ::core::marker::PhantomData
-                }
-
-                pub fn #object_schema_method_ident<F>(&self, _: F)
-                where
-                    F: ::core::ops::FnOnce(&#inner_ty),
-                {}
-            });
-            if is_style_type(inner_ty) {
-                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
-                let selection_schema_method_ident =
-                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
-                builder_prop_type_methods.push(quote! {
-                    pub fn #style_schema_method_ident<F>(&self, _: F)
-                    where
-                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
-                        ),
-                    {}
-
-                    pub fn #selection_schema_method_ident<F>(&self, _: F)
-                    where
-                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
-                        ),
-                    {}
-                });
-            }
-            optional_default_fields.push(quote! {
-                #field_ident: ::core::option::Option::None,
-            });
-            if is_fn_pointer_type(inner_ty) {
-                builder_setters.push(quote! {
-                    pub fn #field_ident(&mut self, value: #inner_ty) {
-                        self.#field_ident = ::core::option::Option::Some(::core::option::Option::Some(value));
-                    }
-                });
-            } else {
-                builder_setters.push(quote! {
-                    pub fn #field_ident<V>(&mut self, value: V)
-                    where
-                        V: ::rfgui::ui::IntoOptionalProp<#inner_ty>,
-                    {
-                        self.#field_ident = ::core::option::Option::Some(value.into_optional_prop());
-                    }
-                });
-            }
-            build_fields.push(quote! {
-                #field_ident: builder.#field_ident.unwrap_or(::core::option::Option::None),
+        if is_already_option {
+            from_init_fields.push(quote! {
+                #field_ident: __init.#field_ident,
             });
         } else {
-            let type_method_ident = format_ident!("__rsx_prop_type_{}", field_ident);
-            let object_schema_method_ident = format_ident!("__rsx_object_schema_{}", field_ident);
-            builder_prop_type_methods.push(quote! {
-                pub fn #type_method_ident(&self) -> ::core::marker::PhantomData<#props_field_ty> {
-                    ::core::marker::PhantomData
-                }
-
-                pub fn #object_schema_method_ident<F>(&self, _: F)
-                where
-                    F: ::core::ops::FnOnce(&#props_field_ty),
-                {}
-            });
-            if is_style_type(&props_field_ty) {
-                let style_schema_method_ident = format_ident!("__rsx_style_schema_{}", field_ident);
-                let selection_schema_method_ident =
-                    format_ident!("__rsx_style_selection_schema_{}", field_ident);
-                builder_prop_type_methods.push(quote! {
-                    pub fn #style_schema_method_ident<F>(&self, _: F)
-                    where
-                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema
-                        ),
-                    {}
-
-                    pub fn #selection_schema_method_ident<F>(&self, _: F)
-                    where
-                        #props_name #ty_generics: ::rfgui::ui::RsxPropsStyleSchema,
-                        F: ::core::ops::FnOnce(
-                            &<<#props_name #ty_generics as ::rfgui::ui::RsxPropsStyleSchema>::StyleSchema as ::rfgui::ui::RsxStyleSchema>::SelectionSchema
-                        ),
-                    {}
-                });
-            }
-            all_optional = false;
-            if is_fn_pointer_type(&props_field_ty) {
-                builder_setters.push(quote! {
-                    pub fn #field_ident(&mut self, value: #props_field_ty) {
-                        self.#field_ident = ::core::option::Option::Some(value);
-                    }
-                });
-            } else {
-                builder_setters.push(quote! {
-                    pub fn #field_ident<V>(&mut self, value: V)
-                    where
-                        V: ::core::convert::Into<#props_field_ty>,
-                    {
-                        self.#field_ident = ::core::option::Option::Some(value.into());
-                    }
-                });
-            }
             let field_name = field_ident.to_string();
-            build_fields.push(quote! {
-                #field_ident: builder.#field_ident.ok_or_else(|| {
-                    format!("missing required prop `{}` on <{}>", #field_name, stringify!(#comp_name))
-                })?,
+            let comp_name_str = comp_name.to_string();
+            from_init_fields.push(quote! {
+                #field_ident: __init.#field_ident.expect(concat!(
+                    "missing required prop `",
+                    #field_name,
+                    "` on <",
+                    #comp_name_str,
+                    ">"
+                )),
             });
         }
 
@@ -1544,20 +961,6 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         }
     }
 
-    let optional_default_impl = if all_optional {
-        quote! {
-            impl #impl_generics ::rfgui::ui::OptionalDefault for #props_name #ty_generics #where_clause {
-                fn optional_default() -> Self {
-                    Self {
-                        #(#optional_default_fields)*
-                    }
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
     let component_struct_tokens = if has_generics {
         quote! {
             #vis struct #comp_name #fn_generics (
@@ -1578,34 +981,23 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         }
 
         #[doc(hidden)]
-        #vis struct #builder_name #fn_generics {
-            #(#builder_fields,)*
+        #vis struct #init_name #fn_generics {
+            #(#init_fields)*
         }
 
-        impl #impl_generics ::core::default::Default for #builder_name #ty_generics #where_clause {
+        impl #impl_generics ::core::default::Default for #init_name #ty_generics #where_clause {
             fn default() -> Self {
                 Self {
-                    #(#builder_default_fields)*
+                    #(#init_default_fields)*
                 }
             }
         }
 
-        impl #impl_generics #builder_name #ty_generics #where_clause {
-            #(#builder_setters)*
-            #(#builder_prop_type_methods)*
-        }
-
-        impl #impl_generics ::rfgui::ui::RsxPropsBuilder for #props_name #ty_generics #where_clause {
-            type Builder = #builder_name #ty_generics;
-
-            fn builder() -> Self::Builder {
-                ::core::default::Default::default()
-            }
-
-            fn build(builder: Self::Builder) -> ::core::result::Result<Self, ::std::string::String> {
-                Ok(Self {
-                    #(#build_fields)*
-                })
+        impl #impl_generics ::core::convert::From<#init_name #ty_generics> for #props_name #ty_generics #where_clause {
+            fn from(__init: #init_name #ty_generics) -> Self {
+                Self {
+                    #(#from_init_fields)*
+                }
             }
         }
 
@@ -1616,16 +1008,29 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             }
         }
 
-        impl #impl_generics ::rfgui::ui::RsxChildrenPolicy for #comp_name #ty_generics #where_clause {
+        impl #impl_generics ::rfgui::ui::RsxTag for #comp_name #ty_generics #where_clause {
+            type Props = #init_name #ty_generics;
+            type StrictProps = #props_name #ty_generics;
             const ACCEPTS_CHILDREN: bool = #accepts_children;
+
+            fn into_strict(props: Self::Props) -> Self::StrictProps {
+                ::core::convert::From::from(props)
+            }
+
+            fn create_node(
+                props: Self::StrictProps,
+                children: ::std::vec::Vec<::rfgui::ui::RsxNode>,
+                _key: ::core::option::Option<::rfgui::ui::RsxKey>,
+            ) -> ::rfgui::ui::RsxNode {
+                <#comp_name #ty_generics as ::rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(props, children)
+            }
         }
 
         #[allow(non_snake_case)]
         fn #helper_name #helper_generics (#helper_args) -> #output_ty #body
-
-        #optional_default_impl
     }
 }
+
 
 fn is_vec_rsx_node(ty: &Type) -> bool {
     let Type::Path(TypePath { path, .. }) = ty else {
@@ -1651,6 +1056,279 @@ fn is_vec_rsx_node(ty: &Type) -> bool {
         .last()
         .map(|s| s.ident == "RsxNode")
         .unwrap_or(false)
+}
+
+// ============================================================================
+// v2 expansion: React-style shared createElement path
+// ============================================================================
+
+fn expand_node(child: &Child) -> proc_macro2::TokenStream {
+    match child {
+        Child::Element(element) => expand_element(element),
+        Child::TextLiteral(text) => quote! { ::rfgui::ui::RsxNode::text(#text) },
+        Child::TextRaw(text) => quote! { ::rfgui::ui::RsxNode::text(#text) },
+        Child::Expr(expr) => quote! { ::rfgui::ui::IntoRsxNode::into_rsx_node(#expr) },
+    }
+}
+
+fn expand_child_append(child: &Child) -> proc_macro2::TokenStream {
+    match child {
+        Child::Expr(expr) => quote! {
+            ::rfgui::ui::append_rsx_child_node(&mut __rsx_children, #expr);
+        },
+        _ => {
+            let node = expand_node(child);
+            quote! { __rsx_children.push(#node); }
+        }
+    }
+}
+
+fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
+    let tag = &element.tag;
+    let close_tag = &element.close_tag;
+    let has_children = !element.children.is_empty();
+    let diagnostics = &element.diagnostics;
+    let child_appends = element.children.iter().map(expand_child_append);
+
+    let parent_path = quote!(__init);
+    let prop_assignments = element
+        .props
+        .iter()
+        .filter(|p| p.key != "key")
+        .map(|prop| expand_prop_assignment(&element.tag, prop, &parent_path));
+    let component_key = component_key_tokens(element);
+    let children_schema_check = if has_children {
+        quote! {
+            let _: [(); 1] = [(); <#tag as ::rfgui::ui::RsxTag>::ACCEPTS_CHILDREN as usize];
+        }
+    } else {
+        quote! {}
+    };
+    let children_value = if has_children {
+        quote! {{
+            let mut __rsx_children = ::std::vec::Vec::new();
+            #(#child_appends)*
+            __rsx_children
+        }}
+    } else {
+        quote! { ::std::vec::Vec::new() }
+    };
+
+    quote! {
+        {
+            #(#diagnostics)*
+            let _ = ::core::marker::PhantomData::<#close_tag>;
+            #children_schema_check
+            ::rfgui::ui::create_element::<#tag>(
+                {
+                    let mut __init: <#tag as ::rfgui::ui::RsxTag>::Props =
+                        ::core::default::Default::default();
+                    #(#prop_assignments)*
+                    __init
+                },
+                #children_value,
+                #component_key,
+            )
+        }
+    }
+}
+
+fn expand_prop_assignment(
+    tag: &Path,
+    prop: &Prop,
+    parent_path: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let key = &prop.key;
+    match &prop.value {
+        PropValueExpr::Missing => {
+            // `<Element disabled />` shorthand — set to `Some(true)`.
+            quote! {
+                #parent_path.#key = ::core::option::Option::Some(true);
+            }
+        }
+        PropValueExpr::Expr(expr) => {
+            let wrapped = wrap_event_expr(tag, key, expr);
+            quote! {
+                #parent_path.#key = ::rfgui::ui::IntoOptionalProp::into_optional_prop(#wrapped);
+            }
+        }
+        PropValueExpr::Macro(tokens) => quote! {
+            #parent_path.#key = ::rfgui::ui::IntoOptionalProp::into_optional_prop(#tokens);
+        },
+        PropValueExpr::StyleObject(entries) => {
+            expand_object_literal(key, parent_path, entries.iter().map(StyleOrObjectEntry::Style))
+        }
+        PropValueExpr::Object(entries) => expand_object_literal(
+            key,
+            parent_path,
+            entries.iter().map(StyleOrObjectEntry::Object),
+        ),
+        PropValueExpr::Invalid(error_tokens) => quote! {
+            #error_tokens
+        },
+    }
+}
+
+// Union view over StyleEntry and ObjectEntry so we can share nested object expansion.
+#[derive(Clone, Copy)]
+enum StyleOrObjectEntry<'a> {
+    Style(&'a StyleEntry),
+    Object(&'a ObjectEntry),
+}
+
+
+fn expand_object_literal<'a, I>(
+    key: &Ident,
+    parent_path: &proc_macro2::TokenStream,
+    entries: I,
+) -> proc_macro2::TokenStream
+where
+    I: IntoIterator<Item = StyleOrObjectEntry<'a>>,
+{
+    let inner_assignments: Vec<proc_macro2::TokenStream> = entries
+        .into_iter()
+        .map(|entry| {
+            let inner_parent = quote!(__obj);
+            match entry {
+                StyleOrObjectEntry::Style(e) => {
+                    expand_style_entry_assignment(e, &inner_parent)
+                }
+                StyleOrObjectEntry::Object(e) => {
+                    expand_object_entry_assignment(e, &inner_parent)
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        #parent_path.#key = ::core::option::Option::Some({
+            let mut __obj = ::rfgui::ui::__rsx_default_from_phantom(
+                ::rfgui::ui::__rsx_infer_inner_option(&#parent_path.#key)
+            );
+            #(#inner_assignments)*
+            __obj
+        });
+    }
+}
+
+// Expand a value expression into an assignment to `parent.key`, with special
+// rewrite for `if`/`match`/`block` where a branch is `None` — those branches
+// become a no-op instead of evaluating to `None`, so the user can write
+// `color: if cond { Color::X } else { None }` where the else arm is literal None.
+fn expand_assignment_with_none_rewrite(
+    parent_path: &proc_macro2::TokenStream,
+    key: &Ident,
+    expr: &Expr,
+) -> proc_macro2::TokenStream {
+    if is_none_expr(expr) {
+        return quote! {};
+    }
+    if let Some(tokens) = rewrite_conditional_assignment(parent_path, key, expr) {
+        return tokens;
+    }
+    quote! {
+        #parent_path.#key =
+            ::rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
+    }
+}
+
+fn rewrite_conditional_assignment(
+    parent_path: &proc_macro2::TokenStream,
+    key: &Ident,
+    expr: &Expr,
+) -> Option<proc_macro2::TokenStream> {
+    if is_none_expr(expr) {
+        return Some(quote! {});
+    }
+    if let Expr::If(expr_if) = expr {
+        let then_expr = block_single_expr(&expr_if.then_branch)?;
+        let cond = &expr_if.cond;
+        let then_tokens = rewrite_conditional_assignment(parent_path, key, then_expr)?;
+        if let Some((_, else_expr)) = &expr_if.else_branch {
+            let else_tokens = rewrite_conditional_assignment(parent_path, key, else_expr)?;
+            return Some(quote! {
+                if #cond {
+                    #then_tokens
+                } else {
+                    #else_tokens
+                }
+            });
+        }
+        return Some(quote! {
+            if #cond { #then_tokens }
+        });
+    }
+    if let Expr::Block(expr_block) = expr
+        && let Some(inner) = block_single_expr(&expr_block.block)
+    {
+        return rewrite_conditional_assignment(parent_path, key, inner);
+    }
+    if let Expr::Match(expr_match) = expr {
+        let match_expr = &expr_match.expr;
+        let arms: Option<Vec<_>> = expr_match
+            .arms
+            .iter()
+            .map(|arm| {
+                let pat = &arm.pat;
+                let guard = arm
+                    .guard
+                    .as_ref()
+                    .map(|(_, guard_expr)| quote! { if #guard_expr });
+                let body = rewrite_conditional_assignment(parent_path, key, &arm.body)?;
+                Some(quote! {
+                    #pat #guard => { #body }
+                })
+            })
+            .collect();
+        let arms = arms?;
+        return Some(quote! {
+            match #match_expr {
+                #(#arms),*
+            }
+        });
+    }
+    Some(quote! {
+        #parent_path.#key =
+            ::rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
+    })
+}
+
+fn expand_style_entry_assignment(
+    entry: &StyleEntry,
+    parent_path: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let key = &entry.key;
+    match &entry.value {
+        StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
+            compile_error!("style value is incomplete; expected `:` and a value");
+        },
+        StyleValueExpr::Expr(expr) => expand_assignment_with_none_rewrite(parent_path, key, expr),
+        StyleValueExpr::StyleObject(entries) => expand_object_literal(
+            key,
+            parent_path,
+            entries.iter().map(StyleOrObjectEntry::Style),
+        ),
+    }
+}
+
+fn expand_object_entry_assignment(
+    entry: &ObjectEntry,
+    parent_path: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let key = &entry.key;
+    match &entry.value {
+        ObjectValueExpr::Expr(expr) => expand_assignment_with_none_rewrite(parent_path, key, expr),
+        ObjectValueExpr::StyleObject(entries) => expand_object_literal(
+            key,
+            parent_path,
+            entries.iter().map(StyleOrObjectEntry::Style),
+        ),
+        ObjectValueExpr::Object(entries) => expand_object_literal(
+            key,
+            parent_path,
+            entries.iter().map(StyleOrObjectEntry::Object),
+        ),
+    }
 }
 
 #[cfg(test)]

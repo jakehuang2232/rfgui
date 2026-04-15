@@ -2,78 +2,12 @@
 use crate::rfgui::ScrollDirection;
 use crate::rfgui::ui::{RsxNode, rsx};
 use crate::rfgui::view::Element;
-#[cfg(target_arch = "wasm32")]
-use crate::rfgui::view::{Text, TextArea};
 use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::Theme;
 use crate::utils::output_image_source;
 use rfgui::Align;
 use rfgui::view::{Image, ImageFit, ImageSampling};
 
-#[cfg(target_arch = "wasm32")]
-const ABOUT_LICENSES_WEB_NOTE: &str = "Third Party Licenses\n\n\
-Use desktop version to see third party licenses.\n\n\
-";
-
-#[cfg(target_arch = "wasm32")]
-pub fn build(theme: &Theme) -> RsxNode {
-    rsx! {
-        <Element style={{
-            width: Length::percent(100.0),
-            height: Length::percent(100.0),
-            layout: Layout::flow().column().no_wrap().align(Align::Center),
-            padding: Padding::uniform(theme.spacing.md),
-            gap: theme.spacing.sm,
-            scroll_direction: ScrollDirection::Vertical,
-        }}>
-            <Image style={{
-                    width: Length::px(100.0),
-                    height: Length::px(100.0)
-                }}
-                source={output_image_source("rfgui-logo.png")}
-                sampling={ImageSampling::Linear}
-                fit={ImageFit::Contain}
-            />
-            <Text style={{
-                font_weight: theme.typography.weight.bold,
-                font_size: theme.typography.size.xl,
-            }}>
-                RFGUI
-            </Text>
-            <Text>by Jun Hui Huang</Text>
-            <Element style={{
-                width: Length::percent(100.0),
-                layout: Layout::flow().column().no_wrap(),
-                gap: theme.spacing.xs,
-                scroll_direction: ScrollDirection::Vertical,
-            }}>
-                <Text style={{
-                    font_weight: theme.typography.weight.bold,
-                }}>
-                    Third Party Licenses
-                </Text>
-                <Text style={{
-                    font_size: theme.typography.size.sm,
-                }}>
-                    {"Web version of RFGUI has some gliches, please use desktop version for better experience."}
-                </Text>
-                <TextArea
-                    multiline={true}
-                    read_only={true}
-                    style={{
-                        width: Length::percent(100.0),
-                        height: Length::px(260.0),
-                        font_size: theme.typography.size.sm,
-                    }}
-                >
-                    {ABOUT_LICENSES_WEB_NOTE}
-                </TextArea>
-            </Element>
-        </Element>
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub fn build(theme: &Theme) -> RsxNode {
     rsx! {
             <Element style={{

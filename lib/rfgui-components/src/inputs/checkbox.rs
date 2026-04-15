@@ -1,6 +1,6 @@
 use crate::{CheckIcon, use_theme};
 use rfgui::ui::{
-    Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, RsxChildrenPolicy,
+    Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp,
     RsxComponent, RsxNode, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
@@ -103,6 +103,20 @@ impl RsxComponent<CheckboxProps> for Checkbox {
     }
 }
 
-impl RsxChildrenPolicy for Checkbox {
+impl rfgui::ui::RsxTag for Checkbox {
+    type Props = __CheckboxPropsInit;
+    type StrictProps = CheckboxProps;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<CheckboxProps>>::render(props, children)
+    }
 }

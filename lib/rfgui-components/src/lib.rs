@@ -16,7 +16,7 @@ mod tests {
     };
     use rfgui::ui::{
         EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
-        RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, create_tag_element, global_state,
+        RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, global_state,
         rsx, take_state_dirty,
     };
     use rfgui::view::{Element, ElementPropSchema, Image, Text, TextArea, TextPropSchema};
@@ -109,13 +109,13 @@ mod tests {
     fn select_trigger_click_does_not_change_binding_value() {
         let selected = global_state(|| String::from("Option A"));
         let tree = rsx! {
-            <Select
+            <Select::<String, String>
                 data={vec![
                     String::from("Option A"),
                     String::from("Option B"),
                     String::from("Option C"),
                 ]}
-                to_label={select_label}
+                to_label={select_label as fn(&String, usize) -> String}
                 value={selected.binding()}
             />
         };
@@ -133,13 +133,13 @@ mod tests {
 
         let build_tree = || {
             rsx! {
-                <Select
+                <Select::<String, String>
                     data={vec![
                         String::from("Option A"),
                         String::from("Option B"),
                         String::from("Option C"),
                     ]}
-                    to_label={select_label}
+                    to_label={select_label as fn(&String, usize) -> String}
                     value={selected.binding()}
                 />
             }
@@ -168,13 +168,13 @@ mod tests {
 
         let build_tree = || {
             rsx! {
-                <Select
+                <Select::<String, String>
                     data={vec![
                         String::from("Option A"),
                         String::from("Option B"),
                         String::from("Option C"),
                     ]}
-                    to_label={select_label}
+                    to_label={select_label as fn(&String, usize) -> String}
                     value={selected.binding()}
                 />
             }
@@ -751,47 +751,12 @@ mod tests {
 
     #[test]
     fn create_element_supports_multiple_children() {
-        let tree = create_tag_element::<Element, _, _>(
-            ElementPropSchema {
-                anchor: None,
-                style: None,
-                on_mouse_down: None,
-                on_mouse_up: None,
-                on_mouse_move: None,
-                on_mouse_enter: None,
-                on_mouse_leave: None,
-                on_click: None,
-                on_key_down: None,
-                on_key_up: None,
-                on_focus: None,
-                on_blur: None,
-            },
-            vec![
-                create_tag_element::<Text, _, _>(
-                    TextPropSchema {
-                        style: None,
-                        align: None,
-                        font_size: None,
-                        line_height: None,
-                        font: None,
-                        opacity: None,
-                    },
-                    "A",
-                ),
-                create_tag_element::<Text, _, _>(
-                    TextPropSchema {
-                        style: None,
-                        align: None,
-                        font_size: None,
-                        line_height: None,
-                        font: None,
-                        opacity: None,
-                    },
-                    "B",
-                ),
-            ],
-        );
-
+        let tree = rsx! {
+            <Element>
+                <Text>"A"</Text>
+                <Text>"B"</Text>
+            </Element>
+        };
         let RsxNode::Element(root) = tree else {
             panic!("create_element should produce an element root");
         };

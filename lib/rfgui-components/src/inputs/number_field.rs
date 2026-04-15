@@ -1,12 +1,12 @@
 use crate::{Button, use_theme};
 use rfgui::ui::{
-    Binding, BlurHandlerProp, ClickHandlerProp, RsxChildrenPolicy, RsxComponent, RsxNode,
+    Binding, BlurHandlerProp, ClickHandlerProp, RsxComponent, RsxNode,
     TextChangeHandlerProp, props, rsx, use_state,
 };
 use rfgui::view::{Element, TextArea};
 use rfgui::{Align, Layout, Length, Padding, TextWrap, flex};
 
-pub struct NumberField;
+pub struct NumberField<T: NumberFieldValue = f64>(std::marker::PhantomData<T>);
 
 pub trait NumberFieldValue: Copy + PartialEq + PartialOrd + 'static {
     fn zero() -> Self;
@@ -29,7 +29,7 @@ pub struct NumberFieldProps<T: NumberFieldValue> {
     pub label: Option<String>,
 }
 
-impl<T> RsxComponent<NumberFieldProps<T>> for NumberField
+impl<T> RsxComponent<NumberFieldProps<T>> for NumberField<T>
 where
     T: NumberFieldValue,
 {
@@ -174,8 +174,25 @@ where
     }
 }
 
-impl RsxChildrenPolicy for NumberField {
+impl<T> rfgui::ui::RsxTag for NumberField<T>
+where
+    T: NumberFieldValue,
+{
+    type Props = __NumberFieldPropsInit<T>;
+    type StrictProps = NumberFieldProps<T>;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<NumberFieldProps<T>>>::render(props, children)
+    }
 }
 
 fn step_handler<T: NumberFieldValue>(

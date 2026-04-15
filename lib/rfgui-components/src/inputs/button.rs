@@ -2,7 +2,7 @@ use crate::use_theme;
 use rfgui::TextAlign::Center;
 use rfgui::ui::{
     ClickEvent, ClickHandlerProp, EventMeta, MouseButton, MouseDownHandlerProp,
-    MouseEnterHandlerProp, MouseEventData, MouseLeaveHandlerProp, RsxChildrenPolicy, RsxComponent,
+    MouseEnterHandlerProp, MouseEventData, MouseLeaveHandlerProp, RsxComponent,
     RsxNode, component, props, rsx, use_interval, use_state,
 };
 use rfgui::view::{Element, Text};
@@ -82,9 +82,24 @@ impl RsxComponent<ButtonProps> for Button {
     }
 }
 
-impl RsxChildrenPolicy for Button {
+impl rfgui::ui::RsxTag for Button {
+    type Props = __ButtonPropsInit;
+    type StrictProps = ButtonProps;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<ButtonProps>>::render(props, children)
+    }
 }
+
 
 #[derive(Clone, Default, PartialEq)]
 struct ButtonRepeatState {

@@ -43,9 +43,21 @@ fn generate_components(codepoints: &str) -> String {
         output.push_str("    }\n");
         output.push_str("}\n\n");
         output.push_str(&format!(
-            "impl rfgui::ui::RsxChildrenPolicy for {component_name} {{\n"
+            "impl rfgui::ui::RsxTag for {component_name} {{\n"
         ));
+        output.push_str("    type Props = __MaterialSymbolIconPropsInit;\n");
+        output.push_str("    type StrictProps = MaterialSymbolIconProps;\n");
         output.push_str("    const ACCEPTS_CHILDREN: bool = false;\n");
+        output.push_str("    fn into_strict(props: Self::Props) -> Self::StrictProps { props.into() }\n");
+        output.push_str("    fn create_node(\n");
+        output.push_str("        props: Self::StrictProps,\n");
+        output.push_str("        children: Vec<rfgui::ui::RsxNode>,\n");
+        output.push_str("        _key: Option<rfgui::ui::RsxKey>,\n");
+        output.push_str("    ) -> rfgui::ui::RsxNode {\n");
+        output.push_str(&format!(
+            "        <Self as rfgui::ui::RsxComponent<MaterialSymbolIconProps>>::render(props, children)\n"
+        ));
+        output.push_str("    }\n");
         output.push_str("}\n\n");
     }
 

@@ -1,7 +1,7 @@
 use crate::use_theme;
 
 use rfgui::ui::{
-    Binding, RsxChildrenPolicy, RsxComponent, RsxNode, on_mouse_down, on_mouse_move, on_mouse_up,
+    Binding, RsxComponent, RsxNode, on_mouse_down, on_mouse_move, on_mouse_up,
     props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
@@ -200,8 +200,22 @@ impl RsxComponent<SliderProps> for Slider {
     }
 }
 
-impl RsxChildrenPolicy for Slider {
+impl rfgui::ui::RsxTag for Slider {
+    type Props = __SliderPropsInit;
+    type StrictProps = SliderProps;
     const ACCEPTS_CHILDREN: bool = false;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<SliderProps>>::render(props, children)
+    }
 }
 
 fn resolve_option_count(min: f64, max: f64, configured: Option<usize>) -> usize {

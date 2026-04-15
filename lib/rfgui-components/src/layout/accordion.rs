@@ -1,6 +1,6 @@
 use crate::{ExpandMoreIcon, use_theme};
 use rfgui::ui::{
-    Binding, RsxChildrenPolicy, RsxComponent, RsxNode, component, on_click, props, rsx, use_state,
+    Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state,
 };
 use rfgui::view::Element;
 use rfgui::{
@@ -33,8 +33,22 @@ impl RsxComponent<AccordionProps> for Accordion {
     }
 }
 
-impl RsxChildrenPolicy for Accordion {
+impl rfgui::ui::RsxTag for Accordion {
+    type Props = __AccordionPropsInit;
+    type StrictProps = AccordionProps;
     const ACCEPTS_CHILDREN: bool = true;
+
+    fn into_strict(props: Self::Props) -> Self::StrictProps {
+        props.into()
+    }
+
+    fn create_node(
+        props: Self::StrictProps,
+        children: Vec<rfgui::ui::RsxNode>,
+        _key: Option<rfgui::ui::RsxKey>,
+    ) -> rfgui::ui::RsxNode {
+        <Self as RsxComponent<AccordionProps>>::render(props, children)
+    }
 }
 
 #[component]
