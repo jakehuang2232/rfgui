@@ -432,36 +432,101 @@ pub(crate) fn seed_layout_transition_snapshots(
     }
 }
 
+#[derive(Clone, Copy)]
+struct HitTestRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+fn hit_test_point_for_node(node: &dyn ElementTrait, x: f32, y: f32) -> (f32, f32) {
+    node.as_any()
+        .downcast_ref::<Element>()
+        .and_then(|element| element.map_viewport_to_paint_space(x, y))
+        .unwrap_or((x, y))
+}
+
+fn hit_test_point_in_rect(rect: HitTestRect, x: f32, y: f32) -> bool {
+    rect.width > 0.0
+        && rect.height > 0.0
+        && x >= rect.x
+        && y >= rect.y
+        && x <= rect.x + rect.width
+        && y <= rect.y + rect.height
+}
+
+fn hit_test_has_absolute_descendant(node: &dyn ElementTrait) -> bool {
+    node.as_any()
+        .downcast_ref::<Element>()
+        .is_some_and(Element::has_absolute_descendant_for_hit_test)
+}
+
+fn find_deepest_in_viewport_clip_subtree(
+    node: &dyn ElementTrait,
+    x: f32,
+    y: f32,
+) -> Option<u64> {
+    let (x, y) = hit_test_point_for_node(node, x, y);
+    let snapshot = node.box_model_snapshot();
+    if !snapshot.should_render && !hit_test_has_absolute_descendant(node) {
+        return None;
+    }
+    if !point_in_box_model(&snapshot, x, y) {
+        return None;
+    }
+    if !node.hit_test_visible_at(x, y) {
+        return None;
+    }
+    if node.intercepts_pointer_at(x, y) {
+        return Some(snapshot.node_id);
+    }
+    if let Some(children) = node.children() {
+        for child in children.iter().rev() {
+            if let Some(id) = find_deepest_in_viewport_clip_subtree(child.as_ref(), x, y) {
+                return Some(id);
+            }
+        }
+    }
+    Some(snapshot.node_id)
+}
+
+fn find_viewport_clip_priority(node: &dyn ElementTrait, x: f32, y: f32) -> Option<u64> {
+    let snapshot = node.box_model_snapshot();
+    if !snapshot.should_render && !hit_test_has_absolute_descendant(node) {
+        return None;
+    }
+
+    if let Some(children) = node.children() {
+        for child in children.iter().rev() {
+            if let Some(id) = find_viewport_clip_priority(child.as_ref(), x, y) {
+                return Some(id);
+            }
+        }
+    }
+
+    let Some(element) = node.as_any().downcast_ref::<Element>() else {
+        return None;
+    };
+    if !element.is_absolute_positioned_for_hit_test()
+        || element.clip_mode_for_hit_test() != crate::style::ClipMode::Viewport
+    {
+        return None;
+    }
+
+    if point_in_box_model(&snapshot, x, y) {
+        find_deepest_in_viewport_clip_subtree(node, x, y)
+    } else {
+        None
+    }
+}
+
 pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Option<u64> {
-    #[derive(Clone, Copy)]
-    struct Rect {
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-    }
-
-    fn point_for_node(node: &dyn ElementTrait, x: f32, y: f32) -> (f32, f32) {
-        node.as_any()
-            .downcast_ref::<Element>()
-            .and_then(|element| element.map_viewport_to_paint_space(x, y))
-            .unwrap_or((x, y))
-    }
-
-    fn point_in_rect(rect: Rect, x: f32, y: f32) -> bool {
-        rect.width > 0.0
-            && rect.height > 0.0
-            && x >= rect.x
-            && y >= rect.y
-            && x <= rect.x + rect.width
-            && y <= rect.y + rect.height
-    }
-
     fn child_allows_outside_parent_hit(
         child: &dyn ElementTrait,
         x: f32,
         y: f32,
-        viewport_rect: Rect,
+        viewport_rect: HitTestRect,
     ) -> bool {
         let Some(element) = child.as_any().downcast_ref::<Element>() else {
             return false;
@@ -474,74 +539,13 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
         }
         match element.clip_mode_for_hit_test() {
             crate::style::ClipMode::Parent => false,
-            crate::style::ClipMode::Viewport => point_in_rect(viewport_rect, x, y),
+            crate::style::ClipMode::Viewport => hit_test_point_in_rect(viewport_rect, x, y),
             crate::style::ClipMode::AnchorParent => element.has_anchor_name_for_hit_test(),
         }
     }
 
-    fn find_viewport_clip_priority(node: &dyn ElementTrait, x: f32, y: f32) -> Option<u64> {
-        fn has_absolute_descendant(node: &dyn ElementTrait) -> bool {
-            node.as_any()
-                .downcast_ref::<Element>()
-                .is_some_and(Element::has_absolute_descendant_for_hit_test)
-        }
-
-        fn find_deepest_in_subtree(node: &dyn ElementTrait, x: f32, y: f32) -> Option<u64> {
-            let (x, y) = point_for_node(node, x, y);
-            let snapshot = node.box_model_snapshot();
-            if !snapshot.should_render && !has_absolute_descendant(node) {
-                return None;
-            }
-            if !point_in_box_model(&snapshot, x, y) {
-                return None;
-            }
-            if !node.hit_test_visible_at(x, y) {
-                return None;
-            }
-            if node.intercepts_pointer_at(x, y) {
-                return Some(snapshot.node_id);
-            }
-            if let Some(children) = node.children() {
-                for child in children.iter().rev() {
-                    if let Some(id) = find_deepest_in_subtree(child.as_ref(), x, y) {
-                        return Some(id);
-                    }
-                }
-            }
-            Some(snapshot.node_id)
-        }
-
-        let snapshot = node.box_model_snapshot();
-        if !snapshot.should_render && !has_absolute_descendant(node) {
-            return None;
-        }
-
-        if let Some(children) = node.children() {
-            for child in children.iter().rev() {
-                if let Some(id) = find_viewport_clip_priority(child.as_ref(), x, y) {
-                    return Some(id);
-                }
-            }
-        }
-
-        let Some(element) = node.as_any().downcast_ref::<Element>() else {
-            return None;
-        };
-        if !element.is_absolute_positioned_for_hit_test()
-            || element.clip_mode_for_hit_test() != crate::style::ClipMode::Viewport
-        {
-            return None;
-        }
-
-        if point_in_box_model(&snapshot, x, y) {
-            find_deepest_in_subtree(node, x, y)
-        } else {
-            None
-        }
-    }
-
-    fn find(node: &dyn ElementTrait, x: f32, y: f32, viewport_rect: Rect) -> Option<u64> {
-        let (x, y) = point_for_node(node, x, y);
+    fn find(node: &dyn ElementTrait, x: f32, y: f32, viewport_rect: HitTestRect) -> Option<u64> {
+        let (x, y) = hit_test_point_for_node(node, x, y);
         let snapshot = node.box_model_snapshot();
         let has_absolute_descendant = node
             .as_any()
@@ -578,7 +582,7 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
     }
 
     let root_snapshot = root.box_model_snapshot();
-    let viewport_rect = Rect {
+    let viewport_rect = HitTestRect {
         x: root_snapshot.x,
         y: root_snapshot.y,
         width: root_snapshot.width.max(0.0),
@@ -588,6 +592,53 @@ pub fn hit_test(root: &dyn ElementTrait, viewport_x: f32, viewport_y: f32) -> Op
         return Some(id);
     }
     find(root, viewport_x, viewport_y, viewport_rect)
+}
+
+/// Hit-test across multiple UI roots in a single pass.
+///
+/// 1. Searches all roots for **nested** viewport-clipped absolute elements
+///    (dropdowns, popovers) which render on top of everything via deferred
+///    rendering. Root-level viewport-clip elements (Window shells) are
+///    intentionally skipped so they don't shadow deeper targets in other roots.
+/// 2. If no nested viewport-clip match is found, falls back to the normal
+///    per-root `hit_test` (reverse order — last root has highest priority).
+///
+/// Returns `Some((root_index, target_node_id))`.
+pub fn hit_test_roots(
+    roots: &[Box<dyn ElementTrait>],
+    viewport_x: f32,
+    viewport_y: f32,
+) -> Option<(usize, u64)> {
+    let mut fallback: Option<(usize, u64)> = None;
+    for (idx, root) in roots.iter().enumerate().rev() {
+        let snapshot = root.box_model_snapshot();
+        let has_abs = root
+            .as_any()
+            .downcast_ref::<Element>()
+            .is_some_and(Element::has_absolute_descendant_for_hit_test);
+        if !snapshot.should_render && !has_abs {
+            continue;
+        }
+        // Search children for nested viewport-clip targets (deferred elements).
+        // These render on top of all roots, so they win over any root-level match.
+        if let Some(children) = root.children() {
+            for child in children.iter().rev() {
+                if let Some(id) =
+                    find_viewport_clip_priority(child.as_ref(), viewport_x, viewport_y)
+                {
+                    return Some((idx, id));
+                }
+            }
+        }
+        // No nested viewport-clip match in this root. Record normal hit_test
+        // result as fallback (first match in reverse = highest z-order root).
+        if fallback.is_none() {
+            if let Some(id) = hit_test(root.as_ref(), viewport_x, viewport_y) {
+                fallback = Some((idx, id));
+            }
+        }
+    }
+    fallback
 }
 
 pub fn dispatch_mouse_down_from_hit_test(

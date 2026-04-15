@@ -78,14 +78,44 @@ impl ChildrenScratch {
         }
     }
 
+    /// Shrink threshold — if a collection grew beyond this capacity (e.g. due
+    /// to a single very large subtree), shrink it back so memory doesn't stay
+    /// pinned.  Modelled after Servo/Stylo's arena-reset pattern.
+    const SHRINK_HASHMAP_TO: usize = 64;
+    const SHRINK_VEC_TO: usize = 128;
+
     fn clear(&mut self) {
         self.old_keyed.clear();
-        self.old_unkeyed.clear(); // drops VecDeque values; HashMap capacity is retained
+        self.old_unkeyed.clear();
         self.matches.clear();
         self.matched_old.clear();
         self.current_order.clear();
         self.pos_lookup.clear();
         self.target_seq.clear();
+
+        // Reclaim bloated capacity so a one-time spike doesn't hold memory
+        // forever (Servo/Stylo arena-reset inspired).
+        if self.old_keyed.capacity() > Self::SHRINK_HASHMAP_TO {
+            self.old_keyed.shrink_to(Self::SHRINK_HASHMAP_TO);
+        }
+        if self.old_unkeyed.capacity() > Self::SHRINK_HASHMAP_TO {
+            self.old_unkeyed.shrink_to(Self::SHRINK_HASHMAP_TO);
+        }
+        if self.pos_lookup.capacity() > Self::SHRINK_HASHMAP_TO {
+            self.pos_lookup.shrink_to(Self::SHRINK_HASHMAP_TO);
+        }
+        if self.matches.capacity() > Self::SHRINK_VEC_TO {
+            self.matches.shrink_to(Self::SHRINK_VEC_TO);
+        }
+        if self.matched_old.capacity() > Self::SHRINK_VEC_TO {
+            self.matched_old.shrink_to(Self::SHRINK_VEC_TO);
+        }
+        if self.current_order.capacity() > Self::SHRINK_VEC_TO {
+            self.current_order.shrink_to(Self::SHRINK_VEC_TO);
+        }
+        if self.target_seq.capacity() > Self::SHRINK_VEC_TO {
+            self.target_seq.shrink_to(Self::SHRINK_VEC_TO);
+        }
     }
 }
 
@@ -112,11 +142,21 @@ impl ScratchGuard {
     }
 }
 
+/// Max pooled scratch entries — enough for reasonable recursion depth.
+/// Excess entries are dropped rather than pooled to bound memory.
+const MAX_SCRATCH_POOL_SIZE: usize = 8;
+
 impl Drop for ScratchGuard {
     fn drop(&mut self) {
         if let Some(mut s) = self.scratch.take() {
             s.clear();
-            SCRATCH_POOL.with(|pool| pool.borrow_mut().push(s));
+            SCRATCH_POOL.with(|pool| {
+                let mut pool = pool.borrow_mut();
+                if pool.len() < MAX_SCRATCH_POOL_SIZE {
+                    pool.push(s);
+                }
+                // else: drop `s` — pool is full
+            });
         }
     }
 }

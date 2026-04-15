@@ -13,7 +13,7 @@ Route Rust / UI questions:
 
 ### UI / Layout / Engine
 - Style system / typed style → m03-style-system
-- Layout / flow / scroll → m04-layout
+- Layout / flow / scroll → m04-ui-layout
 - Component / RSX → m05-components
 
 ---

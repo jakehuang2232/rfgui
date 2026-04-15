@@ -125,11 +125,68 @@ pub struct Text {
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
 }
 
+/// LRU cache with generation-based eviction (à la Skia SkStrikeCache).
+///
+/// Each entry tracks an `access_gen` bumped on every hit.  When the cache
+/// exceeds `MAX_ENTRIES`, the coldest 25 % of entries are evicted in one
+/// batch — matching Skia's "at least `fTotalMemoryUsed >> 2`" policy.
+struct LruCache<K: Eq + std::hash::Hash + Clone, V> {
+    map: HashMap<K, (V, u64)>, // value + access generation
+    generation: u64,
+}
+
+const LRU_CACHE_MAX_ENTRIES: usize = 4096;
+
+impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
+
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            generation: 0,
+        }
+    }
+
+    fn get(&mut self, key: &K) -> Option<&V> {
+        self.generation += 1;
+        let current_gen = self.generation;
+        self.map.get_mut(key).map(|(v, g)| {
+            *g = current_gen;
+            &*v
+        })
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.generation += 1;
+        self.map.insert(key, (value, self.generation));
+        self.evict_if_needed();
+    }
+
+    /// Evict coldest 25 % when over capacity (Skia-style batch eviction).
+    fn evict_if_needed(&mut self) {
+        if self.map.len() <= LRU_CACHE_MAX_ENTRIES {
+            return;
+        }
+        let evict_count = self.map.len() / 4; // 25 %
+        let mut gens: Vec<u64> = self.map.values().map(|(_, g)| *g).collect();
+        gens.sort_unstable();
+        let cutoff = gens.get(evict_count).copied().unwrap_or(0);
+        self.map.retain(|_, (_, g)| *g > cutoff);
+    }
+
+}
+
 thread_local! {
-    static MEASURE_TEXT_CACHE: RefCell<HashMap<TextMeasureCacheKey, MeasuredTextLayout>> =
-        RefCell::new(HashMap::new());
-    static SHAPED_TEXT_CACHE: RefCell<HashMap<TextShapeCacheKey, GlobalShapedText>> =
-        RefCell::new(HashMap::new());
+    static MEASURE_TEXT_CACHE: RefCell<LruCache<TextMeasureCacheKey, MeasuredTextLayout>> =
+        RefCell::new(LruCache::new());
+    static SHAPED_TEXT_CACHE: RefCell<LruCache<TextShapeCacheKey, GlobalShapedText>> =
+        RefCell::new(LruCache::new());
     static TEXT_MEASURE_PROFILE: RefCell<TextMeasureProfile> =
         RefCell::new(TextMeasureProfile::default());
 }
@@ -266,7 +323,7 @@ impl Text {
         );
         let (cache_hit, shaped) = SHAPED_TEXT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if let Some(cached) = cache.get(&key).cloned() {
+            if let Some(cached) = cache.get_cloned(&key) {
                 return (true, cached);
             }
             let shaped = with_shared_font_system(|font_system| {
@@ -285,13 +342,6 @@ impl Text {
                 let shape_line = buffer.line_shape(font_system, 0).cloned();
                 GlobalShapedText { buffer, shape_line }
             });
-            if cache.len() >= 4096 {
-                let mut keep = false;
-                cache.retain(|_, _| {
-                    keep = !keep;
-                    keep
-                });
-            }
             cache.insert(key, shaped.clone());
             (false, shaped)
         });
@@ -931,7 +981,7 @@ fn measure_text_layout(
         align,
         font_families,
     );
-    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned()) {
+    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow_mut().get_cloned(&cache_key)) {
         if let Some(started_at) = started_at {
             let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
             record_text_measure_profile(|profile| {
@@ -963,15 +1013,7 @@ fn measure_text_layout(
             height,
         };
         MEASURE_TEXT_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.len() >= 4096 {
-                let mut keep = false;
-                cache.retain(|_, _| {
-                    keep = !keep;
-                    keep
-                });
-            }
-            cache.insert(cache_key, measured.clone());
+            cache.borrow_mut().insert(cache_key, measured.clone());
         });
         if let Some(started_at) = started_at {
             let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;

@@ -143,6 +143,11 @@ impl SharedPropValue {
     pub fn value(&self) -> Rc<dyn Any> {
         self.value.clone()
     }
+
+    /// Move out the inner `Rc` without bumping the refcount.
+    pub fn into_inner(self) -> Rc<dyn Any> {
+        self.value
+    }
 }
 
 impl fmt::Debug for SharedPropValue {

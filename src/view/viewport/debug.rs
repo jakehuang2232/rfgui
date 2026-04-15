@@ -1,6 +1,17 @@
 use super::*;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+static DEBUG_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_debug_trace_enabled(enabled: bool) {
+    DEBUG_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn is_debug_trace_enabled() -> bool {
+    DEBUG_TRACE_ENABLED.load(Ordering::Relaxed)
+}
 
 fn highlight_ms(ms: f64) -> String {
     let color = if ms >= 16.7 {
@@ -513,6 +524,9 @@ pub(super) fn trace_promoted_build_frame_marker() {
 }
 
 pub(crate) fn begin_debug_reuse_path_frame() {
+    if !is_debug_trace_enabled() {
+        return;
+    }
     debug_reuse_path_store().lock().unwrap().clear();
     debug_style_sample_store().lock().unwrap().clear();
     debug_style_sample_record_store().lock().unwrap().clear();
@@ -521,50 +535,64 @@ pub(crate) fn begin_debug_reuse_path_frame() {
 }
 
 pub(crate) fn record_debug_reuse_path(record: DebugReusePathRecord) {
+    if !is_debug_trace_enabled() {
+        return;
+    }
     debug_reuse_path_store().lock().unwrap().push(record);
 }
 
-pub(super) fn snapshot_debug_reuse_path() -> Vec<DebugReusePathRecord> {
-    debug_reuse_path_store().lock().unwrap().clone()
+pub(super) fn take_debug_reuse_path() -> Vec<DebugReusePathRecord> {
+    std::mem::take(&mut *debug_reuse_path_store().lock().unwrap())
 }
 
 pub(super) fn record_debug_style_sample(line: String) {
+    if !is_debug_trace_enabled() {
+        return;
+    }
     debug_style_sample_store().lock().unwrap().push(line);
 }
 
-fn snapshot_debug_style_samples() -> Vec<String> {
-    debug_style_sample_store().lock().unwrap().clone()
+fn take_debug_style_samples() -> Vec<String> {
+    std::mem::take(&mut *debug_style_sample_store().lock().unwrap())
 }
 
 pub(super) fn record_debug_style_sample_record(record: DebugStyleSampleRecord) {
+    if !is_debug_trace_enabled() {
+        return;
+    }
     debug_style_sample_record_store()
         .lock()
         .unwrap()
         .push(record);
 }
 
-pub(super) fn snapshot_debug_style_sample_records() -> Vec<DebugStyleSampleRecord> {
-    debug_style_sample_record_store().lock().unwrap().clone()
+pub(super) fn take_debug_style_sample_records() -> Vec<DebugStyleSampleRecord> {
+    std::mem::take(&mut *debug_style_sample_record_store().lock().unwrap())
 }
 
 pub(super) fn record_debug_style_promotion(line: String) {
+    if !is_debug_trace_enabled() {
+        return;
+    }
     debug_style_promotion_store().lock().unwrap().push(line);
 }
 
-fn snapshot_debug_style_promotion() -> Vec<String> {
-    debug_style_promotion_store().lock().unwrap().clone()
+fn take_debug_style_promotion() -> Vec<String> {
+    std::mem::take(&mut *debug_style_promotion_store().lock().unwrap())
 }
 
 pub(super) fn record_debug_style_request(line: String) {
+    if !is_debug_trace_enabled() {
+        return;
+    }
     debug_style_request_store().lock().unwrap().push(line);
 }
 
-fn snapshot_debug_style_requests() -> Vec<String> {
-    debug_style_request_store().lock().unwrap().clone()
+fn take_debug_style_requests() -> Vec<String> {
+    std::mem::take(&mut *debug_style_request_store().lock().unwrap())
 }
 
-pub(super) fn format_reuse_path_trace() -> String {
-    let mut records = snapshot_debug_reuse_path();
+pub(super) fn format_reuse_path_trace(records: &mut Vec<DebugReusePathRecord>) -> String {
     if records.is_empty() {
         return "[reuse-path]\n  no promoted path activity".to_string();
     }
@@ -633,7 +661,7 @@ pub(super) fn format_reuse_path_trace() -> String {
 }
 
 pub(super) fn format_style_sample_trace() -> String {
-    let lines = snapshot_debug_style_samples();
+    let lines = take_debug_style_samples();
     if lines.is_empty() {
         return "[style-sample]\n  no style samples".to_string();
     }
@@ -646,7 +674,7 @@ pub(super) fn format_style_sample_trace() -> String {
 }
 
 pub(super) fn format_style_promotion_trace() -> String {
-    let lines = snapshot_debug_style_promotion();
+    let lines = take_debug_style_promotion();
     if lines.is_empty() {
         return "[style-promotion]\n  no sampled promoted roots".to_string();
     }
@@ -659,7 +687,7 @@ pub(super) fn format_style_promotion_trace() -> String {
 }
 
 pub(super) fn format_style_request_trace() -> String {
-    let lines = snapshot_debug_style_requests();
+    let lines = take_debug_style_requests();
     if lines.is_empty() {
         return "[style-request]\n  no style requests".to_string();
     }

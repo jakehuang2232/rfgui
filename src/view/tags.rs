@@ -959,9 +959,9 @@ fn from_shared_prop_value<T: Clone + 'static>(
 ) -> Result<T, String> {
     match value {
         crate::ui::PropValue::Shared(shared) => shared
-            .value()
+            .into_inner()
             .downcast::<T>()
-            .map(|value| (*value).clone())
+            .map(|rc| Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone()))
             .map_err(|_| format!("expected {expected} value")),
         _ => Err(format!("expected {expected} value")),
     }

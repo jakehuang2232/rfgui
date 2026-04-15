@@ -1147,6 +1147,33 @@ type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>)>;
 type FocusHandler = Box<dyn FnMut(&mut FocusEvent, &mut ViewportControl<'_>)>;
 type BlurHandler = Box<dyn FnMut(&mut BlurEvent, &mut ViewportControl<'_>)>;
 
+/// Cold-path storage for event handlers. Boxed and lazily allocated so that
+/// elements without handlers pay only 8 bytes (the `Option<Box<_>>` pointer).
+#[derive(Default)]
+struct ElementEventHandlers {
+    mouse_down: Vec<MouseDownHandler>,
+    mouse_up: Vec<MouseUpHandler>,
+    mouse_move: Vec<MouseMoveHandler>,
+    mouse_enter: Vec<MouseEnterHandler>,
+    mouse_leave: Vec<MouseLeaveHandler>,
+    click: Vec<ClickHandler>,
+    key_down: Vec<KeyDownHandler>,
+    key_up: Vec<KeyUpHandler>,
+    focus: Vec<FocusHandler>,
+    blur: Vec<BlurHandler>,
+}
+
+/// Cold-path storage for pending transition/animation requests. Boxed and
+/// lazily allocated so that elements without active transitions pay only
+/// 8 bytes.
+#[derive(Default)]
+struct ElementTransitionRequests {
+    style: Vec<StyleTrackRequest>,
+    animation: Vec<AnimationRequest>,
+    layout: Vec<LayoutTrackRequest>,
+    visual: Vec<VisualTrackRequest>,
+}
+
 #[derive(Clone, Debug)]
 struct FlexLayoutInfo {
     lines: Vec<Vec<FlexLineItem>>,
@@ -1248,10 +1275,7 @@ pub struct Element {
     scrollbar_drag: Option<ScrollbarDragState>,
     last_scrollbar_interaction: Option<Instant>,
     scrollbar_shadow_blur_radius: f32,
-    pending_style_transition_requests: Vec<StyleTrackRequest>,
-    pending_animation_requests: Vec<AnimationRequest>,
-    pending_layout_transition_requests: Vec<LayoutTrackRequest>,
-    pending_visual_transition_requests: Vec<VisualTrackRequest>,
+    transition_requests: Option<Box<ElementTransitionRequests>>,
     last_started_animator: Option<crate::Animator>,
     has_style_snapshot: bool,
     has_layout_snapshot: bool,
@@ -1268,16 +1292,7 @@ pub struct Element {
     layout_assigned_width: Option<f32>,
     layout_assigned_height: Option<f32>,
     is_hovered: bool,
-    mouse_down_handlers: Vec<MouseDownHandler>,
-    mouse_up_handlers: Vec<MouseUpHandler>,
-    mouse_move_handlers: Vec<MouseMoveHandler>,
-    mouse_enter_handlers: Vec<MouseEnterHandler>,
-    mouse_leave_handlers: Vec<MouseLeaveHandler>,
-    click_handlers: Vec<ClickHandler>,
-    key_down_handlers: Vec<KeyDownHandler>,
-    key_up_handlers: Vec<KeyUpHandler>,
-    focus_handlers: Vec<FocusHandler>,
-    blur_handlers: Vec<BlurHandler>,
+    event_handlers: Option<Box<ElementEventHandlers>>,
     layout_dirty: bool,
     dirty_flags: DirtyFlags,
     last_layout_placement: Option<LayoutPlacement>,

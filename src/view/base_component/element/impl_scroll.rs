@@ -555,70 +555,70 @@ impl Element {
     where
         F: FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.mouse_down_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).mouse_down.push(Box::new(handler));
     }
 
     pub fn on_mouse_up<F>(&mut self, handler: F)
     where
         F: FnMut(&mut MouseUpEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.mouse_up_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).mouse_up.push(Box::new(handler));
     }
 
     pub fn on_mouse_move<F>(&mut self, handler: F)
     where
         F: FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.mouse_move_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).mouse_move.push(Box::new(handler));
     }
 
     pub fn on_mouse_enter<F>(&mut self, handler: F)
     where
         F: FnMut(&mut MouseEnterEvent) + 'static,
     {
-        self.mouse_enter_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).mouse_enter.push(Box::new(handler));
     }
 
     pub fn on_mouse_leave<F>(&mut self, handler: F)
     where
         F: FnMut(&mut MouseLeaveEvent) + 'static,
     {
-        self.mouse_leave_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).mouse_leave.push(Box::new(handler));
     }
 
     pub fn on_click<F>(&mut self, handler: F)
     where
         F: FnMut(&mut ClickEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.click_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).click.push(Box::new(handler));
     }
 
     pub fn on_key_down<F>(&mut self, handler: F)
     where
         F: FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.key_down_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).key_down.push(Box::new(handler));
     }
 
     pub fn on_key_up<F>(&mut self, handler: F)
     where
         F: FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.key_up_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).key_up.push(Box::new(handler));
     }
 
     pub fn on_focus<F>(&mut self, handler: F)
     where
         F: FnMut(&mut FocusEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.focus_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).focus.push(Box::new(handler));
     }
 
     pub fn on_blur<F>(&mut self, handler: F)
     where
         F: FnMut(&mut BlurEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.blur_handlers.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).blur.push(Box::new(handler));
     }
 
     pub fn id(&self) -> u64 {

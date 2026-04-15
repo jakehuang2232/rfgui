@@ -3959,7 +3959,7 @@ mod tests {
         rebuilt.apply_style(style);
         assert!(rebuilt.restore_state(snapshot.as_ref()));
 
-        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        let requests = rebuilt.transition_requests.as_mut().map_or_else(Vec::new, |r| std::mem::take(&mut r.style));
         assert!(
             requests.is_empty(),
             "restore of identical style should not enqueue style transitions: {requests:?}"
@@ -3994,7 +3994,7 @@ mod tests {
 
         assert!(rebuilt.restore_state(snapshot.as_ref()));
 
-        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        let requests = rebuilt.transition_requests.as_mut().map_or_else(Vec::new, |r| std::mem::take(&mut r.style));
         assert_eq!(requests.len(), 1, "expected one background transition request");
         assert_eq!(requests[0].field, crate::transition::StyleField::BackgroundColor);
         assert_eq!(
@@ -4029,7 +4029,7 @@ mod tests {
 
         assert!(rebuilt.restore_state(snapshot.as_ref()));
 
-        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        let requests = rebuilt.transition_requests.as_mut().map_or_else(Vec::new, |r| std::mem::take(&mut r.style));
         assert_eq!(requests.len(), 1, "expected one transform transition request");
         assert_eq!(requests[0].field, crate::transition::StyleField::Transform);
         assert_eq!(
@@ -4144,7 +4144,7 @@ mod tests {
 
         assert!(rebuilt.restore_state(snapshot.as_ref()));
 
-        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        let requests = rebuilt.transition_requests.as_mut().map_or_else(Vec::new, |r| std::mem::take(&mut r.style));
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].field, crate::transition::StyleField::TransformOrigin);
     }
@@ -4171,7 +4171,7 @@ mod tests {
 
         assert!(rebuilt.restore_state(snapshot.as_ref()));
 
-        let requests = std::mem::take(&mut rebuilt.pending_style_transition_requests);
+        let requests = rebuilt.transition_requests.as_mut().map_or_else(Vec::new, |r| std::mem::take(&mut r.style));
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].field, crate::transition::StyleField::BoxShadow);
     }

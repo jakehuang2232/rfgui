@@ -73,14 +73,17 @@ impl Viewport {
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
-            for root in roots.iter_mut().rev() {
-                if crate::view::base_component::dispatch_mouse_down_from_hit_test(
-                    root.as_mut(),
-                    &mut event,
-                    &mut control,
-                ) {
-                    handled = true;
-                    break;
+            if let Some((root_idx, _)) =
+                crate::view::base_component::hit_test_roots(&roots, x, y)
+            {
+                if let Some(root) = roots.get_mut(root_idx) {
+                    if crate::view::base_component::dispatch_mouse_down_from_hit_test(
+                        root.as_mut(),
+                        &mut event,
+                        &mut control,
+                    ) {
+                        handled = true;
+                    }
                 }
             }
         }
@@ -172,15 +175,16 @@ impl Viewport {
                     }
                 }
                 control.viewport.set_pointer_capture_node_id(None);
-            } else {
-                for root in roots.iter_mut().rev() {
+            } else if let Some((root_idx, _)) =
+                crate::view::base_component::hit_test_roots(&roots, x, y)
+            {
+                if let Some(root) = roots.get_mut(root_idx) {
                     if crate::view::base_component::dispatch_mouse_up_from_hit_test(
                         root.as_mut(),
                         &mut event,
                         &mut control,
                     ) {
                         handled = true;
-                        break;
                     }
                 }
             }
@@ -202,10 +206,8 @@ impl Viewport {
         };
         let redraw_requested_before = self.redraw_requested;
         let mut roots = std::mem::take(&mut self.scene.ui_roots);
-        let hover_target = roots
-            .iter()
-            .rev()
-            .find_map(|root| crate::view::base_component::hit_test(root.as_ref(), x, y));
+        let hit_result = crate::view::base_component::hit_test_roots(&roots, x, y);
+        let hover_target = hit_result.map(|(_, id)| id);
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
             &mut roots,
             &mut self.input_state.hovered_node_id,
@@ -246,15 +248,14 @@ impl Viewport {
                 if !handled {
                     control.viewport.set_pointer_capture_node_id(None);
                 }
-            } else {
-                for root in roots.iter_mut().rev() {
+            } else if let Some((root_idx, _)) = hit_result {
+                if let Some(root) = roots.get_mut(root_idx) {
                     if crate::view::base_component::dispatch_mouse_move_from_hit_test(
                         root.as_mut(),
                         &mut event,
                         &mut control,
                     ) {
                         handled = true;
-                        break;
                     }
                 }
             }
@@ -283,10 +284,8 @@ impl Viewport {
         }
         let buttons = self.current_ui_mouse_buttons();
         let mut roots = std::mem::take(&mut self.scene.ui_roots);
-        let hit_target = roots
-            .iter()
-            .rev()
-            .find_map(|root| crate::view::base_component::hit_test(root.as_ref(), x, y));
+        let hit_target = crate::view::base_component::hit_test_roots(&roots, x, y)
+            .map(|(_, id)| id);
         let is_valid_click = is_valid_click_candidate(pending_click, button, hit_target, x, y);
         if !is_valid_click {
             self.scene.ui_roots = roots;
@@ -406,10 +405,8 @@ impl Viewport {
         delta_x: f32,
         delta_y: f32,
     ) -> Option<(usize, u64)> {
-        let hit_target = roots
-            .iter()
-            .rev()
-            .find_map(|root| crate::view::base_component::hit_test(root.as_ref(), x, y))?;
+        let hit_target = crate::view::base_component::hit_test_roots(roots, x, y)
+            .map(|(_, id)| id)?;
         let mut best_match: Option<(usize, u64, usize)> = None;
 
         for (root_index, root) in roots.iter().enumerate() {

@@ -112,67 +112,85 @@ impl Viewport {
     }
 
     pub(super) fn extract_style_from_value(value: &PropValue) -> Result<Option<Style>, String> {
-        let schema = ElementStylePropSchema::from_prop_value(value.clone())
+        Self::extract_style_from_value_owned(value.clone())
+    }
+
+    pub(super) fn extract_style_from_value_owned(value: PropValue) -> Result<Option<Style>, String> {
+        let schema = ElementStylePropSchema::from_prop_value(value)
             .map_err(|_| "prop `style` expects ElementStylePropSchema value".to_string())?;
         Ok(Some(schema.to_style()))
     }
 
-    /// Returns `Ok(true)` when the only difference between old props and `changed`/`removed`
-    /// is a change to transform/transform-origin inside the `style` prop.
-    pub(super) fn is_transform_only_update(
+    /// Placement-safe property IDs: changes to these never require a tree rebuild
+    /// or a measure pass — they only affect placement (place pass) or paint.
+    const PLACEMENT_SAFE_PROPERTIES: [PropertyId; 3] = [
+        PropertyId::Transform,
+        PropertyId::TransformOrigin,
+        PropertyId::Position,
+    ];
+
+    /// Returns `Ok(true)` when the only difference between old and new props is
+    /// a change to placement-safe properties (transform, transform-origin,
+    /// position) inside the `style` prop.
+    pub(super) fn is_placement_only_update(
         old_props: &[(&'static str, PropValue)],
         changed: &[(&'static str, PropValue)],
         removed: &[&'static str],
     ) -> Result<bool, String> {
-        // Removals or extra changes mean it's more than a transform update.
         if !removed.is_empty() || changed.len() != 1 || changed[0].0 != "style" {
             return Ok(false);
         }
         let old_style = Self::extract_style_prop(old_props)?.unwrap_or_default();
         let new_style = Self::extract_style_from_value(&changed[0].1)?.unwrap_or_default();
-        let ignored = [PropertyId::Transform, PropertyId::TransformOrigin];
-        if old_style.clone().without_properties_recursive(&ignored)
-            != new_style.clone().without_properties_recursive(&ignored)
+        if old_style.clone().without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
+            != new_style.clone().without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
         {
             return Ok(false);
         }
-        let old_transform = old_style.get(PropertyId::Transform);
-        let new_transform = new_style.get(PropertyId::Transform);
-        let old_origin = old_style.get(PropertyId::TransformOrigin);
-        let new_origin = new_style.get(PropertyId::TransformOrigin);
-        // Transform is in the diff but hasn't actually changed — nothing to do.
-        if old_transform == new_transform && old_origin == new_origin {
+        // At least one placement-safe property must have actually changed.
+        let any_changed = Self::PLACEMENT_SAFE_PROPERTIES.iter().any(|id| {
+            old_style.get(*id) != new_style.get(*id)
+        });
+        if !any_changed {
             return Ok(false);
         }
         Ok(true)
     }
 
-    pub(super) fn apply_transform_style_by_node_id(
+    pub(super) fn apply_placement_style_by_node_id(
         roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
         node_id: u64,
         style: &Style,
     ) -> bool {
         for root in roots.iter_mut() {
             if let Some(element) = Self::element_by_id_mut(root.as_mut(), node_id) {
-                let mut transform_style = Style::new();
-                transform_style.set_transform(match style.get(PropertyId::Transform) {
-                    Some(crate::ParsedValue::Transform(transform)) => transform.clone(),
-                    _ => Transform::default(),
-                });
-                transform_style.set_transform_origin(
-                    match style.get(PropertyId::TransformOrigin) {
-                        Some(crate::ParsedValue::TransformOrigin(origin)) => *origin,
-                        _ => TransformOrigin::center(),
-                    },
-                );
-                element.apply_style(transform_style);
+                let mut patch_style = Style::new();
+                if let Some(crate::ParsedValue::Transform(transform)) =
+                    style.get(PropertyId::Transform)
+                {
+                    patch_style.set_transform(transform.clone());
+                }
+                if let Some(crate::ParsedValue::TransformOrigin(origin)) =
+                    style.get(PropertyId::TransformOrigin)
+                {
+                    patch_style.set_transform_origin(*origin);
+                }
+                if let Some(crate::ParsedValue::Position(position)) =
+                    style.get(PropertyId::Position)
+                {
+                    patch_style.insert(
+                        PropertyId::Position,
+                        crate::ParsedValue::Position(position.clone()),
+                    );
+                }
+                element.apply_style(patch_style);
                 return true;
             }
         }
         false
     }
 
-    pub(super) fn try_apply_redraw_only_transform_updates(&mut self, root: &RsxNode) -> Result<bool, String> {
+    pub(super) fn try_apply_placement_updates(&mut self, root: &RsxNode) -> Result<bool, String> {
         let Some(previous_root) = self.scene.last_rsx_root.as_ref() else {
             return Ok(false);
         };
@@ -192,7 +210,7 @@ impl Viewport {
             let RsxNode::Element(old_element) = old_node else {
                 return Ok(false);
             };
-            if !Self::is_transform_only_update(&old_element.props, changed, removed)? {
+            if !Self::is_placement_only_update(&old_element.props, changed, removed)? {
                 return Ok(false);
             }
             let style = Self::extract_style_from_value(&changed[0].1)?.unwrap_or_default();
@@ -202,7 +220,7 @@ impl Viewport {
         }
 
         for (node_id, style) in &updates {
-            if !Self::apply_transform_style_by_node_id(&mut self.scene.ui_roots, *node_id, style) {
+            if !Self::apply_placement_style_by_node_id(&mut self.scene.ui_roots, *node_id, style) {
                 return Ok(false);
             }
         }
