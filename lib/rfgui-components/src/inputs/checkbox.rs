@@ -5,6 +5,7 @@ use rfgui::ui::{
 };
 use rfgui::view::{Element, Text};
 use rfgui::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};
+use std::rc::Rc;
 
 pub struct Checkbox;
 
@@ -14,6 +15,7 @@ pub struct CheckboxProps {
     pub binding: Option<Binding<bool>>,
     pub checked: Option<bool>,
     pub disabled: Option<bool>,
+    pub on_change: Option<Rc<dyn Fn(bool)>>,
 }
 
 impl RsxComponent<CheckboxProps> for Checkbox {
@@ -22,6 +24,7 @@ impl RsxComponent<CheckboxProps> for Checkbox {
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
         let disabled = props.disabled.unwrap_or(false);
+        let on_change = props.on_change;
         let label = props.label;
         let theme = use_theme().0;
         let checkbox_theme = &theme.component.checkbox;
@@ -40,7 +43,11 @@ impl RsxComponent<CheckboxProps> for Checkbox {
             if disabled {
                 return;
             }
-            checked_binding.set(!checked_binding.get());
+            let next = !checked_binding.get();
+            checked_binding.set(next);
+            if let Some(cb) = &on_change {
+                cb(next);
+            }
         });
 
         let on_mouse_enter =

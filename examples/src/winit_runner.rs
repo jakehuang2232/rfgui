@@ -13,15 +13,15 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use rfgui::app::{App, AppConfig, AppContext, AppEvent, WheelConfig};
+use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::desktop_backend::ArboardClipboard;
 use rfgui::platform::{
     CallbackCursorSink, CallbackRedrawRequester, Clipboard, NullClipboard, PlatformImePreedit,
     PlatformKeyEvent, PlatformMouseButton, PlatformMouseEvent, PlatformMouseEventKind,
     PlatformServices, PlatformTextInput, PlatformWheelEvent,
 };
-use rfgui::ui::{RsxNode, next_timer_deadline, peek_state_dirty, run_due_timers};
-use rfgui::view::viewport::{Viewport, ViewportControl};
+use rfgui::ui::{next_timer_deadline, run_due_timers};
+use rfgui::view::viewport::{RenderFrameResult, Viewport};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -42,14 +42,15 @@ use winit::window::{Window, WindowId};
 pub fn run<A: App + 'static>(app: A, config: AppConfig) {
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut handler = Runner::new(app, config);
+    let mut handler = Runner::new(Box::new(app), config);
     event_loop
         .run_app(&mut handler)
         .expect("winit event loop exited with error");
 }
 
-struct Runner<A: App> {
-    app: A,
+struct Runner {
+    /// Holds the App until the Viewport is created, then `None`.
+    pending_app: Option<Box<dyn App>>,
     config: AppConfig,
     window: Option<Arc<Window>>,
     viewport: Option<Viewport>,
@@ -76,22 +77,10 @@ struct Runner<A: App> {
     /// is not inserted twice.
     ime_composing: bool,
     last_ime_rect: Option<(i32, i32, u32, u32)>,
-    /// Memoized result of `App::build` from the last rebuild. Reused on
-    /// pure-redraw frames (animation tick, hover update, …) so the
-    /// viewport receives the *same* `RsxNode` reference and skips its
-    /// expensive structural diff. Without this, every animation frame
-    /// rebuilt the entire scene and ran orders of magnitude slower than
-    /// the old hand-rolled app loop.
-    cached_rsx: Option<RsxNode>,
-    /// True until the next `App::build` runs. Set on construction (so
-    /// the first frame builds) and whenever a state change triggers a
-    /// rebuild-class dirty flag.
-    needs_rebuild: bool,
-    ready_dispatched: bool,
 }
 
-impl<A: App> Runner<A> {
-    fn new(app: A, config: AppConfig) -> Self {
+impl Runner {
+    fn new(app: Box<dyn App>, config: AppConfig) -> Self {
         let clipboard: Box<dyn Clipboard + Send> = match ArboardClipboard::new() {
             Some(c) => Box::new(c),
             None => Box::new(NullClipboard::default()),
@@ -103,7 +92,7 @@ impl<A: App> Runner<A> {
             *redraw_flag_write.lock().unwrap() = true;
         });
         Self {
-            app,
+            pending_app: Some(app),
             config,
             window: None,
             viewport: None,
@@ -116,9 +105,6 @@ impl<A: App> Runner<A> {
             cursor_in_window: false,
             ime_composing: false,
             last_ime_rect: None,
-            cached_rsx: None,
-            needs_rebuild: true,
-            ready_dispatched: false,
         }
     }
 
@@ -128,6 +114,9 @@ impl<A: App> Runner<A> {
         }
         let Some(window) = &self.window else { return };
         let mut viewport = Viewport::new();
+        if let Some(app) = self.pending_app.take() {
+            viewport.set_app(app);
+        }
         viewport.set_scale_factor(window.scale_factor() as f32);
         let size = window.inner_size();
         viewport.set_size(size.width, size.height);
@@ -135,7 +124,6 @@ impl<A: App> Runner<A> {
             viewport.set_clear_color(Box::new(color));
         }
         pollster::block_on(viewport.attach(window.clone()));
-        pollster::block_on(viewport.create_surface());
         self.viewport = Some(viewport);
         // Kick the first frame. Winit does not emit RedrawRequested on
         // window creation, so without this the App never renders until
@@ -143,29 +131,12 @@ impl<A: App> Runner<A> {
         window.request_redraw();
     }
 
-    fn with_ctx<R>(&mut self, f: impl FnOnce(&mut A, &mut AppContext<'_>) -> R) -> Option<R> {
-        let viewport = self.viewport.as_mut()?;
-        // Actual cursor application happens in drain_and_apply via the
-        // winit Window; the sink on self is a stub because the viewport
-        // records pending requests and the runner applies them.
-        let mut ctx = AppContext {
-            viewport: ViewportControl::new(viewport),
-            services: PlatformServices {
-                clipboard: self.clipboard.as_mut(),
-                cursor: &mut self.cursor,
-                redraw: &self.redraw,
-            },
-        };
-        Some(f(&mut self.app, &mut ctx))
-    }
+
 
     fn handle_keyboard(&mut self, event: KeyEvent) {
         let key_str = key_to_string(&event.logical_key);
         let code_str = physical_key_to_string(&event.physical_key);
         let pressed = matches!(event.state, ElementState::Pressed);
-        // Update the viewport's pressed-key set so `is_key_pressed`
-        // lookups (used by shortcut handlers and the text-input filter
-        // below) stay in sync with the host keyboard state.
         if let Some(viewport) = self.viewport.as_mut() {
             viewport.set_key_pressed(key_str.clone(), pressed);
         }
@@ -176,14 +147,14 @@ impl<A: App> Runner<A> {
             pressed,
         };
         let app_event = AppEvent::Key(platform_event.clone());
-        self.with_ctx(|app, ctx| app.on_event(&app_event, ctx));
         if let Some(viewport) = self.viewport.as_mut() {
+            viewport.dispatch_app_event(&app_event, PlatformServices {
+                clipboard: self.clipboard.as_mut(),
+                cursor: &mut self.cursor,
+                redraw: &self.redraw,
+            });
             let _ = viewport.dispatch_platform_key_event(&platform_event);
         }
-        // Winit delivers committed text on key-press events as `event.text`
-        // when no IME is in use. Suppress during IME composition to avoid
-        // double-inserting the character, and filter out shortcut chords
-        // so `Ctrl+C` doesn't insert the literal "c".
         if pressed && !self.ime_composing {
             if let Some(text) = event.text.as_ref() {
                 if !text.is_empty()
@@ -197,8 +168,12 @@ impl<A: App> Runner<A> {
                         text: text.to_string(),
                     };
                     let ti_event = AppEvent::TextInput(ti.clone());
-                    self.with_ctx(|app, ctx| app.on_event(&ti_event, ctx));
                     if let Some(viewport) = self.viewport.as_mut() {
+                        viewport.dispatch_app_event(&ti_event, PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        });
                         let _ = viewport.dispatch_platform_text_input(&ti);
                     }
                 }
@@ -213,8 +188,6 @@ impl<A: App> Runner<A> {
             }
             Ime::Disabled => {
                 self.ime_composing = false;
-                // Clear any stale preedit state on the viewport so the
-                // next character doesn't start with leftover composition.
                 let preedit = PlatformImePreedit {
                     text: String::new(),
                     cursor_start: None,
@@ -236,8 +209,12 @@ impl<A: App> Runner<A> {
                     cursor_end: end,
                 };
                 let app_event = AppEvent::ImePreedit(preedit.clone());
-                self.with_ctx(|app, ctx| app.on_event(&app_event, ctx));
                 if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&app_event, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_ime_preedit(&preedit);
                 }
             }
@@ -248,8 +225,12 @@ impl<A: App> Runner<A> {
                 }
                 let ti = PlatformTextInput { text };
                 let app_event = AppEvent::TextInput(ti.clone());
-                self.with_ctx(|app, ctx| app.on_event(&app_event, ctx));
                 if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&app_event, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_text_input(&ti);
                 }
             }
@@ -288,11 +269,13 @@ impl<A: App> Runner<A> {
     }
 
     fn ensure_ready(&mut self) {
-        if self.ready_dispatched {
-            return;
+        if let Some(viewport) = self.viewport.as_mut() {
+            viewport.app_on_ready(PlatformServices {
+                clipboard: self.clipboard.as_mut(),
+                cursor: &mut self.cursor,
+                redraw: &self.redraw,
+            });
         }
-        self.with_ctx(|app, ctx| app.on_ready(ctx));
-        self.ready_dispatched = true;
     }
 
     /// Run one build+render cycle. Called on `RedrawRequested` and also
@@ -301,41 +284,19 @@ impl<A: App> Runner<A> {
     /// `RedrawRequested` at window creation on every platform.
     fn render_once(&mut self) {
         self.ensure_ready();
-        // Promote any dirty-rebuild signal from the last event batch into
-        // a real rebuild request so the cached RSX gets refreshed.
-        if peek_state_dirty().needs_rebuild() {
-            self.needs_rebuild = true;
-        }
-        if self.needs_rebuild || self.cached_rsx.is_none() {
-            let rsx = self.with_ctx(|app, ctx| app.build(ctx));
-            if let Some(rsx) = rsx {
-                self.cached_rsx = Some(rsx);
+        if let Some(viewport) = self.viewport.as_mut() {
+            let result = viewport.render_frame(PlatformServices {
+                clipboard: self.clipboard.as_mut(),
+                cursor: &mut self.cursor,
+                redraw: &self.redraw,
+            });
+            if matches!(result, RenderFrameResult::NeedsRetry) {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
-            self.needs_rebuild = false;
-        }
-        if let (Some(rsx), Some(viewport)) =
-            (self.cached_rsx.as_ref(), self.viewport.as_mut())
-        {
-            let _ = viewport.render_rsx(rsx);
         }
         self.sync_ime_cursor_area();
-        // The first frame after window creation can hit
-        // `SurfaceTexture::Occluded` on macOS while the NSWindow is still
-        // becoming visible. `begin_frame` then silently returns and no
-        // geometry is laid out, so the screen stays blank until something
-        // else (a manual resize, an animation tick) pokes the loop. Detect
-        // that case and queue another redraw so the next tick retries.
-        let needs_retry = self
-            .viewport
-            .as_ref()
-            .zip(self.cached_rsx.as_ref())
-            .map(|(v, _)| v.frame_box_models().is_empty())
-            .unwrap_or(false);
-        if needs_retry {
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
-        }
         self.drain_and_apply();
     }
 
@@ -385,7 +346,7 @@ impl<A: App> Runner<A> {
     }
 }
 
-impl<A: App + 'static> ApplicationHandler for Runner<A> {
+impl ApplicationHandler for Runner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -420,20 +381,34 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
         self.ensure_ready();
         match event {
             WindowEvent::CloseRequested => {
-                let close = AppEvent::CloseRequested;
-                self.with_ctx(|app, ctx| app.on_event(&close, ctx));
-                self.with_ctx(|app, ctx| app.on_shutdown(ctx));
+                if let Some(viewport) = self.viewport.as_mut() {
+                    let close = AppEvent::CloseRequested;
+                    viewport.dispatch_app_event(&close, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                    viewport.app_on_shutdown(PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport.set_size(size.width, size.height);
+                    let ev = AppEvent::Resized {
+                        width: size.width,
+                        height: size.height,
+                    };
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
                 }
-                let ev = AppEvent::Resized {
-                    width: size.width,
-                    height: size.height,
-                };
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -441,11 +416,15 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport.set_scale_factor(scale_factor as f32);
+                    let ev = AppEvent::ScaleFactorChanged {
+                        scale: scale_factor as f32,
+                    };
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
                 }
-                let ev = AppEvent::ScaleFactorChanged {
-                    scale: scale_factor as f32,
-                };
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Some(position);
@@ -465,8 +444,12 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                     },
                 };
                 let ev = AppEvent::Mouse(move_event);
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
                 if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_mouse_event(&move_event);
                 }
             }
@@ -486,25 +469,29 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                         platform_button_to_viewport(mapped),
                         pressed,
                     );
-                }
-                let kind = if pressed {
-                    PlatformMouseEventKind::Down(mapped)
-                } else {
-                    PlatformMouseEventKind::Up(mapped)
-                };
-                let ev = AppEvent::Mouse(PlatformMouseEvent { kind });
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
-                if let Some(viewport) = self.viewport.as_mut() {
+                    let kind = if pressed {
+                        PlatformMouseEventKind::Down(mapped)
+                    } else {
+                        PlatformMouseEventKind::Up(mapped)
+                    };
+                    let ev = AppEvent::Mouse(PlatformMouseEvent { kind });
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent { kind });
                     if !pressed {
                         let click = PlatformMouseEvent {
                             kind: PlatformMouseEventKind::Click(mapped),
                         };
                         let click_ev = AppEvent::Mouse(click);
-                        self.with_ctx(|app, ctx| app.on_event(&click_ev, ctx));
-                        if let Some(viewport) = self.viewport.as_mut() {
-                            let _ = viewport.dispatch_platform_mouse_event(&click);
-                        }
+                        viewport.dispatch_app_event(&click_ev, PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        });
+                        let _ = viewport.dispatch_platform_mouse_event(&click);
                     }
                 }
             }
@@ -512,15 +499,16 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                 let Some((dx, dy)) = self.normalize_wheel(delta) else {
                     return;
                 };
-                // Old runner dispatched negated deltas so a forward wheel
-                // scrolls content *up* — match that so scroll direction
-                // feels right on both mouse wheels and trackpads.
                 let ev = AppEvent::Wheel(PlatformWheelEvent {
                     delta_x: -dx,
                     delta_y: -dy,
                 });
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
                 if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_wheel_event(&PlatformWheelEvent {
                         delta_x: -dx,
                         delta_y: -dy,
@@ -529,10 +517,14 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
             }
             WindowEvent::Focused(focused) => {
                 let ev = AppEvent::HostFocus(focused);
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
                 if !focused {
-                    // Purge any stuck hover / pressed-key / pressed-button
-                    // state left over from the outgoing focus session.
                     self.ime_composing = false;
                     if let Some(viewport) = self.viewport.as_mut() {
                         viewport.clear_input_state();

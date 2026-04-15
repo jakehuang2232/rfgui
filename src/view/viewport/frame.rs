@@ -81,6 +81,61 @@ pub(super) struct FrameState {
     pub depth_view: Option<wgpu::TextureView>,
 }
 
+/// Collects all per-frame profiling timings so they can be passed to trace
+/// tree construction without scattering ~20 individual variables.
+#[derive(Default)]
+pub(super) struct FrameTimings {
+    pub begin_frame_ms: f64,
+    pub begin_frame_acquire_ms: f64,
+    pub begin_frame_create_view_ms: f64,
+    pub begin_frame_create_encoder_ms: f64,
+
+    pub layout_ms: f64,
+    pub layout_measure_ms: f64,
+    pub layout_place_ms: f64,
+    pub layout_collect_box_models_ms: f64,
+    pub layout_text_measure_profile: crate::view::base_component::TextMeasureProfile,
+    pub layout_place_profile: crate::view::base_component::LayoutPlaceProfile,
+
+    pub post_layout_transition_ms: f64,
+
+    pub relayout_ms: f64,
+    pub relayout_measure_ms: f64,
+    pub relayout_place_ms: f64,
+    pub relayout_collect_box_models_ms: f64,
+    pub relayout_place_profile: crate::view::base_component::LayoutPlaceProfile,
+
+    pub update_promotion_ms: f64,
+    pub build_graph_ms: f64,
+
+    pub compile_ms: f64,
+    pub compile_children: Vec<super::debug::TraceRenderNode>,
+
+    pub execute_ms: f64,
+    pub execute_pass_count: usize,
+    pub execute_ordered_passes: Vec<(String, f64, usize)>,
+    pub execute_detail_ordered_passes: Vec<(String, f64, usize)>,
+
+    pub end_frame_ms: f64,
+    pub end_frame_submit_ms: f64,
+    pub end_frame_present_ms: f64,
+
+    pub total_ms: f64,
+
+    /// Time spent in `App::build()` producing the RSX tree.  Measured in
+    /// `render_frame` and injected before the trace tree is built.
+    pub rsx_build_ms: f64,
+}
+
+/// Result of a single layout pass (measure → place → collect_box_models).
+pub(super) struct LayoutPassResult {
+    pub measure_ms: f64,
+    pub place_ms: f64,
+    pub collect_box_models_ms: f64,
+    pub text_measure_profile: crate::view::base_component::TextMeasureProfile,
+    pub place_profile: crate::view::base_component::LayoutPlaceProfile,
+}
+
 pub struct FrameParts<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub view: &'a wgpu::TextureView,

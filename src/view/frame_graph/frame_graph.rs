@@ -4365,7 +4365,7 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
     }
 
     pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {
-        if !self.viewport.debug_trace_render_time() || elapsed_ms <= 0.0 {
+        if !self.viewport.debug_options().trace_render_time || elapsed_ms <= 0.0 {
             return;
         }
         let name = name.to_string();
@@ -4377,7 +4377,7 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
     }
 
     pub fn record_detail_count(&mut self, name: &'static str) {
-        if !self.viewport.debug_trace_render_time() {
+        if !self.viewport.debug_options().trace_render_time {
             return;
         }
         let name = name.to_string();
@@ -4458,7 +4458,7 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
     }
 
     pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {
-        if !self.viewport.debug_trace_render_time() || elapsed_ms <= 0.0 {
+        if !self.viewport.debug_options().trace_render_time || elapsed_ms <= 0.0 {
             return;
         }
         let name = name.to_string();
@@ -4470,7 +4470,7 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
     }
 
     pub fn record_detail_count(&mut self, name: &'static str) {
-        if !self.viewport.debug_trace_render_time() {
+        if !self.viewport.debug_options().trace_render_time {
             return;
         }
         let name = name.to_string();
@@ -4551,7 +4551,7 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
     }
 
     pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {
-        if !self.viewport.debug_trace_render_time() || elapsed_ms <= 0.0 {
+        if !self.viewport.debug_options().trace_render_time || elapsed_ms <= 0.0 {
             return;
         }
         let name = name.to_string();
@@ -4563,7 +4563,7 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
     }
 
     pub fn record_detail_count(&mut self, name: &'static str) {
-        if !self.viewport.debug_trace_render_time() {
+        if !self.viewport.debug_options().trace_render_time {
             return;
         }
         let name = name.to_string();
