@@ -257,15 +257,7 @@ pub struct Viewport {
     redraw_requested: bool,
     debug_options: ViewportDebugOptions,
     frame_stats: FrameStats,
-    frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
-    cached_root_box_models: HashMap<u64, Vec<super::base_component::BoxModelSnapshot>>,
-    promotion_state: PromotionState,
-    promotion_config: ViewportPromotionConfig,
-    promoted_layer_updates: Vec<PromotedLayerUpdate>,
-    promoted_base_signatures: HashMap<u64, u64>,
-    promoted_composition_signatures: HashMap<u64, u64>,
-    debug_previous_subtree_signatures: HashMap<u64, (u64, u64, u64, bool)>,
-    promoted_reuse_cooldown_frames: u8,
+    compositor: CompositorState,
     input_state: InputState,
     clipboard_fallback: Option<String>,
     dispatched_focus_node_id: Option<u64>,
@@ -286,6 +278,11 @@ pub struct Viewport {
     cursor_override: Option<Cursor>,
     last_recorded_cursor: Option<Cursor>,
     pending_platform_requests: PlatformRequests,
+    /// Set inside `render_rsx_with_dirty` whenever any transition or
+    /// animation plugin reports `keep_running`. Cleared at the start of
+    /// every render. Hosts query this via `is_animating()` to decide
+    /// whether to pump another frame immediately or idle.
+    is_animating: bool,
     frame_presented: bool,
     last_frame_graph: Option<FrameGraph>,
     compile_cache: Option<CachedCompiledGraph>,
@@ -293,6 +290,39 @@ pub struct Viewport {
     debug_overlay_indices: Vec<u32>,
     viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
     viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
+}
+
+/// Phase-7 extraction. Groups everything the layer-promotion / compositor
+/// pipeline owns — promotion state, cached signatures for reuse, and the
+/// box-model snapshots produced each frame. Pure internal refactor; the
+/// viewport public API is unchanged and nothing outside the viewport names
+/// this type.
+struct CompositorState {
+    promotion_state: PromotionState,
+    promotion_config: ViewportPromotionConfig,
+    promoted_layer_updates: Vec<PromotedLayerUpdate>,
+    promoted_base_signatures: HashMap<u64, u64>,
+    promoted_composition_signatures: HashMap<u64, u64>,
+    debug_previous_subtree_signatures: HashMap<u64, (u64, u64, u64, bool)>,
+    promoted_reuse_cooldown_frames: u8,
+    frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
+    cached_root_box_models: HashMap<u64, Vec<super::base_component::BoxModelSnapshot>>,
+}
+
+impl CompositorState {
+    fn new() -> Self {
+        Self {
+            promotion_state: PromotionState::default(),
+            promotion_config: ViewportPromotionConfig::default(),
+            promoted_layer_updates: Vec::new(),
+            promoted_base_signatures: HashMap::new(),
+            promoted_composition_signatures: HashMap::new(),
+            debug_previous_subtree_signatures: HashMap::new(),
+            promoted_reuse_cooldown_frames: 0,
+            frame_box_models: Vec::new(),
+            cached_root_box_models: HashMap::new(),
+        }
+    }
 }
 
 struct CachedCompiledGraph {
@@ -332,11 +362,11 @@ impl Viewport {
     const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 96 * 1024 * 1024;
 
     fn invalidate_promoted_layer_reuse(&mut self) {
-        self.promoted_base_signatures.clear();
-        self.promoted_composition_signatures.clear();
-        self.debug_previous_subtree_signatures.clear();
-        self.promoted_layer_updates.clear();
-        self.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
+        self.compositor.promoted_base_signatures.clear();
+        self.compositor.promoted_composition_signatures.clear();
+        self.compositor.debug_previous_subtree_signatures.clear();
+        self.compositor.promoted_layer_updates.clear();
+        self.compositor.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
     }
 
     fn normalize_msaa_sample_count(sample_count: u32) -> u32 {
@@ -478,7 +508,7 @@ impl Viewport {
         }
         let promoted_root = roots.iter().find_map(|root| {
             let root_id = root.id();
-            if !self.promotion_state.promoted_node_ids.contains(&root_id) {
+            if !self.compositor.promotion_state.promoted_node_ids.contains(&root_id) {
                 return None;
             }
             if root_id == target
@@ -860,7 +890,7 @@ impl Viewport {
         &mut self,
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
     ) {
-        self.frame_box_models.clear();
+        self.compositor.frame_box_models.clear();
         let mut active_root_ids = HashSet::new();
         for root in roots.iter_mut() {
             let root_id = root.id();
@@ -871,16 +901,16 @@ impl Viewport {
                     .union(crate::view::base_component::DirtyFlags::PLACE)
                     .union(crate::view::base_component::DirtyFlags::BOX_MODEL)
                     .union(crate::view::base_component::DirtyFlags::HIT_TEST),
-            ) || !self.cached_root_box_models.contains_key(&root_id);
+            ) || !self.compositor.cached_root_box_models.contains_key(&root_id);
             if needs_refresh {
                 let snapshots = super::base_component::collect_box_models(root.as_ref());
-                self.cached_root_box_models.insert(root_id, snapshots);
+                self.compositor.cached_root_box_models.insert(root_id, snapshots);
             }
-            if let Some(snapshots) = self.cached_root_box_models.get(&root_id) {
-                self.frame_box_models.extend_from_slice(snapshots);
+            if let Some(snapshots) = self.compositor.cached_root_box_models.get(&root_id) {
+                self.compositor.frame_box_models.extend_from_slice(snapshots);
             }
         }
-        self.cached_root_box_models
+        self.compositor.cached_root_box_models
             .retain(|root_id, _| active_root_ids.contains(root_id));
         for root in roots.iter_mut() {
             super::base_component::clear_subtree_dirty_flags(
@@ -1225,6 +1255,7 @@ impl Viewport {
             || layout_result.keep_running
         {
             self.request_redraw();
+            self.is_animating = true;
         }
         PostLayoutTransitionResult {
             redraw_changed: redraw_changed
@@ -1375,7 +1406,7 @@ impl Viewport {
     }
 
     fn update_promotion_state(&mut self, roots: &[Box<dyn super::base_component::ElementTrait>]) {
-        let previous_promoted_node_ids = self.promotion_state.promoted_node_ids.clone();
+        let previous_promoted_node_ids = self.compositor.promotion_state.promoted_node_ids.clone();
         let active_animator_hints = self.animation_plugin.active_promotion_hints();
         let active_channels = active_channels_by_node(&self.transition_claims);
         let candidates = collect_promotion_candidates(
@@ -1387,28 +1418,28 @@ impl Viewport {
         let next_promotion_state = evaluate_promotion(
             candidates,
             (self.logical_width, self.logical_height),
-            self.promotion_config,
+            self.compositor.promotion_config,
         );
         let promotion_topology_changed =
             previous_promoted_node_ids != next_promotion_state.promoted_node_ids;
-        self.promotion_state = next_promotion_state;
+        self.compositor.promotion_state = next_promotion_state;
         if promotion_topology_changed {
-            self.promoted_base_signatures.clear();
-            self.promoted_composition_signatures.clear();
-            self.promoted_layer_updates.clear();
-            self.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
+            self.compositor.promoted_base_signatures.clear();
+            self.compositor.promoted_composition_signatures.clear();
+            self.compositor.promoted_layer_updates.clear();
+            self.compositor.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
         }
         let (mut updates, next_base_signatures, next_composition_signatures) =
             collect_promoted_layer_updates(
                 roots,
-                &self.promotion_state.promoted_node_ids,
-                &self.promoted_base_signatures,
-                &self.promoted_composition_signatures,
+                &self.compositor.promotion_state.promoted_node_ids,
+                &self.compositor.promoted_base_signatures,
+                &self.compositor.promoted_composition_signatures,
             );
         if self.debug_options.trace_reuse_path {
             let subtree_signatures =
-                collect_debug_subtree_signatures(roots, &self.promotion_state.promoted_node_ids);
-            let previous_subtree_signatures = &self.debug_previous_subtree_signatures;
+                collect_debug_subtree_signatures(roots, &self.compositor.promotion_state.promoted_node_ids);
+            let previous_subtree_signatures = &self.compositor.debug_previous_subtree_signatures;
             let mut sampled_roots = snapshot_debug_style_sample_records()
                 .into_iter()
                 .filter_map(|record| record.promoted_root.map(|root| (record.target, root)))
@@ -1458,36 +1489,38 @@ impl Viewport {
                     ));
                 }
             }
-            self.debug_previous_subtree_signatures = subtree_signatures;
+            self.compositor.debug_previous_subtree_signatures = subtree_signatures;
         } else {
-            self.debug_previous_subtree_signatures.clear();
+            self.compositor.debug_previous_subtree_signatures.clear();
         }
-        if self.promoted_reuse_cooldown_frames > 0 {
+        if self.compositor.promoted_reuse_cooldown_frames > 0 {
             for update in &mut updates {
                 update.kind = PromotedLayerUpdateKind::Reraster;
                 update.composition_kind = PromotedLayerUpdateKind::Reraster;
             }
-            self.promoted_reuse_cooldown_frames =
-                self.promoted_reuse_cooldown_frames.saturating_sub(1);
+            self.compositor.promoted_reuse_cooldown_frames =
+                self.compositor.promoted_reuse_cooldown_frames.saturating_sub(1);
         }
-        self.promoted_layer_updates = updates;
-        self.promoted_base_signatures = next_base_signatures;
-        self.promoted_composition_signatures = next_composition_signatures;
+        self.compositor.promoted_layer_updates = updates;
+        self.compositor.promoted_base_signatures = next_base_signatures;
+        self.compositor.promoted_composition_signatures = next_composition_signatures;
     }
 
     fn apply_promotion_runtime(&self, ctx: &mut super::base_component::UiBuildContext) {
         let promoted_update_kinds = self
+            .compositor
             .promoted_layer_updates
             .iter()
             .map(|update| (update.node_id, update.kind))
             .collect::<HashMap<_, _>>();
         let promoted_composition_update_kinds = self
+            .compositor
             .promoted_layer_updates
             .iter()
             .map(|update| (update.node_id, update.composition_kind))
             .collect::<HashMap<_, _>>();
         ctx.set_promoted_runtime(
-            Arc::new(self.promotion_state.promoted_node_ids.clone()),
+            Arc::new(self.compositor.promotion_state.promoted_node_ids.clone()),
             Arc::new(promoted_update_kinds),
             Arc::new(promoted_composition_update_kinds),
         );
@@ -1585,15 +1618,7 @@ impl Viewport {
             redraw_requested: false,
             debug_options,
             frame_stats: FrameStats::new(debug_options.trace_fps),
-            frame_box_models: Vec::new(),
-            cached_root_box_models: HashMap::new(),
-            promotion_state: PromotionState::default(),
-            promotion_config: ViewportPromotionConfig::default(),
-            promoted_layer_updates: Vec::new(),
-            promoted_base_signatures: HashMap::new(),
-            promoted_composition_signatures: HashMap::new(),
-            debug_previous_subtree_signatures: HashMap::new(),
-            promoted_reuse_cooldown_frames: 0,
+            compositor: CompositorState::new(),
             input_state: InputState::default(),
             clipboard_fallback: None,
             dispatched_focus_node_id: None,
@@ -1634,6 +1659,7 @@ impl Viewport {
             cursor_override: None,
             last_recorded_cursor: None,
             pending_platform_requests: PlatformRequests::default(),
+            is_animating: false,
             frame_presented: false,
             last_frame_graph: None,
             compile_cache: None,
@@ -1759,12 +1785,13 @@ impl Viewport {
         let screen_w = self.surface_config.width.max(1) as f32;
         let screen_h = self.surface_config.height.max(1) as f32;
         let snapshots_by_id = self
+            .compositor
             .frame_box_models
             .iter()
             .map(|snapshot| (snapshot.node_id, *snapshot))
             .collect::<HashMap<_, _>>();
         let mut overlay_batches = Vec::new();
-        let promoted_node_ids = self.promotion_state.promoted_node_ids.clone();
+        let promoted_node_ids = self.compositor.promotion_state.promoted_node_ids.clone();
         for record in snapshot_debug_reuse_path() {
             let Some(snapshot) = snapshots_by_id.get(&record.node_id).copied() else {
                 continue;
@@ -1980,6 +2007,14 @@ impl Viewport {
 
     pub fn redraw_requested(&self) -> bool {
         self.redraw_requested
+    }
+
+    /// Returns true when the most recent render reported that one or
+    /// more transition / animation plugins still wanted additional
+    /// frames. Hosts use this to decide whether to pump the next frame
+    /// immediately or sleep until the next user event.
+    pub fn is_animating(&self) -> bool {
+        self.is_animating
     }
 
     pub fn take_redraw_request(&mut self) -> bool {
@@ -2224,7 +2259,7 @@ impl Viewport {
             ),
         ];
         let layout_started_at = Instant::now();
-        self.frame_box_models.clear();
+        self.compositor.frame_box_models.clear();
         super::base_component::set_text_measure_profile_enabled(
             self.debug_options.trace_render_time,
         );
@@ -2278,7 +2313,7 @@ impl Viewport {
         let mut relayout_collect_box_models_elapsed_ms = 0.0_f64;
         let mut relayout_place_profile = super::base_component::LayoutPlaceProfile::default();
         if post_layout_transition.relayout_required {
-            self.frame_box_models.clear();
+            self.compositor.frame_box_models.clear();
             super::base_component::reset_text_measure_profile();
             let relayout_measure_started_at = Instant::now();
             for root in roots.iter_mut() {
@@ -2747,9 +2782,9 @@ impl Viewport {
             println!(
                 "{}",
                 format_promotion_trace(
-                    &self.promotion_state.decisions,
-                    &self.promoted_layer_updates,
-                    self.promotion_config.base_threshold,
+                    &self.compositor.promotion_state.decisions,
+                    &self.compositor.promoted_layer_updates,
+                    self.compositor.promotion_config.base_threshold,
                 )
             );
         }
@@ -2769,11 +2804,71 @@ impl Viewport {
         self.render_rsx_with_dirty(root, take_state_dirty())
     }
 
+    /// Drain the thread-local queue populated by `ui::use_viewport()` and
+    /// apply each action to this viewport. Called at the top of
+    /// `render_rsx_with_dirty` so event handlers from the prior frame land
+    /// before dirty flags are read.
+    fn apply_pending_viewport_actions(&mut self) {
+        let actions = crate::ui::drain_viewport_actions();
+        if actions.is_empty() {
+            return;
+        }
+        let mut promotion_dirty = false;
+        for action in actions {
+            match action {
+                crate::ui::ViewportAction::SetDebugTraceFps(on) => self.set_debug_trace_fps(on),
+                crate::ui::ViewportAction::SetDebugTraceRenderTime(on) => {
+                    self.set_debug_trace_render_time(on);
+                }
+                crate::ui::ViewportAction::SetDebugTraceCompileDetail(on) => {
+                    self.set_debug_trace_compile_detail(on);
+                }
+                crate::ui::ViewportAction::SetDebugTraceReusePath(on) => {
+                    self.set_debug_trace_reuse_path(on);
+                }
+                crate::ui::ViewportAction::SetDebugGeometryOverlay(on) => {
+                    self.set_debug_geometry_overlay(on);
+                }
+                crate::ui::ViewportAction::SetPromotionEnabled(on) => {
+                    let mut cfg = self.compositor.promotion_config.clone();
+                    cfg.enabled = on;
+                    // Scene that previously relied on the atomic threshold
+                    // swap in 01_window gets the same behavior here: a
+                    // large threshold effectively disables layer promotion
+                    // even though the `enabled` flag remains true in
+                    // other call paths.
+                    cfg.base_threshold = if on {
+                        ViewportPromotionConfig::default().base_threshold
+                    } else {
+                        1000
+                    };
+                    self.set_promotion_config(cfg);
+                    promotion_dirty = true;
+                }
+                crate::ui::ViewportAction::SetClearColor(color) => {
+                    self.set_clear_color(Box::new(color));
+                }
+                crate::ui::ViewportAction::RequestRedraw => self.request_redraw(),
+            }
+        }
+        if promotion_dirty {
+            self.invalidate_promoted_layer_reuse();
+        }
+    }
+
     pub fn render_rsx_with_dirty(
         &mut self,
         root: &RsxNode,
         state_dirty: crate::ui::UiDirtyState,
     ) -> Result<(), String> {
+        // Apply any viewport mutations that component event handlers
+        // enqueued via `use_viewport()` during the previous tick. Must
+        // run before dirty evaluation so toggles like trace_render_time
+        // take effect on the upcoming frame.
+        self.apply_pending_viewport_actions();
+        // Reset the animation flag — transition plugins below will set
+        // it back to true if any of them still want more frames.
+        self.is_animating = false;
         let resource_dirty = crate::view::image_resource::take_image_redraw_dirty()
             || crate::view::svg_resource::take_svg_redraw_dirty();
         let root_changed = self.last_rsx_root.as_ref() != Some(root);
@@ -3266,23 +3361,23 @@ impl Viewport {
     }
 
     pub fn frame_box_models(&self) -> &[super::base_component::BoxModelSnapshot] {
-        &self.frame_box_models
+        &self.compositor.frame_box_models
     }
 
     pub fn promotion_decisions(&self) -> &[PromotionDecision] {
-        &self.promotion_state.decisions
+        &self.compositor.promotion_state.decisions
     }
 
     pub fn promoted_layer_updates(&self) -> &[PromotedLayerUpdate] {
-        &self.promoted_layer_updates
+        &self.compositor.promoted_layer_updates
     }
 
     pub fn promotion_config(&self) -> ViewportPromotionConfig {
-        self.promotion_config
+        self.compositor.promotion_config
     }
 
     pub fn set_promotion_config(&mut self, config: ViewportPromotionConfig) {
-        self.promotion_config = config;
+        self.compositor.promotion_config = config;
     }
 
     pub fn set_focused_node_id(&mut self, node_id: Option<u64>) {

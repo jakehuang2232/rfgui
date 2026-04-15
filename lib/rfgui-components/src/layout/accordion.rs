@@ -45,7 +45,7 @@ fn AccordionView(
     disabled: bool,
     children: Vec<RsxNode>,
 ) -> RsxNode {
-    let theme = use_theme().get();
+    let theme = use_theme().0;
     let fallback_expanded = use_state(|| default_expanded);
     let is_expanded = expanded_binding
         .as_ref()

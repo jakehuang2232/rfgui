@@ -271,7 +271,7 @@ fn WindowView(
     window_slots: Option<WindowSlotsProp>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
-    let theme = use_theme().get();
+    let theme = use_theme().0;
     let position_state = use_state(|| position.unwrap_or((0.0, 0.0)));
     let size = use_state(|| (initial_width, initial_height));
     let interaction = use_state(|| WindowInteraction::Idle);

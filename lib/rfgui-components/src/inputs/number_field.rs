@@ -37,7 +37,7 @@ where
         let value = props.value.unwrap_or_else(T::zero);
         let has_binding = props.binding.is_some();
         let binding = props.binding.unwrap_or_else(|| Binding::new(value));
-        let theme = use_theme().get();
+        let theme = use_theme().0;
         let label = props.label;
 
         let fallback_value = use_state(|| value);

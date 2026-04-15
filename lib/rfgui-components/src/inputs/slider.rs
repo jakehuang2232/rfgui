@@ -35,7 +35,7 @@ impl RsxComponent<SliderProps> for Slider {
         let step_count = resolve_option_count(min, max, props.option_count);
         let disabled = props.disabled.unwrap_or(false);
         let label = props.label;
-        let theme = use_theme().get();
+        let theme = use_theme().0;
         let slider_theme = &theme.component.slider;
         let height = slider_theme.height.max(1.0);
         let grab_padding = slider_theme.grab_padding.max(0.0).min(height * 0.5);

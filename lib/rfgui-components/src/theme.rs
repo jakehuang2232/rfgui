@@ -1,4 +1,4 @@
-use rfgui::ui::{GlobalState, global_state};
+use rfgui::ui::global_state;
 use rfgui::{
     Border, BorderRadius, BoxShadow, Color, ColorLike, FontFamily, FontSize, Length, Padding,
     TransitionTiming,
@@ -565,10 +565,23 @@ pub fn init_theme(theme: Theme) {
     state.set(theme);
 }
 
-pub fn use_theme() -> GlobalState<Theme> {
-    global_state(Theme::light)
+/// React-style theme hook. Returns the current theme snapshot plus a
+/// callable setter — `let (theme, set_theme) = use_theme();` then call
+/// `set_theme(Theme::dark())` to switch.
+///
+/// The setter is an `Rc<dyn Fn(Theme)>` so it can be cloned into event
+/// closures and invoked with plain call syntax.
+pub fn use_theme() -> (Theme, std::rc::Rc<dyn Fn(Theme)>) {
+    let state = global_state(Theme::light);
+    let theme = state.get();
+    let setter_state = state;
+    let set: std::rc::Rc<dyn Fn(Theme)> =
+        std::rc::Rc::new(move |next: Theme| setter_state.set(next));
+    (theme, set)
 }
 
+/// Legacy free-function setter, kept for callers that reach for the
+/// global directly without going through `use_theme`.
 pub fn set_theme(theme: Theme) {
     init_theme(theme);
 }
