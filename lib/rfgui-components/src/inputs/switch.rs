@@ -4,6 +4,7 @@ use rfgui::ui::{
 };
 use rfgui::view::{Element, Text};
 use rfgui::{Align, Layout, Length, Operator, Transition, TransitionProperty};
+use std::rc::Rc;
 
 pub struct Switch;
 
@@ -13,6 +14,7 @@ pub struct SwitchProps {
     pub binding: Option<Binding<bool>>,
     pub checked: Option<bool>,
     pub disabled: Option<bool>,
+    pub on_change: Option<Rc<dyn Fn(bool)>>,
 }
 
 impl RsxComponent<SwitchProps> for Switch {
@@ -22,7 +24,7 @@ impl RsxComponent<SwitchProps> for Switch {
         let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
         let disabled = props.disabled.unwrap_or(false);
         let label = props.label;
-        let theme = use_theme().get();
+        let theme = use_theme().0;
         let switch_theme = &theme.component.switch;
         let thumb_travel = Length::calc(
             Length::calc(
@@ -45,11 +47,16 @@ impl RsxComponent<SwitchProps> for Switch {
         };
         let checked = checked_binding.get();
 
+        let on_change = props.on_change;
         let click = on_click(move |_event| {
             if disabled {
                 return;
             }
-            checked_binding.set(!checked_binding.get());
+            let next = !checked_binding.get();
+            checked_binding.set(next);
+            if let Some(cb) = on_change.as_ref() {
+                cb(next);
+            }
         });
 
         rsx! {

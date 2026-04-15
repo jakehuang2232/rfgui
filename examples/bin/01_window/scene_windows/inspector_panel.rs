@@ -1,22 +1,59 @@
-use crate::rfgui::ui::{Binding, RsxNode, rsx};
+use crate::rfgui::ui::{RsxNode, rsx, use_state, use_viewport};
 use crate::rfgui::{Border, Color, Layout, Length, Padding};
-use crate::rfgui_components::{Button, ButtonVariant, Switch, Theme};
-use crate::state::REQUEST_DUMP_FRAME_GRAPH_DOT;
+use crate::rfgui_components::{Switch, Theme, use_theme};
 use rfgui::view::Element;
-use std::sync::atomic::Ordering;
+use std::rc::Rc;
 
-pub struct InspectorPanelBindings {
-    pub switch_on: Binding<bool>,
-    pub debug_geometry_overlay: Binding<bool>,
-    pub debug_render_time: Binding<bool>,
-    pub debug_compile_detail: Binding<bool>,
-    pub debug_reuse_path: Binding<bool>,
-    pub enable_layer_promotion: Binding<bool>,
-}
+pub fn build(theme: &Theme) -> RsxNode {
+    let dark_mode = use_state(|| true);
+    let debug_geometry_overlay = use_state(|| false);
+    let debug_render_time = use_state(|| false);
+    let debug_compile_detail = use_state(|| false);
+    let debug_reuse_path = use_state(|| false);
+    let enable_layer_promotion = use_state(|| true);
 
-pub fn build(theme: &Theme, bindings: InspectorPanelBindings) -> RsxNode {
-    let debug_reuse_path_binding = bindings.debug_reuse_path.clone();
-    let show_reuse_legend = debug_reuse_path_binding.get();
+    let show_reuse_legend = debug_reuse_path.get();
+
+    // One viewport handle captured up front; cloned into every callback.
+    let viewport = use_viewport();
+    let (_, set_theme) = use_theme();
+
+    let on_dark_mode = {
+        let set_theme = set_theme.clone();
+        Rc::new(move |on: bool| {
+            if on {
+                set_theme(Theme::dark());
+                // Match the runner's startup clear color for dark theme
+                // so the viewport background tracks the switch without a
+                // second round trip through app config.
+                viewport.set_clear_color(Color::rgb(40, 44, 52));
+            } else {
+                set_theme(Theme::light());
+                viewport.set_clear_color(Color::rgb(240, 240, 240));
+            }
+        }) as Rc<dyn Fn(bool)>
+    };
+    let on_geometry_overlay = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_geometry_overlay(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_render_time = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_trace_render_time(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_compile_detail = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_trace_compile_detail(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_reuse_path = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_trace_reuse_path(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_layer_promotion = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_promotion_enabled(on)) as Rc<dyn Fn(bool)>
+    };
+
     rsx! {
         <Element style={{
             gap: theme.spacing.xs,
@@ -25,23 +62,28 @@ pub fn build(theme: &Theme, bindings: InspectorPanelBindings) -> RsxNode {
         }}>
             <Switch
                 label="Dark mode"
-                binding={bindings.switch_on}
+                binding={dark_mode.binding()}
+                on_change={on_dark_mode}
             />
             <Switch
                 label="Debug Geometry Overlay"
-                binding={bindings.debug_geometry_overlay}
+                binding={debug_geometry_overlay.binding()}
+                on_change={on_geometry_overlay}
             />
             <Switch
                 label="Debug Render Time"
-                binding={bindings.debug_render_time}
+                binding={debug_render_time.binding()}
+                on_change={on_render_time}
             />
             <Switch
                 label="Debug Compile Detail"
-                binding={bindings.debug_compile_detail}
+                binding={debug_compile_detail.binding()}
+                on_change={on_compile_detail}
             />
             <Switch
                 label="Debug Reuse Path"
-                binding={debug_reuse_path_binding}
+                binding={debug_reuse_path.binding()}
+                on_change={on_reuse_path}
             />
             {if show_reuse_legend {
                 rsx! {
@@ -100,14 +142,8 @@ pub fn build(theme: &Theme, bindings: InspectorPanelBindings) -> RsxNode {
             }}
             <Switch
                 label="Enable Layer Promotion"
-                binding={bindings.enable_layer_promotion}
-            />
-            <Button
-                label="Dump FrameGraph DOT"
-                variant={Some(ButtonVariant::Outlined)}
-                on_click={move |_| {
-                    REQUEST_DUMP_FRAME_GRAPH_DOT.store(true, Ordering::Release);
-                }}
+                binding={enable_layer_promotion.binding()}
+                on_change={on_layer_promotion}
             />
         </Element>
     }

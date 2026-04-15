@@ -9,7 +9,7 @@ use crate::rfgui_components::{Button, ButtonVariant, use_theme};
 pub fn GlobalKeyCounterCard(title: String) -> RsxNode {
     let count = use_state(|| 0_i32);
     let transition_alt = use_state(|| false);
-    let theme = use_theme().get();
+    let theme = use_theme().0;
     let increment = {
         let count = count.clone();
         on_click(move |_| {
@@ -107,7 +107,7 @@ pub fn GlobalKeyCounterCard(title: String) -> RsxNode {
 #[component]
 pub fn GlobalKeyRenderTestBlock() -> RsxNode {
     let move_to_right = use_state(|| false);
-    let theme = use_theme().get();
+    let theme = use_theme().0;
     let global_key = GlobalKey::from("example-01-window-render-test-global-key-card");
     let toggle_side = {
         let move_to_right = move_to_right.clone();

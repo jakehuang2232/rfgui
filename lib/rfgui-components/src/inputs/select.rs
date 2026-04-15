@@ -101,7 +101,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     let was_focused_on_pointer_down_binding = was_focused_on_pointer_down.binding();
     let is_open = open_binding.get();
     let is_focused = focused_binding.get();
-    let theme = use_theme().get();
+    let theme = use_theme().0;
 
     let pseudo_focus = {
         let open_binding = open_binding.clone();
@@ -235,7 +235,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
 }
 
 fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode {
-    let theme = use_theme().get();
+    let theme = use_theme().0;
     let option_nodes: Vec<RsxNode> = menu_items
         .iter()
         .map(|item| {

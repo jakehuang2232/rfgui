@@ -127,7 +127,7 @@ fn ButtonView(
     const REPEAT_INTERVAL: Duration = Duration::from_millis(75);
     const REPEAT_TICK: Duration = Duration::from_millis(25);
 
-    let theme = use_theme().get();
+    let theme = use_theme().0;
     let variant = variant.unwrap_or(ButtonVariant::Contained);
     let disabled = disabled.unwrap_or(false);
     let repeat_enabled = repeat.unwrap_or(false) && !disabled && on_click.is_some();

@@ -23,7 +23,7 @@ impl RsxComponent<CheckboxProps> for Checkbox {
         let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
         let disabled = props.disabled.unwrap_or(false);
         let label = props.label;
-        let theme = use_theme().get();
+        let theme = use_theme().0;
         let checkbox_theme = &theme.component.checkbox;
         let fallback_checked = use_state(|| checked);
         let checked_binding = if has_binding {

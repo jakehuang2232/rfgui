@@ -12,11 +12,21 @@
 use crate::Cursor;
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 
+pub mod callback;
+pub mod headless;
 pub mod input;
 
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod desktop_backend;
+
+#[cfg(target_arch = "wasm32")]
+pub mod web_backend;
+
+pub use callback::{CallbackCursorSink, CallbackRedrawRequester};
+pub use headless::{HeadlessBackend, NullClipboard, NullCursorSink, NullRedrawRequester};
 pub use input::{
     PlatformImePreedit, PlatformKeyEvent, PlatformMouseButton, PlatformMouseEvent,
     PlatformMouseEventKind, PlatformTextInput, PlatformWheelEvent,
@@ -92,40 +102,6 @@ impl PlatformRequests {
     }
 }
 
-/// No-op implementations for tests and headless environments.
-pub mod headless {
-    use super::{Clipboard, CursorSink, RedrawRequester};
-    use crate::Cursor;
-
-    #[derive(Default)]
-    pub struct NullClipboard {
-        buf: Option<String>,
-    }
-
-    impl Clipboard for NullClipboard {
-        fn get(&mut self) -> Option<String> {
-            self.buf.clone()
-        }
-        fn set(&mut self, text: &str) {
-            self.buf = Some(text.to_string());
-        }
-    }
-
-    #[derive(Default)]
-    pub struct NullCursorSink;
-
-    impl CursorSink for NullCursorSink {
-        fn set_cursor(&mut self, _cursor: Cursor) {}
-    }
-
-    #[derive(Default)]
-    pub struct NullRedrawRequester;
-
-    impl RedrawRequester for NullRedrawRequester {
-        fn request_redraw(&self) {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,13 +110,5 @@ mod tests {
     fn platform_requests_empty_by_default() {
         let r = PlatformRequests::default();
         assert!(r.is_empty());
-    }
-
-    #[test]
-    fn headless_clipboard_roundtrip() {
-        let mut cb = headless::NullClipboard::default();
-        assert_eq!(cb.get(), None);
-        cb.set("hello");
-        assert_eq!(cb.get().as_deref(), Some("hello"));
     }
 }
