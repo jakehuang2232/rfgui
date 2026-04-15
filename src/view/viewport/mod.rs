@@ -242,10 +242,7 @@ pub struct Viewport {
     input_state: InputState,
     clipboard_fallback: Option<String>,
     dispatched_focus_node_id: Option<u64>,
-    ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
-    scroll_offsets: HashMap<u64, (f32, f32)>,
-    element_snapshots: HashMap<u64, Box<dyn Any>>,
-    last_rsx_root: Option<RsxNode>,
+    scene: SceneState,
     transitions: TransitionRuntime,
     cursor_override: Option<Cursor>,
     last_recorded_cursor: Option<Cursor>,
@@ -257,6 +254,28 @@ pub struct Viewport {
     is_animating: bool,
     viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
     viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
+}
+
+/// Phase-7 extraction. The retained scene tree and the per-node state
+/// layered on top of it: the concrete `ElementTrait` roots produced by the
+/// last reconcile pass, ad-hoc scroll offsets, element-side snapshot
+/// blobs, and the last `RsxNode` seen from the caller. Non-pub.
+struct SceneState {
+    ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
+    scroll_offsets: HashMap<u64, (f32, f32)>,
+    element_snapshots: HashMap<u64, Box<dyn Any>>,
+    last_rsx_root: Option<RsxNode>,
+}
+
+impl SceneState {
+    fn new() -> Self {
+        Self {
+            ui_roots: Vec::new(),
+            scroll_offsets: HashMap::new(),
+            element_snapshots: HashMap::new(),
+            last_rsx_root: None,
+        }
+    }
 }
 
 /// Phase-7 extraction. Everything scoped to a single render frame: the
@@ -885,12 +904,12 @@ impl Viewport {
     }
 
     fn try_apply_redraw_only_transform_updates(&mut self, root: &RsxNode) -> Result<bool, String> {
-        let Some(previous_root) = self.last_rsx_root.as_ref() else {
+        let Some(previous_root) = self.scene.last_rsx_root.as_ref() else {
             return Ok(false);
         };
         let patches = reconcile(Some(previous_root), root);
         if patches.is_empty() {
-            self.last_rsx_root = Some(root.clone());
+            self.scene.last_rsx_root = Some(root.clone());
             return Ok(true);
         }
 
@@ -914,11 +933,11 @@ impl Viewport {
         }
 
         for (node_id, style) in &updates {
-            if !Self::apply_transform_style_by_node_id(&mut self.ui_roots, *node_id, style) {
+            if !Self::apply_transform_style_by_node_id(&mut self.scene.ui_roots, *node_id, style) {
                 return Ok(false);
             }
         }
-        self.last_rsx_root = Some(root.clone());
+        self.scene.last_rsx_root = Some(root.clone());
         Ok(true)
     }
 
@@ -1702,10 +1721,7 @@ impl Viewport {
             input_state: InputState::default(),
             clipboard_fallback: None,
             dispatched_focus_node_id: None,
-            ui_roots: Vec::new(),
-            scroll_offsets: HashMap::new(),
-            element_snapshots: HashMap::new(),
-            last_rsx_root: None,
+            scene: SceneState::new(),
             transitions: TransitionRuntime::new(),
             cursor_override: None,
             last_recorded_cursor: None,
@@ -1934,7 +1950,7 @@ impl Viewport {
 
     pub fn set_style(&mut self, style: Style) {
         self.style = style;
-        self.last_rsx_root = None;
+        self.scene.last_rsx_root = None;
         self.request_redraw();
     }
 
@@ -2918,7 +2934,7 @@ impl Viewport {
         self.is_animating = false;
         let resource_dirty = crate::view::image_resource::take_image_redraw_dirty()
             || crate::view::svg_resource::take_svg_redraw_dirty();
-        let root_changed = self.last_rsx_root.as_ref() != Some(root);
+        let root_changed = self.scene.last_rsx_root.as_ref() != Some(root);
         let mut needs_rebuild = state_dirty.needs_rebuild() || root_changed;
         if root_changed
             && state_dirty.is_redraw_only()
@@ -2928,12 +2944,12 @@ impl Viewport {
         }
         if needs_rebuild {
             // Clear and save current scroll states
-            self.scroll_offsets.clear();
-            Self::save_scroll_states(&self.ui_roots, &mut self.scroll_offsets);
-            self.element_snapshots.clear();
-            Self::save_element_snapshots(&self.ui_roots, &mut self.element_snapshots);
+            self.scene.scroll_offsets.clear();
+            Self::save_scroll_states(&self.scene.ui_roots, &mut self.scene.scroll_offsets);
+            self.scene.element_snapshots.clear();
+            Self::save_element_snapshots(&self.scene.ui_roots, &mut self.scene.element_snapshots);
             let layout_snapshots =
-                super::base_component::collect_layout_transition_snapshots(&self.ui_roots);
+                super::base_component::collect_layout_transition_snapshots(&self.scene.ui_roots);
             let (converted_roots, conversion_errors) =
                 super::renderer_adapter::rsx_to_elements_lossy_with_context(
                     root,
@@ -2950,20 +2966,20 @@ impl Viewport {
             }
             if converted_roots.is_empty() {
                 eprintln!("[render_rsx] no valid root nodes converted; keep previous render tree");
-                self.last_rsx_root = Some(root.clone());
+                self.scene.last_rsx_root = Some(root.clone());
                 return Ok(());
             }
-            self.ui_roots = converted_roots;
-            self.last_rsx_root = Some(root.clone());
+            self.scene.ui_roots = converted_roots;
+            self.scene.last_rsx_root = Some(root.clone());
 
             // Restore scroll states into new elements
-            Self::restore_scroll_states(&mut self.ui_roots, &self.scroll_offsets);
-            Self::restore_element_snapshots(&mut self.ui_roots, &self.element_snapshots);
+            Self::restore_scroll_states(&mut self.scene.ui_roots, &self.scene.scroll_offsets);
+            Self::restore_element_snapshots(&mut self.scene.ui_roots, &self.scene.element_snapshots);
             super::base_component::seed_layout_transition_snapshots(
-                &mut self.ui_roots,
+                &mut self.scene.ui_roots,
                 &layout_snapshots,
             );
-            let mut rebuilt_roots = std::mem::take(&mut self.ui_roots);
+            let mut rebuilt_roots = std::mem::take(&mut self.scene.ui_roots);
             let canceled_tracks = self.cancel_disallowed_transition_tracks(&rebuilt_roots);
             let has_inflight_transition = self.sync_inflight_transition_state(&mut rebuilt_roots);
             let reconciled_transition_state =
@@ -2971,13 +2987,13 @@ impl Viewport {
                     &mut rebuilt_roots,
                     &active_channels_by_node(&self.transitions.transition_claims),
                 );
-            self.ui_roots = rebuilt_roots;
+            self.scene.ui_roots = rebuilt_roots;
             if canceled_tracks || has_inflight_transition || reconciled_transition_state {
                 self.request_redraw();
             }
         }
         self.sync_focus_dispatch();
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let canceled_tracks = self.cancel_disallowed_transition_tracks(&roots);
         let reconciled_transition_state = super::base_component::reconcile_transition_runtime_state(
             &mut roots,
@@ -3015,7 +3031,7 @@ impl Viewport {
         {
             self.request_redraw();
         }
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         if std::mem::take(&mut self.frame.frame_presented) {
             self.notify_cursor_handler();
         }
@@ -3475,7 +3491,7 @@ impl Viewport {
                     self.set_cursor(cursor);
                 }
                 ViewportListenerAction::SelectTextRangeAll(target_id) => {
-                    for root in self.ui_roots.iter_mut().rev() {
+                    for root in self.scene.ui_roots.iter_mut().rev() {
                         if super::base_component::select_all_text_by_id(root.as_mut(), target_id) {
                             selection_changed = true;
                             break;
@@ -3487,7 +3503,7 @@ impl Viewport {
                     start,
                     end,
                 } => {
-                    for root in self.ui_roots.iter_mut().rev() {
+                    for root in self.scene.ui_roots.iter_mut().rev() {
                         if super::base_component::select_text_range_by_id(
                             root.as_mut(),
                             target_id,
@@ -3532,11 +3548,11 @@ impl Viewport {
         self.input_state.mouse_position_viewport = None;
         self.input_state.pointer_capture_node_id = None;
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
-            &mut self.ui_roots,
+            &mut self.scene.ui_roots,
             &mut self.input_state.hovered_node_id,
             None,
         );
-        let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
+        let pointer_changed = Self::cancel_pointer_interactions(&mut self.scene.ui_roots);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
         }
@@ -3589,11 +3605,11 @@ impl Viewport {
         self.viewport_mouse_up_listeners.clear();
         self.dispatched_focus_node_id = None;
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
-            &mut self.ui_roots,
+            &mut self.scene.ui_roots,
             &mut self.input_state.hovered_node_id,
             None,
         );
-        let pointer_changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
+        let pointer_changed = Self::cancel_pointer_interactions(&mut self.scene.ui_roots);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
         }
@@ -3667,7 +3683,7 @@ impl Viewport {
             },
             viewport: meta.viewport(),
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -3682,7 +3698,7 @@ impl Viewport {
                 }
             }
         }
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         if handled {
             self.input_state.pending_click = Some(PendingClick {
                 button,
@@ -3702,7 +3718,7 @@ impl Viewport {
             let focus_after = self.focused_node_id();
             let focus_changed_by_handler = focus_after != focus_before;
             let clicked_within_focused_subtree = focus_before.is_some_and(|focus_id| {
-                self.ui_roots.iter().rev().any(|root| {
+                self.scene.ui_roots.iter().rev().any(|root| {
                     super::base_component::subtree_contains_node(
                         root.as_ref(),
                         focus_id,
@@ -3730,7 +3746,7 @@ impl Viewport {
     pub fn dispatch_mouse_up_event(&mut self, button: MouseButton) -> bool {
         let Some((x, y)) = self.mouse_position_viewport() else {
             self.input_state.pointer_capture_node_id = None;
-            let changed = Self::cancel_pointer_interactions(&mut self.ui_roots);
+            let changed = Self::cancel_pointer_interactions(&mut self.scene.ui_roots);
             if changed {
                 self.request_redraw();
             }
@@ -3753,7 +3769,7 @@ impl Viewport {
             },
             viewport: meta.viewport(),
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -3785,7 +3801,7 @@ impl Viewport {
         }
         let listener_handled = self.dispatch_viewport_mouse_up_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled || listener_handled {
@@ -3799,7 +3815,7 @@ impl Viewport {
             return false;
         };
         let redraw_requested_before = self.redraw_requested;
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let hover_target = roots
             .iter()
             .rev()
@@ -3859,7 +3875,7 @@ impl Viewport {
         }
         let listener_handled = self.dispatch_viewport_mouse_move_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         let redraw_requested_during_event = !redraw_requested_before && self.redraw_requested;
@@ -3880,14 +3896,14 @@ impl Viewport {
             return false;
         }
         let buttons = self.current_ui_mouse_buttons();
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let hit_target = roots
             .iter()
             .rev()
             .find_map(|root| super::base_component::hit_test(root.as_ref(), x, y));
         let is_valid_click = is_valid_click_candidate(pending_click, button, hit_target, x, y);
         if !is_valid_click {
-            self.ui_roots = roots;
+            self.scene.ui_roots = roots;
             return false;
         }
         let mut event = ClickEvent {
@@ -3920,7 +3936,7 @@ impl Viewport {
             }
         }
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -3934,11 +3950,11 @@ impl Viewport {
         };
         let mut pending_scroll_track: Option<(TrackTarget, (f32, f32), (f32, f32))> = None;
         let Some((root_index, target_id)) =
-            Self::find_scroll_handler_at_pointer(&self.ui_roots, x, y, delta_x, delta_y)
+            Self::find_scroll_handler_at_pointer(&self.scene.ui_roots, x, y, delta_x, delta_y)
         else {
             return false;
         };
-        if let Some(root) = self.ui_roots.get_mut(root_index) {
+        if let Some(root) = self.scene.ui_roots.get_mut(root_index) {
             let Some(from) =
                 super::base_component::get_scroll_offset_by_id(root.as_ref(), target_id)
             else {
@@ -4050,7 +4066,7 @@ impl Viewport {
                 modifiers: self.current_key_modifiers(),
             },
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -4067,7 +4083,7 @@ impl Viewport {
             }
         }
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -4088,7 +4104,7 @@ impl Viewport {
                 modifiers: self.current_key_modifiers(),
             },
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -4105,7 +4121,7 @@ impl Viewport {
             }
         }
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -4125,7 +4141,7 @@ impl Viewport {
             meta: EventMeta::new(target_id),
             text,
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -4142,7 +4158,7 @@ impl Viewport {
             }
         }
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -4164,7 +4180,7 @@ impl Viewport {
             text,
             cursor,
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -4181,7 +4197,7 @@ impl Viewport {
             }
         }
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -4194,7 +4210,7 @@ impl Viewport {
         let mut event = FocusEvent {
             meta: EventMeta::new(target_id),
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -4211,7 +4227,7 @@ impl Viewport {
             }
         }
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -4224,7 +4240,7 @@ impl Viewport {
         let mut event = BlurEvent {
             meta: EventMeta::new(target_id),
         };
-        let mut roots = std::mem::take(&mut self.ui_roots);
+        let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
         {
             let mut control = ViewportControl::new(self);
@@ -4241,7 +4257,7 @@ impl Viewport {
             }
         }
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.ui_roots = roots;
+        self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -4310,7 +4326,7 @@ impl Viewport {
 
     pub fn focused_ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
         let target_id = self.focused_node_id()?;
-        for root in self.ui_roots.iter().rev() {
+        for root in self.scene.ui_roots.iter().rev() {
             if let Some(rect) =
                 super::base_component::get_ime_cursor_rect_by_id(root.as_ref(), target_id)
             {
@@ -4342,7 +4358,7 @@ impl Viewport {
     }
 
     fn sync_focus_dispatch(&mut self) {
-        if self.ui_roots.is_empty() {
+        if self.scene.ui_roots.is_empty() {
             return;
         }
 
@@ -4373,7 +4389,7 @@ impl Viewport {
         let Some(target_id) = self.input_state.hovered_node_id else {
             return Cursor::Default;
         };
-        for root in self.ui_roots.iter().rev() {
+        for root in self.scene.ui_roots.iter().rev() {
             if let Some(cursor) = super::base_component::get_cursor_by_id(root.as_ref(), target_id)
             {
                 return cursor;
