@@ -418,6 +418,9 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                     height: size.height,
                 };
                 self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(viewport) = self.viewport.as_mut() {

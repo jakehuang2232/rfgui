@@ -113,7 +113,7 @@ impl<'a> ViewportControl<'a> {
     }
 
     pub fn set_scroll_transition(&mut self, transition: ScrollTransition) {
-        self.viewport.scroll_transition = transition;
+        self.viewport.transitions.scroll_transition = transition;
     }
 
     pub fn set_selects(&mut self, selects: Vec<u64>) {
@@ -232,6 +232,133 @@ pub struct Viewport {
     scale_factor: f32,
     logical_width: f32,
     logical_height: f32,
+    gpu: GpuContext,
+    frame: FrameRuntime,
+    pending_size: Option<(u32, u32)>,
+    needs_reconfigure: bool,
+    redraw_requested: bool,
+    debug_options: ViewportDebugOptions,
+    compositor: CompositorState,
+    input_state: InputState,
+    clipboard_fallback: Option<String>,
+    dispatched_focus_node_id: Option<u64>,
+    ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
+    scroll_offsets: HashMap<u64, (f32, f32)>,
+    element_snapshots: HashMap<u64, Box<dyn Any>>,
+    last_rsx_root: Option<RsxNode>,
+    transitions: TransitionRuntime,
+    cursor_override: Option<Cursor>,
+    last_recorded_cursor: Option<Cursor>,
+    pending_platform_requests: PlatformRequests,
+    /// Set inside `render_rsx_with_dirty` whenever any transition or
+    /// animation plugin reports `keep_running`. Cleared at the start of
+    /// every render. Hosts query this via `is_animating()` to decide
+    /// whether to pump another frame immediately or idle.
+    is_animating: bool,
+    viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
+    viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
+}
+
+/// Phase-7 extraction. Everything scoped to a single render frame: the
+/// per-frame state, pooled GPU allocations, frame-graph cache, and debug
+/// overlay geometry buffers. Non-pub; the viewport re-exposes whatever the
+/// outside world needs through existing accessor methods.
+struct FrameRuntime {
+    frame_state: Option<FrameState>,
+    offscreen_render_target_pool: OffscreenRenderTargetPool,
+    sampled_texture_cache: HashMap<u64, SampledTextureEntry>,
+    frame_buffer_pool: HashMap<u32, FrameBufferEntry>,
+    draw_rect_uniform_pool: Vec<DrawRectUniformBufferEntry>,
+    draw_rect_uniform_cursor: usize,
+    draw_rect_uniform_offset: u64,
+    frame_stats: FrameStats,
+    frame_presented: bool,
+    last_frame_graph: Option<FrameGraph>,
+    compile_cache: Option<CachedCompiledGraph>,
+    debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
+    debug_overlay_indices: Vec<u32>,
+}
+
+impl FrameRuntime {
+    fn new(trace_fps: bool) -> Self {
+        Self {
+            frame_state: None,
+            offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
+            sampled_texture_cache: HashMap::new(),
+            frame_buffer_pool: HashMap::new(),
+            draw_rect_uniform_pool: Vec::new(),
+            draw_rect_uniform_cursor: 0,
+            draw_rect_uniform_offset: 0,
+            frame_stats: FrameStats::new(trace_fps),
+            frame_presented: false,
+            last_frame_graph: None,
+            compile_cache: None,
+            debug_overlay_vertices: Vec::new(),
+            debug_overlay_indices: Vec::new(),
+        }
+    }
+}
+
+/// Phase-7 extraction. Owns every transition and animation plugin plus the
+/// shared channel / claim bookkeeping they all consume. The
+/// `TransitionHostAdapter` built on every tick borrows `transition_channels`
+/// immutably and `transition_claims` mutably from here, so field names are
+/// preserved verbatim to keep the adapter sites mechanical.
+struct TransitionRuntime {
+    transition_channels: HashSet<ChannelId>,
+    transition_claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+    scroll_transition_plugin: ScrollTransitionPlugin,
+    layout_transition_plugin: LayoutTransitionPlugin,
+    visual_transition_plugin: VisualTransitionPlugin,
+    style_transition_plugin: StyleTransitionPlugin,
+    animation_plugin: AnimationPlugin,
+    scroll_transition: ScrollTransition,
+    last_transition_tick: Option<Instant>,
+    transition_epoch: Option<Instant>,
+}
+
+impl TransitionRuntime {
+    fn new() -> Self {
+        Self {
+            transition_channels: HashSet::from([
+                CHANNEL_SCROLL_X,
+                CHANNEL_SCROLL_Y,
+                CHANNEL_LAYOUT_X,
+                CHANNEL_LAYOUT_Y,
+                CHANNEL_LAYOUT_WIDTH,
+                CHANNEL_LAYOUT_HEIGHT,
+                CHANNEL_VISUAL_X,
+                CHANNEL_VISUAL_Y,
+                CHANNEL_STYLE_OPACITY,
+                CHANNEL_STYLE_BORDER_RADIUS,
+                CHANNEL_STYLE_BACKGROUND_COLOR,
+                CHANNEL_STYLE_COLOR,
+                CHANNEL_STYLE_BORDER_TOP_COLOR,
+                CHANNEL_STYLE_BORDER_RIGHT_COLOR,
+                CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
+                CHANNEL_STYLE_BORDER_LEFT_COLOR,
+                CHANNEL_STYLE_BOX_SHADOW,
+                CHANNEL_STYLE_TRANSFORM,
+                CHANNEL_STYLE_TRANSFORM_ORIGIN,
+            ]),
+            transition_claims: HashMap::new(),
+            scroll_transition_plugin: ScrollTransitionPlugin::new(),
+            layout_transition_plugin: LayoutTransitionPlugin::new(),
+            visual_transition_plugin: VisualTransitionPlugin::new(),
+            style_transition_plugin: StyleTransitionPlugin::new(),
+            animation_plugin: AnimationPlugin::new(),
+            scroll_transition: ScrollTransition::new(250).ease_out(),
+            last_transition_tick: None,
+            transition_epoch: None,
+        }
+    }
+}
+
+/// Phase-7 extraction. Groups the wgpu surface / device / queue / attachments
+/// plus their configuration knobs. Everything the renderer needs to talk to
+/// the GPU lives here. No public API depends on the struct — accessor methods
+/// on `Viewport` still return `&wgpu::Device` and friends.
+struct GpuContext {
     surface: Option<wgpu::Surface<'static>>,
     surface_config: wgpu::SurfaceConfiguration,
     device: Option<wgpu::Device>,
@@ -244,52 +371,7 @@ pub struct Viewport {
     surface_msaa_view: Option<wgpu::TextureView>,
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
-    frame_state: Option<FrameState>,
-    offscreen_render_target_pool: OffscreenRenderTargetPool,
-    sampled_texture_cache: HashMap<u64, SampledTextureEntry>,
-    frame_buffer_pool: HashMap<u32, FrameBufferEntry>,
-    draw_rect_uniform_pool: Vec<DrawRectUniformBufferEntry>,
-    draw_rect_uniform_cursor: usize,
-    draw_rect_uniform_offset: u64,
     upload_staging_belt: Option<StagingBelt>,
-    pending_size: Option<(u32, u32)>,
-    needs_reconfigure: bool,
-    redraw_requested: bool,
-    debug_options: ViewportDebugOptions,
-    frame_stats: FrameStats,
-    compositor: CompositorState,
-    input_state: InputState,
-    clipboard_fallback: Option<String>,
-    dispatched_focus_node_id: Option<u64>,
-    ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
-    scroll_offsets: HashMap<u64, (f32, f32)>,
-    element_snapshots: HashMap<u64, Box<dyn Any>>,
-    last_rsx_root: Option<RsxNode>,
-    transition_channels: HashSet<ChannelId>,
-    transition_claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
-    scroll_transition_plugin: ScrollTransitionPlugin,
-    layout_transition_plugin: LayoutTransitionPlugin,
-    visual_transition_plugin: VisualTransitionPlugin,
-    style_transition_plugin: StyleTransitionPlugin,
-    animation_plugin: AnimationPlugin,
-    scroll_transition: ScrollTransition,
-    last_transition_tick: Option<Instant>,
-    transition_epoch: Option<Instant>,
-    cursor_override: Option<Cursor>,
-    last_recorded_cursor: Option<Cursor>,
-    pending_platform_requests: PlatformRequests,
-    /// Set inside `render_rsx_with_dirty` whenever any transition or
-    /// animation plugin reports `keep_running`. Cleared at the start of
-    /// every render. Hosts query this via `is_animating()` to decide
-    /// whether to pump another frame immediately or idle.
-    is_animating: bool,
-    frame_presented: bool,
-    last_frame_graph: Option<FrameGraph>,
-    compile_cache: Option<CachedCompiledGraph>,
-    debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
-    debug_overlay_indices: Vec<u32>,
-    viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
-    viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
 }
 
 /// Phase-7 extraction. Groups everything the layer-promotion / compositor
@@ -398,30 +480,30 @@ impl Viewport {
     }
 
     fn cancel_track_by_owner(&mut self, key: TrackKey<TrackTarget>) -> bool {
-        let Some(owner) = self.transition_claims.get(&key).copied() else {
+        let Some(owner) = self.transitions.transition_claims.get(&key).copied() else {
             return false;
         };
         let mut host = TransitionHostAdapter {
-            registered_channels: &self.transition_channels,
-            claims: &mut self.transition_claims,
+            registered_channels: &self.transitions.transition_channels,
+            claims: &mut self.transitions.transition_claims,
         };
         if owner == ScrollTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.scroll_transition_plugin.cancel_track(key, &mut host);
+            self.transitions.scroll_transition_plugin.cancel_track(key, &mut host);
             return true;
         }
         if owner == LayoutTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.layout_transition_plugin.cancel_track(key, &mut host);
+            self.transitions.layout_transition_plugin.cancel_track(key, &mut host);
             return true;
         }
         if owner == StyleTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.style_transition_plugin.cancel_track(key, &mut host);
+            self.transitions.style_transition_plugin.cancel_track(key, &mut host);
             return true;
         }
         if owner == VisualTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.visual_transition_plugin.cancel_track(key, &mut host);
+            self.transitions.visual_transition_plugin.cancel_track(key, &mut host);
             return true;
         }
-        self.transition_claims.remove(&key);
+        self.transitions.transition_claims.remove(&key);
         false
     }
 
@@ -430,7 +512,7 @@ impl Viewport {
         roots: &[Box<dyn super::base_component::ElementTrait>],
     ) -> bool {
         let allowlist = super::base_component::collect_transition_track_allowlist(roots);
-        let active_keys = self.transition_claims.keys().copied().collect::<Vec<_>>();
+        let active_keys = self.transitions.transition_claims.keys().copied().collect::<Vec<_>>();
         let mut canceled = false;
         for key in active_keys {
             if !Self::is_style_driven_transition_channel(key.channel) {
@@ -446,11 +528,12 @@ impl Viewport {
 
     fn sync_layout_transition_claims(&mut self) {
         let active_keys = self
+            .transitions
             .layout_transition_plugin
             .active_track_keys()
             .into_iter()
             .collect::<HashSet<_>>();
-        self.transition_claims.retain(|key, owner| {
+        self.transitions.transition_claims.retain(|key, owner| {
             if !matches!(
                 key.channel,
                 CHANNEL_LAYOUT_X | CHANNEL_LAYOUT_Y | CHANNEL_LAYOUT_WIDTH | CHANNEL_LAYOUT_HEIGHT
@@ -615,12 +698,13 @@ impl Viewport {
             return false;
         }
         let mut host = TransitionHostAdapter {
-            registered_channels: &self.transition_channels,
-            claims: &mut self.transition_claims,
+            registered_channels: &self.transitions.transition_channels,
+            claims: &mut self.transitions.transition_claims,
         };
         if self
+            .transitions
             .scroll_transition_plugin
-            .start_scroll_track(&mut host, target, axis, from, to, self.scroll_transition)
+            .start_scroll_track(&mut host, target, axis, from, to, self.transitions.scroll_transition)
             .is_err()
         {
             return false;
@@ -635,10 +719,10 @@ impl Viewport {
             channel: axis.channel_id(),
         };
         let mut host = TransitionHostAdapter {
-            registered_channels: &self.transition_channels,
-            claims: &mut self.transition_claims,
+            registered_channels: &self.transitions.transition_channels,
+            claims: &mut self.transitions.transition_claims,
         };
-        self.scroll_transition_plugin.cancel_track(key, &mut host);
+        self.transitions.scroll_transition_plugin.cancel_track(key, &mut host);
     }
 
     fn apply_hover_target(
@@ -924,11 +1008,12 @@ impl Viewport {
     fn transition_timing(&mut self) -> (f32, f64) {
         let now = Instant::now();
         let dt = self
+            .transitions
             .last_transition_tick
             .map(|last| (now - last).as_secs_f32())
             .unwrap_or(0.0);
-        self.last_transition_tick = Some(now);
-        let epoch = self.transition_epoch.get_or_insert(now);
+        self.transitions.last_transition_tick = Some(now);
+        let epoch = self.transitions.transition_epoch.get_or_insert(now);
         let now_seconds = (now - *epoch).as_secs_f64();
         (dt, now_seconds)
     }
@@ -948,11 +1033,11 @@ impl Viewport {
         }
         if !layout_requests.is_empty() {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
             for request in layout_requests {
-                let _ = self.layout_transition_plugin.start_layout_track(
+                let _ = self.transitions.layout_transition_plugin.start_layout_track(
                     &mut host,
                     request.target,
                     request.field,
@@ -964,10 +1049,10 @@ impl Viewport {
         }
         let layout_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.layout_transition_plugin.run_tracks(
+            self.transitions.layout_transition_plugin.run_tracks(
                 TransitionFrame {
                     dt_seconds: dt,
                     now_seconds,
@@ -977,7 +1062,7 @@ impl Viewport {
         };
         self.sync_layout_transition_claims();
         let mut changed = false;
-        let layout_samples = self.layout_transition_plugin.take_samples();
+        let layout_samples = self.transitions.layout_transition_plugin.take_samples();
         for sample in layout_samples {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_layout_field_by_id(
@@ -1004,7 +1089,7 @@ impl Viewport {
         now_seconds: f64,
     ) -> PostLayoutTransitionResult {
         let live_node_ids = super::base_component::collect_node_id_allowlist(roots);
-        self.animation_plugin.prune_targets(&live_node_ids);
+        self.transitions.animation_plugin.prune_targets(&live_node_ids);
         let mut animation_requests = Vec::new();
         for root in roots.iter_mut() {
             super::base_component::take_animation_requests(root.as_mut(), &mut animation_requests);
@@ -1031,12 +1116,12 @@ impl Viewport {
             );
         }
         for request in animation_requests {
-            self.animation_plugin.start_animator(request);
+            self.transitions.animation_plugin.start_animator(request);
         }
         if !style_requests.is_empty() {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
             for request in style_requests {
                 if self.debug_options.trace_reuse_path {
@@ -1050,7 +1135,7 @@ impl Viewport {
                         request.transition.delay_ms,
                     ));
                 }
-                let _ = self.style_transition_plugin.start_style_track(
+                let _ = self.transitions.style_transition_plugin.start_style_track(
                     &mut host,
                     request.target,
                     request.field,
@@ -1062,11 +1147,11 @@ impl Viewport {
         }
         if !layout_requests.is_empty() {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
             for request in layout_requests {
-                let _ = self.layout_transition_plugin.start_layout_track(
+                let _ = self.transitions.layout_transition_plugin.start_layout_track(
                     &mut host,
                     request.target,
                     request.field,
@@ -1078,11 +1163,11 @@ impl Viewport {
         }
         if !visual_requests.is_empty() {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
             for request in visual_requests {
-                let _ = self.visual_transition_plugin.start_visual_track(
+                let _ = self.transitions.visual_transition_plugin.start_visual_track(
                     &mut host,
                     request.target,
                     request.field,
@@ -1095,10 +1180,10 @@ impl Viewport {
 
         let scroll_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.scroll_transition_plugin.run_tracks(
+            self.transitions.scroll_transition_plugin.run_tracks(
                 TransitionFrame {
                     dt_seconds: dt,
                     now_seconds,
@@ -1108,10 +1193,10 @@ impl Viewport {
         };
         let style_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.style_transition_plugin.run_tracks(
+            self.transitions.style_transition_plugin.run_tracks(
                 TransitionFrame {
                     dt_seconds: dt,
                     now_seconds,
@@ -1119,13 +1204,13 @@ impl Viewport {
                 &mut host,
             )
         };
-        let animation_result = self.animation_plugin.run_animations(dt, now_seconds);
+        let animation_result = self.transitions.animation_plugin.run_animations(dt, now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.visual_transition_plugin.run_tracks(
+            self.transitions.visual_transition_plugin.run_tracks(
                 TransitionFrame {
                     dt_seconds: dt,
                     now_seconds,
@@ -1135,10 +1220,10 @@ impl Viewport {
         };
         let layout_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.layout_transition_plugin.run_tracks(
+            self.transitions.layout_transition_plugin.run_tracks(
                 TransitionFrame {
                     dt_seconds: dt,
                     now_seconds,
@@ -1147,14 +1232,14 @@ impl Viewport {
             )
         };
         self.sync_layout_transition_claims();
-        let samples = self.scroll_transition_plugin.take_samples();
+        let samples = self.transitions.scroll_transition_plugin.take_samples();
         let mut redraw_changed = false;
         let mut relayout_required = false;
         for sample in samples {
             redraw_changed |=
                 Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
         }
-        let style_samples = self.style_transition_plugin.take_samples();
+        let style_samples = self.transitions.style_transition_plugin.take_samples();
         for sample in style_samples {
             let before_signatures = roots.iter().rev().find_map(|root| {
                 super::base_component::get_debug_promotion_signatures_by_id(
@@ -1187,7 +1272,7 @@ impl Viewport {
                 before_signatures,
             );
         }
-        let animation_style_samples = self.animation_plugin.take_style_samples();
+        let animation_style_samples = self.transitions.animation_plugin.take_style_samples();
         for sample in animation_style_samples {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_style_field_by_id(
@@ -1204,7 +1289,7 @@ impl Viewport {
                 }
             }
         }
-        let visual_samples = self.visual_transition_plugin.take_samples();
+        let visual_samples = self.transitions.visual_transition_plugin.take_samples();
         for sample in visual_samples {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_visual_field_by_id(
@@ -1218,7 +1303,7 @@ impl Viewport {
                 }
             }
         }
-        let layout_samples = self.layout_transition_plugin.take_samples();
+        let layout_samples = self.transitions.layout_transition_plugin.take_samples();
         for sample in layout_samples {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_layout_field_by_id(
@@ -1233,7 +1318,7 @@ impl Viewport {
                 }
             }
         }
-        let animation_layout_samples = self.animation_plugin.take_layout_samples();
+        let animation_layout_samples = self.transitions.animation_plugin.take_layout_samples();
         for sample in animation_layout_samples {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_layout_field_by_id(
@@ -1273,49 +1358,49 @@ impl Viewport {
         roots: &mut [Box<dyn super::base_component::ElementTrait>],
     ) -> bool {
         let live_node_ids = super::base_component::collect_node_id_allowlist(roots);
-        self.animation_plugin.prune_targets(&live_node_ids);
+        self.transitions.animation_plugin.prune_targets(&live_node_ids);
         let now = Instant::now();
-        let epoch = self.transition_epoch.get_or_insert(now);
+        let epoch = self.transitions.transition_epoch.get_or_insert(now);
         let frame = TransitionFrame {
             dt_seconds: 0.0,
             now_seconds: (now - *epoch).as_secs_f64(),
         };
         let scroll_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.scroll_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions.scroll_transition_plugin.run_tracks(frame, &mut host)
         };
         let style_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.style_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions.style_transition_plugin.run_tracks(frame, &mut host)
         };
-        let animation_result = self.animation_plugin.run_animations(0.0, frame.now_seconds);
+        let animation_result = self.transitions.animation_plugin.run_animations(0.0, frame.now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.visual_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions.visual_transition_plugin.run_tracks(frame, &mut host)
         };
         let layout_result = {
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
-            self.layout_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions.layout_transition_plugin.run_tracks(frame, &mut host)
         };
         self.sync_layout_transition_claims();
 
         let mut changed = false;
-        for sample in self.scroll_transition_plugin.take_samples() {
+        for sample in self.transitions.scroll_transition_plugin.take_samples() {
             changed |= Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
         }
-        for sample in self.style_transition_plugin.take_samples() {
+        for sample in self.transitions.style_transition_plugin.take_samples() {
             let before_signatures = roots.iter().rev().find_map(|root| {
                 super::base_component::get_debug_promotion_signatures_by_id(
                     root.as_ref(),
@@ -1344,7 +1429,7 @@ impl Viewport {
                 before_signatures,
             );
         }
-        for sample in self.animation_plugin.take_style_samples() {
+        for sample in self.transitions.animation_plugin.take_style_samples() {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_style_field_by_id(
                     root.as_mut(),
@@ -1357,7 +1442,7 @@ impl Viewport {
                 }
             }
         }
-        for sample in self.visual_transition_plugin.take_samples() {
+        for sample in self.transitions.visual_transition_plugin.take_samples() {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_visual_field_by_id(
                     root.as_mut(),
@@ -1370,7 +1455,7 @@ impl Viewport {
                 }
             }
         }
-        for sample in self.layout_transition_plugin.take_samples() {
+        for sample in self.transitions.layout_transition_plugin.take_samples() {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_layout_field_by_id(
                     root.as_mut(),
@@ -1383,7 +1468,7 @@ impl Viewport {
                 }
             }
         }
-        for sample in self.animation_plugin.take_layout_samples() {
+        for sample in self.transitions.animation_plugin.take_layout_samples() {
             for root in roots.iter_mut().rev() {
                 if super::base_component::set_layout_field_by_id(
                     root.as_mut(),
@@ -1407,8 +1492,8 @@ impl Viewport {
 
     fn update_promotion_state(&mut self, roots: &[Box<dyn super::base_component::ElementTrait>]) {
         let previous_promoted_node_ids = self.compositor.promotion_state.promoted_node_ids.clone();
-        let active_animator_hints = self.animation_plugin.active_promotion_hints();
-        let active_channels = active_channels_by_node(&self.transition_claims);
+        let active_animator_hints = self.transitions.animation_plugin.active_promotion_hints();
+        let active_channels = active_channels_by_node(&self.transitions.transition_claims);
         let candidates = collect_promotion_candidates(
             roots,
             &active_animator_hints,
@@ -1582,42 +1667,37 @@ impl Viewport {
             scale_factor: 1.0,
             logical_width: 1.0,
             logical_height: 1.0,
-            surface: None,
-            surface_config: wgpu::SurfaceConfiguration {
-                usage: TextureUsages::RENDER_ATTACHMENT
-                    | TextureUsages::COPY_SRC
-                    | TextureUsages::COPY_DST,
-                format: wgpu::TextureFormat::Bgra8Unorm,
-                width: 1,
-                height: 1,
-                present_mode: Self::present_mode_from_env(),
-                desired_maximum_frame_latency: 2,
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![],
+            gpu: GpuContext {
+                surface: None,
+                surface_config: wgpu::SurfaceConfiguration {
+                    usage: TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::COPY_SRC
+                        | TextureUsages::COPY_DST,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    width: 1,
+                    height: 1,
+                    present_mode: Self::present_mode_from_env(),
+                    desired_maximum_frame_latency: 2,
+                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                    view_formats: vec![],
+                },
+                device: None,
+                instance: None,
+                window: None,
+                surface_format_preference: SurfaceFormatPreference::default(),
+                queue: None,
+                msaa_sample_count: Self::DEFAULT_MSAA_SAMPLE_COUNT,
+                surface_msaa_texture: None,
+                surface_msaa_view: None,
+                depth_texture: None,
+                depth_view: None,
+                upload_staging_belt: None,
             },
-            device: None,
-            instance: None,
-            window: None,
-            surface_format_preference: SurfaceFormatPreference::default(),
-            queue: None,
-            msaa_sample_count: Self::DEFAULT_MSAA_SAMPLE_COUNT,
-            surface_msaa_texture: None,
-            surface_msaa_view: None,
-            depth_texture: None,
-            depth_view: None,
-            frame_state: None,
-            offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
-            sampled_texture_cache: HashMap::new(),
-            frame_buffer_pool: HashMap::new(),
-            draw_rect_uniform_pool: Vec::new(),
-            draw_rect_uniform_cursor: 0,
-            draw_rect_uniform_offset: 0,
-            upload_staging_belt: None,
+            frame: FrameRuntime::new(debug_options.trace_fps),
             pending_size: None,
             needs_reconfigure: false,
             redraw_requested: false,
             debug_options,
-            frame_stats: FrameStats::new(debug_options.trace_fps),
             compositor: CompositorState::new(),
             input_state: InputState::default(),
             clipboard_fallback: None,
@@ -1626,52 +1706,18 @@ impl Viewport {
             scroll_offsets: HashMap::new(),
             element_snapshots: HashMap::new(),
             last_rsx_root: None,
-            transition_channels: HashSet::from([
-                CHANNEL_SCROLL_X,
-                CHANNEL_SCROLL_Y,
-                CHANNEL_LAYOUT_X,
-                CHANNEL_LAYOUT_Y,
-                CHANNEL_LAYOUT_WIDTH,
-                CHANNEL_LAYOUT_HEIGHT,
-                CHANNEL_VISUAL_X,
-                CHANNEL_VISUAL_Y,
-                CHANNEL_STYLE_OPACITY,
-                CHANNEL_STYLE_BORDER_RADIUS,
-                CHANNEL_STYLE_BACKGROUND_COLOR,
-                CHANNEL_STYLE_COLOR,
-                CHANNEL_STYLE_BORDER_TOP_COLOR,
-                CHANNEL_STYLE_BORDER_RIGHT_COLOR,
-                CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
-                CHANNEL_STYLE_BORDER_LEFT_COLOR,
-                CHANNEL_STYLE_BOX_SHADOW,
-                CHANNEL_STYLE_TRANSFORM,
-                CHANNEL_STYLE_TRANSFORM_ORIGIN,
-            ]),
-            transition_claims: HashMap::new(),
-            scroll_transition_plugin: ScrollTransitionPlugin::new(),
-            layout_transition_plugin: LayoutTransitionPlugin::new(),
-            visual_transition_plugin: VisualTransitionPlugin::new(),
-            style_transition_plugin: StyleTransitionPlugin::new(),
-            animation_plugin: AnimationPlugin::new(),
-            scroll_transition: ScrollTransition::new(250).ease_out(),
-            last_transition_tick: None,
-            transition_epoch: None,
+            transitions: TransitionRuntime::new(),
             cursor_override: None,
             last_recorded_cursor: None,
             pending_platform_requests: PlatformRequests::default(),
             is_animating: false,
-            frame_presented: false,
-            last_frame_graph: None,
-            compile_cache: None,
-            debug_overlay_vertices: Vec::new(),
-            debug_overlay_indices: Vec::new(),
             viewport_mouse_move_listeners: Vec::new(),
             viewport_mouse_up_listeners: Vec::new(),
         }
     }
 
     pub fn dump_graph(&self) -> Option<String> {
-        self.last_frame_graph.as_ref().map(|graph| graph.to_dot())
+        self.frame.last_frame_graph.as_ref().map(|graph| graph.to_dot())
     }
 
     pub fn debug_options(&self) -> ViewportDebugOptions {
@@ -1679,18 +1725,18 @@ impl Viewport {
     }
 
     pub fn msaa_sample_count(&self) -> u32 {
-        self.msaa_sample_count
+        self.gpu.msaa_sample_count
     }
 
     pub fn set_msaa_sample_count(&mut self, sample_count: u32) {
         let normalized = Self::normalize_msaa_sample_count(sample_count);
-        if self.msaa_sample_count == normalized {
+        if self.gpu.msaa_sample_count == normalized {
             return;
         }
-        self.msaa_sample_count = normalized;
+        self.gpu.msaa_sample_count = normalized;
         self.invalidate_promoted_layer_reuse();
         self.needs_reconfigure = true;
-        if self.surface.is_some() && self.device.is_some() {
+        if self.gpu.surface.is_some() && self.gpu.device.is_some() {
             self.create_frame_attachments();
         }
         self.request_redraw();
@@ -1698,7 +1744,7 @@ impl Viewport {
 
     pub fn set_debug_options(&mut self, options: ViewportDebugOptions) {
         self.debug_options = options;
-        self.frame_stats.set_enabled(options.trace_fps);
+        self.frame.frame_stats.set_enabled(options.trace_fps);
     }
 
     pub fn debug_trace_fps(&self) -> bool {
@@ -1707,7 +1753,7 @@ impl Viewport {
 
     pub fn set_debug_trace_fps(&mut self, enabled: bool) {
         self.debug_options.trace_fps = enabled;
-        self.frame_stats.set_enabled(enabled);
+        self.frame.frame_stats.set_enabled(enabled);
     }
 
     pub fn debug_trace_render_time(&self) -> bool {
@@ -1747,8 +1793,8 @@ impl Viewport {
     }
 
     pub(crate) fn clear_debug_overlay_geometry(&mut self) {
-        self.debug_overlay_vertices.clear();
-        self.debug_overlay_indices.clear();
+        self.frame.debug_overlay_vertices.clear();
+        self.frame.debug_overlay_indices.clear();
     }
 
     pub(crate) fn push_debug_overlay_geometry(
@@ -1759,9 +1805,9 @@ impl Viewport {
         if vertices.is_empty() || indices.is_empty() {
             return;
         }
-        let base = self.debug_overlay_vertices.len() as u32;
-        self.debug_overlay_vertices.extend_from_slice(vertices);
-        self.debug_overlay_indices
+        let base = self.frame.debug_overlay_vertices.len() as u32;
+        self.frame.debug_overlay_vertices.extend_from_slice(vertices);
+        self.frame.debug_overlay_indices
             .extend(indices.iter().map(|index| base + *index));
     }
 
@@ -1772,8 +1818,8 @@ impl Viewport {
         Vec<u32>,
     ) {
         (
-            std::mem::take(&mut self.debug_overlay_vertices),
-            std::mem::take(&mut self.debug_overlay_indices),
+            std::mem::take(&mut self.frame.debug_overlay_vertices),
+            std::mem::take(&mut self.frame.debug_overlay_indices),
         )
     }
 
@@ -1782,8 +1828,8 @@ impl Viewport {
             return;
         }
         let scale = self.scale_factor.max(0.0001);
-        let screen_w = self.surface_config.width.max(1) as f32;
-        let screen_h = self.surface_config.height.max(1) as f32;
+        let screen_w = self.gpu.surface_config.width.max(1) as f32;
+        let screen_h = self.gpu.surface_config.height.max(1) as f32;
         let snapshots_by_id = self
             .compositor
             .frame_box_models
@@ -1847,8 +1893,8 @@ impl Viewport {
     where
         T: WindowHandle + Send + Sync + 'static,
     {
-        self.window = Some(Arc::new(target));
-        if self.device.is_some() {
+        self.gpu.window = Some(Arc::new(target));
+        if self.gpu.device.is_some() {
             self.create_surface().await;
         }
     }
@@ -1857,14 +1903,14 @@ impl Viewport {
     /// back-compat with existing examples. New code should call `attach`.
     #[deprecated(note = "use Viewport::attach")]
     pub async fn set_window(&mut self, window: Window) {
-        self.window = Some(window);
-        if self.device.is_some() {
+        self.gpu.window = Some(window);
+        if self.gpu.device.is_some() {
             self.create_surface().await;
         }
     }
 
     pub fn set_surface_format_preference(&mut self, pref: SurfaceFormatPreference) {
-        self.surface_format_preference = pref;
+        self.gpu.surface_format_preference = pref;
     }
 
     pub fn set_size(&mut self, mut width: u32, mut height: u32) {
@@ -1875,8 +1921,8 @@ impl Viewport {
             height = 1;
         }
         self.update_logical_size(width, height);
-        if self.surface_config.width == width
-            && self.surface_config.height == height
+        if self.gpu.surface_config.width == width
+            && self.gpu.surface_config.height == height
             && self.pending_size.is_none()
         {
             return;
@@ -1944,7 +1990,7 @@ impl Viewport {
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         self.scale_factor = scale_factor.max(0.0001);
-        self.update_logical_size(self.surface_config.width, self.surface_config.height);
+        self.update_logical_size(self.gpu.surface_config.width, self.gpu.surface_config.height);
         self.invalidate_promoted_layer_reuse();
     }
 
@@ -2022,7 +2068,7 @@ impl Viewport {
     }
 
     pub async fn create_surface(&mut self) {
-        let Some(surface_target) = self.window.clone() else {
+        let Some(surface_target) = self.gpu.window.clone() else {
             return;
         };
         {
@@ -2065,38 +2111,38 @@ impl Viewport {
             let caps = surface.get_capabilities(&adapter);
             let format = Self::pick_surface_format(
                 &caps.formats,
-                self.surface_format_preference,
-                self.surface_config.format,
+                self.gpu.surface_format_preference,
+                self.gpu.surface_config.format,
             );
             let Some(format) = format else {
                 eprintln!("[warn] surface reported no supported formats");
                 return;
             };
-            self.surface_config.format = format;
-            self.surface_config.alpha_mode = Self::alpha_mode_from_capabilities(&caps.alpha_modes);
-            self.surface_config.view_formats = vec![self.surface_config.format];
+            self.gpu.surface_config.format = format;
+            self.gpu.surface_config.alpha_mode = Self::alpha_mode_from_capabilities(&caps.alpha_modes);
+            self.gpu.surface_config.view_formats = vec![self.gpu.surface_config.format];
             if let Some((width, height)) = self.pending_size.take() {
-                self.surface_config.width = width;
-                self.surface_config.height = height;
+                self.gpu.surface_config.width = width;
+                self.gpu.surface_config.height = height;
             }
 
-            surface.configure(&device, &self.surface_config);
+            surface.configure(&device, &self.gpu.surface_config);
 
-            self.instance = Some(instance);
-            self.surface = Some(surface);
-            self.device = Some(device);
-            self.queue = Some(queue);
+            self.gpu.instance = Some(instance);
+            self.gpu.surface = Some(surface);
+            self.gpu.device = Some(device);
+            self.gpu.queue = Some(queue);
             self.release_render_resource_caches();
             self.invalidate_promoted_layer_reuse();
             self.create_frame_attachments();
             self.needs_reconfigure = false;
-            if let Some(device) = self.device.as_ref() {
-                if let Some(queue) = self.queue.as_ref() {
+            if let Some(device) = self.gpu.device.as_ref() {
+                if let Some(queue) = self.gpu.queue.as_ref() {
                     crate::view::render_pass::prewarm_text_pipeline(
                         device,
                         queue,
-                        self.surface_config.format,
-                        self.msaa_sample_count,
+                        self.gpu.surface_config.format,
+                        self.gpu.msaa_sample_count,
                     );
                 }
             }
@@ -2142,28 +2188,28 @@ impl Viewport {
             return true;
         }
         if let Some((width, height)) = self.pending_size.take() {
-            self.surface_config.width = width;
-            self.surface_config.height = height;
+            self.gpu.surface_config.width = width;
+            self.gpu.surface_config.height = height;
         }
-        let surface = match &self.surface {
+        let surface = match &self.gpu.surface {
             Some(surface) => surface,
             None => return false,
         };
-        let device = match &self.device {
+        let device = match &self.gpu.device {
             Some(device) => device,
             None => return false,
         };
-        surface.configure(device, &self.surface_config);
+        surface.configure(device, &self.gpu.surface_config);
         let device_for_prewarm = device.clone();
         self.release_render_resource_caches();
         self.invalidate_promoted_layer_reuse();
         self.create_frame_attachments();
-        if let Some(queue) = self.queue.as_ref() {
+        if let Some(queue) = self.gpu.queue.as_ref() {
             crate::view::render_pass::prewarm_text_pipeline(
                 &device_for_prewarm,
                 queue,
-                self.surface_config.format,
-                self.msaa_sample_count,
+                self.gpu.surface_config.format,
+                self.gpu.msaa_sample_count,
             );
         }
         self.needs_reconfigure = false;
@@ -2176,52 +2222,52 @@ impl Viewport {
     }
 
     fn create_surface_msaa_texture(&mut self) {
-        if self.msaa_sample_count <= 1 {
-            self.surface_msaa_texture = None;
-            self.surface_msaa_view = None;
+        if self.gpu.msaa_sample_count <= 1 {
+            self.gpu.surface_msaa_texture = None;
+            self.gpu.surface_msaa_view = None;
             return;
         }
-        let device = match &self.device {
+        let device = match &self.gpu.device {
             Some(d) => d,
             None => return,
         };
         let size = wgpu::Extent3d {
-            width: self.surface_config.width.max(1),
-            height: self.surface_config.height.max(1),
+            width: self.gpu.surface_config.width.max(1),
+            height: self.gpu.surface_config.height.max(1),
             depth_or_array_layers: 1,
         };
         let desc = wgpu::TextureDescriptor {
             label: Some("Surface MSAA Texture"),
             size,
             mip_level_count: 1,
-            sample_count: self.msaa_sample_count,
+            sample_count: self.gpu.msaa_sample_count,
             dimension: wgpu::TextureDimension::D2,
-            format: self.surface_config.format,
+            format: self.gpu.surface_config.format,
             usage: TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         };
         let texture = device.create_texture(&desc);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.surface_msaa_texture = Some(texture);
-        self.surface_msaa_view = Some(view);
+        self.gpu.surface_msaa_texture = Some(texture);
+        self.gpu.surface_msaa_view = Some(view);
     }
 
     fn create_depth_texture(&mut self) {
-        let device = match &self.device {
+        let device = match &self.gpu.device {
             Some(d) => d,
             None => return,
         };
 
         let size = wgpu::Extent3d {
-            width: self.surface_config.width,
-            height: self.surface_config.height,
+            width: self.gpu.surface_config.width,
+            height: self.gpu.surface_config.height,
             depth_or_array_layers: 1,
         };
         let desc = wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
             size,
             mip_level_count: 1,
-            sample_count: self.msaa_sample_count,
+            sample_count: self.gpu.msaa_sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth24PlusStencil8,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
@@ -2230,8 +2276,8 @@ impl Viewport {
         let texture = device.create_texture(&desc);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        self.depth_texture = Some(texture);
-        self.depth_view = Some(view);
+        self.gpu.depth_texture = Some(texture);
+        self.gpu.depth_view = Some(view);
     }
 
     fn render_render_tree(
@@ -2364,14 +2410,14 @@ impl Viewport {
         self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
         let mut ctx = super::base_component::UiBuildContext::new(
-            self.surface_config.width,
-            self.surface_config.height,
-            self.surface_config.format,
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+            self.gpu.surface_config.format,
             self.scale_factor,
         );
         self.apply_promotion_runtime(&mut ctx);
         let clear_uses_premultiplied_alpha = matches!(
-            self.surface_config.alpha_mode,
+            self.gpu.surface_config.alpha_mode,
             wgpu::CompositeAlphaMode::PostMultiplied | wgpu::CompositeAlphaMode::PreMultiplied
         );
         let mut clear_rgba = self.clear_color.to_rgba_f32();
@@ -2567,6 +2613,7 @@ impl Viewport {
         // On cache hit the graph is reused in-place; on miss it is dropped. Either way
         // the returned compiled_graph is stored back for the next frame.
         let prior_cache = self
+            .frame
             .compile_cache
             .take()
             .map(|c| (c.topology_hash, c.graph));
@@ -2575,7 +2622,7 @@ impl Viewport {
                 compile_elapsed_ms = profile.total_ms;
                 compile_children =
                     build_compile_trace_nodes(&profile, self.debug_trace_compile_detail());
-                self.compile_cache = Some(CachedCompiledGraph {
+                self.frame.compile_cache = Some(CachedCompiledGraph {
                     topology_hash,
                     graph: compiled_graph,
                 });
@@ -2795,8 +2842,8 @@ impl Viewport {
             println!("{}", format_style_sample_trace());
             println!("{}", format_style_promotion_trace());
         }
-        self.frame_stats.record_frame(frame_start.elapsed());
-        self.last_frame_graph = Some(graph);
+        self.frame.frame_stats.record_frame(frame_start.elapsed());
+        self.frame.last_frame_graph = Some(graph);
         post_layout_transition.redraw_changed
     }
 
@@ -2922,7 +2969,7 @@ impl Viewport {
             let reconciled_transition_state =
                 super::base_component::reconcile_transition_runtime_state(
                     &mut rebuilt_roots,
-                    &active_channels_by_node(&self.transition_claims),
+                    &active_channels_by_node(&self.transitions.transition_claims),
                 );
             self.ui_roots = rebuilt_roots;
             if canceled_tracks || has_inflight_transition || reconciled_transition_state {
@@ -2934,7 +2981,7 @@ impl Viewport {
         let canceled_tracks = self.cancel_disallowed_transition_tracks(&roots);
         let reconciled_transition_state = super::base_component::reconcile_transition_runtime_state(
             &mut roots,
-            &active_channels_by_node(&self.transition_claims),
+            &active_channels_by_node(&self.transitions.transition_claims),
         );
         let (dt, now_seconds) = self.transition_timing();
         let transition_changed_before_render = canceled_tracks
@@ -2969,14 +3016,14 @@ impl Viewport {
             self.request_redraw();
         }
         self.ui_roots = roots;
-        if std::mem::take(&mut self.frame_presented) {
+        if std::mem::take(&mut self.frame.frame_presented) {
             self.notify_cursor_handler();
         }
         Ok(())
     }
 
     pub fn frame_parts(&mut self) -> Option<FrameParts<'_>> {
-        let frame = self.frame_state.as_mut()?;
+        let frame = self.frame.frame_state.as_mut()?;
         Some(FrameParts {
             encoder: &mut frame.encoder,
             view: &frame.view,
@@ -2986,11 +3033,11 @@ impl Viewport {
     }
 
     pub fn device(&self) -> Option<&wgpu::Device> {
-        self.device.as_ref()
+        self.gpu.device.as_ref()
     }
 
     pub fn queue(&self) -> Option<&Queue> {
-        self.queue.as_ref()
+        self.gpu.queue.as_ref()
     }
 
     pub(crate) fn acquire_offscreen_render_target(
@@ -2998,9 +3045,9 @@ impl Viewport {
         allocation_id: AllocationId,
         desc: TextureDesc,
     ) -> Option<RenderTargetBundle> {
-        let device = self.device.as_ref()?;
+        let device = self.gpu.device.as_ref()?;
         let sample_count = desc.sample_count().max(1);
-        self.offscreen_render_target_pool
+        self.frame.offscreen_render_target_pool
             .acquire(device, allocation_id, desc, sample_count)
     }
 
@@ -3009,9 +3056,9 @@ impl Viewport {
         stable_key: u64,
         desc: TextureDesc,
     ) -> Option<RenderTargetBundle> {
-        let device = self.device.as_ref()?;
+        let device = self.gpu.device.as_ref()?;
         let sample_count = desc.sample_count().max(1);
-        self.offscreen_render_target_pool
+        self.frame.offscreen_render_target_pool
             .acquire_persistent(device, stable_key, desc, sample_count)
     }
 
@@ -3023,15 +3070,16 @@ impl Viewport {
         format: wgpu::TextureFormat,
         bytes: &[u8],
     ) -> bool {
-        let Some(device) = self.device.as_ref() else {
+        let Some(device) = self.gpu.device.as_ref() else {
             return false;
         };
-        let Some(queue) = self.queue.as_ref() else {
+        let Some(queue) = self.gpu.queue.as_ref() else {
             return false;
         };
         let width = width.max(1);
         let height = height.max(1);
         let recreate = self
+            .frame
             .sampled_texture_cache
             .get(&stable_key)
             .is_none_or(|entry| {
@@ -3053,7 +3101,7 @@ impl Viewport {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.sampled_texture_cache.insert(
+            self.frame.sampled_texture_cache.insert(
                 stable_key,
                 SampledTextureEntry {
                     texture,
@@ -3065,7 +3113,7 @@ impl Viewport {
                 },
             );
         }
-        let Some(entry) = self.sampled_texture_cache.get(&stable_key) else {
+        let Some(entry) = self.frame.sampled_texture_cache.get(&stable_key) else {
             return false;
         };
         queue.write_texture(
@@ -3092,13 +3140,13 @@ impl Viewport {
     }
 
     pub(crate) fn sampled_texture_view(&self, stable_key: u64) -> Option<wgpu::TextureView> {
-        self.sampled_texture_cache
+        self.frame.sampled_texture_cache
             .get(&stable_key)
             .map(|entry| entry.view.clone())
     }
 
     fn total_sampled_texture_bytes(&self) -> u64 {
-        self.sampled_texture_cache
+        self.frame.sampled_texture_cache
             .values()
             .map(|entry| entry.byte_size)
             .sum()
@@ -3111,6 +3159,7 @@ impl Viewport {
         }
 
         let mut candidates = self
+            .frame
             .sampled_texture_cache
             .keys()
             .filter_map(|key| {
@@ -3125,7 +3174,7 @@ impl Viewport {
             if total_bytes <= Self::SAMPLED_TEXTURE_EVICT_TO_BYTES {
                 break;
             }
-            if let Some(entry) = self.sampled_texture_cache.remove(&key) {
+            if let Some(entry) = self.frame.sampled_texture_cache.remove(&key) {
                 total_bytes = total_bytes.saturating_sub(entry.byte_size);
             }
         }
@@ -3136,9 +3185,10 @@ impl Viewport {
         allocation_id: AllocationId,
         desc: BufferDesc,
     ) -> Option<wgpu::Buffer> {
-        let device = self.device.as_ref()?;
+        let device = self.gpu.device.as_ref()?;
         let key = allocation_id.0;
         let recreate = self
+            .frame
             .frame_buffer_pool
             .get(&key)
             .is_none_or(|entry| entry.size != desc.size || entry.usage != desc.usage);
@@ -3150,7 +3200,7 @@ impl Viewport {
                 usage,
                 mapped_at_creation: false,
             });
-            self.frame_buffer_pool.insert(
+            self.frame.frame_buffer_pool.insert(
                 key,
                 FrameBufferEntry {
                     buffer: buffer.clone(),
@@ -3159,7 +3209,7 @@ impl Viewport {
                 },
             );
         }
-        self.frame_buffer_pool
+        self.frame.frame_buffer_pool
             .get(&key)
             .map(|entry| entry.buffer.clone())
     }
@@ -3180,16 +3230,16 @@ impl Viewport {
         let Some(buffer) = self.acquire_frame_buffer(allocation_id, desc) else {
             return false;
         };
-        if self.upload_staging_belt.is_none() {
-            let Some(device) = self.device.as_ref().cloned() else {
+        if self.gpu.upload_staging_belt.is_none() {
+            let Some(device) = self.gpu.device.as_ref().cloned() else {
                 return false;
             };
-            self.upload_staging_belt = Some(StagingBelt::new(device, 1024 * 1024));
+            self.gpu.upload_staging_belt = Some(StagingBelt::new(device, 1024 * 1024));
         }
-        let Some(frame) = self.frame_state.as_mut() else {
+        let Some(frame) = self.frame.frame_state.as_mut() else {
             return false;
         };
-        let Some(staging_belt) = self.upload_staging_belt.as_mut() else {
+        let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() else {
             return false;
         };
         let align = wgpu::COPY_BUFFER_ALIGNMENT as usize;
@@ -3222,43 +3272,45 @@ impl Viewport {
         if data.is_empty() || data.len() as u64 > slot_size {
             return None;
         }
-        let device = self.device.as_ref()?.clone();
-        if self.upload_staging_belt.is_none() {
-            self.upload_staging_belt = Some(StagingBelt::new(device.clone(), 1024 * 1024));
+        let device = self.gpu.device.as_ref()?.clone();
+        if self.gpu.upload_staging_belt.is_none() {
+            self.gpu.upload_staging_belt = Some(StagingBelt::new(device.clone(), 1024 * 1024));
         }
         let required_size = chunk_size.max(slot_size).max(1);
         let has_current_capacity = self
+            .frame
             .draw_rect_uniform_pool
-            .get(self.draw_rect_uniform_cursor)
+            .get(self.frame.draw_rect_uniform_cursor)
             .is_some_and(|entry| {
                 entry.size >= required_size
-                    && self.draw_rect_uniform_offset.saturating_add(slot_size) <= entry.size
+                    && self.frame.draw_rect_uniform_offset.saturating_add(slot_size) <= entry.size
             });
         if !has_current_capacity
             && self
+                .frame
                 .draw_rect_uniform_pool
-                .get(self.draw_rect_uniform_cursor)
+                .get(self.frame.draw_rect_uniform_cursor)
                 .is_some()
         {
-            self.draw_rect_uniform_cursor = self.draw_rect_uniform_cursor.saturating_add(1);
-            self.draw_rect_uniform_offset = 0;
+            self.frame.draw_rect_uniform_cursor = self.frame.draw_rect_uniform_cursor.saturating_add(1);
+            self.frame.draw_rect_uniform_offset = 0;
         }
-        let target_index = self.draw_rect_uniform_cursor;
-        if self.draw_rect_uniform_pool.len() <= target_index {
+        let target_index = self.frame.draw_rect_uniform_cursor;
+        if self.frame.draw_rect_uniform_pool.len() <= target_index {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("DrawRect Uniform Ring Buffer"),
                 size: required_size,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.draw_rect_uniform_pool.push(DrawRectUniformBufferEntry {
+            self.frame.draw_rect_uniform_pool.push(DrawRectUniformBufferEntry {
                 buffer,
                 size: required_size,
                 bind_groups: HashMap::new(),
             });
-        } else if self.draw_rect_uniform_pool[target_index].size < required_size {
+        } else if self.frame.draw_rect_uniform_pool[target_index].size < required_size {
             // Buffer reallocated — invalidate all cached bind groups for this slot.
-            self.draw_rect_uniform_pool[target_index] = DrawRectUniformBufferEntry {
+            self.frame.draw_rect_uniform_pool[target_index] = DrawRectUniformBufferEntry {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("DrawRect Uniform Ring Buffer"),
                     size: required_size,
@@ -3269,19 +3321,19 @@ impl Viewport {
                 bind_groups: HashMap::new(),
             };
         }
-        let dynamic_offset = self.draw_rect_uniform_offset;
+        let dynamic_offset = self.frame.draw_rect_uniform_offset;
         let Some(size) = wgpu::BufferSize::new(slot_size) else {
             return None;
         };
-        let buffer = self.draw_rect_uniform_pool[target_index].buffer.clone();
-        let frame = self.frame_state.as_mut()?;
-        let staging_belt = self.upload_staging_belt.as_mut()?;
+        let buffer = self.frame.draw_rect_uniform_pool[target_index].buffer.clone();
+        let frame = self.frame.frame_state.as_mut()?;
+        let staging_belt = self.gpu.upload_staging_belt.as_mut()?;
         let mut mapped =
             staging_belt.write_buffer(&mut frame.encoder, &buffer, dynamic_offset, size);
         mapped.slice(..).fill(0);
         mapped.slice(..data.len()).copy_from_slice(data);
         drop(mapped);
-        self.draw_rect_uniform_offset = self.draw_rect_uniform_offset.saturating_add(slot_size);
+        self.frame.draw_rect_uniform_offset = self.frame.draw_rect_uniform_offset.saturating_add(slot_size);
         Some((buffer, dynamic_offset as u32, target_index))
     }
 
@@ -3296,11 +3348,11 @@ impl Viewport {
         layout: &wgpu::BindGroupLayout,
         slot_size: u64,
     ) -> Option<wgpu::BindGroup> {
-        let entry = self.draw_rect_uniform_pool.get(pool_index)?;
+        let entry = self.frame.draw_rect_uniform_pool.get(pool_index)?;
         if let Some(bg) = entry.bind_groups.get(&layout_cache_key) {
             return Some(bg.clone());
         }
-        let device = self.device.as_ref()?;
+        let device = self.gpu.device.as_ref()?;
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("DrawRect Bind Group (Cached)"),
             layout,
@@ -3314,7 +3366,7 @@ impl Viewport {
             }],
         });
         // Re-borrow mutably to insert (split borrow is not possible across Option).
-        self.draw_rect_uniform_pool
+        self.frame.draw_rect_uniform_pool
             .get_mut(pool_index)?
             .bind_groups
             .insert(layout_cache_key, bg.clone());
@@ -3329,23 +3381,23 @@ impl Viewport {
         crate::view::render_pass::composite_layer_pass::clear_composite_layer_resources_cache();
         crate::view::render_pass::texture_composite_pass::clear_texture_composite_resources_cache();
         crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
-        self.offscreen_render_target_pool.clear();
-        self.sampled_texture_cache.clear();
+        self.frame.offscreen_render_target_pool.clear();
+        self.frame.sampled_texture_cache.clear();
         crate::view::image_resource::invalidate_uploaded_images();
         crate::view::svg_resource::invalidate_uploaded_images();
-        self.frame_buffer_pool.clear();
-        self.draw_rect_uniform_pool.clear();
-        self.draw_rect_uniform_cursor = 0;
-        self.draw_rect_uniform_offset = 0;
-        self.upload_staging_belt = None;
+        self.frame.frame_buffer_pool.clear();
+        self.frame.draw_rect_uniform_pool.clear();
+        self.frame.draw_rect_uniform_cursor = 0;
+        self.frame.draw_rect_uniform_offset = 0;
+        self.gpu.upload_staging_belt = None;
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
-        self.surface_config.format
+        self.gpu.surface_config.format
     }
 
     pub fn surface_size(&self) -> (u32, u32) {
-        (self.surface_config.width, self.surface_config.height)
+        (self.gpu.surface_config.width, self.gpu.surface_config.height)
     }
 
     fn update_logical_size(&mut self, physical_width: u32, physical_height: u32) {
@@ -3355,7 +3407,7 @@ impl Viewport {
     }
 
     pub fn frame_texture(&self) -> Option<&wgpu::Texture> {
-        self.frame_state
+        self.frame.frame_state
             .as_ref()
             .map(|frame| &frame.render_texture.texture)
     }
@@ -3910,13 +3962,13 @@ impl Viewport {
         }
         let mut handled = false;
         if let Some((target_id, from, to)) = pending_scroll_track {
-            let transition_spec = self.scroll_transition;
+            let transition_spec = self.transitions.scroll_transition;
             let mut host = TransitionHostAdapter {
-                registered_channels: &self.transition_channels,
-                claims: &mut self.transition_claims,
+                registered_channels: &self.transitions.transition_channels,
+                claims: &mut self.transitions.transition_claims,
             };
             if (to.0 - from.0).abs() > 0.001 {
-                let _ = self.scroll_transition_plugin.start_scroll_track(
+                let _ = self.transitions.scroll_transition_plugin.start_scroll_track(
                     &mut host,
                     target_id,
                     ScrollAxis::X,
@@ -3926,7 +3978,7 @@ impl Viewport {
                 );
             }
             if (to.1 - from.1).abs() > 0.001 {
-                let _ = self.scroll_transition_plugin.start_scroll_track(
+                let _ = self.transitions.scroll_transition_plugin.start_scroll_track(
                     &mut host,
                     target_id,
                     ScrollAxis::Y,
@@ -4344,7 +4396,7 @@ impl Viewport {
 
     fn begin_frame(&mut self) -> Option<BeginFrameProfile> {
         let total_started_at = Instant::now();
-        if self.frame_state.is_some() {
+        if self.frame.frame_state.is_some() {
             return Some(BeginFrameProfile {
                 total_ms: 0.0,
                 acquire_ms: 0.0,
@@ -4355,17 +4407,17 @@ impl Viewport {
         if !self.apply_pending_reconfigure() {
             return None;
         }
-        self.offscreen_render_target_pool.begin_frame();
-        self.draw_rect_uniform_cursor = 0;
-        self.draw_rect_uniform_offset = 0;
+        self.frame.offscreen_render_target_pool.begin_frame();
+        self.frame.draw_rect_uniform_cursor = 0;
+        self.frame.draw_rect_uniform_offset = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
 
-        let surface = match &self.surface {
+        let surface = match &self.gpu.surface {
             Some(s) => s,
             None => return None,
         };
-        let device = match &self.device {
+        let device = match &self.gpu.device {
             Some(d) => d,
             None => return None,
         };
@@ -4374,12 +4426,12 @@ impl Viewport {
         let render_texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                surface.configure(device, &self.surface_config);
+                surface.configure(device, &self.gpu.surface_config);
                 texture
             }
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 println!("[warn] surface lost, recreate render texture");
-                surface.configure(device, &self.surface_config);
+                surface.configure(device, &self.gpu.surface_config);
                 match surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(texture)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -4396,8 +4448,8 @@ impl Viewport {
         let surface_view = render_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let (view, resolve_view) = if self.msaa_sample_count > 1 {
-            let Some(msaa_view) = self.surface_msaa_view.as_ref() else {
+        let (view, resolve_view) = if self.gpu.msaa_sample_count > 1 {
+            let Some(msaa_view) = self.gpu.surface_msaa_view.as_ref() else {
                 return None;
             };
             (msaa_view.clone(), Some(surface_view))
@@ -4411,12 +4463,12 @@ impl Viewport {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let create_encoder_ms = create_encoder_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        self.frame_state = Some(FrameState {
+        self.frame.frame_state = Some(FrameState {
             render_texture,
             view,
             resolve_view,
             encoder,
-            depth_view: self.depth_view.clone(),
+            depth_view: self.gpu.depth_view.clone(),
         });
         Some(BeginFrameProfile {
             total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
@@ -4428,7 +4480,7 @@ impl Viewport {
 
     fn end_frame(&mut self) -> EndFrameProfile {
         let total_started_at = Instant::now();
-        let frame = match self.frame_state.take() {
+        let frame = match self.frame.frame_state.take() {
             Some(frame) => frame,
             None => {
                 return EndFrameProfile {
@@ -4438,14 +4490,14 @@ impl Viewport {
                 };
             }
         };
-        if let Some(staging_belt) = self.upload_staging_belt.as_mut() {
+        if let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() {
             staging_belt.finish();
         }
 
         let submit_started_at = Instant::now();
-        let queue = self.queue.as_ref().unwrap();
+        let queue = self.gpu.queue.as_ref().unwrap();
         queue.submit(Some(frame.encoder.finish()));
-        if let Some(staging_belt) = self.upload_staging_belt.as_mut() {
+        if let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() {
             staging_belt.recall();
         }
         let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -4453,7 +4505,7 @@ impl Viewport {
         let present_started_at = Instant::now();
         frame.render_texture.present();
         let present_ms = present_started_at.elapsed().as_secs_f64() * 1000.0;
-        self.frame_presented = true;
+        self.frame.frame_presented = true;
         EndFrameProfile {
             total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
             submit_ms,

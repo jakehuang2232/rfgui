@@ -560,11 +560,6 @@ impl Theme {
     }
 }
 
-pub fn init_theme(theme: Theme) {
-    let state = global_state(Theme::light);
-    state.set(theme);
-}
-
 /// React-style theme hook. Returns the current theme snapshot plus a
 /// callable setter — `let (theme, set_theme) = use_theme();` then call
 /// `set_theme(Theme::dark())` to switch.
@@ -572,18 +567,12 @@ pub fn init_theme(theme: Theme) {
 /// The setter is an `Rc<dyn Fn(Theme)>` so it can be cloned into event
 /// closures and invoked with plain call syntax.
 pub fn use_theme() -> (Theme, std::rc::Rc<dyn Fn(Theme)>) {
-    let state = global_state(Theme::light);
+    let state = global_state(Theme::dark);
     let theme = state.get();
     let setter_state = state;
     let set: std::rc::Rc<dyn Fn(Theme)> =
         std::rc::Rc::new(move |next: Theme| setter_state.set(next));
     (theme, set)
-}
-
-/// Legacy free-function setter, kept for callers that reach for the
-/// global directly without going through `use_theme`.
-pub fn set_theme(theme: Theme) {
-    init_theme(theme);
 }
 
 fn hex(hex_string: &str) -> Box<dyn ColorLike> {
