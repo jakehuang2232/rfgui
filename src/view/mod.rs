@@ -17,8 +17,13 @@ pub(crate) mod text_layout;
 pub mod viewport;
 
 #[cfg(target_arch = "wasm32")]
+pub use font_system::load_browser_fonts;
+#[cfg(target_arch = "wasm32")]
 pub use font_system::load_default_web_cjk_font;
+#[cfg(target_arch = "wasm32")]
+pub use font_system::load_web_font_from_url;
 pub use font_system::register_font_bytes;
+pub use font_system::set_default_font_families;
 pub use renderer_adapter::*;
 pub use tags::*;
 pub use viewport::*;

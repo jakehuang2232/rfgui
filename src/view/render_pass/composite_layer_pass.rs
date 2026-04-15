@@ -296,7 +296,7 @@ impl GraphicsPass for CompositeLayerPass {
                 )
             });
 
-            let debug_geometry_overlay = ctx.viewport().debug_geometry_overlay();
+            let debug_geometry_overlay = ctx.viewport().debug_options().geometry_overlay;
             let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
                 &resources.pipeline_stencil_test
             } else {

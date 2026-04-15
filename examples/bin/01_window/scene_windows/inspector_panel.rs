@@ -1,6 +1,8 @@
 use crate::rfgui::ui::{RsxNode, rsx, use_state, use_viewport};
-use crate::rfgui::{Border, Color, Layout, Length, Padding};
-use crate::rfgui_components::{Switch, Theme, use_theme};
+use crate::rfgui::{
+    Border, ClipMode, Color, Layout, Length, Padding, Position, Transition, TransitionProperty,
+};
+use crate::rfgui_components::{Checkbox, Switch, Theme, use_theme};
 use rfgui::view::Element;
 use std::rc::Rc;
 
@@ -8,10 +10,13 @@ pub fn build(theme: &Theme) -> RsxNode {
     let dark_mode = use_state(|| true);
     let debug_geometry_overlay = use_state(|| false);
     let debug_render_time = use_state(|| false);
-    let debug_compile_detail = use_state(|| false);
+    let detail_layout = use_state(|| false);
+    let detail_compile = use_state(|| false);
+    let detail_execute = use_state(|| false);
     let debug_reuse_path = use_state(|| false);
     let enable_layer_promotion = use_state(|| true);
 
+    let show_render_detail = debug_render_time.get();
     let show_reuse_legend = debug_reuse_path.get();
 
     // One viewport handle captured up front; cloned into every callback.
@@ -23,9 +28,6 @@ pub fn build(theme: &Theme) -> RsxNode {
         Rc::new(move |on: bool| {
             if on {
                 set_theme(Theme::dark());
-                // Match the runner's startup clear color for dark theme
-                // so the viewport background tracks the switch without a
-                // second round trip through app config.
                 viewport.set_clear_color(Color::rgb(40, 44, 52));
             } else {
                 set_theme(Theme::light());
@@ -41,9 +43,17 @@ pub fn build(theme: &Theme) -> RsxNode {
         let vp = viewport;
         Rc::new(move |on: bool| vp.set_debug_trace_render_time(on)) as Rc<dyn Fn(bool)>
     };
-    let on_compile_detail = {
+    let on_detail_layout = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_trace_layout_detail(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_detail_compile = {
         let vp = viewport;
         Rc::new(move |on: bool| vp.set_debug_trace_compile_detail(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_detail_execute = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_trace_execute_detail(on)) as Rc<dyn Fn(bool)>
     };
     let on_reuse_path = {
         let vp = viewport;
@@ -66,19 +76,44 @@ pub fn build(theme: &Theme) -> RsxNode {
                 on_change={on_dark_mode}
             />
             <Switch
-                label="Debug Geometry Overlay"
-                binding={debug_geometry_overlay.binding()}
-                on_change={on_geometry_overlay}
-            />
-            <Switch
                 label="Debug Render Time"
                 binding={debug_render_time.binding()}
                 on_change={on_render_time}
             />
+            <Element style={{
+                layout: Layout::flow().column().no_wrap(),
+                gap: theme.spacing.xs,
+                padding: Padding::new().left(theme.spacing.md),
+                position: Position::static_().clip(ClipMode::Parent),
+                height: if show_render_detail { None } else { Length::Zero },
+                transition: [
+                    Transition::new(
+                        TransitionProperty::Height,
+                        theme.motion.duration.normal,
+                    )
+                    .ease_in_out(),
+                ],
+            }}>
+                <Checkbox
+                    label="Layout Detail"
+                    binding={detail_layout.binding()}
+                    on_change={on_detail_layout}
+                />
+                <Checkbox
+                    label="Compile Detail"
+                    binding={detail_compile.binding()}
+                    on_change={on_detail_compile}
+                />
+                <Checkbox
+                    label="Execute Detail"
+                    binding={detail_execute.binding()}
+                    on_change={on_detail_execute}
+                />
+            </Element>
             <Switch
-                label="Debug Compile Detail"
-                binding={debug_compile_detail.binding()}
-                on_change={on_compile_detail}
+                label="Debug Geometry Overlay"
+                binding={debug_geometry_overlay.binding()}
+                on_change={on_geometry_overlay}
             />
             <Switch
                 label="Debug Reuse Path"

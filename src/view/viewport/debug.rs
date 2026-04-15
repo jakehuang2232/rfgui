@@ -320,6 +320,72 @@ pub(super) fn build_compile_trace_nodes(
     nodes
 }
 
+pub(super) fn build_text_measure_trace_nodes(
+    profile: &crate::view::base_component::TextMeasureProfile,
+) -> Vec<TraceRenderNode> {
+    let entries: &[(&str, usize, Option<usize>, f64)] = &[
+        (
+            "text.measure_inline",
+            profile.measure_inline_calls,
+            None,
+            profile.measure_inline_ms,
+        ),
+        (
+            "text.collect_wrapped_inline_fragments",
+            profile.collect_wrapped_inline_fragments_calls,
+            Some(profile.collect_wrapped_inline_fragments_cache_hits),
+            profile.collect_wrapped_inline_fragments_ms,
+        ),
+        (
+            "text.first_wrapped_fragment",
+            profile.first_wrapped_fragment_calls,
+            Some(profile.first_wrapped_fragment_cache_hits),
+            profile.first_wrapped_fragment_ms,
+        ),
+        (
+            "text.wrapped_suffix_fragments",
+            profile.wrapped_suffix_fragments_calls,
+            Some(profile.wrapped_suffix_fragments_cache_hits),
+            profile.wrapped_suffix_fragments_ms,
+        ),
+        (
+            "text.relayout_from_base",
+            profile.relayout_from_base_calls,
+            Some(profile.relayout_from_base_cache_hits),
+            profile.relayout_from_base_ms,
+        ),
+        (
+            "text.ensure_shaped_base_buffer",
+            profile.ensure_shaped_base_buffer_calls,
+            Some(profile.ensure_shaped_base_buffer_cache_hits),
+            profile.ensure_shaped_base_buffer_ms,
+        ),
+        (
+            "text.measure_text_layout",
+            profile.measure_text_layout_calls,
+            Some(profile.measure_text_layout_cache_hits),
+            profile.measure_text_layout_ms,
+        ),
+        (
+            "text.trimmed_suffix_shape_line",
+            profile.trimmed_suffix_shape_line_calls,
+            Some(profile.trimmed_suffix_shape_line_cache_hits),
+            profile.trimmed_suffix_shape_line_ms,
+        ),
+    ];
+    entries
+        .iter()
+        .filter(|(_, calls, _, _)| *calls > 0)
+        .map(|(name, calls, hits, ms)| {
+            let label = match hits {
+                Some(h) => format!("{name} (calls={calls}, hits={h})"),
+                None => format!("{name} (calls={calls})"),
+            };
+            TraceRenderNode::new(label, *ms)
+        })
+        .collect()
+}
+
 pub(super) fn build_layout_place_trace_nodes(
     profile: &crate::view::base_component::LayoutPlaceProfile,
 ) -> Vec<TraceRenderNode> {

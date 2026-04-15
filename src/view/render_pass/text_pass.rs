@@ -456,7 +456,7 @@ impl GraphicsPass for TextPass {
                 });
                 return;
             }
-            if viewport.debug_geometry_overlay() {
+            if viewport.debug_options().geometry_overlay {
                 let (overlay_w, overlay_h) = viewport.surface_size();
                 let overlay = build_text_debug_overlay_multi(
                     &self.params.fragments,

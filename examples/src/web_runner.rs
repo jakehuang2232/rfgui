@@ -20,15 +20,15 @@
 #![cfg(target_arch = "wasm32")]
 
 use rfgui::SurfaceFormatPreference;
-use rfgui::app::{App, AppConfig, AppContext, AppEvent, WheelConfig};
+use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::web_backend::{CanvasCursorSink, InMemoryClipboard};
 use rfgui::platform::{
     Clipboard, CursorSink, PlatformImePreedit, PlatformKeyEvent, PlatformMouseButton,
     PlatformMouseEvent, PlatformMouseEventKind, PlatformServices, PlatformTextInput,
     PlatformWheelEvent, RedrawRequester,
 };
-use rfgui::ui::{RsxNode, peek_state_dirty, run_due_timers};
-use rfgui::view::viewport::{Viewport, ViewportControl};
+use rfgui::ui::run_due_timers;
+use rfgui::view::viewport::{RenderFrameResult, Viewport};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ pub fn run<A: App + 'static>(app: A, mut config: AppConfig) {
     let _ = &mut config; // currently no wasm-only mutation; reserved.
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
-    let runner = Runner::new(app, config);
+    let runner = Runner::new(Box::new(app), config);
     event_loop.spawn_app(runner);
 }
 
@@ -64,8 +64,9 @@ pub fn run<A: App + 'static>(app: A, mut config: AppConfig) {
 /// completes.
 type SharedViewport = Rc<RefCell<Option<Viewport>>>;
 
-struct Runner<A: App> {
-    app: A,
+struct Runner {
+    /// Holds the App until the Viewport is created, then `None`.
+    pending_app: Rc<RefCell<Option<Box<dyn App>>>>,
     config: AppConfig,
     window: Option<Arc<Window>>,
     viewport: SharedViewport,
@@ -75,9 +76,6 @@ struct Runner<A: App> {
     last_mouse_logical: Option<(f32, f32)>,
     cursor_in_window: bool,
     ime_composing: bool,
-    cached_rsx: Option<RsxNode>,
-    needs_rebuild: bool,
-    ready_dispatched: bool,
     boot_overlay_hidden: bool,
     resize_listener: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
     /// Set when async viewport init kicks off. Reset once the viewport
@@ -86,10 +84,10 @@ struct Runner<A: App> {
     init_in_flight: bool,
 }
 
-impl<A: App> Runner<A> {
-    fn new(app: A, config: AppConfig) -> Self {
+impl Runner {
+    fn new(app: Box<dyn App>, config: AppConfig) -> Self {
         Self {
-            app,
+            pending_app: Rc::new(RefCell::new(Some(app))),
             config,
             window: None,
             viewport: Rc::new(RefCell::new(None)),
@@ -99,9 +97,6 @@ impl<A: App> Runner<A> {
             last_mouse_logical: None,
             cursor_in_window: false,
             ime_composing: false,
-            cached_rsx: None,
-            needs_rebuild: true,
-            ready_dispatched: false,
             boot_overlay_hidden: false,
             resize_listener: None,
             init_in_flight: false,
@@ -116,16 +111,15 @@ impl<A: App> Runner<A> {
             return;
         };
         self.init_in_flight = true;
-        // winit's wasm `Window::inner_size()` reports the canvas backing
-        // store size, which starts at the HTML default (300×150) until
-        // something writes `canvas.width`/`canvas.height`. Read the live
-        // CSS dimensions instead and sync them onto the canvas so the
-        // surface gets configured at the actual on-screen size.
         let (physical_size, scale) = sync_canvas_size(lookup_app_canvas().as_ref(), window.scale_factor() as f32);
         let clear_color = self.config.clear_color;
         let viewport_slot = self.viewport.clone();
+        let pending_app = self.pending_app.clone();
         spawn_local(async move {
             let mut viewport = Viewport::new();
+            if let Some(app) = pending_app.borrow_mut().take() {
+                viewport.set_app(app);
+            }
             viewport.set_msaa_sample_count(1);
             viewport.set_scale_factor(scale);
             viewport.set_size(physical_size.0, physical_size.1);
@@ -134,9 +128,7 @@ impl<A: App> Runner<A> {
                 viewport.set_clear_color(Box::new(color));
             }
             viewport.attach(window.clone()).await;
-            viewport.create_surface().await;
             *viewport_slot.borrow_mut() = Some(viewport);
-            // Wake the event loop so the first frame paints.
             window.request_redraw();
         });
     }
@@ -170,65 +162,37 @@ impl<A: App> Runner<A> {
     }
 
     fn ensure_ready(&mut self) {
-        if self.ready_dispatched {
-            return;
-        }
-        if self.viewport.borrow().is_none() {
-            return;
-        }
-        self.with_ctx(|app, ctx| app.on_ready(ctx));
-        self.ready_dispatched = true;
-    }
-
-    fn with_ctx<R>(&mut self, f: impl FnOnce(&mut A, &mut AppContext<'_>) -> R) -> Option<R> {
-        let mut viewport_borrow = self.viewport.borrow_mut();
-        let viewport = viewport_borrow.as_mut()?;
-        let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
-            Some(sink) => sink,
-            None => &mut NoopCursorSink,
-        };
-        let mut ctx = AppContext {
-            viewport: ViewportControl::new(viewport),
-            services: PlatformServices {
+        if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+            let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                Some(sink) => sink,
+                None => &mut NoopCursorSink,
+            };
+            viewport.app_on_ready(PlatformServices {
                 clipboard: &mut self.clipboard,
                 cursor: cursor_sink,
                 redraw: &self.redraw,
-            },
-        };
-        Some(f(&mut self.app, &mut ctx))
+            });
+        }
     }
 
     fn render_once(&mut self) {
         self.ensure_ready();
-        if self.viewport.borrow().is_none() {
-            return;
-        }
-        if peek_state_dirty().needs_rebuild() {
-            self.needs_rebuild = true;
-        }
-        if self.needs_rebuild || self.cached_rsx.is_none() {
-            let rsx = self.with_ctx(|app, ctx| app.build(ctx));
-            if let Some(rsx) = rsx {
-                self.cached_rsx = Some(rsx);
-            }
-            self.needs_rebuild = false;
-        }
-        if let Some(rsx) = self.cached_rsx.clone() {
-            if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
-                let _ = viewport.render_rsx(&rsx);
-            }
-        }
-        // Retry on the next tick when the canvas surface is briefly
-        // occluded right after creation — `begin_frame` then silently
-        // bails and produces no geometry, leaving the canvas blank until
-        // an unrelated event pokes the loop.
-        let needs_retry = self.cached_rsx.is_some()
-            && self
-                .viewport
-                .borrow()
-                .as_ref()
-                .map(|v| v.frame_box_models().is_empty())
-                .unwrap_or(false);
+        let result = {
+            let mut viewport_borrow = self.viewport.borrow_mut();
+            let Some(viewport) = viewport_borrow.as_mut() else {
+                return;
+            };
+            let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                Some(sink) => sink,
+                None => &mut NoopCursorSink,
+            };
+            viewport.render_frame(PlatformServices {
+                clipboard: &mut self.clipboard,
+                cursor: cursor_sink,
+                redraw: &self.redraw,
+            })
+        };
+        let needs_retry = matches!(result, RenderFrameResult::NeedsRetry);
         if needs_retry {
             if let Some(window) = &self.window {
                 window.request_redraw();
@@ -300,9 +264,20 @@ impl<A: App> Runner<A> {
             pressed,
         };
         let app_event = AppEvent::Key(platform_event.clone());
-        self.with_ctx(|app, ctx| app.on_event(&app_event, ctx));
-        if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
-            let _ = viewport.dispatch_platform_key_event(&platform_event);
+        {
+            let mut vp = self.viewport.borrow_mut();
+            if let Some(viewport) = vp.as_mut() {
+                let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                    Some(sink) => sink,
+                    None => &mut NoopCursorSink,
+                };
+                viewport.dispatch_app_event(&app_event, PlatformServices {
+                    clipboard: &mut self.clipboard,
+                    cursor: cursor_sink,
+                    redraw: &self.redraw,
+                });
+                let _ = viewport.dispatch_platform_key_event(&platform_event);
+            }
         }
         if pressed && !self.ime_composing {
             if let Some(text) = event.text.as_ref() {
@@ -323,8 +298,17 @@ impl<A: App> Runner<A> {
                             text: text.to_string(),
                         };
                         let ti_event = AppEvent::TextInput(ti.clone());
-                        self.with_ctx(|app, ctx| app.on_event(&ti_event, ctx));
-                        if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                        let mut vp = self.viewport.borrow_mut();
+                        if let Some(viewport) = vp.as_mut() {
+                            let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                                Some(sink) => sink,
+                                None => &mut NoopCursorSink,
+                            };
+                            viewport.dispatch_app_event(&ti_event, PlatformServices {
+                                clipboard: &mut self.clipboard,
+                                cursor: cursor_sink,
+                                redraw: &self.redraw,
+                            });
                             let _ = viewport.dispatch_platform_text_input(&ti);
                         }
                     }
@@ -361,8 +345,17 @@ impl<A: App> Runner<A> {
                     cursor_end: end,
                 };
                 let app_event = AppEvent::ImePreedit(preedit.clone());
-                self.with_ctx(|app, ctx| app.on_event(&app_event, ctx));
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                let mut vp = self.viewport.borrow_mut();
+                if let Some(viewport) = vp.as_mut() {
+                    let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                        Some(sink) => sink,
+                        None => &mut NoopCursorSink,
+                    };
+                    viewport.dispatch_app_event(&app_event, PlatformServices {
+                        clipboard: &mut self.clipboard,
+                        cursor: cursor_sink,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_ime_preedit(&preedit);
                 }
             }
@@ -373,8 +366,17 @@ impl<A: App> Runner<A> {
                 }
                 let ti = PlatformTextInput { text };
                 let app_event = AppEvent::TextInput(ti.clone());
-                self.with_ctx(|app, ctx| app.on_event(&app_event, ctx));
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                let mut vp = self.viewport.borrow_mut();
+                if let Some(viewport) = vp.as_mut() {
+                    let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                        Some(sink) => sink,
+                        None => &mut NoopCursorSink,
+                    };
+                    viewport.dispatch_app_event(&app_event, PlatformServices {
+                        clipboard: &mut self.clipboard,
+                        cursor: cursor_sink,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_text_input(&ti);
                 }
             }
@@ -382,7 +384,7 @@ impl<A: App> Runner<A> {
     }
 }
 
-impl<A: App + 'static> ApplicationHandler for Runner<A> {
+impl ApplicationHandler for Runner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -424,32 +426,72 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
         self.ensure_ready();
         match event {
             WindowEvent::CloseRequested => {
-                let close = AppEvent::CloseRequested;
-                self.with_ctx(|app, ctx| app.on_event(&close, ctx));
-                self.with_ctx(|app, ctx| app.on_shutdown(ctx));
+                {
+                    let mut vp = self.viewport.borrow_mut();
+                    if let Some(viewport) = vp.as_mut() {
+                        let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                            Some(sink) => sink,
+                            None => &mut NoopCursorSink,
+                        };
+                        let close = AppEvent::CloseRequested;
+                        viewport.dispatch_app_event(&close, PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        });
+                        let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                            Some(sink) => sink,
+                            None => &mut NoopCursorSink,
+                        };
+                        viewport.app_on_shutdown(PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        });
+                    }
+                }
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                let mut vp = self.viewport.borrow_mut();
+                if let Some(viewport) = vp.as_mut() {
                     viewport.set_size(size.width, size.height);
+                    let ev = AppEvent::Resized {
+                        width: size.width,
+                        height: size.height,
+                    };
+                    let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                        Some(sink) => sink,
+                        None => &mut NoopCursorSink,
+                    };
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: &mut self.clipboard,
+                        cursor: cursor_sink,
+                        redraw: &self.redraw,
+                    });
                 }
-                let ev = AppEvent::Resized {
-                    width: size.width,
-                    height: size.height,
-                };
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
+                drop(vp);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                let mut vp = self.viewport.borrow_mut();
+                if let Some(viewport) = vp.as_mut() {
                     viewport.set_scale_factor(scale_factor as f32);
+                    let ev = AppEvent::ScaleFactorChanged {
+                        scale: scale_factor as f32,
+                    };
+                    let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                        Some(sink) => sink,
+                        None => &mut NoopCursorSink,
+                    };
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: &mut self.clipboard,
+                        cursor: cursor_sink,
+                        redraw: &self.redraw,
+                    });
                 }
-                let ev = AppEvent::ScaleFactorChanged {
-                    scale: scale_factor as f32,
-                };
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_in_window = true;
@@ -467,8 +509,17 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                     },
                 };
                 let ev = AppEvent::Mouse(move_event);
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                let mut vp = self.viewport.borrow_mut();
+                if let Some(viewport) = vp.as_mut() {
+                    let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                        Some(sink) => sink,
+                        None => &mut NoopCursorSink,
+                    };
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: &mut self.clipboard,
+                        cursor: cursor_sink,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_mouse_event(&move_event);
                 }
             }
@@ -483,28 +534,43 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                     return;
                 };
                 let pressed = matches!(state, ElementState::Pressed);
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
-                    viewport
-                        .set_mouse_button_pressed(platform_button_to_viewport(mapped), pressed);
-                }
-                let kind = if pressed {
-                    PlatformMouseEventKind::Down(mapped)
-                } else {
-                    PlatformMouseEventKind::Up(mapped)
-                };
-                let ev = AppEvent::Mouse(PlatformMouseEvent { kind });
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
-                    let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent { kind });
-                }
-                if !pressed {
-                    let click = PlatformMouseEvent {
-                        kind: PlatformMouseEventKind::Click(mapped),
-                    };
-                    let click_ev = AppEvent::Mouse(click);
-                    self.with_ctx(|app, ctx| app.on_event(&click_ev, ctx));
-                    if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
-                        let _ = viewport.dispatch_platform_mouse_event(&click);
+                {
+                    let mut vp = self.viewport.borrow_mut();
+                    if let Some(viewport) = vp.as_mut() {
+                        viewport
+                            .set_mouse_button_pressed(platform_button_to_viewport(mapped), pressed);
+                        let kind = if pressed {
+                            PlatformMouseEventKind::Down(mapped)
+                        } else {
+                            PlatformMouseEventKind::Up(mapped)
+                        };
+                        let ev = AppEvent::Mouse(PlatformMouseEvent { kind });
+                        let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                            Some(sink) => sink,
+                            None => &mut NoopCursorSink,
+                        };
+                        viewport.dispatch_app_event(&ev, PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        });
+                        let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent { kind });
+                        if !pressed {
+                            let click = PlatformMouseEvent {
+                                kind: PlatformMouseEventKind::Click(mapped),
+                            };
+                            let click_ev = AppEvent::Mouse(click);
+                            let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                                Some(sink) => sink,
+                                None => &mut NoopCursorSink,
+                            };
+                            viewport.dispatch_app_event(&click_ev, PlatformServices {
+                                clipboard: &mut self.clipboard,
+                                cursor: cursor_sink,
+                                redraw: &self.redraw,
+                            });
+                            let _ = viewport.dispatch_platform_mouse_event(&click);
+                        }
                     }
                 }
             }
@@ -516,8 +582,17 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                     delta_x: -dx,
                     delta_y: -dy,
                 });
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
-                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                let mut vp = self.viewport.borrow_mut();
+                if let Some(viewport) = vp.as_mut() {
+                    let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                        Some(sink) => sink,
+                        None => &mut NoopCursorSink,
+                    };
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: &mut self.clipboard,
+                        cursor: cursor_sink,
+                        redraw: &self.redraw,
+                    });
                     let _ = viewport.dispatch_platform_wheel_event(&PlatformWheelEvent {
                         delta_x: -dx,
                         delta_y: -dy,
@@ -526,7 +601,20 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
             }
             WindowEvent::Focused(focused) => {
                 let ev = AppEvent::HostFocus(focused);
-                self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
+                {
+                    let mut vp = self.viewport.borrow_mut();
+                    if let Some(viewport) = vp.as_mut() {
+                        let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                            Some(sink) => sink,
+                            None => &mut NoopCursorSink,
+                        };
+                        viewport.dispatch_app_event(&ev, PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        });
+                    }
+                }
                 if !focused {
                     self.ime_composing = false;
                     if let Some(viewport) = self.viewport.borrow_mut().as_mut() {

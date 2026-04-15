@@ -30,7 +30,9 @@ thread_local! {
 pub enum ViewportAction {
     SetDebugTraceFps(bool),
     SetDebugTraceRenderTime(bool),
+    SetDebugTraceLayoutDetail(bool),
     SetDebugTraceCompileDetail(bool),
+    SetDebugTraceExecuteDetail(bool),
     SetDebugTraceReusePath(bool),
     SetDebugGeometryOverlay(bool),
     SetPromotionEnabled(bool),
@@ -57,8 +59,16 @@ impl ViewportHandle {
         Self::push(ViewportAction::SetDebugTraceRenderTime(enabled));
     }
 
+    pub fn set_debug_trace_layout_detail(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugTraceLayoutDetail(enabled));
+    }
+
     pub fn set_debug_trace_compile_detail(&self, enabled: bool) {
         Self::push(ViewportAction::SetDebugTraceCompileDetail(enabled));
+    }
+
+    pub fn set_debug_trace_execute_detail(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugTraceExecuteDetail(enabled));
     }
 
     pub fn set_debug_trace_reuse_path(&self, enabled: bool) {

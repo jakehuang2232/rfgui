@@ -328,7 +328,7 @@ impl DrawRectPass {
             target_w as f32,
             target_h as f32,
         );
-        if ctx.viewport.debug_geometry_overlay() {
+        if ctx.viewport.debug_options().geometry_overlay {
             let (overlay_w, overlay_h) = ctx.viewport.surface_size();
             let (debug_vertices, debug_indices) = build_rect_debug_overlay_geometry(
                 params,
