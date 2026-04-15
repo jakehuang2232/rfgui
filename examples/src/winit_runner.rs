@@ -319,6 +319,23 @@ impl<A: App> Runner<A> {
             let _ = viewport.render_rsx(rsx);
         }
         self.sync_ime_cursor_area();
+        // The first frame after window creation can hit
+        // `SurfaceTexture::Occluded` on macOS while the NSWindow is still
+        // becoming visible. `begin_frame` then silently returns and no
+        // geometry is laid out, so the screen stays blank until something
+        // else (a manual resize, an animation tick) pokes the loop. Detect
+        // that case and queue another redraw so the next tick retries.
+        let needs_retry = self
+            .viewport
+            .as_ref()
+            .zip(self.cached_rsx.as_ref())
+            .map(|(v, _)| v.frame_box_models().is_empty())
+            .unwrap_or(false);
+        if needs_retry {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
         self.drain_and_apply();
     }
 
@@ -389,10 +406,9 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
         apply_macos_shadow(&window, !self.config.transparent);
         self.window = Some(window);
         self.ensure_viewport();
-        // Paint the first frame synchronously — `request_redraw` from
-        // inside `resumed` is dropped on some winit backends, leaving a
-        // blank transparent surface until the first user event arrives.
-        self.render_once();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 
     fn window_event(

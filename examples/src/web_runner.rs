@@ -32,6 +32,7 @@ use rfgui::view::viewport::{Viewport, ViewportControl};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlCanvasElement, window};
 use web_time::Instant;
@@ -77,6 +78,7 @@ struct Runner<A: App> {
     cached_rsx: Option<RsxNode>,
     needs_rebuild: bool,
     ready_dispatched: bool,
+    boot_overlay_hidden: bool,
     /// Set when async viewport init kicks off. Reset once the viewport
     /// actually appears in the shared cell. Prevents re-entry from a
     /// second `resumed` call.
@@ -99,6 +101,7 @@ impl<A: App> Runner<A> {
             cached_rsx: None,
             needs_rebuild: true,
             ready_dispatched: false,
+            boot_overlay_hidden: false,
             init_in_flight: false,
         }
     }
@@ -181,7 +184,27 @@ impl<A: App> Runner<A> {
                 let _ = viewport.render_rsx(&rsx);
             }
         }
+        // Retry on the next tick when the canvas surface is briefly
+        // occluded right after creation — `begin_frame` then silently
+        // bails and produces no geometry, leaving the canvas blank until
+        // an unrelated event pokes the loop.
+        let needs_retry = self.cached_rsx.is_some()
+            && self
+                .viewport
+                .borrow()
+                .as_ref()
+                .map(|v| v.frame_box_models().is_empty())
+                .unwrap_or(false);
+        if needs_retry {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
         self.drain_and_apply();
+        if !self.boot_overlay_hidden && !needs_retry {
+            hide_boot_overlay();
+            self.boot_overlay_hidden = true;
+        }
     }
 
     fn drain_and_apply(&mut self) {
@@ -380,6 +403,9 @@ impl<A: App + 'static> ApplicationHandler for Runner<A> {
                     height: size.height,
                 };
                 self.with_ctx(|app, ctx| app.on_event(&ev, ctx));
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
@@ -592,6 +618,21 @@ fn physical_key_to_string(key: &PhysicalKey) -> String {
     match key {
         PhysicalKey::Code(code) => format!("{code:?}"),
         PhysicalKey::Unidentified(_) => String::from("Unidentified"),
+    }
+}
+
+fn hide_boot_overlay() {
+    let Some(win) = window() else { return };
+    let boot = match js_sys::Reflect::get(&win, &wasm_bindgen::JsValue::from_str("__RFGUI_BOOT__")) {
+        Ok(v) if !v.is_undefined() && !v.is_null() => v,
+        _ => return,
+    };
+    let func = match js_sys::Reflect::get(&boot, &wasm_bindgen::JsValue::from_str("hideBootOverlay")) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if let Ok(func) = func.dyn_into::<js_sys::Function>() {
+        let _ = func.call0(&boot);
     }
 }
 
