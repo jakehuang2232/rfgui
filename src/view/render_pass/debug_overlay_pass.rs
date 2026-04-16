@@ -2,7 +2,6 @@ use crate::view::frame_graph::ResourceCache;
 use crate::view::render_pass::GraphicsCtx;
 use crate::view::render_pass::render_target::{render_target_ref, render_target_sample_count};
 use std::cell::RefCell;
-use wgpu::util::DeviceExt;
 
 const DEBUG_OVERLAY_RESOURCES: u64 = 402;
 
@@ -47,16 +46,22 @@ pub(crate) fn draw_debug_overlay(
                 DebugOverlayResources::new(&device, format, sample_count, uses_depth_stencil);
         }
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Frame Debug Overlay Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Frame Debug Overlay Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let vertex_buffer = super::create_transient_buffer(
+            &device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Frame Debug Overlay Vertex Buffer"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            },
+        );
+        let index_buffer = super::create_transient_buffer(
+            &device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Frame Debug Overlay Index Buffer"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
+            },
+        );
 
         let surface_size = ctx.viewport().surface_size();
         let (target_w, target_h) = match target_handle {

@@ -983,6 +983,8 @@ impl Viewport {
         if let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() {
             staging_belt.recall();
         }
+        #[cfg(target_arch = "wasm32")]
+        crate::view::render_pass::destroy_frame_transient_buffers();
         let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let present_started_at = Instant::now();
