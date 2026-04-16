@@ -3,6 +3,7 @@ use crate::view::frame_graph::{
     PrepareContext, TransferPassBuilder, TransferRecordContext,
 };
 use crate::view::viewport::Viewport;
+use wgpu::util::DeviceExt;
 
 pub mod blur_module;
 pub mod clear_pass;
@@ -190,6 +191,53 @@ pub(crate) trait PassNodeDyn {
 
 enum BackendComputeScope<'a, 'pass> {
     Compute(&'a mut wgpu::ComputePass<'pass>),
+}
+
+// ---------------------------------------------------------------------------
+// Transient buffer tracking (WebGPU / wasm32)
+//
+// On WebGPU, GPU buffer destruction relies on JS garbage collection, which
+// does not know about GPU memory pressure.  Per-frame `create_buffer_init`
+// calls therefore leak until GC decides to run — which in Firefox can mean
+// tens of GB of GPU memory growth.
+//
+// We collect all per-frame ("transient") buffers in a thread-local Vec and
+// explicitly call `buffer.destroy()` after `queue.submit()` each frame.
+// Destroying a buffer that is in use by already-submitted GPU work is valid
+// per the WebGPU specification.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+std::thread_local! {
+    static FRAME_TRANSIENT_BUFFERS: std::cell::RefCell<Vec<wgpu::Buffer>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Create a GPU buffer via `create_buffer_init`, and on wasm32 register it
+/// for explicit destruction after the current frame's queue submission.
+///
+/// Use this for buffers that live only until the end of the current frame
+/// (vertex/index/uniform buffers created inside render-pass `execute`).
+/// Do **not** use this for buffers that are cached across frames.
+pub(crate) fn create_transient_buffer(
+    device: &wgpu::Device,
+    desc: &wgpu::util::BufferInitDescriptor<'_>,
+) -> wgpu::Buffer {
+    let buffer = device.create_buffer_init(desc);
+    #[cfg(target_arch = "wasm32")]
+    FRAME_TRANSIENT_BUFFERS.with(|v| v.borrow_mut().push(buffer.clone()));
+    buffer
+}
+
+/// Destroy all transient buffers that were created during the current frame.
+/// Call once after `queue.submit()`.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn destroy_frame_transient_buffers() {
+    FRAME_TRANSIENT_BUFFERS.with(|v| {
+        for buffer in v.borrow_mut().drain(..) {
+            buffer.destroy();
+        }
+    });
 }
 
 pub(crate) struct GraphicsPassWrapper<P: GraphicsPass> {

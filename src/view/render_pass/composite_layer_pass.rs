@@ -14,7 +14,6 @@ use crate::view::render_pass::render_target::{
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::cell::RefCell;
 use std::collections::HashSet;
-use wgpu::util::DeviceExt;
 
 const COMPOSITE_LAYER_RESOURCES: u64 = 201;
 
@@ -330,18 +329,22 @@ impl GraphicsPass for CompositeLayerPass {
                     [0.2, 1.0, 0.35, 0.95],
                 );
                 if !debug_vertices.is_empty() && !debug_indices.is_empty() {
-                    let debug_vertex_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    let debug_vertex_buffer = super::create_transient_buffer(
+                        &device,
+                        &wgpu::util::BufferInitDescriptor {
                             label: Some("Composite Debug Vertex Buffer"),
                             contents: bytemuck::cast_slice(&debug_vertices),
                             usage: wgpu::BufferUsages::VERTEX,
-                        });
-                    let debug_index_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        },
+                    );
+                    let debug_index_buffer = super::create_transient_buffer(
+                        &device,
+                        &wgpu::util::BufferInitDescriptor {
                             label: Some("Composite Debug Index Buffer"),
                             contents: bytemuck::cast_slice(&debug_indices),
                             usage: wgpu::BufferUsages::INDEX,
-                        });
+                        },
+                    );
                     let debug_pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
                         &resources.debug_pipeline_stencil_test
                     } else {

@@ -786,12 +786,14 @@ fn encode_draw_rect_into_existing_pass(
     let bind_group = if let Some(bind_group) = pass_def.prepared_bind_group.clone() {
         bind_group
     } else {
-        let fallback_uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let fallback_uniform_buffer = super::create_transient_buffer(
+            &device,
+            &wgpu::util::BufferInitDescriptor {
                 label: Some("DrawRect Params Buffer Fallback"),
                 contents: bytemuck::bytes_of(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
-            });
+            },
+        );
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("DrawRect Bind Group Fallback"),
             layout: &bind_group_layout,

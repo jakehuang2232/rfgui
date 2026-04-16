@@ -15,7 +15,6 @@ use crate::view::render_pass::texture_composite_pass::{
 };
 use crate::view::render_pass::{ClearPass, GraphicsPass};
 use std::cell::RefCell;
-use wgpu::util::DeviceExt;
 
 const SHADOW_RESOURCES: u64 = 203;
 const SHADOW_INTERMEDIATE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -566,27 +565,33 @@ fn encode_mesh_fill_into_pass(
     if vertices.is_empty() || indices.is_empty() || target_w <= 0.0 || target_h <= 0.0 {
         return;
     }
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Fill Vertex Buffer"),
-        contents: bytemuck::cast_slice(
-            &vertices
-                .iter()
-                .map(|position| FillVertex {
-                    position: [
-                        (position[0] / target_w).clamp(0.0, 1.0) * 2.0 - 1.0,
-                        1.0 - (position[1] / target_h).clamp(0.0, 1.0) * 2.0,
-                    ],
-                    color,
-                })
-                .collect::<Vec<_>>(),
-        ),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Shadow Fill Index Buffer"),
-        contents: bytemuck::cast_slice(indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
+    let vertex_buffer = super::create_transient_buffer(
+        &device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Shadow Fill Vertex Buffer"),
+            contents: bytemuck::cast_slice(
+                &vertices
+                    .iter()
+                    .map(|position| FillVertex {
+                        position: [
+                            (position[0] / target_w).clamp(0.0, 1.0) * 2.0 - 1.0,
+                            1.0 - (position[1] / target_h).clamp(0.0, 1.0) * 2.0,
+                        ],
+                        color,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            usage: wgpu::BufferUsages::VERTEX,
+        },
+    );
+    let index_buffer = super::create_transient_buffer(
+        &device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Shadow Fill Index Buffer"),
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::INDEX,
+        },
+    );
     ctx.set_pipeline(pipeline);
     ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
     ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);

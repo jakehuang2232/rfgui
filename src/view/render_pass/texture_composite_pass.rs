@@ -15,7 +15,6 @@ use crate::view::render_pass::render_target::{
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::cell::RefCell;
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
 
 const TEXTURE_COMPOSITE_RESOURCES: u64 = 205;
 
@@ -344,8 +343,9 @@ impl GraphicsPass for TextureCompositePass {
             let uniform_binding = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
                 buffer.as_entire_binding()
             } else {
-                fallback_uniform_buffer =
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                fallback_uniform_buffer = super::create_transient_buffer(
+                    &device,
+                    &wgpu::util::BufferInitDescriptor {
                         label: Some("TextureComposite Uniform (Fallback)"),
                         contents: bytemuck::bytes_of(&TextureCompositeUniform {
                             use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
@@ -358,7 +358,8 @@ impl GraphicsPass for TextureCompositePass {
                             _pad: 0.0,
                         }),
                         usage: wgpu::BufferUsages::UNIFORM,
-                    });
+                    },
+                );
                 fallback_uniform_buffer.as_entire_binding()
             };
 
@@ -466,18 +467,22 @@ impl GraphicsPass for TextureCompositePass {
                         source_uv_bounds,
                         mask_uv_bounds,
                     );
-                    fallback_vertex_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    fallback_vertex_buffer = super::create_transient_buffer(
+                        &device,
+                        &wgpu::util::BufferInitDescriptor {
                             label: Some("TextureComposite Vertex (Fallback)"),
                             contents: bytemuck::cast_slice(&vertices),
                             usage: wgpu::BufferUsages::VERTEX,
-                        });
-                    fallback_index_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        },
+                    );
+                    fallback_index_buffer = super::create_transient_buffer(
+                        &device,
+                        &wgpu::util::BufferInitDescriptor {
                             label: Some("TextureComposite Index (Fallback)"),
                             contents: bytemuck::cast_slice(&indices),
                             usage: wgpu::BufferUsages::INDEX,
-                        });
+                        },
+                    );
                     (&fallback_vertex_buffer, &fallback_index_buffer)
                 };
 
@@ -565,11 +570,14 @@ pub(crate) fn composite_immediate(
             opacity: opacity.clamp(0.0, 1.0),
             _pad: 0.0,
         };
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("TextureComposite Immediate Uniform"),
-            contents: bytemuck::bytes_of(&uniform),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform_buffer = super::create_transient_buffer(
+            &device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("TextureComposite Immediate Uniform"),
+                contents: bytemuck::bytes_of(&uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        );
         let (vertices, indices) = quad_for_bounds(
             bounds,
             target_size.0 as f32,
@@ -577,15 +585,20 @@ pub(crate) fn composite_immediate(
             [0.0, 0.0, 1.0, 1.0],
             [0.0, 0.0, 1.0, 1.0],
         );
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("TextureComposite Immediate Vertex"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("TextureComposite Immediate Index"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
+        let vertex_buffer = super::create_transient_buffer(
+            &device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("TextureComposite Immediate Vertex"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            },
+        );
+        let index_buffer = super::create_transient_buffer(
+            &device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("TextureComposite Immediate Index"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("TextureComposite Immediate Bind Group"),
