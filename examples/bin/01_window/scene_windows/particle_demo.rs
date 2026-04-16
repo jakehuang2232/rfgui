@@ -1,7 +1,9 @@
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
+    MouseMoveEvent,
     RsxNode, ViewportHandle, component, use_viewport,
 };
+use crate::rfgui::view::viewport::ViewportControl;
 use crate::rfgui::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, InlineMeasureContext,
     InlineNodeSize, InlinePlacement, Layoutable, LayoutConstraints, LayoutPlacement, Renderable,
@@ -33,26 +35,23 @@ use wgpu::util::DeviceExt;
 const MAX_PARTICLES: usize = 600;
 const SPAWN_RATE: f32 = 40.0; // particles per second
 
-/// Each particle orbits the canvas center on an elliptical path.
-/// Radii are stored as a normalised fraction (0..1) of the canvas
-/// short edge so that orbits scale smoothly on resize.
+/// Particle with position & velocity in normalised space (0..1).
+/// Gravitationally attracted to a central mass point.
 struct Particle {
-    /// Normalised semi-major axis (fraction of short edge * 0.5).
-    rx_norm: f32,
-    /// Normalised semi-minor axis.
-    ry_norm: f32,
-    /// Current orbital angle (radians).
-    angle: f32,
-    /// Angular velocity (radians/sec).
-    omega: f32,
-    /// Orbit tilt — rotation of the ellipse itself (radians).
-    tilt: f32,
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
     color: [f32; 4],
-    /// Normalised particle size (fraction of short edge * 0.5).
     size_norm: f32,
     life: f32,
     max_life: f32,
 }
+
+/// Gravitational constant (normalised space).
+const GM: f32 = 0.055;
+/// Softening radius squared — prevents singularity at r→0.
+const SOFTENING2: f32 = 0.000004;
 
 struct ParticleSystemInner {
     particles: Vec<Particle>,
@@ -60,6 +59,14 @@ struct ParticleSystemInner {
     elapsed: f32,
     spawn_accumulator: f32,
     rng: u64,
+    /// Mouse target in normalised coords (0..1). None = center.
+    attractor: Option<(f32, f32)>,
+    /// Central mass position (normalised).
+    mass_x: f32,
+    mass_y: f32,
+    /// Central mass velocity.
+    mass_vx: f32,
+    mass_vy: f32,
 }
 
 impl ParticleSystemInner {
@@ -70,6 +77,11 @@ impl ParticleSystemInner {
             elapsed: 0.0,
             spawn_accumulator: 0.0,
             rng: 0xDEAD_BEEF_CAFE_1234,
+            attractor: None,
+            mass_x: 0.5,
+            mass_y: 0.5,
+            mass_vx: 0.0,
+            mass_vy: 0.0,
         }
     }
 
@@ -101,20 +113,48 @@ impl ParticleSystemInner {
         [r1 + m, g1 + m, b1 + m]
     }
 
+    fn set_attractor(&mut self, pos: Option<(f32, f32)>) {
+        self.attractor = pos;
+    }
+
     fn update(&mut self) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_update).as_secs_f32().min(0.05);
         self.last_update = now;
         self.elapsed += dt;
 
-        // Advance orbits.
+        // Central mass physics: spring attraction to target + damping.
+        let target = self.attractor.unwrap_or((0.5, 0.5));
+        let spring = 30.0_f32;  // spring stiffness
+        let damping = 6.0_f32;  // velocity damping
+        let dx_m = target.0 - self.mass_x;
+        let dy_m = target.1 - self.mass_y;
+        self.mass_vx += dx_m * spring * dt;
+        self.mass_vy += dy_m * spring * dt;
+        self.mass_vx *= (1.0 - damping * dt).max(0.0);
+        self.mass_vy *= (1.0 - damping * dt).max(0.0);
+        self.mass_x += self.mass_vx * dt;
+        self.mass_y += self.mass_vy * dt;
+
+        let cx = self.mass_x;
+        let cy = self.mass_y;
+
+        // Integrate: gravity from central mass → acceleration.
         for p in &mut self.particles {
-            p.angle += p.omega * dt;
+            let dx = cx - p.x;
+            let dy = cy - p.y;
+            let r2 = dx * dx + dy * dy + SOFTENING2;
+            let r = r2.sqrt();
+            let a = GM / r2; // F = GM/r^2
+            p.vx += a * dx / r * dt;
+            p.vy += a * dy / r * dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
             p.life -= dt / p.max_life;
         }
         self.particles.retain(|p| p.life > 0.0);
 
-        // Spawn new orbiting particles.
+        // Spawn new particles in circular orbits around the mass.
         self.spawn_accumulator += SPAWN_RATE * dt;
         let to_spawn = self.spawn_accumulator as usize;
         self.spawn_accumulator -= to_spawn as f32;
@@ -123,33 +163,36 @@ impl ParticleSystemInner {
             if self.particles.len() >= MAX_PARTICLES {
                 break;
             }
-            // Normalised orbit radius: 0.05 .. 0.9 of half-short-edge.
-            let r_norm = 0.05 + self.next_f32() * 0.85;
-            let eccentricity = 0.3 + self.next_f32() * 0.6;
-            let rx_norm = r_norm;
-            let ry_norm = r_norm * eccentricity;
-            let tilt = self.next_f32() * std::f32::consts::TAU;
-            let angle = self.next_f32() * std::f32::consts::TAU;
+            // Random orbital distance (normalised).
+            let r = 0.04 + self.next_f32() * 0.38;
+            let theta = self.next_f32() * std::f32::consts::TAU;
+            let px = cx + r * theta.cos();
+            let py = cy + r * theta.sin();
 
-            // Kepler-ish: inner orbits faster.
-            let omega_sign = if self.next_f32() > 0.3 { 1.0 } else { -1.0 };
-            let omega = omega_sign * (0.4 + 1.5 / (r_norm * 4.0 + 0.5).sqrt());
+            // Circular orbit speed: v = sqrt(GM / r).
+            let v_circ = (GM / (r + SOFTENING2.sqrt())).sqrt();
+            // Tangent direction (perpendicular to radius), random CW/CCW.
+            let sign = if self.next_f32() > 0.3 { 1.0 } else { -1.0 };
+            let vx = sign * v_circ * -theta.sin();
+            let vy = sign * v_circ * theta.cos();
+            // Small random perturbation for elliptical variety.
+            let perturb = 0.85 + self.next_f32() * 0.3;
+            let vx = vx * perturb;
+            let vy = vy * perturb;
 
-            // Colour: inner=warm, outer=cool.
-            let hue_base = r_norm * 240.0;
-            let hue = hue_base + (self.next_f32() - 0.5) * 40.0;
-            let [r, g, b] = Self::hsl_to_rgb(hue.rem_euclid(360.0), 0.85, 0.6);
+            // Colour by distance: inner=warm, outer=cool.
+            let hue = (r / 0.42) * 240.0 + (self.next_f32() - 0.5) * 40.0;
+            let [cr, cg, cb] = Self::hsl_to_rgb(hue.rem_euclid(360.0), 0.85, 0.6);
 
-            let max_life = 4.0 + self.next_f32() * 6.0;
-            let size_norm = 0.005 + self.next_f32() * 0.012;
+            let max_life = 5.0 + self.next_f32() * 8.0;
+            let size_norm = 0.004 + self.next_f32() * 0.010;
 
             self.particles.push(Particle {
-                rx_norm,
-                ry_norm,
-                angle,
-                omega,
-                tilt,
-                color: [r, g, b, 1.0],
+                x: px,
+                y: py,
+                vx,
+                vy,
+                color: [cr, cg, cb, 1.0],
                 size_norm,
                 life: 1.0,
                 max_life,
@@ -158,23 +201,12 @@ impl ParticleSystemInner {
     }
 
     fn to_vertex_data(&self, canvas_width: f32, canvas_height: f32) -> Vec<f32> {
-        let cx = canvas_width * 0.5;
-        let cy = canvas_height * 0.5;
         let half_short = canvas_width.min(canvas_height) * 0.5;
         let mut data = Vec::with_capacity(self.particles.len() * 8);
         for p in &self.particles {
-            let rx = p.rx_norm * half_short;
-            let ry = p.ry_norm * half_short;
+            let px = p.x * canvas_width;
+            let py = p.y * canvas_height;
             let size = p.size_norm * half_short;
-            // Elliptical position in local orbit frame.
-            let lx = rx * p.angle.cos();
-            let ly = ry * p.angle.sin();
-            // Rotate by orbit tilt.
-            let cos_t = p.tilt.cos();
-            let sin_t = p.tilt.sin();
-            let px = cx + lx * cos_t - ly * sin_t;
-            let py = cy + lx * sin_t + ly * cos_t;
-
             data.push(px);
             data.push(py);
             data.push(p.color[0]);
@@ -541,7 +573,32 @@ impl Layoutable for ParticleCanvas {
     }
 }
 
-impl EventTarget for ParticleCanvas {}
+impl EventTarget for ParticleCanvas {
+    fn dispatch_mouse_move(
+        &mut self,
+        event: &mut MouseMoveEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+        let w = self.layout_w;
+        let h = self.layout_h;
+        if w > 0.0 && h > 0.0 {
+            let nx = (event.mouse.local_x / w).clamp(0.0, 1.0);
+            let ny = (event.mouse.local_y / h).clamp(0.0, 1.0);
+            PARTICLE_SYSTEM.with(|sys| {
+                sys.borrow_mut().set_attractor(Some((nx, ny)));
+            });
+        }
+    }
+
+    fn set_hovered(&mut self, hovered: bool) -> bool {
+        if !hovered {
+            PARTICLE_SYSTEM.with(|sys| {
+                sys.borrow_mut().set_attractor(None);
+            });
+        }
+        false
+    }
+}
 
 impl Renderable for ParticleCanvas {
     fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> BuildState {
