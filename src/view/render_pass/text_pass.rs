@@ -1253,14 +1253,7 @@ impl TextResources {
         self.prepared_draw_lru.push_back(key);
         while self.prepared_draw_lru.len() > 512 {
             if let Some(old_key) = self.prepared_draw_lru.pop_front() {
-                if let Some(old_draw) = self.prepared_draws.remove(&old_key) {
-                    if let Some(d) = &old_draw.mask_draw {
-                        d.vertex_buffer.destroy();
-                    }
-                    if let Some(d) = &old_draw.color_draw {
-                        d.vertex_buffer.destroy();
-                    }
-                }
+                self.prepared_draws.remove(&old_key);
             }
         }
     }
@@ -1460,10 +1453,7 @@ impl TextResources {
         self.globals_bind_group_lru.push_back(prepare_signature);
         while self.globals_bind_group_lru.len() > 512 {
             if let Some(old_key) = self.globals_bind_group_lru.pop_front() {
-                if let Some(old) = self.globals_bind_groups.remove(&old_key) {
-                    old.screen_buffer.destroy();
-                    old.fragment_buffer.destroy();
-                }
+                self.globals_bind_groups.remove(&old_key);
             }
         }
         (screen_buffer, fragment_buffer, bind_group, capacity)
