@@ -971,6 +971,7 @@ impl Viewport {
                 };
             }
         };
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() {
             staging_belt.finish();
         }
@@ -978,6 +979,7 @@ impl Viewport {
         let submit_started_at = Instant::now();
         let queue = self.gpu.queue.as_ref().unwrap();
         queue.submit(Some(frame.encoder.finish()));
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() {
             staging_belt.recall();
         }

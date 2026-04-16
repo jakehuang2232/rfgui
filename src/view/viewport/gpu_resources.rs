@@ -217,18 +217,6 @@ impl Viewport {
         let Some(buffer) = self.acquire_frame_buffer(allocation_id, desc) else {
             return false;
         };
-        if self.gpu.upload_staging_belt.is_none() {
-            let Some(device) = self.gpu.device.as_ref().cloned() else {
-                return false;
-            };
-            self.gpu.upload_staging_belt = Some(StagingBelt::new(device, 1024 * 1024));
-        }
-        let Some(frame) = self.frame.frame_state.as_mut() else {
-            return false;
-        };
-        let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() else {
-            return false;
-        };
         let align = wgpu::COPY_BUFFER_ALIGNMENT as usize;
         let rem = data.len() % align;
         let padded_len = if rem == 0 {
@@ -240,14 +228,43 @@ impl Viewport {
         if end > desc.size.max(1) {
             return false;
         }
-        let Some(size) = wgpu::BufferSize::new(padded_len as u64) else {
-            return false;
-        };
-        let mut mapped = staging_belt.write_buffer(&mut frame.encoder, &buffer, offset, size);
-        mapped.slice(..).fill(0);
-        mapped.slice(..data.len()).copy_from_slice(data);
-        drop(mapped);
-        true
+        // On WebGPU (wasm32), StagingBelt's async buffer mapping (map_async → JS
+        // Promise) can fail to resolve before the next frame, causing
+        // "Buffer is not mapped" panics and unbounded memory growth.  Use the
+        // simpler queue.write_buffer path which has no mapping dependency.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(queue) = self.gpu.queue.as_ref() else {
+                return false;
+            };
+            let mut padded = vec![0u8; padded_len];
+            padded[..data.len()].copy_from_slice(data);
+            queue.write_buffer(&buffer, offset, &padded);
+            return true;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.gpu.upload_staging_belt.is_none() {
+                let Some(device) = self.gpu.device.as_ref().cloned() else {
+                    return false;
+                };
+                self.gpu.upload_staging_belt = Some(StagingBelt::new(device, 1024 * 1024));
+            }
+            let Some(frame) = self.frame.frame_state.as_mut() else {
+                return false;
+            };
+            let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() else {
+                return false;
+            };
+            let Some(size) = wgpu::BufferSize::new(padded_len as u64) else {
+                return false;
+            };
+            let mut mapped = staging_belt.write_buffer(&mut frame.encoder, &buffer, offset, size);
+            mapped.slice(..).fill(0);
+            mapped.slice(..data.len()).copy_from_slice(data);
+            drop(mapped);
+            true
+        }
     }
 
     pub(crate) fn upload_draw_rect_uniform(
@@ -260,6 +277,7 @@ impl Viewport {
             return None;
         }
         let device = self.gpu.device.as_ref()?.clone();
+        #[cfg(not(target_arch = "wasm32"))]
         if self.gpu.upload_staging_belt.is_none() {
             self.gpu.upload_staging_belt = Some(StagingBelt::new(device.clone(), 1024 * 1024));
         }
@@ -309,17 +327,27 @@ impl Viewport {
             };
         }
         let dynamic_offset = self.frame.draw_rect_uniform_offset;
-        let Some(size) = wgpu::BufferSize::new(slot_size) else {
-            return None;
-        };
         let buffer = self.frame.draw_rect_uniform_pool[target_index].buffer.clone();
-        let frame = self.frame.frame_state.as_mut()?;
-        let staging_belt = self.gpu.upload_staging_belt.as_mut()?;
-        let mut mapped =
-            staging_belt.write_buffer(&mut frame.encoder, &buffer, dynamic_offset, size);
-        mapped.slice(..).fill(0);
-        mapped.slice(..data.len()).copy_from_slice(data);
-        drop(mapped);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let queue = self.gpu.queue.as_ref()?;
+            let mut padded = vec![0u8; slot_size as usize];
+            padded[..data.len()].copy_from_slice(data);
+            queue.write_buffer(&buffer, dynamic_offset, &padded);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(size) = wgpu::BufferSize::new(slot_size) else {
+                return None;
+            };
+            let frame = self.frame.frame_state.as_mut()?;
+            let staging_belt = self.gpu.upload_staging_belt.as_mut()?;
+            let mut mapped =
+                staging_belt.write_buffer(&mut frame.encoder, &buffer, dynamic_offset, size);
+            mapped.slice(..).fill(0);
+            mapped.slice(..data.len()).copy_from_slice(data);
+            drop(mapped);
+        }
         self.frame.draw_rect_uniform_offset = self.frame.draw_rect_uniform_offset.saturating_add(slot_size);
         Some((buffer, dynamic_offset as u32, target_index))
     }
