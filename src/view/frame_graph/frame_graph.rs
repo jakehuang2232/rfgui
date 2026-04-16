@@ -903,7 +903,7 @@ impl FrameGraph {
         self.declare_texture_internal(desc, ResourceLifetime::Transient, None)
     }
 
-    pub(crate) fn texture_desc(&self, handle: TextureHandle) -> Option<TextureDesc> {
+    pub fn texture_desc(&self, handle: TextureHandle) -> Option<TextureDesc> {
         self.textures.get(handle.0 as usize).cloned()
     }
 

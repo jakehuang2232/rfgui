@@ -366,7 +366,7 @@ pub struct BuildState {
 }
 
 impl BuildState {
-    pub(crate) fn current_target(&self) -> Option<RenderTargetOut> {
+    pub fn current_target(&self) -> Option<RenderTargetOut> {
         self.target
     }
 
@@ -549,7 +549,7 @@ impl UiBuildContext {
         self.state.target = Some(target);
     }
 
-    pub(crate) fn current_target(&self) -> Option<RenderTargetOut> {
+    pub fn current_target(&self) -> Option<RenderTargetOut> {
         self.state.target
     }
 
@@ -761,6 +761,18 @@ impl UiBuildContext {
 impl ViewportContext {
     pub fn scale_factor(&self) -> f32 {
         self.scale_factor
+    }
+
+    pub fn target_width(&self) -> u32 {
+        self.target_width
+    }
+
+    pub fn target_height(&self) -> u32 {
+        self.target_height
+    }
+
+    pub fn target_format(&self) -> wgpu::TextureFormat {
+        self.target_format
     }
 }
 

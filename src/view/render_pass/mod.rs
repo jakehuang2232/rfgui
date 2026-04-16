@@ -10,7 +10,7 @@ pub mod composite_layer_pass;
 pub mod debug_overlay_pass;
 pub mod draw_rect_pass;
 pub mod present_surface_pass;
-pub(crate) mod render_target;
+pub mod render_target;
 pub mod shadow_module;
 pub mod text_pass;
 pub mod texture_composite_pass;

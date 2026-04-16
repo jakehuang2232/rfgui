@@ -98,6 +98,7 @@ fn is_builtin_svg_node(node: &RsxElementNode) -> bool {
     node.tag_descriptor.map(is_svg_descriptor).unwrap_or(false) || node.tag == "Svg"
 }
 
+
 pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
     let mut nodes = rsx_to_elements(root)?;
     if nodes.len() != 1 {
@@ -672,7 +673,6 @@ fn convert_element(
     if is_builtin_svg_node(node) {
         return convert_svg_element(node, path, global_path, inherited_text_style);
     }
-
     if let Some(descriptor) = node.tag_descriptor
         && let Ok(map) = typed_element_factories().read()
         && let Some(factory) = map.get(&descriptor.type_id)

@@ -3,12 +3,12 @@
 #[allow(missing_docs)]
 pub mod base_component;
 pub(crate) mod font_system;
-pub(crate) mod frame_graph;
+pub mod frame_graph;
 pub(crate) mod image_resource;
 /// Layer promotion analysis and configuration APIs.
 pub mod promotion;
 mod promotion_builder;
-pub(crate) mod render_pass;
+pub mod render_pass;
 mod renderer_adapter;
 pub(crate) mod svg_resource;
 mod tags;

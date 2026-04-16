@@ -34,10 +34,12 @@ fn make_config() -> AppConfig {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
+    scene_windows::particle_demo::register_particle_canvas();
     examples::winit_runner::run(WindowDemoApp, make_config());
 }
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
+    scene_windows::particle_demo::register_particle_canvas();
     examples::web_runner::run(WindowDemoApp, make_config());
 }
