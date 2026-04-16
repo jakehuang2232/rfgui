@@ -756,6 +756,7 @@ dependencies = [
 name = "examples"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "console_error_panic_hook",
  "image",
  "js-sys",
@@ -767,6 +768,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "wgpu",
  "winit",
 ]
 

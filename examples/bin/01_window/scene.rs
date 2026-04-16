@@ -6,6 +6,7 @@ use crate::scene_windows::component_test::ComponentTest;
 use crate::scene_windows::inline_test::build as build_inline_test_window;
 use crate::scene_windows::inspector_panel::build as build_inspector_panel;
 use crate::scene_windows::render_test::RenderTest;
+use crate::scene_windows::particle_demo::ParticleDemo;
 use crate::scene_windows::transition_lab::TransitionLab;
 use crate::window_manager::WindowManager;
 
@@ -59,6 +60,11 @@ pub fn MainScene() -> RsxNode {
         (760.0, 520.0),
     );
 
+    window_manager.push(
+        "Custom Native Component Demo",
+        vec![rsx! { <ParticleDemo /> }],
+        (600.0, 400.0),
+    );
     window_manager.push("About", vec![build_about_panel(&theme)], (360.0, 280.0));
     RsxNode::fragment(window_manager.into_nodes(window_z_order.binding()))
 }
