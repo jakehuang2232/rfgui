@@ -52,6 +52,11 @@ impl Viewport {
                 entry.width != width || entry.height != height || entry.format != format
             });
         if recreate {
+            // Destroy the old texture explicitly before replacing it, so GPU
+            // memory is freed immediately rather than waiting for JS GC.
+            if let Some(old) = self.frame.sampled_texture_cache.remove(&stable_key) {
+                old.texture.destroy();
+            }
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Sampled Image Texture"),
                 size: wgpu::Extent3d {
@@ -144,6 +149,7 @@ impl Viewport {
                 .collect();
             for key in &stale_keys {
                 if let Some(entry) = self.frame.sampled_texture_cache.remove(key) {
+                    entry.texture.destroy();
                     total_bytes = total_bytes.saturating_sub(entry.byte_size);
                 }
             }
@@ -162,6 +168,7 @@ impl Viewport {
                 break;
             }
             if let Some(entry) = self.frame.sampled_texture_cache.remove(&key) {
+                entry.texture.destroy();
                 total_bytes = total_bytes.saturating_sub(entry.byte_size);
             }
         }
@@ -397,10 +404,19 @@ impl Viewport {
         crate::view::render_pass::texture_composite_pass::clear_texture_composite_resources_cache();
         crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
         self.frame.offscreen_render_target_pool.clear();
+        for entry in self.frame.sampled_texture_cache.values() {
+            entry.texture.destroy();
+        }
         self.frame.sampled_texture_cache.clear();
         crate::view::image_resource::invalidate_uploaded_images();
         crate::view::svg_resource::invalidate_uploaded_images();
+        for entry in self.frame.frame_buffer_pool.values() {
+            entry.buffer.destroy();
+        }
         self.frame.frame_buffer_pool.clear();
+        for entry in &self.frame.draw_rect_uniform_pool {
+            entry.buffer.destroy();
+        }
         self.frame.draw_rect_uniform_pool.clear();
         self.frame.draw_rect_uniform_cursor = 0;
         self.frame.draw_rect_uniform_offset = 0;

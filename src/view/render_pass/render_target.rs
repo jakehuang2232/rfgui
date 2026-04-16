@@ -147,6 +147,12 @@ impl OffscreenRenderTargetPool {
     }
 
     pub fn clear(&mut self) {
+        for entry in self.entries.values() {
+            entry.texture.destroy();
+            if let Some(msaa) = entry.msaa_texture.as_ref() {
+                msaa.destroy();
+            }
+        }
         self.entries.clear();
         self.frame_bindings.clear();
         self.persistent_bindings.clear();
@@ -425,7 +431,14 @@ impl OffscreenRenderTargetPool {
     }
 
     fn remove_entry(&mut self, entry_id: u32) {
-        self.entries.remove(&entry_id);
+        if let Some(entry) = self.entries.remove(&entry_id) {
+            // Explicitly release GPU memory instead of waiting for JS GC
+            // (which does not know about GPU memory pressure on WebGPU).
+            entry.texture.destroy();
+            if let Some(msaa) = entry.msaa_texture.as_ref() {
+                msaa.destroy();
+            }
+        }
         self.frame_bindings
             .retain(|_, bound_id| *bound_id != entry_id);
         self.persistent_bindings
