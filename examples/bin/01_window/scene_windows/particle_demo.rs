@@ -32,26 +32,23 @@ use wgpu::util::DeviceExt;
 // Particle System (CPU simulation)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const MAX_PARTICLES: usize = 600;
-const SPAWN_RATE: f32 = 40.0; // particles per second
+const MAX_PARTICLES: usize = 1000;
+const SPAWN_RATE: f32 = 50.0; // particles per second
 
-/// Particle with position & velocity in normalised space (0..1).
-/// Gravitationally attracted to a central mass point.
+/// 3D particle in normalised space. Projected to 2D for rendering.
 struct Particle {
-    x: f32,
-    y: f32,
-    vx: f32,
-    vy: f32,
+    x: f32,  y: f32,  z: f32,
+    vx: f32, vy: f32, vz: f32,
     color: [f32; 4],
     size_norm: f32,
     life: f32,
     max_life: f32,
 }
 
-/// Gravitational constant (normalised space).
 const GM: f32 = 0.055;
-/// Softening radius squared — prevents singularity at r→0.
 const SOFTENING2: f32 = 0.000004;
+/// Perspective camera distance (normalised units).
+const CAM_DIST: f32 = 1.5;
 
 struct ParticleSystemInner {
     particles: Vec<Particle>,
@@ -59,12 +56,10 @@ struct ParticleSystemInner {
     elapsed: f32,
     spawn_accumulator: f32,
     rng: u64,
-    /// Mouse target in normalised coords (0..1). None = center.
     attractor: Option<(f32, f32)>,
-    /// Central mass position (normalised).
+    /// Central mass 3D position (z stays 0 — mass lives on screen plane).
     mass_x: f32,
     mass_y: f32,
-    /// Central mass velocity.
     mass_vx: f32,
     mass_vy: f32,
 }
@@ -123,7 +118,7 @@ impl ParticleSystemInner {
         self.last_update = now;
         self.elapsed += dt;
 
-        // Central mass physics: spring attraction to target + damping.
+        // Central mass attracted to mouse (or center) by gravity + damping.
         let target = self.attractor.unwrap_or((0.5, 0.5));
         let spring = 30.0_f32;  // spring stiffness
         let damping = 6.0_f32;  // velocity damping
@@ -139,22 +134,26 @@ impl ParticleSystemInner {
         let cx = self.mass_x;
         let cy = self.mass_y;
 
-        // Integrate: gravity from central mass → acceleration.
+        // 3D gravity: mass at (cx, cy, 0).
+        let cz = 0.0_f32;
         for p in &mut self.particles {
             let dx = cx - p.x;
             let dy = cy - p.y;
-            let r2 = dx * dx + dy * dy + SOFTENING2;
+            let dz = cz - p.z;
+            let r2 = dx * dx + dy * dy + dz * dz + SOFTENING2;
             let r = r2.sqrt();
-            let a = GM / r2; // F = GM/r^2
+            let a = GM / r2;
             p.vx += a * dx / r * dt;
             p.vy += a * dy / r * dt;
+            p.vz += a * dz / r * dt;
             p.x += p.vx * dt;
             p.y += p.vy * dt;
+            p.z += p.vz * dt;
             p.life -= dt / p.max_life;
         }
         self.particles.retain(|p| p.life > 0.0);
 
-        // Spawn new particles in circular orbits around the mass.
+        // Spawn in random 3D orbits around mass.
         self.spawn_accumulator += SPAWN_RATE * dt;
         let to_spawn = self.spawn_accumulator as usize;
         self.spawn_accumulator -= to_spawn as f32;
@@ -163,35 +162,45 @@ impl ParticleSystemInner {
             if self.particles.len() >= MAX_PARTICLES {
                 break;
             }
-            // Random orbital distance (normalised).
             let r = 0.04 + self.next_f32() * 0.38;
+
+            // Random point on sphere at distance r from mass.
+            let cos_phi = self.next_f32() * 2.0 - 1.0; // -1..1
+            let sin_phi = (1.0 - cos_phi * cos_phi).sqrt();
             let theta = self.next_f32() * std::f32::consts::TAU;
-            let px = cx + r * theta.cos();
-            let py = cy + r * theta.sin();
+            let px = cx + r * sin_phi * theta.cos();
+            let py = cy + r * sin_phi * theta.sin();
+            let pz = cz + r * cos_phi;
 
-            // Circular orbit speed: v = sqrt(GM / r).
+            // Circular orbit speed.
             let v_circ = (GM / (r + SOFTENING2.sqrt())).sqrt();
-            // Tangent direction (perpendicular to radius), random CW/CCW.
-            let sign = if self.next_f32() > 0.3 { 1.0 } else { -1.0 };
-            let vx = sign * v_circ * -theta.sin();
-            let vy = sign * v_circ * theta.cos();
-            // Small random perturbation for elliptical variety.
+            // Random tangent direction perpendicular to radius vector.
+            // Pick a random axis, cross with radius to get tangent.
+            let rand_ax = self.next_f32() - 0.5;
+            let rand_ay = self.next_f32() - 0.5;
+            let rand_az = self.next_f32() - 0.5;
+            let rx = px - cx;
+            let ry = py - cy;
+            let rz = pz - cz;
+            // cross(rand, r)
+            let tx = rand_ay * rz - rand_az * ry;
+            let ty = rand_az * rx - rand_ax * rz;
+            let tz = rand_ax * ry - rand_ay * rx;
+            let t_len = (tx * tx + ty * ty + tz * tz).sqrt().max(0.0001);
             let perturb = 0.85 + self.next_f32() * 0.3;
-            let vx = vx * perturb;
-            let vy = vy * perturb;
+            let v = v_circ * perturb;
+            let vx = v * tx / t_len;
+            let vy = v * ty / t_len;
+            let vz = v * tz / t_len;
 
-            // Colour by distance: inner=warm, outer=cool.
             let hue = (r / 0.42) * 240.0 + (self.next_f32() - 0.5) * 40.0;
             let [cr, cg, cb] = Self::hsl_to_rgb(hue.rem_euclid(360.0), 0.85, 0.6);
-
             let max_life = 5.0 + self.next_f32() * 8.0;
             let size_norm = 0.004 + self.next_f32() * 0.010;
 
             self.particles.push(Particle {
-                x: px,
-                y: py,
-                vx,
-                vy,
+                x: px, y: py, z: pz,
+                vx, vy, vz,
                 color: [cr, cg, cb, 1.0],
                 size_norm,
                 life: 1.0,
@@ -204,14 +213,22 @@ impl ParticleSystemInner {
         let half_short = canvas_width.min(canvas_height) * 0.5;
         let mut data = Vec::with_capacity(self.particles.len() * 8);
         for p in &self.particles {
-            let px = p.x * canvas_width;
-            let py = p.y * canvas_height;
-            let size = p.size_norm * half_short;
+            // Perspective projection: objects closer to camera appear larger.
+            let depth = CAM_DIST - p.z; // camera at z = CAM_DIST, looking toward z=0
+            let scale = if depth > 0.01 { CAM_DIST / depth } else { CAM_DIST / 0.01 };
+            // Project around canvas center.
+            let cx = canvas_width * 0.5;
+            let cy = canvas_height * 0.5;
+            let px = cx + (p.x * canvas_width - cx) * scale;
+            let py = cy + (p.y * canvas_height - cy) * scale;
+            let size = p.size_norm * half_short * scale;
+            // Depth fade: particles further away are slightly dimmer.
+            let depth_fade = (scale * 0.7).clamp(0.3, 1.0);
             data.push(px);
             data.push(py);
-            data.push(p.color[0]);
-            data.push(p.color[1]);
-            data.push(p.color[2]);
+            data.push(p.color[0] * depth_fade);
+            data.push(p.color[1] * depth_fade);
+            data.push(p.color[2] * depth_fade);
             data.push(p.color[3]);
             data.push(size);
             data.push(p.life);
