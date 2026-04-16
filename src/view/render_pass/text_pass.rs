@@ -1193,6 +1193,14 @@ impl TextResources {
     fn reset_atlas(&mut self) {
         self.mask_atlas.reset();
         self.color_atlas.reset();
+        for draw_set in self.prepared_draws.values() {
+            if let Some(d) = &draw_set.mask_draw {
+                d.vertex_buffer.destroy();
+            }
+            if let Some(d) = &draw_set.color_draw {
+                d.vertex_buffer.destroy();
+            }
+        }
         self.prepared_draws.clear();
         self.prepared_draw_lru.clear();
         self.swash_cache.image_cache.clear();
@@ -1245,7 +1253,14 @@ impl TextResources {
         self.prepared_draw_lru.push_back(key);
         while self.prepared_draw_lru.len() > 512 {
             if let Some(old_key) = self.prepared_draw_lru.pop_front() {
-                self.prepared_draws.remove(&old_key);
+                if let Some(old_draw) = self.prepared_draws.remove(&old_key) {
+                    if let Some(d) = &old_draw.mask_draw {
+                        d.vertex_buffer.destroy();
+                    }
+                    if let Some(d) = &old_draw.color_draw {
+                        d.vertex_buffer.destroy();
+                    }
+                }
             }
         }
     }
@@ -1445,7 +1460,10 @@ impl TextResources {
         self.globals_bind_group_lru.push_back(prepare_signature);
         while self.globals_bind_group_lru.len() > 512 {
             if let Some(old_key) = self.globals_bind_group_lru.pop_front() {
-                self.globals_bind_groups.remove(&old_key);
+                if let Some(old) = self.globals_bind_groups.remove(&old_key) {
+                    old.screen_buffer.destroy();
+                    old.fragment_buffer.destroy();
+                }
             }
         }
         (screen_buffer, fragment_buffer, bind_group, capacity)
