@@ -346,6 +346,17 @@ struct ParticlePass {
     bind_group: Option<wgpu::BindGroup>,
 }
 
+impl Drop for ParticlePass {
+    fn drop(&mut self) {
+        if let Some(buf) = self.uniform_buffer.take() {
+            buf.destroy();
+        }
+        if let Some(buf) = self.vertex_buffer.take() {
+            buf.destroy();
+        }
+    }
+}
+
 impl GraphicsPass for ParticlePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
