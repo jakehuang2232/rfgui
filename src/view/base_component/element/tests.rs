@@ -3097,7 +3097,7 @@ mod tests {
                 percent_base_height: Some(140.0),
             });
             assert_eq!(parent.computed_style.layout_axis_cross_size(), CrossSize::Stretch);
-            assert!(parent.children[1].allows_cross_stretch(true));
+            assert!(parent.children[1].flex_props().allows_cross_stretch(true));
             parent.place(LayoutPlacement {
                 parent_x: 0.0,
                 parent_y: 0.0,

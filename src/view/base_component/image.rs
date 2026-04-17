@@ -365,46 +365,15 @@ impl Layoutable for Image {
         self.element.set_layout_height(height);
     }
 
-    fn allows_cross_stretch(&self, is_row: bool) -> bool {
-        self.element.allows_cross_stretch(is_row)
-    }
-
-    fn flex_grow(&self) -> f32 {
-        self.element.flex_grow()
-    }
-
-    fn flex_shrink(&self) -> f32 {
-        self.element.flex_shrink()
-    }
-
-    fn flex_basis(&self) -> crate::SizeValue {
-        self.element.flex_basis()
-    }
-
-    fn flex_main_size(&self, is_row: bool) -> crate::SizeValue {
-        <Element as Layoutable>::flex_main_size(&self.element, is_row)
-    }
-
-    fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {
-        <Element as Layoutable>::flex_has_explicit_min_main_size(&self.element, is_row)
-    }
-
-    fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
-        let _ = is_row;
-        None
-    }
-
-    fn flex_auto_base_main_size(&self, is_row: bool) -> Option<f32> {
+    fn flex_props(&self) -> crate::view::base_component::FlexProps {
         let (measured_w, measured_h) = self.measured_size();
-        Some(if is_row { measured_w } else { measured_h }.max(0.0))
-    }
-
-    fn flex_min_main_size(&self, is_row: bool) -> crate::SizeValue {
-        <Element as Layoutable>::flex_min_main_size(&self.element, is_row)
-    }
-
-    fn flex_max_main_size(&self, is_row: bool) -> crate::SizeValue {
-        <Element as Layoutable>::flex_max_main_size(&self.element, is_row)
+        crate::view::base_component::FlexProps {
+            intrinsic_width: Some(measured_w),
+            intrinsic_height: Some(measured_h),
+            intrinsic_feeds_auto_min: false,
+            intrinsic_feeds_auto_base: true,
+            ..self.element.flex_props()
+        }
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {

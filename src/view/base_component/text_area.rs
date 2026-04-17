@@ -2960,54 +2960,20 @@ impl Layoutable for TextArea {
         self.cached_ime_cursor_rect = None;
     }
 
-    fn allows_cross_stretch(&self, is_row: bool) -> bool {
-        if is_row {
-            self.auto_height
-        } else {
-            self.auto_width
-        }
-    }
-
-    fn flex_grow(&self) -> f32 {
-        self.element.flex_grow()
-    }
-
-    fn flex_shrink(&self) -> f32 {
-        self.element.flex_shrink()
-    }
-
-    fn flex_basis(&self) -> crate::SizeValue {
-        self.element.flex_basis()
-    }
-
-    fn flex_main_size(&self, is_row: bool) -> crate::SizeValue {
-        if (is_row && self.auto_width) || (!is_row && self.auto_height) {
-            crate::SizeValue::Auto
-        } else {
-            <Element as Layoutable>::flex_main_size(&self.element, is_row)
-        }
-    }
-
-    fn flex_has_explicit_min_main_size(&self, is_row: bool) -> bool {
-        <Element as Layoutable>::flex_has_explicit_min_main_size(&self.element, is_row)
-    }
-
-    fn flex_auto_min_main_size(&self, is_row: bool) -> Option<f32> {
-        if self.flex_has_explicit_min_main_size(is_row)
-            || self.flex_main_size(is_row) != crate::SizeValue::Auto
-        {
-            return None;
-        }
+    fn flex_props(&self) -> crate::view::base_component::FlexProps {
         let (measured_w, measured_h) = self.measured_size();
-        Some(if is_row { measured_w } else { measured_h }.max(0.0))
-    }
-
-    fn flex_min_main_size(&self, is_row: bool) -> crate::SizeValue {
-        <Element as Layoutable>::flex_min_main_size(&self.element, is_row)
-    }
-
-    fn flex_max_main_size(&self, is_row: bool) -> crate::SizeValue {
-        <Element as Layoutable>::flex_max_main_size(&self.element, is_row)
+        let base = self.element.flex_props();
+        crate::view::base_component::FlexProps {
+            width: if self.auto_width { crate::SizeValue::Auto } else { base.width },
+            height: if self.auto_height { crate::SizeValue::Auto } else { base.height },
+            allows_cross_stretch_when_row: self.auto_height,
+            allows_cross_stretch_when_col: self.auto_width,
+            intrinsic_width: Some(measured_w),
+            intrinsic_height: Some(measured_h),
+            intrinsic_feeds_auto_min: true,
+            intrinsic_feeds_auto_base: false,
+            ..base
+        }
     }
 
     fn set_layout_offset(&mut self, x: f32, y: f32) {
