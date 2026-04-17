@@ -361,3 +361,207 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
         }
     }
 }
+
+fn resolve_position2d_component(
+    length: Length,
+    base: f32,
+) -> f32 {
+    length.resolve_with_base(Some(base), 0.0, 0.0).unwrap_or(base * 0.5)
+}
+
+fn linear_endpoints_for_side(side: crate::style::SideOrCorner, width: f32, height: f32) -> ([f32; 2], [f32; 2]) {
+    use crate::style::SideOrCorner::*;
+    let cx = width * 0.5;
+    let cy = height * 0.5;
+    match side {
+        Top => ([cx, height], [cx, 0.0]),
+        Bottom => ([cx, 0.0], [cx, height]),
+        Left => ([width, cy], [0.0, cy]),
+        Right => ([0.0, cy], [width, cy]),
+        TopLeft => ([width, height], [0.0, 0.0]),
+        TopRight => ([0.0, height], [width, 0.0]),
+        BottomLeft => ([width, 0.0], [0.0, height]),
+        BottomRight => ([0.0, 0.0], [width, height]),
+    }
+}
+
+fn linear_endpoints_for_angle(angle_rad: f32, width: f32, height: f32) -> ([f32; 2], [f32; 2]) {
+    // CSS angle: 0deg = to top, positive = clockwise.
+    let cx = width * 0.5;
+    let cy = height * 0.5;
+    let sin_a = angle_rad.sin();
+    let cos_a = angle_rad.cos();
+    // Direction vector (CSS up = -y, clockwise from up).
+    let dir_x = sin_a;
+    let dir_y = -cos_a;
+    // Gradient line length = |w*sin| + |h*cos|.
+    let line_len = (width * sin_a).abs() + (height * cos_a).abs();
+    let half = line_len * 0.5;
+    let p1 = [cx + dir_x * half, cy + dir_y * half];
+    let p0 = [cx - dir_x * half, cy - dir_y * half];
+    (p0, p1)
+}
+
+fn radial_radii(
+    shape: crate::style::RadialShape,
+    size: crate::style::RadialSize,
+    cx: f32,
+    cy: f32,
+    width: f32,
+    height: f32,
+) -> (f32, f32) {
+    use crate::style::{RadialShape, RadialSize};
+    let (rx, ry) = match size {
+        RadialSize::ClosestSide => (cx.min(width - cx).max(0.0), cy.min(height - cy).max(0.0)),
+        RadialSize::FarthestSide => (cx.max(width - cx).max(0.0), cy.max(height - cy).max(0.0)),
+        RadialSize::ClosestCorner => {
+            let dx = cx.min(width - cx).max(0.0);
+            let dy = cy.min(height - cy).max(0.0);
+            let d = (dx * dx + dy * dy).sqrt();
+            (d, d)
+        }
+        RadialSize::FarthestCorner => {
+            let dx = cx.max(width - cx).max(0.0);
+            let dy = cy.max(height - cy).max(0.0);
+            let d = (dx * dx + dy * dy).sqrt();
+            (d, d)
+        }
+        RadialSize::Explicit { rx, ry } => (
+            rx.resolve_with_base(Some(width), 0.0, 0.0).unwrap_or(0.0).max(0.0),
+            ry.resolve_with_base(Some(height), 0.0, 0.0).unwrap_or(0.0).max(0.0),
+        ),
+    };
+    match shape {
+        RadialShape::Circle => {
+            let r = rx.max(ry);
+            (r, r)
+        }
+        RadialShape::Ellipse => (rx.max(1e-3), ry.max(1e-3)),
+    }
+}
+
+fn resolve_gradient_paint(
+    gradient: &crate::style::Gradient,
+    width: f32,
+    height: f32,
+) -> crate::render_pass::draw_rect_pass::GradientPaint {
+    use crate::render_pass::draw_rect_pass::{GradientKindGpu, GradientPaint, GradientStopGpu};
+    use crate::style::{ColorLike, Gradient, GradientLine, Length as L};
+
+    let mut paint = GradientPaint::default();
+    let stops_in = gradient.stops();
+    let n = stops_in.len();
+
+    let axis_len = match gradient {
+        Gradient::Linear { line, .. } => {
+            let (p0, p1) = match line {
+                GradientLine::Angle(a) => {
+                    linear_endpoints_for_angle(a.to_radians(), width, height)
+                }
+                GradientLine::ToSide(side) => linear_endpoints_for_side(*side, width, height),
+            };
+            let dx = p1[0] - p0[0];
+            let dy = p1[1] - p0[1];
+            (dx * dx + dy * dy).sqrt().max(1.0)
+        }
+        _ => width.max(height).max(1.0),
+    };
+
+    let mut positions: Vec<Option<f32>> = stops_in
+        .iter()
+        .take(n)
+        .map(|s| match s.position {
+            Some(L::Percent(p)) => Some(p / 100.0),
+            Some(L::Px(px)) => Some(px / axis_len),
+            Some(L::Zero) => Some(0.0),
+            Some(other) => other
+                .resolve_with_base(Some(axis_len), 0.0, 0.0)
+                .map(|v| v / axis_len),
+            None => None,
+        })
+        .collect();
+
+    if n > 0 {
+        if positions[0].is_none() {
+            positions[0] = Some(0.0);
+        }
+        if positions[n - 1].is_none() {
+            positions[n - 1] = Some(1.0);
+        }
+        let mut i = 1;
+        while i < n - 1 {
+            if positions[i].is_none() {
+                let start_i = i - 1;
+                let start_v = positions[start_i].unwrap_or(0.0);
+                let mut end_i = i;
+                while end_i < n && positions[end_i].is_none() {
+                    end_i += 1;
+                }
+                let end_v = positions[end_i].unwrap_or(1.0);
+                let gap = (end_i - start_i) as f32;
+                for k in (start_i + 1)..end_i {
+                    let t = (k - start_i) as f32 / gap;
+                    positions[k] = Some(start_v + (end_v - start_v) * t);
+                }
+                i = end_i;
+            } else {
+                i += 1;
+            }
+        }
+        for k in 1..n {
+            let prev = positions[k - 1].unwrap_or(0.0);
+            let cur = positions[k].unwrap_or(prev);
+            if cur < prev {
+                positions[k] = Some(prev);
+            }
+        }
+    }
+
+    let stops_vec: Vec<GradientStopGpu> = stops_in
+        .iter()
+        .take(n)
+        .enumerate()
+        .map(|(k, stop)| {
+            let color = stop.color.to_rgba_f32();
+            let p = positions[k].unwrap_or(0.0);
+            GradientStopGpu {
+                color,
+                pos: [p, 0.0, 0.0, 0.0],
+            }
+        })
+        .collect();
+    paint.stops = std::sync::Arc::from(stops_vec);
+    paint.repeating = gradient.is_repeating();
+
+    match gradient {
+        Gradient::Linear { line, .. } => {
+            paint.kind = GradientKindGpu::Linear;
+            let (p0, p1) = match line {
+                GradientLine::Angle(a) => {
+                    linear_endpoints_for_angle(a.to_radians(), width, height)
+                }
+                GradientLine::ToSide(side) => linear_endpoints_for_side(*side, width, height),
+            };
+            paint.axis = [p0[0], p0[1], p1[0], p1[1]];
+        }
+        Gradient::Radial {
+            shape,
+            size,
+            position,
+            ..
+        } => {
+            paint.kind = GradientKindGpu::Radial;
+            let cx = resolve_position2d_component(position.x, width);
+            let cy = resolve_position2d_component(position.y, height);
+            let (rx, ry) = radial_radii(*shape, *size, cx, cy, width, height);
+            paint.axis = [cx, cy, rx, ry];
+        }
+        Gradient::Conic { from, position, .. } => {
+            paint.kind = GradientKindGpu::Conic;
+            let cx = resolve_position2d_component(position.x, width);
+            let cy = resolve_position2d_component(position.y, height);
+            paint.axis = [cx, cy, from.to_radians(), 0.0];
+        }
+    }
+    paint
+}

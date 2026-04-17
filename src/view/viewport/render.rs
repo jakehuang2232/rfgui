@@ -58,6 +58,7 @@ impl Viewport {
 
     fn push_debug_reuse_overlay_geometry(
         &mut self,
+        roots: &[Box<dyn crate::view::base_component::ElementTrait>],
         reuse_records: &[DebugReusePathRecord],
     ) {
         if !self.debug_options.trace_reuse_path {
@@ -66,12 +67,13 @@ impl Viewport {
         let scale = self.scale_factor.max(0.0001);
         let screen_w = self.gpu.surface_config.width.max(1) as f32;
         let screen_h = self.gpu.surface_config.height.max(1) as f32;
-        let snapshots_by_id = self
-            .compositor
-            .frame_box_models
-            .iter()
-            .map(|snapshot| (snapshot.node_id, *snapshot))
-            .collect::<FxHashMap<_, _>>();
+        let mut snapshots_by_id: FxHashMap<u64, crate::view::base_component::BoxModelSnapshot> =
+            FxHashMap::default();
+        for root in roots.iter() {
+            for snapshot in crate::view::base_component::collect_box_models(root.as_ref()) {
+                snapshots_by_id.insert(snapshot.node_id, snapshot);
+            }
+        }
         let mut overlay_batches = Vec::new();
         let promoted_node_ids = self.compositor.promotion_state.promoted_node_ids.clone();
         for record in reuse_records {
@@ -513,7 +515,7 @@ impl Viewport {
             }
         }
         let reuse_records = take_debug_reuse_path();
-        self.push_debug_reuse_overlay_geometry(&reuse_records);
+        self.push_debug_reuse_overlay_geometry(roots, &reuse_records);
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
             let present_pass = crate::view::render_pass::present_surface_pass::PresentSurfacePass::new(
@@ -896,6 +898,7 @@ impl Viewport {
         self.frame.offscreen_render_target_pool.begin_frame();
         self.frame.draw_rect_uniform_cursor = 0;
         self.frame.draw_rect_uniform_offset = 0;
+        self.frame.gradient_stops_byte_cursor = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
         crate::view::render_pass::text_pass::begin_text_resources_frame();

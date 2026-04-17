@@ -1,8 +1,7 @@
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use crate::transition::AnimationPromotionHint;
 use crate::view::base_component::{BoxModelSnapshot, ElementTrait};
 use crate::view::promotion::{PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionCandidate};
-use std::collections::hash_map::DefaultHasher;
 
 use std::hash::{Hash, Hasher};
 
@@ -96,7 +95,7 @@ pub(crate) fn collect_promoted_layer_updates(
         has_promoted_output: bool,
     }
 
-    fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut DefaultHasher) {
+    fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut FxHasher) {
         node.promotion_clip_intersection_signature().hash(hasher);
         let bounds = node.promotion_composite_bounds();
         bounds.x.to_bits().hash(hasher);
@@ -122,8 +121,8 @@ pub(crate) fn collect_promoted_layer_updates(
         next_base_signatures: &mut FxHashMap<u64, u64>,
         next_composition_signatures: &mut FxHashMap<u64, u64>,
     ) -> WalkState {
-        let mut hasher = DefaultHasher::new();
-        let mut composition_hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
+        let mut composition_hasher = FxHasher::default();
         node.promotion_self_signature().hash(&mut hasher);
         node.promotion_clip_intersection_signature()
             .hash(&mut hasher);
@@ -179,7 +178,7 @@ pub(crate) fn collect_promoted_layer_updates(
             0
         };
         let output_signature = if has_promoted_output {
-            let mut output_hasher = DefaultHasher::new();
+            let mut output_hasher = FxHasher::default();
             base_signature.hash(&mut output_hasher);
             composition_signature.hash(&mut output_hasher);
             output_hasher.finish()
@@ -252,7 +251,7 @@ pub(crate) fn collect_debug_subtree_signatures(
         has_promoted_output: bool,
     }
 
-    fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut DefaultHasher) {
+    fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut FxHasher) {
         node.promotion_clip_intersection_signature().hash(hasher);
         let bounds = node.promotion_composite_bounds();
         bounds.x.to_bits().hash(hasher);
@@ -274,8 +273,8 @@ pub(crate) fn collect_debug_subtree_signatures(
         promoted_node_ids: &FxHashSet<u64>,
         out: &mut FxHashMap<u64, (u64, u64, u64, bool)>,
     ) -> WalkState {
-        let mut hasher = DefaultHasher::new();
-        let mut composition_hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
+        let mut composition_hasher = FxHasher::default();
         node.promotion_self_signature().hash(&mut hasher);
         node.promotion_clip_intersection_signature()
             .hash(&mut hasher);
@@ -323,7 +322,7 @@ pub(crate) fn collect_debug_subtree_signatures(
             0
         };
         let output_signature = if has_promoted_output {
-            let mut output_hasher = DefaultHasher::new();
+            let mut output_hasher = FxHasher::default();
             base_signature.hash(&mut output_hasher);
             composition_signature.hash(&mut output_hasher);
             output_hasher.finish()

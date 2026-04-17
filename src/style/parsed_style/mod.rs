@@ -2,7 +2,9 @@
 
 //! Typed parsed-style declarations accepted by RSX and style construction APIs.
 
+use crate::style::background::Background;
 use crate::style::color::{Color, ColorLike, IntoColor, OklchColor, StyleColor};
+use crate::style::gradient::Gradient;
 
 use rustc_hash::FxHashMap;
 use std::ops::Add;
@@ -33,6 +35,8 @@ pub enum PropertyId {
     Cursor,
     Color,
     BackgroundColor,
+    BackgroundImage,
+    BorderImage,
     FontFamily,
     FontSize,
     FontWeight,
@@ -2298,6 +2302,7 @@ pub enum ParsedValue {
     Transition(Transitions),
     Animator(Animator),
     Color(StyleColor),
+    Gradient(Gradient),
 }
 
 impl ParsedValue {
@@ -2694,6 +2699,50 @@ impl Style {
 
     pub fn with_padding(mut self, padding: Padding) -> Self {
         self.set_padding(padding);
+        self
+    }
+
+    pub fn set_background(&mut self, background: Background) {
+        match background {
+            Background::Color(color) => {
+                self.insert(
+                    PropertyId::BackgroundColor,
+                    ParsedValue::Color(color.to_style_color()),
+                );
+                let _ = self.remove(PropertyId::BackgroundImage);
+            }
+            Background::Gradient(gradient) => {
+                self.insert(
+                    PropertyId::BackgroundImage,
+                    ParsedValue::Gradient(gradient),
+                );
+            }
+        }
+    }
+
+    pub fn with_background(mut self, background: Background) -> Self {
+        self.set_background(background);
+        self
+    }
+
+    pub fn set_background_image(&mut self, gradient: Gradient) {
+        self.insert(
+            PropertyId::BackgroundImage,
+            ParsedValue::Gradient(gradient),
+        );
+    }
+
+    pub fn with_background_image(mut self, gradient: Gradient) -> Self {
+        self.set_background_image(gradient);
+        self
+    }
+
+    pub fn set_border_image(&mut self, gradient: Gradient) {
+        self.insert(PropertyId::BorderImage, ParsedValue::Gradient(gradient));
+    }
+
+    pub fn with_border_image(mut self, gradient: Gradient) -> Self {
+        self.set_border_image(gradient);
         self
     }
 

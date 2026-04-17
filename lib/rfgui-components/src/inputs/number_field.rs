@@ -150,20 +150,17 @@ where
                     />
                 </Element>
                 <Button
-                    label="-"
-                    style={
-                        padding: Padding::new().x(Length::px(5.0)),
-                    }
+                    size="small"
+                    variant="outlined"
                     repeat on_click={minus_click}
-                    disabled={disabled}/>
+                    disabled={disabled}
+                >-</Button>
                 <Button
-                    label="+"
-                    style={
-                        padding: Padding::new().x(Length::px(5.0)),
-                    }
+                    size="small"
+                    variant="outlined"
                     repeat on_click={plus_click}
                     disabled={disabled}
-                />
+                >+</Button>
                 <Element style={{
                     flex: flex().grow(1.0).shrink(1.0).basis(theme.component.input.label_width_basis.clone()),
                     max_width: theme.component.input.label_max_width.clone(),

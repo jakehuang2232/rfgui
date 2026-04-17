@@ -365,6 +365,105 @@ impl Viewport {
         Some((buffer, dynamic_offset as u32, target_index))
     }
 
+    /// Upload a run of gradient stops into the persistent gradient stops storage buffer,
+    /// returning the starting stop index (not byte offset).  Grows the buffer if needed,
+    /// invalidating cached draw-rect bind groups since they reference the old buffer.
+    pub(crate) fn upload_gradient_stops(
+        &mut self,
+        stops: &[crate::view::render_pass::draw_rect_pass::GradientStopGpu],
+    ) -> Option<u32> {
+        use crate::view::render_pass::draw_rect_pass::{
+            GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY, GRADIENT_STOP_STRIDE,
+        };
+        if stops.is_empty() {
+            return None;
+        }
+        let device = self.gpu.device.as_ref()?.clone();
+        let stop_bytes: &[u8] = bytemuck::cast_slice(stops);
+        let byte_len = stop_bytes.len() as u64;
+        let needed_end = self.frame.gradient_stops_byte_cursor.saturating_add(byte_len);
+
+        let current_size = self
+            .frame
+            .gradient_stops_buffer
+            .as_ref()
+            .map(|e| e.size)
+            .unwrap_or(0);
+        let mut buffer_grew = false;
+        if needed_end > current_size {
+            let mut new_size = current_size.max(GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY).max(1);
+            while new_size < needed_end {
+                new_size = new_size.saturating_mul(2);
+            }
+            if let Some(old) = self.frame.gradient_stops_buffer.take() {
+                old.buffer.destroy();
+            }
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Gradient Stops Storage Buffer"),
+                size: new_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.frame.gradient_stops_buffer = Some(GradientStopsBufferEntry {
+                buffer,
+                size: new_size,
+            });
+            buffer_grew = true;
+        }
+
+        if buffer_grew {
+            // Existing cached draw-rect bind groups reference the stale storage buffer.
+            for entry in self.frame.draw_rect_uniform_pool.iter_mut() {
+                entry.bind_groups.clear();
+            }
+        }
+
+        let entry = self.frame.gradient_stops_buffer.as_ref()?;
+        let byte_offset = self.frame.gradient_stops_byte_cursor;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let queue = self.gpu.queue.as_ref()?;
+            queue.write_buffer(&entry.buffer, byte_offset, stop_bytes);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.gpu.upload_staging_belt.is_none() {
+                self.gpu.upload_staging_belt = Some(StagingBelt::new(device.clone(), 1024 * 1024));
+            }
+            let frame = self.frame.frame_state.as_mut()?;
+            let staging_belt = self.gpu.upload_staging_belt.as_mut()?;
+            let Some(size) = wgpu::BufferSize::new(byte_len) else {
+                return None;
+            };
+            let mut mapped =
+                staging_belt.write_buffer(&mut frame.encoder, &entry.buffer, byte_offset, size);
+            mapped.slice(..).copy_from_slice(stop_bytes);
+            drop(mapped);
+        }
+
+        self.frame.gradient_stops_byte_cursor = needed_end;
+        let start_index = (byte_offset / GRADIENT_STOP_STRIDE) as u32;
+        Some(start_index)
+    }
+
+    pub(crate) fn ensure_gradient_stops_buffer(&mut self) -> Option<&wgpu::Buffer> {
+        use crate::view::render_pass::draw_rect_pass::GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY;
+        if self.frame.gradient_stops_buffer.is_none() {
+            let device = self.gpu.device.as_ref()?.clone();
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Gradient Stops Storage Buffer"),
+                size: GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.frame.gradient_stops_buffer = Some(GradientStopsBufferEntry {
+                buffer,
+                size: GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY,
+            });
+        }
+        self.frame.gradient_stops_buffer.as_ref().map(|e| &e.buffer)
+    }
+
     /// Return a cached bind group for the given uniform pool slot and pipeline layout key,
     /// creating and storing it on the first call.  Bind groups bind the pool buffer at
     /// offset 0 / size=slot_size; dynamic offsets are supplied per-draw, so one bind group
@@ -380,20 +479,29 @@ impl Viewport {
         if let Some(bg) = entry.bind_groups.get(&layout_cache_key) {
             return Some(bg.clone());
         }
+        // Ensure the gradient stops buffer exists so binding 1 can resolve.
+        self.ensure_gradient_stops_buffer();
+        let stops_buffer = self.frame.gradient_stops_buffer.as_ref()?.buffer.clone();
+        let uniform_buffer = self.frame.draw_rect_uniform_pool.get(pool_index)?.buffer.clone();
         let device = self.gpu.device.as_ref()?;
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("DrawRect Bind Group (Cached)"),
             layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &entry.buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(slot_size),
-                }),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(slot_size),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: stops_buffer.as_entire_binding(),
+                },
+            ],
         });
-        // Re-borrow mutably to insert (split borrow is not possible across Option).
         self.frame.draw_rect_uniform_pool
             .get_mut(pool_index)?
             .bind_groups
@@ -426,6 +534,10 @@ impl Viewport {
         self.frame.draw_rect_uniform_pool.clear();
         self.frame.draw_rect_uniform_cursor = 0;
         self.frame.draw_rect_uniform_offset = 0;
+        if let Some(entry) = self.frame.gradient_stops_buffer.take() {
+            entry.buffer.destroy();
+        }
+        self.frame.gradient_stops_byte_cursor = 0;
         self.gpu.upload_staging_belt = None;
     }
 }

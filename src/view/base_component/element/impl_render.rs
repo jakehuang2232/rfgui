@@ -751,6 +751,20 @@ impl Element {
         }
         let fill_color = self.background_color.as_ref().to_rgba_f32();
         let opacity = if force_opaque { 1.0 } else { self.opacity };
+        let gradient_paint = self.computed_style.background_image.as_ref().map(|g| {
+            resolve_gradient_paint(
+                g,
+                self.core.layout_size.width.max(0.0),
+                self.core.layout_size.height.max(0.0),
+            )
+        });
+        let border_gradient_paint = self.computed_style.border_image.as_ref().map(|g| {
+            resolve_gradient_paint(
+                g,
+                self.core.layout_size.width.max(0.0),
+                self.core.layout_size.height.max(0.0),
+            )
+        });
         let shadow_state = self.render_box_shadows(
             graph,
             UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
@@ -784,6 +798,7 @@ impl Element {
                 size: [self.core.layout_size.width, self.core.layout_size.height],
                 fill_color,
                 opacity,
+                gradient: gradient_paint,
                 ..Default::default()
             },
             DrawRectInput::default(),
@@ -804,6 +819,7 @@ impl Element {
                 size: [self.core.layout_size.width, self.core.layout_size.height],
                 fill_color: [0.0, 0.0, 0.0, 0.0],
                 opacity,
+                border_gradient: border_gradient_paint,
                 ..Default::default()
             },
             DrawRectInput::default(),

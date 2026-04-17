@@ -9,7 +9,7 @@ use crate::rfgui::{
 };
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
 use crate::utils::output_image_source;
-use rfgui::FillMode;
+use rfgui::{FillMode, Gradient, SideOrCorner};
 
 fn animator_demo_keyframe<T: crate::rfgui::ColorLike>(
     background: T,
@@ -127,12 +127,12 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                 gap: theme.spacing.md,
             }}>
                 Justify Content:
-                <Button label="Start" on_click={move |_| {justify_content_start.set(JustifyContent::Start);}} />
-                <Button label="Center" on_click={move |_| {justify_content_center.set(JustifyContent::Center);}} />
-                <Button label="End" on_click={move |_| {justify_content_end.set(JustifyContent::End);}} />
-                <Button label="SpaceBetween" on_click={move |_| {justify_content_space_between.set(JustifyContent::SpaceBetween);}} />
-                <Button label="SpaceAround" on_click={move |_| {justify_content_space_around.set(JustifyContent::SpaceAround);}} />
-                <Button label="SpaceEvenly" on_click={move |_| {justify_content_space_evenly.set(JustifyContent::SpaceEvenly);}} />
+                <Button  on_click={move |_| {justify_content_start.set(JustifyContent::Start);}}>Start</Button>
+                <Button  on_click={move |_| {justify_content_center.set(JustifyContent::Center);}}>Center</Button>
+                <Button  on_click={move |_| {justify_content_end.set(JustifyContent::End);}}>End</Button>
+                <Button  on_click={move |_| {justify_content_space_between.set(JustifyContent::SpaceBetween);}}>SpaceBetween</Button>
+                <Button  on_click={move |_| {justify_content_space_around.set(JustifyContent::SpaceAround);}}>SpaceAround</Button>
+                <Button  on_click={move |_| {justify_content_space_evenly.set(JustifyContent::SpaceEvenly);}}>SpaceEvenly</Button>
             </Element>
             <Element style={{
                 width: Length::percent(100.0),
@@ -140,12 +140,12 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                 gap: theme.spacing.md,
             }}>
                 Cross Align:
-                <Button label="Start" on_click={move |_| {align_start.set(Align::Start);}} />
-                <Button label="Center" on_click={move |_| {align_center.set(Align::Center);}} />
-                <Button label="End" on_click={move |_| {align_end.set(Align::End);}} />
+                <Button  on_click={move |_| {align_start.set(Align::Start);}}>Start</Button>
+                <Button  on_click={move |_| {align_center.set(Align::Center);}}>Center</Button>
+                <Button  on_click={move |_| {align_end.set(Align::End);}}>End</Button>
                 Cross Size:
-                <Button label="Fit" on_click={move |_| {cross_size_fit.set(CrossSize::Fit);}} />
-                <Button label="Stretch" on_click={move |_| {cross_size_stretch.set(CrossSize::Stretch);}} />
+                <Button  on_click={move |_| {cross_size_fit.set(CrossSize::Fit);}}>Fit</Button>
+                <Button  on_click={move |_| {cross_size_stretch.set(CrossSize::Stretch);}}>Stretch</Button>
             </Element>
             <Element style={{
                 width: Length::px(100.0),
@@ -193,7 +193,7 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
             <Element style={{
                 width: Length::px(150.0),
                 height: Length::px(150.0),
-                background: theme.color.primary.base.clone(),
+                background: Gradient::rainbow(SideOrCorner::Right),
                 color: theme.color.primary.on.clone(),
                 border: Border::uniform(Length::px(10.0), &Color::hex("#274f8b"))
                     .top(Some(Length::px(20.0)), Some(&Color::hex("#e06c75")))
@@ -422,10 +422,10 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                 </Text>
                 <Text>{format!("Click Count: {}", click_count.get())}</Text>
                 <Button
-                    label="Click\nMe"
+                    
                     variant={Some(ButtonVariant::Contained)}
                     on_click={increment}
-                />
+>{"Click\nMe"}</Button>
             </Element>
             <Element style={{
                 width: Length::px(150.0),

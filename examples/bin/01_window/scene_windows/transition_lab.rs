@@ -94,9 +94,9 @@ pub fn TransitionLab(theme: Theme) -> RsxNode {
                         },
                     }} />
                     <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
-                        <Button label="Start Animation" on_click={move |_| { style_start.set(true); style_toggle_target.update(|value| *value = !*value); }} />
-                        <Button label="Remove Transition" on_click={move |_| { style_remove.set(false); }} />
-                        <Button label="Reset" on_click={move |_| { style_reset_enable.set(true); style_reset_target.set(false); }} />
+                        <Button  on_click={move |_| { style_start.set(true); style_toggle_target.update(|value| *value = !*value); }}>Start Animation</Button>
+                        <Button  on_click={move |_| { style_remove.set(false); }}>Remove Transition</Button>
+                        <Button  on_click={move |_| { style_reset_enable.set(true); style_reset_target.set(false); }}>Reset</Button>
                     </Element>
                 </Element>
                 <Element style={{
@@ -198,9 +198,9 @@ pub fn TransitionLab(theme: Theme) -> RsxNode {
                         </Element>
                     </Element>
                     <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
-                        <Button label="Start Animation" on_click={move |_| { transform_start.set(true); transform_toggle_target.update(|value| *value = !*value); }} />
-                        <Button label="Remove Transition" on_click={move |_| { transform_remove.set(false); }} />
-                        <Button label="Reset" on_click={move |_| { transform_reset_enable.set(true); transform_reset_target.set(false); }} />
+                        <Button  on_click={move |_| { transform_start.set(true); transform_toggle_target.update(|value| *value = !*value); }}>Start Animation</Button>
+                        <Button  on_click={move |_| { transform_remove.set(false); }}>Remove Transition</Button>
+                        <Button  on_click={move |_| { transform_reset_enable.set(true); transform_reset_target.set(false); }}>Reset</Button>
                     </Element>
                 </Element>
                 <Element style={{
@@ -238,9 +238,9 @@ pub fn TransitionLab(theme: Theme) -> RsxNode {
                         }} />
                     </Element>
                     <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
-                        <Button label="Start Animation" on_click={move |_| { layout_start_enable.set(true); layout_toggle_size.update(|value| *value = !*value); }} />
-                        <Button label="Remove Transition" on_click={move |_| { layout_remove.set(false); }} />
-                        <Button label="Reset" on_click={move |_| { layout_reset_enable.set(true); layout_reset_size.set(false); }} />
+                        <Button  on_click={move |_| { layout_start_enable.set(true); layout_toggle_size.update(|value| *value = !*value); }}>Start Animation</Button>
+                        <Button  on_click={move |_| { layout_remove.set(false); }}>Remove Transition</Button>
+                        <Button  on_click={move |_| { layout_reset_enable.set(true); layout_reset_size.set(false); }}>Reset</Button>
                     </Element>
                 </Element>
                 <Element style={{
@@ -277,9 +277,9 @@ pub fn TransitionLab(theme: Theme) -> RsxNode {
                         }} />
                     </Element>
                     <Element style={{ layout: Layout::flow().row().wrap(), gap: theme.spacing.xs }}>
-                        <Button label="Start Animation" on_click={move |_| { visual_start_enable.set(true); visual_toggle_pos.update(|value| *value = !*value); }} />
-                        <Button label="Remove Transition" on_click={move |_| { visual_remove.set(false); }} />
-                        <Button label="Reset" on_click={move |_| { visual_reset_enable.set(true); visual_reset_pos.set(false); }} />
+                        <Button  on_click={move |_| { visual_start_enable.set(true); visual_toggle_pos.update(|value| *value = !*value); }}>Start Animation</Button>
+                        <Button  on_click={move |_| { visual_remove.set(false); }}>Remove Transition</Button>
+                        <Button  on_click={move |_| { visual_reset_enable.set(true); visual_reset_pos.set(false); }}>Reset</Button>
                     </Element>
                 </Element>
             </Element>

@@ -1,5 +1,4 @@
-use crate::use_theme;
-use rfgui::TextAlign::Center;
+use crate::{ButtonSizeSpec, Theme, use_theme};
 use rfgui::ui::{
     ClickEvent, ClickHandlerProp, EventMeta, MouseButton, MouseDownHandlerProp,
     MouseEnterHandlerProp, MouseEventData, MouseLeaveHandlerProp, RsxComponent,
@@ -36,48 +35,173 @@ impl From<String> for ButtonVariant {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonSize {
+    Small,
+    Medium,
+    Large,
+}
+
+impl From<&str> for ButtonSize {
+    fn from(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "small" => ButtonSize::Small,
+            "medium" => ButtonSize::Medium,
+            "large" => ButtonSize::Large,
+            other => panic!("rsx build error on <Button>. unknown Button size `{other}`"),
+        }
+    }
+}
+
+impl From<String> for ButtonSize {
+    fn from(value: String) -> Self {
+        ButtonSize::from(value.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonColor {
+    Primary,
+    Secondary,
+    Error,
+    Warning,
+    Info,
+    Success,
+    Inherit,
+}
+
+impl From<&str> for ButtonColor {
+    fn from(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "primary" => ButtonColor::Primary,
+            "secondary" => ButtonColor::Secondary,
+            "error" => ButtonColor::Error,
+            "warning" => ButtonColor::Warning,
+            "info" => ButtonColor::Info,
+            "success" => ButtonColor::Success,
+            "inherit" => ButtonColor::Inherit,
+            other => panic!("rsx build error on <Button>. unknown Button color `{other}`"),
+        }
+    }
+}
+
+impl From<String> for ButtonColor {
+    fn from(value: String) -> Self {
+        ButtonColor::from(value.as_str())
+    }
+}
+
+impl rfgui::ui::IntoOptionalProp<ButtonVariant> for &str {
+    fn into_optional_prop(self) -> Option<ButtonVariant> {
+        Some(ButtonVariant::from(self))
+    }
+}
+
+impl rfgui::ui::IntoOptionalProp<ButtonVariant> for String {
+    fn into_optional_prop(self) -> Option<ButtonVariant> {
+        Some(ButtonVariant::from(self))
+    }
+}
+
+impl rfgui::ui::IntoOptionalProp<ButtonSize> for &str {
+    fn into_optional_prop(self) -> Option<ButtonSize> {
+        Some(ButtonSize::from(self))
+    }
+}
+
+impl rfgui::ui::IntoOptionalProp<ButtonSize> for String {
+    fn into_optional_prop(self) -> Option<ButtonSize> {
+        Some(ButtonSize::from(self))
+    }
+}
+
+impl rfgui::ui::IntoOptionalProp<ButtonColor> for &str {
+    fn into_optional_prop(self) -> Option<ButtonColor> {
+        Some(ButtonColor::from(self))
+    }
+}
+
+impl rfgui::ui::IntoOptionalProp<ButtonColor> for String {
+    fn into_optional_prop(self) -> Option<ButtonColor> {
+        Some(ButtonColor::from(self))
+    }
+}
+
+/// Resolve a `ButtonColor` to a `(base, on)` pair from the current theme.
+/// `Inherit` returns the primary text color as base and keeps `on` equal so
+/// text-style buttons pick up the ambient foreground.
+pub(crate) fn resolve_color_set(
+    theme: &Theme,
+    color: ButtonColor,
+) -> (Box<dyn ColorLike>, Box<dyn ColorLike>) {
+    match color {
+        ButtonColor::Primary => (
+            theme.color.primary.base.clone(),
+            theme.color.primary.on.clone(),
+        ),
+        ButtonColor::Secondary => (
+            theme.color.secondary.base.clone(),
+            theme.color.secondary.on.clone(),
+        ),
+        ButtonColor::Error => (
+            theme.color.error.base.clone(),
+            theme.color.error.on.clone(),
+        ),
+        ButtonColor::Warning => (
+            theme.color.warning.base.clone(),
+            theme.color.warning.on.clone(),
+        ),
+        ButtonColor::Info => (theme.color.info.base.clone(), theme.color.info.on.clone()),
+        ButtonColor::Success => (
+            theme.color.success.base.clone(),
+            theme.color.success.on.clone(),
+        ),
+        ButtonColor::Inherit => (
+            theme.color.text.primary.clone(),
+            theme.color.text.primary.clone(),
+        ),
+    }
+}
+
+pub(crate) fn size_spec(theme: &Theme, size: ButtonSize) -> ButtonSizeSpec {
+    match size {
+        ButtonSize::Small => theme.component.button.size.small.clone(),
+        ButtonSize::Medium => theme.component.button.size.medium.clone(),
+        ButtonSize::Large => theme.component.button.size.large.clone(),
+    }
+}
+
 pub struct Button;
 
 #[props]
 pub struct ButtonProps {
-    pub label: String,
     pub variant: Option<ButtonVariant>,
+    pub size: Option<ButtonSize>,
+    pub color: Option<ButtonColor>,
     pub disabled: Option<bool>,
     pub repeat: Option<bool>,
-    pub style: Option<ButtonStyleSlot>,
+    pub full_width: Option<bool>,
+    pub start_icon: Option<RsxNode>,
+    pub end_icon: Option<RsxNode>,
     pub on_click: Option<ClickHandlerProp>,
 }
 
-#[props]
-#[derive(Clone)]
-pub struct ButtonStyleSlot {
-    pub color: Option<Color>,
-    pub background: Option<Color>,
-    pub padding: Option<Padding>,
-    pub border: Option<Border>,
-    pub border_radius: Option<BorderRadius>,
-    pub hover: Option<ButtonHoverStyleSlot>,
-}
-
-#[props]
-#[derive(Clone)]
-pub struct ButtonHoverStyleSlot {
-    pub color: Option<Color>,
-    pub background: Option<Color>,
-    pub border: Option<Border>,
-}
-
 impl RsxComponent<ButtonProps> for Button {
-    fn render(props: ButtonProps, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: ButtonProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <ButtonView
-                label={props.label}
                 variant={props.variant}
+                size={props.size}
+                color={props.color}
                 disabled={props.disabled}
                 repeat={props.repeat}
-                style={props.style}
+                full_width={props.full_width}
+                start_icon={props.start_icon}
+                end_icon={props.end_icon}
                 on_click={props.on_click}
-            />
+            >
+                {children}
+            </ButtonView>
         }
     }
 }
@@ -85,7 +209,7 @@ impl RsxComponent<ButtonProps> for Button {
 impl rfgui::ui::RsxTag for Button {
     type Props = __ButtonPropsInit;
     type StrictProps = ButtonProps;
-    const ACCEPTS_CHILDREN: bool = false;
+    const ACCEPTS_CHILDREN: bool = true;
 
     fn into_strict(props: Self::Props) -> Self::StrictProps {
         props.into()
@@ -99,7 +223,6 @@ impl rfgui::ui::RsxTag for Button {
         <Self as RsxComponent<ButtonProps>>::render(props, children)
     }
 }
-
 
 #[derive(Clone, Default, PartialEq)]
 struct ButtonRepeatState {
@@ -131,12 +254,16 @@ fn resolve_color(color: &dyn ColorLike) -> Color {
 
 #[component]
 fn ButtonView(
-    label: String,
     variant: Option<ButtonVariant>,
+    size: Option<ButtonSize>,
+    color: Option<ButtonColor>,
     disabled: Option<bool>,
     repeat: Option<bool>,
-    style: Option<ButtonStyleSlot>,
+    full_width: Option<bool>,
+    start_icon: Option<RsxNode>,
+    end_icon: Option<RsxNode>,
     on_click: Option<ClickHandlerProp>,
+    children: Vec<RsxNode>,
 ) -> RsxNode {
     const REPEAT_DELAY: Duration = Duration::from_millis(400);
     const REPEAT_INTERVAL: Duration = Duration::from_millis(75);
@@ -144,7 +271,10 @@ fn ButtonView(
 
     let theme = use_theme().0;
     let variant = variant.unwrap_or(ButtonVariant::Contained);
+    let size = size.unwrap_or(ButtonSize::Medium);
+    let color = color.unwrap_or(ButtonColor::Primary);
     let disabled = disabled.unwrap_or(false);
+    let full_width = full_width.unwrap_or(false);
     let repeat_enabled = repeat.unwrap_or(false) && !disabled && on_click.is_some();
     let repeat_state = use_state(ButtonRepeatState::default);
     let repeat_snapshot = repeat_state.get();
@@ -183,100 +313,59 @@ fn ButtonView(
         use_interval(false, REPEAT_TICK, || {});
     }
 
-    let transparent = Box::new(Color::transparent()) as Box<dyn ColorLike>;
-    let border = if disabled {
+    let spec = size_spec(&theme, size);
+    let (color_base, color_on) = resolve_color_set(&theme, color);
+    let transparent: Box<dyn ColorLike> = Box::new(Color::transparent());
+
+    let border: Border = if disabled {
         match variant {
-            ButtonVariant::Contained => {
-                Border::uniform(Length::px(0.5), theme.color.state.disabled.as_ref())
-            }
-            ButtonVariant::Outlined => {
+            ButtonVariant::Contained | ButtonVariant::Outlined => {
                 Border::uniform(Length::px(0.5), theme.color.state.disabled.as_ref())
             }
             ButtonVariant::Text => Border::uniform(Length::px(0.5), transparent.as_ref()),
         }
     } else {
         match variant {
-            ButtonVariant::Contained => {
-                Border::uniform(Length::px(0.5), theme.color.primary.base.as_ref())
-            }
-            ButtonVariant::Outlined => {
-                Border::uniform(Length::px(0.5), theme.color.primary.base.as_ref())
+            ButtonVariant::Contained | ButtonVariant::Outlined => {
+                Border::uniform(Length::px(0.5), color_base.as_ref())
             }
             ButtonVariant::Text => Border::uniform(Length::px(0.5), transparent.as_ref()),
         }
     };
+
     let background: Box<dyn ColorLike> = if disabled {
         match variant {
             ButtonVariant::Contained => theme.color.state.disabled.clone(),
-            ButtonVariant::Outlined | ButtonVariant::Text => {
-                Box::new(Color::transparent()) as Box<dyn ColorLike>
-            }
+            ButtonVariant::Outlined | ButtonVariant::Text => transparent.clone(),
         }
     } else {
         match variant {
-            ButtonVariant::Contained => theme.color.primary.base.clone(),
-            ButtonVariant::Outlined => Box::new(Color::transparent()) as Box<dyn ColorLike>,
-            ButtonVariant::Text => Box::new(Color::transparent()) as Box<dyn ColorLike>,
+            ButtonVariant::Contained => color_base.clone(),
+            ButtonVariant::Outlined | ButtonVariant::Text => transparent.clone(),
         }
     };
+
     let hover_background: Box<dyn ColorLike> = if disabled {
         background.clone()
     } else {
         match variant {
             ButtonVariant::Contained => theme.color.state.active.clone(),
-            ButtonVariant::Outlined => theme.color.state.hover.clone(),
-            ButtonVariant::Text => theme.color.state.hover.clone(),
+            ButtonVariant::Outlined | ButtonVariant::Text => theme.color.state.hover.clone(),
         }
     };
-    let text_color = if disabled {
+
+    let text_color: Box<dyn ColorLike> = if disabled {
         theme.color.text.disabled.clone()
     } else {
         match variant {
-            ButtonVariant::Contained => theme.color.primary.on.clone(),
-            ButtonVariant::Outlined => theme.color.text.primary.clone(),
-            ButtonVariant::Text => theme.color.text.primary.clone(),
+            ButtonVariant::Contained => color_on.clone(),
+            ButtonVariant::Outlined | ButtonVariant::Text => color_base.clone(),
         }
     };
-    let style_slot = style.as_ref();
-    let root_background = style_slot
-        .and_then(|slot| slot.background)
-        .unwrap_or_else(|| resolve_color(background.as_ref()));
-    let root_padding = style_slot
-        .and_then(|slot| slot.padding)
-        .unwrap_or(theme.component.button.padding);
-    let root_border = style_slot
-        .and_then(|slot| slot.border.clone())
-        .unwrap_or(border);
-    let root_border_radius = style_slot
-        .and_then(|slot| slot.border_radius)
-        .unwrap_or(theme.component.button.radius);
-    let root_hover_background = if disabled {
-        root_background
-    } else {
-        style_slot
-            .and_then(|slot| slot.hover.as_ref())
-            .and_then(|hover| hover.background)
-            .unwrap_or_else(|| resolve_color(hover_background.as_ref()))
-    };
-    let root_hover_border = if disabled {
-        root_border.clone()
-    } else {
-        style_slot
-            .and_then(|slot| slot.hover.as_ref())
-            .and_then(|hover| hover.border.clone())
-            .unwrap_or_else(|| root_border.clone())
-    };
-    let resolved_text_color = style_slot
-        .and_then(|slot| slot.color)
-        .unwrap_or_else(|| resolve_color(text_color.as_ref()));
-    let text_hover_color = if disabled {
-        resolved_text_color
-    } else {
-        style_slot
-            .and_then(|slot| slot.hover.as_ref())
-            .and_then(|hover| hover.color)
-            .unwrap_or(resolved_text_color)
-    };
+
+    let resolved_background = resolve_color(background.as_ref());
+    let resolved_hover_background = resolve_color(hover_background.as_ref());
+    let resolved_text_color = resolve_color(text_color.as_ref());
 
     let mouse_down = if repeat_enabled {
         let repeat_state = repeat_state.binding();
@@ -362,26 +451,37 @@ fn ButtonView(
         None
     };
 
+    let root_padding: Padding = spec.padding;
+    let root_border_radius: BorderRadius = theme.component.button.radius;
+    let icon_gap = spec.icon_gap;
+
+    let width = if full_width {
+        Some(Length::percent(100.0))
+    } else {
+        None
+    };
+
     rsx! {
         <Element
             style={{
+                width: width,
                 layout: Layout::flow()
                     .row()
                     .no_wrap()
                     .justify_content(JustifyContent::Center)
                     .align(Align::Center),
+                gap: icon_gap,
                 padding: root_padding,
                 border_radius: root_border_radius,
-                border: root_border,
-                background: root_background,
+                border: border,
+                background: resolved_background,
                 transition: Transitions::single(
                     Transition::new(TransitionProperty::BackgroundColor, theme.motion.duration.normal)
                         .ease_in_out(),
                 ),
                 cursor: if disabled { Cursor::Default } else { Cursor::Pointer },
                 hover: {
-                    background: root_hover_background,
-                    border: root_hover_border,
+                    background: resolved_hover_background,
                 },
             }}
             on_mouse_down={mouse_down}
@@ -389,18 +489,16 @@ fn ButtonView(
             on_mouse_leave={mouse_leave}
             on_click={if !disabled && !repeat_enabled { on_click } else { None }}
         >
+            {start_icon}
             <Text
-                font_size={theme.typography.size.sm}
-                align={Center}
+                font_size={spec.font_size}
                 style={{
                     color: resolved_text_color,
-                    hover: {
-                        color: text_hover_color,
-                    }
                 }}
             >
-                {label}
+                {children}
             </Text>
+            {end_icon}
         </Element>
     }
 }
