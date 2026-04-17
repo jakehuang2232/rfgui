@@ -1,5 +1,6 @@
+use rustc_hash::{FxHashMap, FxHashSet};
 use crate::time::Instant;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
@@ -662,9 +663,9 @@ pub struct CompiledGraph {
     pub(crate) execution_plan: ExecutionPlan,
     pub resource_transitions: Vec<CompiledResourceTransition>,
     pub resource_timelines: Vec<CompiledResourceTimeline>,
-    texture_allocation_ids: HashMap<TextureHandle, AllocationId>,
-    buffer_allocation_ids: HashMap<BufferHandle, AllocationId>,
-    texture_stable_keys: HashMap<TextureHandle, u64>,
+    texture_allocation_ids: FxHashMap<TextureHandle, AllocationId>,
+    buffer_allocation_ids: FxHashMap<BufferHandle, AllocationId>,
+    texture_stable_keys: FxHashMap<TextureHandle, u64>,
 }
 
 #[derive(Clone)]
@@ -678,7 +679,7 @@ enum ExecuteStep {
 pub struct FrameGraph {
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
-    texture_attachment_pairs: HashMap<TextureHandle, AttachmentTarget>,
+    texture_attachment_pairs: FxHashMap<TextureHandle, AttachmentTarget>,
     buffers: Vec<BufferDesc>,
     texture_metadata: Vec<ResourceMetadata>,
     buffer_metadata: Vec<ResourceMetadata>,
@@ -763,7 +764,7 @@ impl FrameGraph {
         Self {
             passes: Vec::new(),
             textures: Vec::new(),
-            texture_attachment_pairs: HashMap::new(),
+            texture_attachment_pairs: FxHashMap::default(),
             buffers: Vec::new(),
             texture_metadata: Vec::new(),
             buffer_metadata: Vec::new(),
@@ -1446,9 +1447,9 @@ impl FrameGraph {
     }
 
     fn annotate_resource_versions(&mut self) {
-        let mut latest_texture_version: HashMap<TextureHandle, TextureVersionId> = HashMap::new();
-        let mut latest_buffer_version: HashMap<BufferHandle, BufferVersionId> = HashMap::new();
-        let mut version_producers: HashMap<ResourceVersionId, usize> = HashMap::new();
+        let mut latest_texture_version: FxHashMap<TextureHandle, TextureVersionId> = FxHashMap::default();
+        let mut latest_buffer_version: FxHashMap<BufferHandle, BufferVersionId> = FxHashMap::default();
+        let mut version_producers: FxHashMap<ResourceVersionId, usize> = FxHashMap::default();
         let mut consumed_versions: Vec<ConsumedVersion> = Vec::new();
         let mut produced_versions: Vec<ProducedVersion> = Vec::new();
         let mut next_texture_version = 0_u32;
@@ -1565,7 +1566,7 @@ impl FrameGraph {
                 ResourceHandle::Texture(handle) => resource.stable_key.map(|key| (handle, key)),
                 _ => None,
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<FxHashMap<_, _>>();
         let culled_passes = (0..self.passes.len())
             .filter(|index| !live_passes.contains(index))
             .collect::<Vec<_>>();
@@ -1646,15 +1647,15 @@ impl FrameGraph {
 
     fn discover_sink_passes(
         &self,
-        version_producers: &HashMap<ResourceVersionId, usize>,
-        latest_resource_versions: &HashMap<ResourceHandle, ResourceVersionId>,
+        version_producers: &FxHashMap<ResourceVersionId, usize>,
+        latest_resource_versions: &FxHashMap<ResourceHandle, ResourceVersionId>,
     ) -> Result<Vec<usize>, FrameGraphError> {
         if self.external_sinks.is_empty() {
             return Ok((0..self.passes.len()).collect());
         }
 
         let mut sink_passes = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         for sink in &self.external_sinks {
             match sink.target {
                 ExternalSinkTarget::Pass(pass) => {
@@ -1692,9 +1693,9 @@ impl FrameGraph {
     fn discover_live_passes(
         &self,
         sink_passes: &[usize],
-        version_producers: &HashMap<ResourceVersionId, usize>,
-    ) -> Result<HashSet<usize>, FrameGraphError> {
-        let mut live = HashSet::new();
+        version_producers: &FxHashMap<ResourceVersionId, usize>,
+    ) -> Result<FxHashSet<usize>, FrameGraphError> {
+        let mut live = FxHashSet::default();
         let mut stack = sink_passes.to_vec();
         while let Some(pass_index) = stack.pop() {
             if !live.insert(pass_index) {
@@ -1720,11 +1721,11 @@ impl FrameGraph {
 
     fn build_live_dependency_graph(
         &self,
-        live_passes: &HashSet<usize>,
-        version_producers: &HashMap<ResourceVersionId, usize>,
-    ) -> Result<(Vec<HashSet<usize>>, Vec<usize>), FrameGraphError> {
+        live_passes: &FxHashSet<usize>,
+        version_producers: &FxHashMap<ResourceVersionId, usize>,
+    ) -> Result<(Vec<FxHashSet<usize>>, Vec<usize>), FrameGraphError> {
         let mut indegree = vec![0usize; self.passes.len()];
-        let mut graph_edges: Vec<HashSet<usize>> = vec![HashSet::new(); self.passes.len()];
+        let mut graph_edges: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); self.passes.len()];
 
         self.validate_live_passes(live_passes, version_producers)?;
 
@@ -1747,8 +1748,8 @@ impl FrameGraph {
 
     fn validate_live_passes(
         &self,
-        live_passes: &HashSet<usize>,
-        version_producers: &HashMap<ResourceVersionId, usize>,
+        live_passes: &FxHashSet<usize>,
+        version_producers: &FxHashMap<ResourceVersionId, usize>,
     ) -> Result<(), FrameGraphError> {
         for &index in live_passes {
             validate_pass_descriptor(&self.passes[index].descriptor, &self.textures)?;
@@ -1773,8 +1774,8 @@ impl FrameGraph {
         Ok(())
     }
 
-    fn build_version_producers(&self) -> HashMap<ResourceVersionId, usize> {
-        let mut producers = HashMap::new();
+    fn build_version_producers(&self) -> FxHashMap<ResourceVersionId, usize> {
+        let mut producers = FxHashMap::default();
         for (pass_index, node) in self.passes.iter().enumerate() {
             for usage in &node.usages {
                 if let Some(version) = usage.write_version {
@@ -1785,8 +1786,8 @@ impl FrameGraph {
         producers
     }
 
-    fn latest_resource_versions(&self) -> HashMap<ResourceHandle, ResourceVersionId> {
-        let mut latest = HashMap::new();
+    fn latest_resource_versions(&self) -> FxHashMap<ResourceHandle, ResourceVersionId> {
+        let mut latest = FxHashMap::default();
         for node in &self.passes {
             for usage in &node.usages {
                 if let Some(version) = usage.write_version {
@@ -1798,7 +1799,7 @@ impl FrameGraph {
     }
 
     fn pass_consumed_versions(&self, pass_index: usize) -> Vec<ConsumedVersion> {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut versions = Vec::new();
         for usage in &self.passes[pass_index].usages {
             let Some(version) = usage.read_version else {
@@ -1817,7 +1818,7 @@ impl FrameGraph {
     }
 
     fn pass_produced_versions(&self, pass_index: usize) -> Vec<ProducedVersion> {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut versions = Vec::new();
         for usage in &self.passes[pass_index].usages {
             let Some(version) = usage.write_version else {
@@ -1843,8 +1844,8 @@ impl FrameGraph {
 
     fn compute_batch_anchor_info(
         &self,
-        live_passes: &HashSet<usize>,
-        graph_edges: &[HashSet<usize>],
+        live_passes: &FxHashSet<usize>,
+        graph_edges: &[FxHashSet<usize>],
         indegree: &[usize],
         compatibility_keys: &[Option<RenderPassCompatibilityKey>],
     ) -> Vec<BatchAnchorInfo> {
@@ -1889,13 +1890,13 @@ impl FrameGraph {
 
     fn toposort_live_passes(
         &self,
-        live_passes: &HashSet<usize>,
-        graph_edges: &[HashSet<usize>],
+        live_passes: &FxHashSet<usize>,
+        graph_edges: &[FxHashSet<usize>],
         indegree: &[usize],
     ) -> Result<Vec<usize>, FrameGraphError> {
         let mut indegree = indegree.to_vec();
         let mut order = Vec::new();
-        let mut queue: HashSet<usize> = indegree
+        let mut queue: FxHashSet<usize> = indegree
             .iter()
             .enumerate()
             .filter_map(|(idx, &deg)| {
@@ -2033,7 +2034,7 @@ impl FrameGraph {
             .iter()
             .map(|node| node.descriptor.clone())
             .collect::<Vec<_>>();
-        let mut seen_transient_color_targets = HashSet::<TextureHandle>::new();
+        let mut seen_transient_color_targets = FxHashSet::<TextureHandle>::default();
 
         for &pass_index in ordered_passes {
             let PassDetails::Graphics(graphics) = &mut descriptors[pass_index].details else {
@@ -2066,20 +2067,20 @@ impl FrameGraph {
 
     fn build_compiled_resources(
         &self,
-        live_passes: &HashSet<usize>,
+        live_passes: &FxHashSet<usize>,
         ordered_passes: &[usize],
     ) -> (
         Vec<CompiledResource>,
         AllocationPlan,
-        HashMap<TextureHandle, AllocationId>,
-        HashMap<BufferHandle, AllocationId>,
+        FxHashMap<TextureHandle, AllocationId>,
+        FxHashMap<BufferHandle, AllocationId>,
     ) {
         let ordered_positions = ordered_passes
             .iter()
             .enumerate()
             .map(|(order, &pass_index)| (pass_index, order))
-            .collect::<HashMap<_, _>>();
-        let mut resources = HashMap::<ResourceHandle, CompiledResource>::new();
+            .collect::<FxHashMap<_, _>>();
+        let mut resources = FxHashMap::<ResourceHandle, CompiledResource>::default();
 
         for (pass_index, node) in self.passes.iter().enumerate() {
             if !live_passes.contains(&pass_index) {
@@ -2088,8 +2089,8 @@ impl FrameGraph {
             let Some(order_index) = ordered_positions.get(&pass_index).copied() else {
                 continue;
             };
-            let mut producers = HashSet::new();
-            let mut consumers = HashSet::new();
+            let mut producers = FxHashSet::default();
+            let mut consumers = FxHashSet::default();
             for usage in &node.usages {
                 let resource = usage.resource;
                 let metadata = self.resource_metadata(resource);
@@ -2152,16 +2153,16 @@ impl FrameGraph {
         ordered_passes: &[usize],
     ) -> Result<
         (
-            HashMap<usize, Vec<CompiledPassResourceTransition>>,
+            FxHashMap<usize, Vec<CompiledPassResourceTransition>>,
             Vec<CompiledResourceTransition>,
             Vec<CompiledResourceTimeline>,
         ),
         FrameGraphError,
     > {
-        let mut current_states = HashMap::<ResourceHandle, ResourceState>::new();
-        let mut pass_transitions = HashMap::<usize, Vec<CompiledPassResourceTransition>>::new();
+        let mut current_states = FxHashMap::<ResourceHandle, ResourceState>::default();
+        let mut pass_transitions = FxHashMap::<usize, Vec<CompiledPassResourceTransition>>::default();
         let mut resource_transitions = Vec::<CompiledResourceTransition>::new();
-        let mut timeline_map = HashMap::<ResourceHandle, Vec<CompiledResourceTransition>>::new();
+        let mut timeline_map = FxHashMap::<ResourceHandle, Vec<CompiledResourceTransition>>::default();
 
         for (execution_index, &pass_index) in ordered_passes.iter().enumerate() {
             let per_resource = group_pass_usages_by_resource(&self.passes[pass_index].usages);
@@ -2267,10 +2268,10 @@ impl FrameGraph {
             }
         }
 
-        let mut resources: HashSet<ResourceHandle> = HashSet::new();
-        let mut write_edges: HashSet<(usize, ResourceHandle)> = HashSet::new();
-        let mut read_edges: HashSet<(ResourceHandle, usize)> = HashSet::new();
-        let mut modify_edges: HashSet<(usize, ResourceHandle)> = HashSet::new();
+        let mut resources: FxHashSet<ResourceHandle> = FxHashSet::default();
+        let mut write_edges: FxHashSet<(usize, ResourceHandle)> = FxHashSet::default();
+        let mut read_edges: FxHashSet<(ResourceHandle, usize)> = FxHashSet::default();
+        let mut modify_edges: FxHashSet<(usize, ResourceHandle)> = FxHashSet::default();
 
         for (index, node) in self.passes.iter().enumerate() {
             for usage in &node.usages {
@@ -2361,8 +2362,8 @@ impl FrameGraph {
             return Err(FrameGraphError::NotCompiled);
         }
         let execute_started_at = Instant::now();
-        let mut pass_timings: HashMap<String, f64> = HashMap::new();
-        let mut pass_counts: HashMap<String, usize> = HashMap::new();
+        let mut pass_timings: FxHashMap<String, f64> = FxHashMap::default();
+        let mut pass_counts: FxHashMap<String, usize> = FxHashMap::default();
         let mut pass_first_seen_order: Vec<String> = Vec::new();
         let textures = self.textures.clone();
         let buffers = self.buffers.clone();
@@ -2459,8 +2460,8 @@ impl FrameGraph {
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut HashMap<String, f64>,
-        pass_counts: &mut HashMap<String, usize>,
+        pass_timings: &mut FxHashMap<String, f64>,
+        pass_counts: &mut FxHashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
         let encoder_ptr = {
@@ -2505,8 +2506,8 @@ impl FrameGraph {
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut HashMap<String, f64>,
-        pass_counts: &mut HashMap<String, usize>,
+        pass_timings: &mut FxHashMap<String, f64>,
+        pass_counts: &mut FxHashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
         let pass_name = self.passes[index].pass.name().to_string();
@@ -2556,8 +2557,8 @@ impl FrameGraph {
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut HashMap<String, f64>,
-        pass_counts: &mut HashMap<String, usize>,
+        pass_timings: &mut FxHashMap<String, f64>,
+        pass_counts: &mut FxHashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
         let pass_name = self.passes[index].pass.name().to_string();
@@ -2602,8 +2603,8 @@ impl FrameGraph {
         &mut self,
         group: &RenderPassGroup,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut HashMap<String, f64>,
-        pass_counts: &mut HashMap<String, usize>,
+        pass_timings: &mut FxHashMap<String, f64>,
+        pass_counts: &mut FxHashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
         let Some(parts) = ctx.viewport.frame_parts() else {
@@ -2629,8 +2630,8 @@ impl FrameGraph {
         compatibility: &RenderPassCompatibilityKey,
         ctx: &mut RecordContext<'_, '_>,
         encoder: &mut wgpu::CommandEncoder,
-        pass_timings: &mut HashMap<String, f64>,
-        pass_counts: &mut HashMap<String, usize>,
+        pass_timings: &mut FxHashMap<String, f64>,
+        pass_counts: &mut FxHashMap<String, usize>,
         pass_first_seen_order: &mut Vec<String>,
     ) {
         let pass_names = pass_indices
@@ -2763,8 +2764,8 @@ impl FrameGraph {
 fn record_pass_timing(
     pass_name: String,
     pass_started_at: Instant,
-    pass_timings: &mut HashMap<String, f64>,
-    pass_counts: &mut HashMap<String, usize>,
+    pass_timings: &mut FxHashMap<String, f64>,
+    pass_counts: &mut FxHashMap<String, usize>,
     pass_first_seen_order: &mut Vec<String>,
 ) {
     let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -2907,8 +2908,8 @@ fn annotate_usage_version(
     usage: ResourceUsage,
     descriptor: &PassDescriptor,
     texture_metadata: &[ResourceMetadata],
-    latest_texture_version: &mut HashMap<TextureHandle, TextureVersionId>,
-    latest_buffer_version: &mut HashMap<BufferHandle, BufferVersionId>,
+    latest_texture_version: &mut FxHashMap<TextureHandle, TextureVersionId>,
+    latest_buffer_version: &mut FxHashMap<BufferHandle, BufferVersionId>,
     next_texture_version: &mut u32,
     next_buffer_version: &mut u32,
 ) -> (Option<ResourceVersionId>, Option<ResourceVersionId>) {
@@ -2932,7 +2933,7 @@ fn annotate_texture_usage_version(
     usage: ResourceUsage,
     descriptor: &PassDescriptor,
     texture_metadata: &[ResourceMetadata],
-    latest_versions: &mut HashMap<TextureHandle, TextureVersionId>,
+    latest_versions: &mut FxHashMap<TextureHandle, TextureVersionId>,
     next_version: &mut u32,
 ) -> (Option<ResourceVersionId>, Option<ResourceVersionId>) {
     let current = latest_versions
@@ -3052,7 +3053,7 @@ fn annotate_texture_usage_version(
 fn annotate_buffer_usage_version(
     handle: BufferHandle,
     usage: ResourceUsage,
-    latest_versions: &mut HashMap<BufferHandle, BufferVersionId>,
+    latest_versions: &mut FxHashMap<BufferHandle, BufferVersionId>,
     next_version: &mut u32,
 ) -> (Option<ResourceVersionId>, Option<ResourceVersionId>) {
     let current = latest_versions
@@ -3101,7 +3102,7 @@ fn annotate_buffer_usage_version(
 
 fn allocate_texture_version(
     handle: TextureHandle,
-    latest_versions: &mut HashMap<TextureHandle, TextureVersionId>,
+    latest_versions: &mut FxHashMap<TextureHandle, TextureVersionId>,
     next_version: &mut u32,
 ) -> TextureVersionId {
     let version = TextureVersionId(*next_version);
@@ -3112,7 +3113,7 @@ fn allocate_texture_version(
 
 fn allocate_buffer_version(
     handle: BufferHandle,
-    latest_versions: &mut HashMap<BufferHandle, BufferVersionId>,
+    latest_versions: &mut FxHashMap<BufferHandle, BufferVersionId>,
     next_version: &mut u32,
 ) -> BufferVersionId {
     let version = BufferVersionId(*next_version);
@@ -3175,7 +3176,7 @@ fn resource_sort_key(handle: ResourceHandle) -> (u8, u32) {
 fn group_pass_usages_by_resource(
     usages: &[PassResourceUsage],
 ) -> Vec<(ResourceHandle, Vec<ResourceUsage>)> {
-    let mut grouped = HashMap::<ResourceHandle, Vec<ResourceUsage>>::new();
+    let mut grouped = FxHashMap::<ResourceHandle, Vec<ResourceUsage>>::default();
     for usage in usages {
         grouped.entry(usage.resource).or_default().push(usage.usage);
     }
@@ -3435,13 +3436,13 @@ fn validate_pass_descriptor(
 }
 
 fn select_next_ready_node(
-    queue: &HashSet<usize>,
+    queue: &FxHashSet<usize>,
     signatures: &[Option<RenderPassCompatibilityKey>],
     batch_anchor_info: &[BatchAnchorInfo],
     last_signature: Option<&RenderPassCompatibilityKey>,
-    graph_edges: &[HashSet<usize>],
+    graph_edges: &[FxHashSet<usize>],
     indegree: &[usize],
-    live_passes: &HashSet<usize>,
+    live_passes: &FxHashSet<usize>,
 ) -> usize {
     if let Some(last_signature) = last_signature {
         let mut best: Option<usize> = None;
@@ -3468,7 +3469,7 @@ fn select_next_ready_node(
         best_distance: usize,
         best_idx: usize,
     }
-    let mut anchor_groups: HashMap<&RenderPassCompatibilityKey, AnchorGroupBest> = HashMap::new();
+    let mut anchor_groups: FxHashMap<&RenderPassCompatibilityKey, AnchorGroupBest> = FxHashMap::default();
     for &idx in queue {
         // Resolve the anchor's signature through the index stored in BatchAnchorInfo —
         // no clone required; we borrow directly from the signatures slice.
@@ -3548,8 +3549,8 @@ fn select_next_ready_node(
 }
 
 fn topological_order_for_analysis(
-    live_passes: &HashSet<usize>,
-    graph_edges: &[HashSet<usize>],
+    live_passes: &FxHashSet<usize>,
+    graph_edges: &[FxHashSet<usize>],
     indegree: &[usize],
 ) -> Vec<usize> {
     let mut indegree = indegree.to_vec();
@@ -3580,11 +3581,11 @@ fn topological_order_for_analysis(
 fn estimate_compatible_run_length(
     start_idx: usize,
     target_signature: &RenderPassCompatibilityKey,
-    ready: &mut HashSet<usize>,
+    ready: &mut FxHashSet<usize>,
     sim_indegree: &mut Vec<usize>,
     signatures: &[Option<RenderPassCompatibilityKey>],
-    graph_edges: &[HashSet<usize>],
-    live_passes: &HashSet<usize>,
+    graph_edges: &[FxHashSet<usize>],
+    live_passes: &FxHashSet<usize>,
 ) -> usize {
     // Undo logs so we can restore `ready` and `sim_indegree` after the simulation
     // instead of cloning them fresh on every call.
@@ -3819,8 +3820,8 @@ fn build_allocation_plan(
     graph: &FrameGraph,
 ) -> (
     AllocationPlan,
-    HashMap<TextureHandle, AllocationId>,
-    HashMap<BufferHandle, AllocationId>,
+    FxHashMap<TextureHandle, AllocationId>,
+    FxHashMap<BufferHandle, AllocationId>,
 ) {
     #[derive(Clone)]
     struct TextureSlot {
@@ -3841,10 +3842,10 @@ fn build_allocation_plan(
     let mut texture_slots: Vec<TextureSlot> = Vec::new();
     let mut texture_allocations: Vec<TextureAllocationPlanEntry> = Vec::new();
     // Index from AllocationId → position in texture_allocations for O(1) lookup.
-    let mut texture_allocation_index: HashMap<AllocationId, usize> = HashMap::new();
+    let mut texture_allocation_index: FxHashMap<AllocationId, usize> = FxHashMap::default();
     let mut buffer_allocations: Vec<BufferAllocationPlanEntry> = Vec::new();
-    let mut texture_allocation_ids = HashMap::new();
-    let mut buffer_allocation_ids = HashMap::new();
+    let mut texture_allocation_ids = FxHashMap::default();
+    let mut buffer_allocation_ids = FxHashMap::default();
 
     let mut texture_candidates = resources
         .iter()
@@ -3990,7 +3991,7 @@ fn build_allocation_plan(
     )
 }
 
-fn count_graph_edges(graph_edges: &[HashSet<usize>], live_passes: &HashSet<usize>) -> usize {
+fn count_graph_edges(graph_edges: &[FxHashSet<usize>], live_passes: &FxHashSet<usize>) -> usize {
     live_passes
         .iter()
         .map(|&index| graph_edges[index].len())
@@ -3999,7 +4000,7 @@ fn count_graph_edges(graph_edges: &[HashSet<usize>], live_passes: &HashSet<usize
 
 fn count_live_passes_by_kind(
     graph: &FrameGraph,
-    live_passes: &HashSet<usize>,
+    live_passes: &FxHashSet<usize>,
     kind: PassKind,
 ) -> usize {
     live_passes
@@ -4041,10 +4042,10 @@ fn max_graphics_group_size(steps: &[CompiledExecuteStep]) -> usize {
 
 fn summarize_pass_name_counts(
     graph: &FrameGraph,
-    live_passes: &HashSet<usize>,
+    live_passes: &FxHashSet<usize>,
     limit: usize,
 ) -> Vec<CompileCountStat> {
-    let mut counts = HashMap::<String, usize>::new();
+    let mut counts = FxHashMap::<String, usize>::default();
     for &index in live_passes {
         *counts
             .entry(graph.passes[index].descriptor.name.to_string())
@@ -4055,10 +4056,10 @@ fn summarize_pass_name_counts(
 
 fn summarize_versioned_resource_counts(
     graph: &FrameGraph,
-    live_passes: &HashSet<usize>,
+    live_passes: &FxHashSet<usize>,
     limit: usize,
 ) -> Vec<CompileCountStat> {
-    let mut counts = HashMap::<ResourceHandle, usize>::new();
+    let mut counts = FxHashMap::<ResourceHandle, usize>::default();
     for &index in live_passes {
         for usage in &graph.passes[index].usages {
             if usage.read_version.is_some() {
@@ -4089,7 +4090,7 @@ fn summarize_versioned_resource_counts(
 
 fn summarize_degree_counts(
     graph: &FrameGraph,
-    live_passes: &HashSet<usize>,
+    live_passes: &FxHashSet<usize>,
     indegree: &[usize],
     limit: usize,
 ) -> Vec<CompileDegreeStat> {
@@ -4107,8 +4108,8 @@ fn summarize_degree_counts(
 
 fn summarize_outdegree_counts(
     graph: &FrameGraph,
-    live_passes: &HashSet<usize>,
-    graph_edges: &[HashSet<usize>],
+    live_passes: &FxHashSet<usize>,
+    graph_edges: &[FxHashSet<usize>],
     limit: usize,
 ) -> Vec<CompileDegreeStat> {
     let mut items = live_passes
@@ -4123,7 +4124,7 @@ fn summarize_outdegree_counts(
     items
 }
 
-fn sort_count_stats(counts: HashMap<String, usize>, limit: usize) -> Vec<CompileCountStat> {
+fn sort_count_stats(counts: FxHashMap<String, usize>, limit: usize) -> Vec<CompileCountStat> {
     let mut items = counts
         .into_iter()
         .map(|(label, count)| CompileCountStat { label, count })
@@ -4172,9 +4173,9 @@ pub struct PrepareContext<'a, 'b> {
     pub(crate) viewport: &'a mut Viewport,
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
-    texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'b HashMap<TextureHandle, u64>,
-    buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
+    texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+    buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
 }
 
 impl<'a, 'b> PrepareContext<'a, 'b> {
@@ -4182,9 +4183,9 @@ impl<'a, 'b> PrepareContext<'a, 'b> {
         viewport: &'a mut Viewport,
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
-        texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
-        texture_stable_keys: &'b HashMap<TextureHandle, u64>,
-        buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
+        texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
+        texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+        buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
             viewport,
@@ -4238,11 +4239,11 @@ pub struct RecordContext<'a, 'b> {
     pub(crate) viewport: &'a mut Viewport,
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
-    texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'b HashMap<TextureHandle, u64>,
-    buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
-    detail_timings: HashMap<String, f64>,
-    detail_counts: HashMap<String, usize>,
+    texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+    buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
+    detail_timings: FxHashMap<String, f64>,
+    detail_counts: FxHashMap<String, usize>,
     detail_order: Vec<String>,
 }
 
@@ -4251,9 +4252,9 @@ impl<'a, 'b> RecordContext<'a, 'b> {
         viewport: &'a mut Viewport,
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
-        texture_allocation_ids: &'b HashMap<TextureHandle, AllocationId>,
-        texture_stable_keys: &'b HashMap<TextureHandle, u64>,
-        buffer_allocation_ids: &'b HashMap<BufferHandle, AllocationId>,
+        texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
+        texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+        buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
             viewport,
@@ -4262,8 +4263,8 @@ impl<'a, 'b> RecordContext<'a, 'b> {
             texture_allocation_ids,
             texture_stable_keys,
             buffer_allocation_ids,
-            detail_timings: HashMap::new(),
-            detail_counts: HashMap::new(),
+            detail_timings: FxHashMap::default(),
+            detail_counts: FxHashMap::default(),
             detail_order: Vec::new(),
         }
     }
@@ -4311,11 +4312,11 @@ pub struct GraphicsRecordContext<'ctx, 'res> {
     pub(crate) viewport: &'ctx mut Viewport,
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
-    texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'res HashMap<TextureHandle, u64>,
-    buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
-    detail_timings: &'ctx mut HashMap<String, f64>,
-    detail_counts: &'ctx mut HashMap<String, usize>,
+    texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
+    buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
+    detail_timings: &'ctx mut FxHashMap<String, f64>,
+    detail_counts: &'ctx mut FxHashMap<String, usize>,
     detail_order: &'ctx mut Vec<String>,
 }
 
@@ -4404,11 +4405,11 @@ pub struct ComputeRecordContext<'ctx, 'res> {
     pub(crate) viewport: &'ctx mut Viewport,
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
-    texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'res HashMap<TextureHandle, u64>,
-    buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
-    detail_timings: &'ctx mut HashMap<String, f64>,
-    detail_counts: &'ctx mut HashMap<String, usize>,
+    texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
+    buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
+    detail_timings: &'ctx mut FxHashMap<String, f64>,
+    detail_counts: &'ctx mut FxHashMap<String, usize>,
     detail_order: &'ctx mut Vec<String>,
 }
 
@@ -4497,11 +4498,11 @@ pub struct TransferRecordContext<'ctx, 'res> {
     pub(crate) viewport: &'ctx mut Viewport,
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
-    texture_allocation_ids: &'res HashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'res HashMap<TextureHandle, u64>,
-    buffer_allocation_ids: &'res HashMap<BufferHandle, AllocationId>,
-    detail_timings: &'ctx mut HashMap<String, f64>,
-    detail_counts: &'ctx mut HashMap<String, usize>,
+    texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
+    texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
+    buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
+    detail_timings: &'ctx mut FxHashMap<String, f64>,
+    detail_counts: &'ctx mut FxHashMap<String, usize>,
     detail_order: &'ctx mut Vec<String>,
 }
 
@@ -4598,13 +4599,13 @@ pub enum FrameGraphError {
 }
 
 pub struct ResourceCache<T> {
-    store: HashMap<u64, T>,
+    store: FxHashMap<u64, T>,
 }
 
 impl<T> ResourceCache<T> {
     pub fn new() -> Self {
         Self {
-            store: HashMap::new(),
+            store: FxHashMap::default(),
         }
     }
 

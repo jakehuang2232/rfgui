@@ -1,3 +1,4 @@
+use rustc_hash::{FxHashMap, FxHashSet};
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{
@@ -9,7 +10,6 @@ use crate::view::render_pass::render_target::{
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::num::NonZeroU64;
 use wgpu::util::DeviceExt;
 
@@ -1144,7 +1144,7 @@ fn build_rect_debug_overlay_geometry(
     }
 
     let corners = [[left, top], [right, top], [right, bottom], [left, bottom]];
-    let mut edges = HashSet::new();
+    let mut edges = FxHashSet::default();
     for (u, v) in [(0_u32, 1_u32), (1, 2), (2, 3), (3, 0)] {
         edges.insert((u, v));
     }
@@ -1250,13 +1250,13 @@ fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
 }
 
 struct DrawRectResourcesCache<T> {
-    entries: std::collections::HashMap<u64, T>,
+    entries: FxHashMap<u64, T>,
 }
 
 impl<T> DrawRectResourcesCache<T> {
     fn new() -> Self {
         Self {
-            entries: std::collections::HashMap::new(),
+            entries: FxHashMap::default(),
         }
     }
 

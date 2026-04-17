@@ -71,7 +71,7 @@ impl Viewport {
             .frame_box_models
             .iter()
             .map(|snapshot| (snapshot.node_id, *snapshot))
-            .collect::<HashMap<_, _>>();
+            .collect::<FxHashMap<_, _>>();
         let mut overlay_batches = Vec::new();
         let promoted_node_ids = self.compositor.promotion_state.promoted_node_ids.clone();
         for record in reuse_records {

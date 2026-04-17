@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{ElementCore, Position, Size};
 use crate::ColorLike;
@@ -37,7 +38,6 @@ use crate::view::render_pass::{
 use crate::view::viewport::ViewportControl;
 use glam::{Mat4, Vec3, Vec4};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
@@ -263,7 +263,7 @@ struct PlacementRuntime {
     depth: usize,
     viewport_width: f32,
     viewport_height: f32,
-    anchors: std::collections::HashMap<String, AnchorSnapshot>,
+    anchors: FxHashMap<String, AnchorSnapshot>,
     child_clip_stack: Vec<Rect>,
     hit_test_clip_stack: Vec<Rect>,
 }
@@ -348,9 +348,9 @@ pub struct ViewportContext {
     target_format: wgpu::TextureFormat,
     scale_factor: f32,
     render_transform: Option<Mat4>,
-    promoted_node_ids: Arc<std::collections::HashSet<u64>>,
-    promoted_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
-    promoted_composition_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
+    promoted_node_ids: Arc<FxHashSet<u64>>,
+    promoted_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
+    promoted_composition_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
 }
 
 /// Mutable build state threaded through low-level render graph construction.
@@ -358,7 +358,7 @@ pub struct ViewportContext {
 pub struct BuildState {
     target: Option<RenderTargetOut>,
     depth_stencil_target: Option<AttachmentTarget>,
-    target_pairs: HashMap<u32, AttachmentTarget>,
+    target_pairs: FxHashMap<u32, AttachmentTarget>,
     scissor_rect: Option<[u32; 4]>,
     clip_id_stack: Vec<u8>,
     deferred_node_ids: Vec<u64>,
@@ -374,7 +374,7 @@ impl BuildState {
         Self {
             target: None,
             depth_stencil_target: None,
-            target_pairs: HashMap::new(),
+            target_pairs: FxHashMap::default(),
             scissor_rect: ancestor_clip.scissor_rect,
             clip_id_stack: Vec::new(),
             deferred_node_ids: Vec::new(),
@@ -464,14 +464,14 @@ impl UiBuildContext {
                 target_format: viewport_format,
                 scale_factor: scale_factor.max(0.0001),
                 render_transform: None,
-                promoted_node_ids: Arc::new(std::collections::HashSet::new()),
-                promoted_update_kinds: Arc::new(HashMap::new()),
-                promoted_composition_update_kinds: Arc::new(HashMap::new()),
+                promoted_node_ids: Arc::new(FxHashSet::default()),
+                promoted_update_kinds: Arc::new(FxHashMap::default()),
+                promoted_composition_update_kinds: Arc::new(FxHashMap::default()),
             },
             state: BuildState {
                 target: None,
                 depth_stencil_target: Some(AttachmentTarget::Surface),
-                target_pairs: HashMap::new(),
+                target_pairs: FxHashMap::default(),
                 scissor_rect: None,
                 clip_id_stack: Vec::new(),
                 deferred_node_ids: Vec::new(),
@@ -726,9 +726,9 @@ impl UiBuildContext {
 
     pub(crate) fn set_promoted_runtime(
         &mut self,
-        promoted_node_ids: Arc<std::collections::HashSet<u64>>,
-        promoted_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
-        promoted_composition_update_kinds: Arc<HashMap<u64, PromotedLayerUpdateKind>>,
+        promoted_node_ids: Arc<FxHashSet<u64>>,
+        promoted_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
+        promoted_composition_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
     ) {
         self.viewport.promoted_node_ids = promoted_node_ids;
         self.viewport.promoted_update_kinds = promoted_update_kinds;

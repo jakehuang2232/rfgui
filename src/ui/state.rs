@@ -1,13 +1,14 @@
 #![allow(missing_docs)]
 
 //! Stateful hooks and global state helpers used by typed RSX components.
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::time::{Duration, Instant};
 use crate::ui::{FromPropValue, GlobalKey, IntoPropValue, PropValue, RsxKey, SharedPropValue};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -225,22 +226,22 @@ struct RenderContext {
 
 #[derive(Default)]
 struct StateStore {
-    slots: HashMap<ComponentKey, Vec<Box<dyn Any>>>,
+    slots: FxHashMap<ComponentKey, Vec<Box<dyn Any>>>,
     build_depth: usize,
     root_cursor: usize,
-    live_keys: HashSet<ComponentKey>,
-    live_global_keys: HashSet<GlobalKey>,
-    global_component_keys: HashMap<GlobalKey, ComponentKey>,
-    active_build_global_keys: HashSet<GlobalKey>,
+    live_keys: FxHashSet<ComponentKey>,
+    live_global_keys: FxHashSet<GlobalKey>,
+    global_component_keys: FxHashMap<GlobalKey, ComponentKey>,
+    active_build_global_keys: FxHashSet<GlobalKey>,
     components_rendered_in_build: bool,
     /// Component-memoization cache. Entries are keyed by `ComponentKey` and
     /// store the last props/output pair plus the set of descendant keys that
     /// were registered during that render, so we can keep them alive on a
     /// memo hit without re-entering the render function.
-    memo_cache: HashMap<ComponentKey, MemoEntry>,
+    memo_cache: FxHashMap<ComponentKey, MemoEntry>,
     /// Components whose own state slots changed since their last render.
     /// A memo hit for a key in this set is forbidden — we must re-render.
-    dirty_memo_components: HashSet<ComponentKey>,
+    dirty_memo_components: FxHashSet<ComponentKey>,
 }
 
 /// A cached component render. `props` holds a type-erased clone of the last
@@ -249,9 +250,9 @@ struct MemoEntry {
     props: Box<dyn Any>,
     node: crate::ui::RsxNode,
     props_eq: fn(&dyn Any, &dyn Any) -> bool,
-    live_keys: HashSet<ComponentKey>,
-    live_global_keys: HashSet<GlobalKey>,
-    live_timer_hooks: HashSet<TimerHookKey>,
+    live_keys: FxHashSet<ComponentKey>,
+    live_global_keys: FxHashSet<GlobalKey>,
+    live_timer_hooks: FxHashSet<TimerHookKey>,
 }
 
 /// A scope that captures which keys/hooks were registered during a render
@@ -260,9 +261,9 @@ struct MemoEntry {
 /// resulting [`MemoEntry`].
 #[derive(Default)]
 struct MemoFrame {
-    live_keys: HashSet<ComponentKey>,
-    live_global_keys: HashSet<GlobalKey>,
-    live_timer_hooks: HashSet<TimerHookKey>,
+    live_keys: FxHashSet<ComponentKey>,
+    live_global_keys: FxHashSet<GlobalKey>,
+    live_timer_hooks: FxHashSet<TimerHookKey>,
 }
 
 fn memo_props_eq<P: PartialEq + 'static>(a: &dyn Any, b: &dyn Any) -> bool {
@@ -360,15 +361,15 @@ where
 
 thread_local! {
     static STORE: RefCell<StateStore> = RefCell::new(StateStore::default());
-    static GLOBAL_STORE: RefCell<HashMap<TypeId, Box<dyn Any>>> = RefCell::new(HashMap::new());
+    static GLOBAL_STORE: RefCell<FxHashMap<TypeId, Box<dyn Any>>> = RefCell::new(FxHashMap::default());
     static CONTEXT: RefCell<RenderContext> = RefCell::new(RenderContext::default());
     static COMPONENT_KEY_STACK: RefCell<Vec<Option<RsxKey>>> = const { RefCell::new(Vec::new()) };
     static REDRAW_CALLBACK: RefCell<Option<Rc<dyn Fn()>>> = RefCell::new(None);
     static STATE_DIRTY: Cell<UiDirtyState> = const { Cell::new(UiDirtyState::NONE) };
-    static TIMER_STORE: RefCell<HashMap<TimerHookKey, TimerEntry>> = RefCell::new(HashMap::new());
-    static LIVE_TIMER_HOOKS: RefCell<HashSet<TimerHookKey>> = RefCell::new(HashSet::new());
-    static MOUNT_STORE: RefCell<HashMap<MountHookKey, MountEntry>> = RefCell::new(HashMap::new());
-    static LIVE_MOUNT_HOOKS: RefCell<HashSet<MountHookKey>> = RefCell::new(HashSet::new());
+    static TIMER_STORE: RefCell<FxHashMap<TimerHookKey, TimerEntry>> = RefCell::new(FxHashMap::default());
+    static LIVE_TIMER_HOOKS: RefCell<FxHashSet<TimerHookKey>> = RefCell::new(FxHashSet::default());
+    static MOUNT_STORE: RefCell<FxHashMap<MountHookKey, MountEntry>> = RefCell::new(FxHashMap::default());
+    static LIVE_MOUNT_HOOKS: RefCell<FxHashSet<MountHookKey>> = RefCell::new(FxHashSet::default());
     static PENDING_MOUNTS: RefCell<Vec<Box<dyn FnOnce()>>> = const { RefCell::new(Vec::new()) };
     /// Stack of in-progress memoized-component renders. Every registration of
     /// a `ComponentKey`, `GlobalKey`, or timer hook while this stack is

@@ -1,6 +1,6 @@
 [build]
 target = "index.html"
-dist = "../../target/trunk/example-01-window"
+dist = "../../../target/trunk/example-01-window"
 filehash = true
 minify = "never"
 public_url = "/rfgui/"

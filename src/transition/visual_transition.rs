@@ -1,8 +1,7 @@
 #![allow(missing_docs)]
 
 //! Visual transition primitives for animating paint-only offsets.
-
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
@@ -63,7 +62,7 @@ struct VisualTrackState {
 #[derive(Debug)]
 pub struct VisualTransitionPlugin {
     plugin_id: TransitionPluginId,
-    tracks: HashMap<TrackKey<TrackTarget>, VisualTrackState>,
+    tracks: FxHashMap<TrackKey<TrackTarget>, VisualTrackState>,
     frame_samples: Vec<VisualSample>,
 }
 
@@ -83,7 +82,7 @@ impl VisualTransitionPlugin {
     pub fn with_plugin_id(plugin_id: TransitionPluginId) -> Self {
         Self {
             plugin_id,
-            tracks: HashMap::new(),
+            tracks: FxHashMap::default(),
             frame_samples: Vec::new(),
         }
     }
@@ -230,7 +229,7 @@ impl Transition<TrackTarget> for VisualTransitionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    
 
     fn transition(duration_ms: u32) -> VisualTransition {
         VisualTransition {
@@ -241,15 +240,15 @@ mod tests {
     }
 
     struct TestHost {
-        registered_channels: HashSet<ChannelId>,
-        claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+        registered_channels: FxHashSet<ChannelId>,
+        claims: FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
     }
 
     impl TestHost {
         fn with_channels(channels: &[ChannelId]) -> Self {
             Self {
                 registered_channels: channels.iter().copied().collect(),
-                claims: HashMap::new(),
+                claims: FxHashMap::default(),
             }
         }
     }

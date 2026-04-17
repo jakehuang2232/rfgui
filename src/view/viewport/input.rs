@@ -58,8 +58,8 @@ pub(super) struct InputState {
     pub hovered_node_id: Option<u64>,
     pub mouse_position_viewport: Option<(f32, f32)>,
     pub pending_click: Option<PendingClick>,
-    pub pressed_mouse_buttons: HashSet<MouseButton>,
-    pub pressed_keys: HashSet<String>,
+    pub pressed_mouse_buttons: FxHashSet<MouseButton>,
+    pub pressed_keys: FxHashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]

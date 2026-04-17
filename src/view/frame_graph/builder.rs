@@ -1,3 +1,4 @@
+use rustc_hash::FxHashMap;
 use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
 use super::frame_graph::{
     AttachmentLoadOp, AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
@@ -9,7 +10,6 @@ use super::frame_graph::{
 };
 use super::slot::{InSlot, OutSlot, ResourceType};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
-use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BufferReadUsage {
@@ -65,7 +65,7 @@ impl UsageTrackedResource for BufferResource {
 pub(crate) struct PassBuilderState<'a> {
     pub(crate) descriptor: &'a mut PassDescriptor,
     pub(crate) textures: &'a mut Vec<TextureDesc>,
-    pub(crate) texture_attachment_pairs: &'a HashMap<TextureHandle, AttachmentTarget>,
+    pub(crate) texture_attachment_pairs: &'a FxHashMap<TextureHandle, AttachmentTarget>,
     pub(crate) buffers: &'a mut Vec<BufferDesc>,
     pub(crate) texture_metadata: &'a mut Vec<ResourceMetadata>,
     pub(crate) buffer_metadata: &'a mut Vec<ResourceMetadata>,

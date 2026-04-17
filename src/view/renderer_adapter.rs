@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 //! Adapters that convert RSX trees into low-level retained host elements.
+use rustc_hash::FxHashMap;
 
 use crate::Style;
 use crate::ui::{
@@ -16,7 +17,6 @@ use crate::{
     AnchorName, Color, Cursor, Layout, Length, ParsedValue, Position, PropertyId, TextWrap,
 };
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 const TEXT_AREA_PROJECTION_TAG: &str = "__rfgui_text_area_projection";
@@ -24,14 +24,14 @@ const TEXT_AREA_PROJECTION_TAG: &str = "__rfgui_text_area_projection";
 pub type ElementFactory =
     Arc<dyn Fn(&RsxElementNode, &[u64]) -> Result<Box<dyn ElementTrait>, String> + Send + Sync>;
 
-fn element_factories() -> &'static RwLock<HashMap<String, ElementFactory>> {
-    static FACTORIES: OnceLock<RwLock<HashMap<String, ElementFactory>>> = OnceLock::new();
-    FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
+fn element_factories() -> &'static RwLock<FxHashMap<String, ElementFactory>> {
+    static FACTORIES: OnceLock<RwLock<FxHashMap<String, ElementFactory>>> = OnceLock::new();
+    FACTORIES.get_or_init(|| RwLock::new(FxHashMap::default()))
 }
 
-fn typed_element_factories() -> &'static RwLock<HashMap<TypeId, ElementFactory>> {
-    static FACTORIES: OnceLock<RwLock<HashMap<TypeId, ElementFactory>>> = OnceLock::new();
-    FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
+fn typed_element_factories() -> &'static RwLock<FxHashMap<TypeId, ElementFactory>> {
+    static FACTORIES: OnceLock<RwLock<FxHashMap<TypeId, ElementFactory>>> = OnceLock::new();
+    FACTORIES.get_or_init(|| RwLock::new(FxHashMap::default()))
 }
 
 pub fn register_element_factory(tag: impl Into<String>, factory: ElementFactory) {
@@ -97,7 +97,6 @@ fn is_builtin_image_node(node: &RsxElementNode) -> bool {
 fn is_builtin_svg_node(node: &RsxElementNode) -> bool {
     node.tag_descriptor.map(is_svg_descriptor).unwrap_or(false) || node.tag == "Svg"
 }
-
 
 pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
     let mut nodes = rsx_to_elements(root)?;
@@ -237,7 +236,7 @@ impl InheritedTextStyle {
 pub struct ViewportRenderBackend<'a> {
     viewport: &'a mut Viewport,
     current_root: Option<RsxNode>,
-    global_key_registry: HashMap<GlobalKey, RenderedGlobalKeyEntry>,
+    global_key_registry: FxHashMap<GlobalKey, RenderedGlobalKeyEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -270,7 +269,7 @@ impl<'a> ViewportRenderBackend<'a> {
         Self {
             viewport,
             current_root: None,
-            global_key_registry: HashMap::new(),
+            global_key_registry: FxHashMap::default(),
         }
     }
 
@@ -314,7 +313,7 @@ impl<'a> ViewportRenderBackend<'a> {
         self.global_key_registry = if let Some(root) = self.current_root.as_ref() {
             collect_global_key_registry(root)?
         } else {
-            HashMap::new()
+            FxHashMap::default()
         };
         Ok(())
     }
@@ -448,8 +447,8 @@ pub(crate) fn rendered_node_id_by_index_path(
 
 fn collect_global_key_registry(
     root: &RsxNode,
-) -> Result<HashMap<GlobalKey, RenderedGlobalKeyEntry>, String> {
-    let mut registry = HashMap::new();
+) -> Result<FxHashMap<GlobalKey, RenderedGlobalKeyEntry>, String> {
+    let mut registry = FxHashMap::default();
     let mut path = Vec::new();
     let global_path = current_global_node_path(root, None);
     collect_global_key_registry_with_path(root, &mut path, global_path, &mut registry)?;
@@ -460,7 +459,7 @@ fn collect_global_key_registry_with_path(
     node: &RsxNode,
     path: &mut Vec<u64>,
     global_path: Option<GlobalNodePath>,
-    registry: &mut HashMap<GlobalKey, RenderedGlobalKeyEntry>,
+    registry: &mut FxHashMap<GlobalKey, RenderedGlobalKeyEntry>,
 ) -> Result<(), String> {
     let current_global_path = current_global_node_path(node, global_path.as_ref());
     if let Some(RsxKey::Global(global_key)) = node.identity().key {
@@ -475,7 +474,7 @@ fn collect_global_key_registry_with_path(
     }
 
     if let Some(children) = node.children() {
-        let mut ordinals = HashMap::<&'static str, usize>::new();
+        let mut ordinals = FxHashMap::<&'static str, usize>::default();
         for child in children {
             let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
             let token = child_identity_token(child, ordinal);
@@ -509,7 +508,7 @@ fn rendered_node_id_by_index_path_impl(
         .ok_or_else(|| format!("invalid node path index: {index}"))?;
 
     let current_global_path = current_global_node_path(node, global_path.as_ref());
-    let mut ordinals = HashMap::<&'static str, usize>::new();
+    let mut ordinals = FxHashMap::<&'static str, usize>::default();
     for (child_index, candidate) in children.iter().enumerate() {
         let ordinal = next_identity_ordinal(&mut ordinals, candidate.identity());
         let token = child_identity_token(candidate, ordinal);
@@ -557,7 +556,7 @@ fn append_nodes_with_path(
     match node {
         RsxNode::Fragment(fragment) => {
             let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = HashMap::<&'static str, usize>::new();
+            let mut ordinals = FxHashMap::<&'static str, usize>::default();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
                 let token = child_identity_token(child, ordinal);
@@ -593,7 +592,7 @@ fn append_nodes_with_path_lossy(
     match node {
         RsxNode::Fragment(fragment) => {
             let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = HashMap::<&'static str, usize>::new();
+            let mut ordinals = FxHashMap::<&'static str, usize>::default();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
                 let token = child_identity_token(child, ordinal);
@@ -829,7 +828,7 @@ fn convert_container_element(
         &RsxNode::Element(std::rc::Rc::new(node.clone())),
         global_path.as_ref(),
     );
-    let mut ordinals = HashMap::<&'static str, usize>::new();
+    let mut ordinals = FxHashMap::<&'static str, usize>::default();
     for child in &node.children {
         let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
         let token = child_identity_token(child, ordinal);
@@ -860,7 +859,7 @@ fn append_child_nodes_flattening_fragments(
             let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
             child_path.extend_from_slice(path);
             let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = HashMap::<&'static str, usize>::new();
+            let mut ordinals = FxHashMap::<&'static str, usize>::default();
             for child in &fragment.children {
                 let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
                 let token = child_identity_token(child, ordinal);
@@ -1672,7 +1671,7 @@ fn child_global_node_path(
 }
 
 fn next_identity_ordinal(
-    ordinals: &mut HashMap<&'static str, usize>,
+    ordinals: &mut FxHashMap<&'static str, usize>,
     identity: &RsxNodeIdentity,
 ) -> usize {
     let entry = ordinals

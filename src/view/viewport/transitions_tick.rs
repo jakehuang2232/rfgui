@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) struct TransitionHostAdapter<'a> {
-    pub(super) registered_channels: &'a HashSet<ChannelId>,
-    pub(super) claims: &'a mut HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+    pub(super) registered_channels: &'a FxHashSet<ChannelId>,
+    pub(super) claims: &'a mut FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
 }
 
 impl TransitionHost<TrackTarget> for TransitionHostAdapter<'_> {
@@ -157,7 +157,7 @@ impl Viewport {
             .layout_transition_plugin
             .active_track_keys()
             .into_iter()
-            .collect::<HashSet<_>>();
+            .collect::<FxHashSet<_>>();
         self.transitions.transition_claims.retain(|key, owner| {
             if !matches!(
                 key.channel,

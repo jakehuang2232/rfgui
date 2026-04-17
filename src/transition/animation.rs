@@ -1,9 +1,7 @@
 #![allow(missing_docs)]
 
 //! Keyframe animation runtime used by the typed `animator` style property.
-
-use std::collections::HashMap;
-use std::collections::HashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     LayoutField, LayoutSample, RunResult, StyleField, StyleSample, StyleValue, TimeFunction,
@@ -22,8 +20,8 @@ pub struct AnimationRequest {
 #[derive(Clone, Debug, PartialEq)]
 struct CompiledKeyframe {
     progress: f32,
-    style_values: HashMap<StyleField, StyleValue>,
-    layout_values: HashMap<LayoutField, f32>,
+    style_values: FxHashMap<StyleField, StyleValue>,
+    layout_values: FxHashMap<LayoutField, f32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,8 +46,8 @@ struct ActiveAnimator {
 
 #[derive(Debug, Default)]
 pub struct AnimationPlugin {
-    animators: HashMap<u64, ActiveAnimator>,
-    completed_animators: HashMap<u64, ActiveAnimator>,
+    animators: FxHashMap<u64, ActiveAnimator>,
+    completed_animators: FxHashMap<u64, ActiveAnimator>,
     style_samples: Vec<StyleSample>,
     layout_samples: Vec<LayoutSample>,
 }
@@ -114,18 +112,18 @@ impl AnimationPlugin {
         std::mem::take(&mut self.layout_samples)
     }
 
-    pub fn prune_targets(&mut self, keep_targets: &HashSet<u64>) {
+    pub fn prune_targets(&mut self, keep_targets: &FxHashSet<u64>) {
         self.animators
             .retain(|target, _| keep_targets.contains(target));
         self.completed_animators
             .retain(|target, _| keep_targets.contains(target));
     }
 
-    pub fn active_targets(&self) -> HashSet<u64> {
+    pub fn active_targets(&self) -> FxHashSet<u64> {
         self.animators.keys().copied().collect()
     }
 
-    pub fn active_promotion_hints(&self) -> HashMap<u64, AnimationPromotionHint> {
+    pub fn active_promotion_hints(&self) -> FxHashMap<u64, AnimationPromotionHint> {
         self.animators
             .iter()
             .map(|(&target, animator)| (target, AnimationPromotionHint::from(animator)))
@@ -136,8 +134,8 @@ impl AnimationPlugin {
         self.style_samples.clear();
         self.layout_samples.clear();
 
-        let mut merged_style = HashMap::<(u64, StyleField), StyleValue>::new();
-        let mut merged_layout = HashMap::<(u64, LayoutField), f32>::new();
+        let mut merged_style = FxHashMap::<(u64, StyleField), StyleValue>::default();
+        let mut merged_layout = FxHashMap::<(u64, LayoutField), f32>::default();
         let mut keep_running = false;
         let mut finished_targets = Vec::new();
 
@@ -260,8 +258,8 @@ fn compile_keyframes(keyframes: &[crate::Keyframe]) -> Vec<CompiledKeyframe> {
         .collect()
 }
 
-fn compile_style_fields(style: &Style) -> HashMap<StyleField, StyleValue> {
-    let mut out = HashMap::new();
+fn compile_style_fields(style: &Style) -> FxHashMap<StyleField, StyleValue> {
+    let mut out = FxHashMap::default();
     for declaration in style.declarations() {
         match declaration.property {
             PropertyId::Opacity => {
@@ -352,8 +350,8 @@ fn compile_style_fields(style: &Style) -> HashMap<StyleField, StyleValue> {
     out
 }
 
-fn compile_layout_fields(style: &Style) -> HashMap<LayoutField, f32> {
-    let mut out = HashMap::new();
+fn compile_layout_fields(style: &Style) -> FxHashMap<LayoutField, f32> {
+    let mut out = FxHashMap::default();
     for declaration in style.declarations() {
         match declaration.property {
             PropertyId::Width => {
@@ -786,7 +784,7 @@ mod tests {
         });
         let _ = plugin.run_animations(0.2, 0.2);
 
-        let mut keep = std::collections::HashSet::new();
+        let mut keep = FxHashSet::default();
         keep.insert(34);
         plugin.prune_targets(&keep);
 

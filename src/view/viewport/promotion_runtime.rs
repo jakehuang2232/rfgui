@@ -105,8 +105,8 @@ impl Viewport {
 
     pub(super) fn apply_promotion_runtime(&self, ctx: &mut crate::view::base_component::UiBuildContext) {
         let updates = &self.compositor.promoted_layer_updates;
-        let mut promoted_update_kinds = HashMap::with_capacity(updates.len());
-        let mut promoted_composition_update_kinds = HashMap::with_capacity(updates.len());
+        let mut promoted_update_kinds = FxHashMap::with_capacity_and_hasher(updates.len(), Default::default());
+        let mut promoted_composition_update_kinds = FxHashMap::with_capacity_and_hasher(updates.len(), Default::default());
         for update in updates {
             promoted_update_kinds.insert(update.node_id, update.kind);
             promoted_composition_update_kinds.insert(update.node_id, update.composition_kind);

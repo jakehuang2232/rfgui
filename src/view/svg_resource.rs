@@ -1,8 +1,8 @@
+use rustc_hash::FxHashMap;
 use crate::view::SvgSource;
 use crate::view::image_resource::{ImageAssetRetentionInfo, ImageSnapshot, ReadyImage};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{Options, Tree};
-use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
@@ -88,14 +88,14 @@ impl SvgRasterEntry {
     }
 }
 
-fn svg_documents() -> &'static Mutex<HashMap<u64, SvgDocumentEntry>> {
-    static ENTRIES: OnceLock<Mutex<HashMap<u64, SvgDocumentEntry>>> = OnceLock::new();
-    ENTRIES.get_or_init(|| Mutex::new(HashMap::new()))
+fn svg_documents() -> &'static Mutex<FxHashMap<u64, SvgDocumentEntry>> {
+    static ENTRIES: OnceLock<Mutex<FxHashMap<u64, SvgDocumentEntry>>> = OnceLock::new();
+    ENTRIES.get_or_init(|| Mutex::new(FxHashMap::default()))
 }
 
-fn svg_rasters() -> &'static Mutex<HashMap<u64, SvgRasterEntry>> {
-    static ENTRIES: OnceLock<Mutex<HashMap<u64, SvgRasterEntry>>> = OnceLock::new();
-    ENTRIES.get_or_init(|| Mutex::new(HashMap::new()))
+fn svg_rasters() -> &'static Mutex<FxHashMap<u64, SvgRasterEntry>> {
+    static ENTRIES: OnceLock<Mutex<FxHashMap<u64, SvgRasterEntry>>> = OnceLock::new();
+    ENTRIES.get_or_init(|| Mutex::new(FxHashMap::default()))
 }
 
 fn next_generation() -> u64 {
@@ -219,11 +219,11 @@ fn rasterize_svg(tree: &Tree, width: u32, height: u32) -> Result<Arc<[u8]>, Arc<
     Ok(Arc::<[u8]>::from(pixmap.take()))
 }
 
-fn total_svg_raster_bytes(rasters: &HashMap<u64, SvgRasterEntry>) -> u64 {
+fn total_svg_raster_bytes(rasters: &FxHashMap<u64, SvgRasterEntry>) -> u64 {
     rasters.values().map(SvgRasterEntry::byte_size).sum()
 }
 
-fn evict_svg_rasters_under_pressure(rasters: &mut HashMap<u64, SvgRasterEntry>) {
+fn evict_svg_rasters_under_pressure(rasters: &mut FxHashMap<u64, SvgRasterEntry>) {
     let mut total_bytes = total_svg_raster_bytes(rasters);
     if total_bytes <= SVG_RASTER_PRESSURE_BYTES {
         return;

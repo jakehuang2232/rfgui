@@ -1,5 +1,5 @@
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::view::font_system::with_shared_font_system;
@@ -96,10 +96,10 @@ struct TextMeasurementSnapshot {
     measure_revision: u64,
     cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
-    layout_cache: HashMap<TextLayoutCacheKey, MeasuredTextLayout>,
-    inline_plan_cache: HashMap<InlinePlanCacheKey, InlineTextPlan>,
-    first_line_fragment_cache: HashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
-    wrapped_suffix_cache: HashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
+    layout_cache: FxHashMap<TextLayoutCacheKey, MeasuredTextLayout>,
+    inline_plan_cache: FxHashMap<InlinePlanCacheKey, InlineTextPlan>,
+    first_line_fragment_cache: FxHashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
+    wrapped_suffix_cache: FxHashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
     layout_buffer: Option<Arc<GlyphBuffer>>,
     inline_plan: Option<InlineTextPlan>,
     last_inline_measure_context: Option<InlineMeasureContext>,
@@ -137,10 +137,10 @@ pub struct Text {
     measure_revision: u64,
     cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
     cached_height_for_width: Option<(u64, f32, f32)>,
-    layout_cache: HashMap<TextLayoutCacheKey, MeasuredTextLayout>,
-    inline_plan_cache: HashMap<InlinePlanCacheKey, InlineTextPlan>,
-    first_line_fragment_cache: HashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
-    wrapped_suffix_cache: HashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
+    layout_cache: FxHashMap<TextLayoutCacheKey, MeasuredTextLayout>,
+    inline_plan_cache: FxHashMap<InlinePlanCacheKey, InlineTextPlan>,
+    first_line_fragment_cache: FxHashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
+    wrapped_suffix_cache: FxHashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
     layout_buffer: Option<Arc<GlyphBuffer>>,
     inline_plan: Option<InlineTextPlan>,
     last_inline_measure_context: Option<InlineMeasureContext>,
@@ -154,7 +154,7 @@ pub struct Text {
 /// exceeds `MAX_ENTRIES`, the coldest 25 % of entries are evicted in one
 /// batch — matching Skia's "at least `fTotalMemoryUsed >> 2`" policy.
 struct LruCache<K: Eq + std::hash::Hash + Clone, V> {
-    map: HashMap<K, (V, u64)>, // value + access generation
+    map: FxHashMap<K, (V, u64)>, // value + access generation
     generation: u64,
 }
 
@@ -164,7 +164,7 @@ impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
 
     fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             generation: 0,
         }
     }
@@ -398,7 +398,6 @@ impl Text {
         }
         shaped
     }
-
 
     fn relayout_from_base(&mut self, width: Option<f32>, allow_wrap: bool) -> MeasuredTextLayout {
         let started_at = text_measure_profile_enabled().then(Instant::now);
@@ -797,10 +796,10 @@ impl Text {
             measure_revision: 0,
             cached_intrinsic_layout: None,
             cached_height_for_width: None,
-            layout_cache: HashMap::new(),
-            inline_plan_cache: HashMap::new(),
-            first_line_fragment_cache: HashMap::new(),
-            wrapped_suffix_cache: HashMap::new(),
+            layout_cache: FxHashMap::default(),
+            inline_plan_cache: FxHashMap::default(),
+            first_line_fragment_cache: FxHashMap::default(),
+            wrapped_suffix_cache: FxHashMap::default(),
             layout_buffer: None,
             inline_plan: None,
             last_inline_measure_context: None,

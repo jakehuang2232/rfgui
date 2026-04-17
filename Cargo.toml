@@ -22,6 +22,7 @@ image = { version = "0.25", default-features = false, features = ["default-forma
 resvg = "0.45.1"
 rfgui-rsx = { version = "0.1.0-alpha.2", path = "rsx-macro" }
 glam = "0.30.5"
+rustc-hash = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.6.1"
@@ -42,5 +43,10 @@ opt-level = 1
 
 [profile.web-debug]
 inherits = "dev"
+debug = 2
+strip = "none"
+
+[profile.web-release]
+inherits = "release"
 debug = 2
 strip = "none"

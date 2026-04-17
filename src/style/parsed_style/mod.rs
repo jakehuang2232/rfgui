@@ -4,7 +4,7 @@
 
 use crate::style::color::{Color, ColorLike, IntoColor, OklchColor, StyleColor};
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::ops::Add;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2345,7 +2345,7 @@ impl SelectionStyle {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Style {
     declarations: Vec<Declaration>,
-    index: HashMap<PropertyId, usize>,
+    index: FxHashMap<PropertyId, usize>,
     hover: Option<Box<Style>>,
     selection: Option<Box<SelectionStyle>>,
 }

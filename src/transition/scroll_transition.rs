@@ -1,8 +1,7 @@
 #![allow(missing_docs)]
 
 //! Scroll transition primitives for animating scroll offsets.
-
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
@@ -89,7 +88,7 @@ struct ScrollTrackState {
 #[derive(Debug)]
 pub struct ScrollTransitionPlugin {
     plugin_id: TransitionPluginId,
-    tracks: HashMap<TrackKey<TrackTarget>, ScrollTrackState>,
+    tracks: FxHashMap<TrackKey<TrackTarget>, ScrollTrackState>,
     frame_samples: Vec<ScrollSample>,
 }
 
@@ -109,7 +108,7 @@ impl ScrollTransitionPlugin {
     pub fn with_plugin_id(plugin_id: TransitionPluginId) -> Self {
         Self {
             plugin_id,
-            tracks: HashMap::new(),
+            tracks: FxHashMap::default(),
             frame_samples: Vec::new(),
         }
     }

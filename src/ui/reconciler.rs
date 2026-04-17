@@ -1,10 +1,11 @@
 #![allow(missing_docs)]
 
 //! Tree reconciliation helpers used by the RSX runtime.
+use rustc_hash::FxHashMap;
 
 use crate::ui::{PropValue, RsxElementNode, RsxNode, RsxNodeIdentity};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{VecDeque};
 use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,19 +49,19 @@ pub enum Patch {
 /// Per-level working storage for `reconcile_children`.
 ///
 /// Kept in a thread-local pool so that repeated reconcile calls reuse the
-/// already-allocated HashMap tables and Vecs instead of allocating fresh ones
+/// already-allocated FxHashMap tables and Vecs instead of allocating fresh ones
 /// every frame.  The pool grows to the maximum tree depth encountered and then
 /// stays constant.
 struct ChildrenScratch {
-    old_keyed: HashMap<RsxNodeIdentity, usize>,
-    old_unkeyed: HashMap<&'static str, VecDeque<usize>>,
+    old_keyed: FxHashMap<RsxNodeIdentity, usize>,
+    old_unkeyed: FxHashMap<&'static str, VecDeque<usize>>,
     matches: Vec<Option<usize>>,
     matched_old: Vec<bool>,
     current_order: Vec<usize>,
     /// Maps old-child-index → its current position in `current_order`.
     /// Updated incrementally as virtual moves/inserts are simulated, giving
     /// O(1) lookup instead of the previous O(n) linear scan.
-    pos_lookup: HashMap<usize, usize>,
+    pos_lookup: FxHashMap<usize, usize>,
     /// Sequence of matched old-child indices in new order, used for LIS.
     target_seq: Vec<usize>,
 }
@@ -68,12 +69,12 @@ struct ChildrenScratch {
 impl ChildrenScratch {
     fn new() -> Self {
         Self {
-            old_keyed: HashMap::new(),
-            old_unkeyed: HashMap::new(),
+            old_keyed: FxHashMap::default(),
+            old_unkeyed: FxHashMap::default(),
             matches: Vec::new(),
             matched_old: Vec::new(),
             current_order: Vec::new(),
-            pos_lookup: HashMap::new(),
+            pos_lookup: FxHashMap::default(),
             target_seq: Vec::new(),
         }
     }
