@@ -314,39 +314,7 @@ impl Viewport {
     }
 
     pub(super) fn create_frame_attachments(&mut self) {
-        self.create_surface_msaa_texture();
         self.create_depth_texture();
-    }
-
-    fn create_surface_msaa_texture(&mut self) {
-        if self.gpu.msaa_sample_count <= 1 {
-            self.gpu.surface_msaa_texture = None;
-            self.gpu.surface_msaa_view = None;
-            return;
-        }
-        let device = match &self.gpu.device {
-            Some(d) => d,
-            None => return,
-        };
-        let size = wgpu::Extent3d {
-            width: self.gpu.surface_config.width.max(1),
-            height: self.gpu.surface_config.height.max(1),
-            depth_or_array_layers: 1,
-        };
-        let desc = wgpu::TextureDescriptor {
-            label: Some("Surface MSAA Texture"),
-            size,
-            mip_level_count: 1,
-            sample_count: self.gpu.msaa_sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: self.gpu.surface_config.format,
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        };
-        let texture = device.create_texture(&desc);
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.gpu.surface_msaa_texture = Some(texture);
-        self.gpu.surface_msaa_view = Some(view);
     }
 
     fn create_depth_texture(&mut self) {
@@ -364,7 +332,7 @@ impl Viewport {
             label: Some("Depth Texture"),
             size,
             mip_level_count: 1,
-            sample_count: self.gpu.msaa_sample_count,
+            sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth24PlusStencil8,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,

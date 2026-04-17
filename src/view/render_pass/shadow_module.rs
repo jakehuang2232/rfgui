@@ -1,6 +1,6 @@
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::{
-    FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, SampleCountPolicy, TextureDesc,
+    FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, TextureDesc,
 };
 use crate::view::render_pass::blur_module::{
     BlurModuleInput, BlurModuleOutput, BlurModuleParams, build_blur_module,
@@ -216,7 +216,6 @@ struct ShadowResources {
 
 impl GraphicsPass for ShadowFillPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
-        builder.set_sample_count(SampleCountPolicy::Fixed(1));
         if let Some(target) = builder.texture_target(&self.render_target) {
             let _ = target;
             builder.write_color(&self.render_target, GraphicsColorAttachmentOps::load());

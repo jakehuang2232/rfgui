@@ -4,7 +4,7 @@ use crate::view::frame_graph::{
 };
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
-    ResourceCache, SampleCountPolicy, TextureDesc,
+    ResourceCache, TextureDesc,
 };
 use crate::view::render_pass::ClearPass;
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
@@ -107,7 +107,6 @@ impl BlurStagePass {
 impl GraphicsPass for BlurStagePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        builder.set_sample_count(SampleCountPolicy::Fixed(1));
         if let Some(source) = self.input.layer.handle().map(OutSlot::with_handle) {
             builder.read_texture(&mut self.input.layer, &source);
         }

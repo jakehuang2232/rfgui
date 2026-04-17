@@ -3,7 +3,7 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
     FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, PrepareContext, SampleCountPolicy,
+    GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
@@ -94,7 +94,6 @@ impl BlurPass {
 impl GraphicsPass for BlurPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        builder.set_sample_count(SampleCountPolicy::Fixed(1));
         self.upload_buffer = builder.create_buffer(BufferDesc {
             size: 64 * 1024,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
