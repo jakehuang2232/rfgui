@@ -1,6 +1,6 @@
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
-    MouseMoveEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     RsxNode, ViewportHandle, component, use_viewport,
 };
 use crate::rfgui::view::viewport::ViewportControl;
@@ -62,6 +62,8 @@ struct ParticleSystemInner {
     mass_y: f32,
     mass_vx: f32,
     mass_vy: f32,
+    /// Left mouse button held → boost central mass.
+    mass_boost: bool,
 }
 
 impl ParticleSystemInner {
@@ -77,6 +79,7 @@ impl ParticleSystemInner {
             mass_y: 0.5,
             mass_vx: 0.0,
             mass_vy: 0.0,
+            mass_boost: false,
         }
     }
 
@@ -112,6 +115,10 @@ impl ParticleSystemInner {
         self.attractor = pos;
     }
 
+    fn set_mass_boost(&mut self, v: bool) {
+        self.mass_boost = v;
+    }
+
     fn update(&mut self) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_update).as_secs_f32().min(0.05);
@@ -136,13 +143,14 @@ impl ParticleSystemInner {
 
         // 3D gravity: mass at (cx, cy, 0).
         let cz = 0.0_f32;
+        let gm_eff = if self.mass_boost { GM * 4.0 } else { GM };
         for p in &mut self.particles {
             let dx = cx - p.x;
             let dy = cy - p.y;
             let dz = cz - p.z;
             let r2 = dx * dx + dy * dy + dz * dz + SOFTENING2;
             let r = r2.sqrt();
-            let a = GM / r2;
+            let a = gm_eff / r2;
             p.vx += a * dx / r * dt;
             p.vy += a * dy / r * dt;
             p.vz += a * dz / r * dt;
@@ -601,16 +609,41 @@ impl EventTarget for ParticleCanvas {
         if w > 0.0 && h > 0.0 {
             let nx = (event.mouse.local_x / w).clamp(0.0, 1.0);
             let ny = (event.mouse.local_y / h).clamp(0.0, 1.0);
+            let boost = event.mouse.buttons.left;
             PARTICLE_SYSTEM.with(|sys| {
-                sys.borrow_mut().set_attractor(Some((nx, ny)));
+                let mut s = sys.borrow_mut();
+                s.set_attractor(Some((nx, ny)));
+                s.set_mass_boost(boost);
             });
+        }
+    }
+
+    fn dispatch_mouse_down(
+        &mut self,
+        event: &mut MouseDownEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+        if event.mouse.button == Some(MouseButton::Left) {
+            PARTICLE_SYSTEM.with(|sys| sys.borrow_mut().set_mass_boost(true));
+        }
+    }
+
+    fn dispatch_mouse_up(
+        &mut self,
+        event: &mut MouseUpEvent,
+        _control: &mut ViewportControl<'_>,
+    ) {
+        if event.mouse.button == Some(MouseButton::Left) {
+            PARTICLE_SYSTEM.with(|sys| sys.borrow_mut().set_mass_boost(false));
         }
     }
 
     fn set_hovered(&mut self, hovered: bool) -> bool {
         if !hovered {
             PARTICLE_SYSTEM.with(|sys| {
-                sys.borrow_mut().set_attractor(None);
+                let mut s = sys.borrow_mut();
+                s.set_attractor(None);
+                s.set_mass_boost(false);
             });
         }
         false
