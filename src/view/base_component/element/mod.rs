@@ -911,43 +911,130 @@ pub struct InlinePlacement {
     pub percent_base_height: Option<f32>,
 }
 
+/// Flex-relevant properties for a single element, packed row/col so the flex
+/// solver can pick the correct axis without issuing multiple trait calls.
+///
+/// `intrinsic_*` expresses content-sized behavior: `Text` / `Image` / `Svg`
+/// set these; plain containers leave them `None`. `intrinsic_as_base` picks
+/// between the two historical uses (Image: seed the flex base; Text: used as
+/// `auto_min`).
+#[derive(Clone, Copy, Debug)]
+pub struct FlexProps {
+    pub grow: f32,
+    pub shrink: f32,
+    pub basis: SizeValue,
+
+    pub width: SizeValue,
+    pub height: SizeValue,
+    pub min_width: SizeValue,
+    pub min_height: SizeValue,
+    pub max_width: SizeValue,
+    pub max_height: SizeValue,
+
+    pub has_explicit_min_width: bool,
+    pub has_explicit_min_height: bool,
+
+    pub allows_cross_stretch_when_row: bool,
+    pub allows_cross_stretch_when_col: bool,
+
+    pub intrinsic_width: Option<f32>,
+    pub intrinsic_height: Option<f32>,
+    /// If true, `intrinsic_*` seeds `auto_min_main` when main size is `Auto`
+    /// and no explicit min is set (Text / TextArea content-sized min).
+    pub intrinsic_feeds_auto_min: bool,
+    /// If true, `intrinsic_*` seeds `auto_base_main` (Image / Svg aspect-ratio
+    /// preservation when flex-basis is auto and main size is auto).
+    pub intrinsic_feeds_auto_base: bool,
+}
+
+impl Default for FlexProps {
+    fn default() -> Self {
+        Self {
+            grow: 0.0,
+            shrink: 1.0,
+            basis: SizeValue::Auto,
+            width: SizeValue::Auto,
+            height: SizeValue::Auto,
+            min_width: SizeValue::Length(Length::Px(0.0)),
+            min_height: SizeValue::Length(Length::Px(0.0)),
+            max_width: SizeValue::Auto,
+            max_height: SizeValue::Auto,
+            has_explicit_min_width: false,
+            has_explicit_min_height: false,
+            allows_cross_stretch_when_row: false,
+            allows_cross_stretch_when_col: false,
+            intrinsic_width: None,
+            intrinsic_height: None,
+            intrinsic_feeds_auto_min: false,
+            intrinsic_feeds_auto_base: false,
+        }
+    }
+}
+
+impl FlexProps {
+    #[inline]
+    pub fn main_size(&self, is_row: bool) -> SizeValue {
+        if is_row { self.width } else { self.height }
+    }
+    #[inline]
+    pub fn min_main(&self, is_row: bool) -> SizeValue {
+        if is_row { self.min_width } else { self.min_height }
+    }
+    #[inline]
+    pub fn max_main(&self, is_row: bool) -> SizeValue {
+        if is_row { self.max_width } else { self.max_height }
+    }
+    #[inline]
+    pub fn has_explicit_min_main(&self, is_row: bool) -> bool {
+        if is_row { self.has_explicit_min_width } else { self.has_explicit_min_height }
+    }
+    #[inline]
+    pub fn allows_cross_stretch(&self, is_row: bool) -> bool {
+        if is_row { self.allows_cross_stretch_when_row } else { self.allows_cross_stretch_when_col }
+    }
+    #[inline]
+    pub fn intrinsic_main(&self, is_row: bool) -> Option<f32> {
+        if is_row { self.intrinsic_width } else { self.intrinsic_height }
+    }
+
+    /// Derived auto_min_main: only content-sized elements opt in via
+    /// `intrinsic_feeds_auto_min`. Gated on main size = `Auto` and no
+    /// explicit min.
+    #[inline]
+    pub fn auto_min_main(&self, is_row: bool) -> Option<f32> {
+        if !self.intrinsic_feeds_auto_min
+            || self.has_explicit_min_main(is_row)
+            || self.main_size(is_row) != SizeValue::Auto
+        {
+            return None;
+        }
+        self.intrinsic_main(is_row)
+    }
+
+    /// Derived auto_base_main: only Image/Svg opt in via
+    /// `intrinsic_feeds_auto_base`.
+    #[inline]
+    pub fn auto_base_main(&self, is_row: bool) -> Option<f32> {
+        if self.intrinsic_feeds_auto_base {
+            self.intrinsic_main(is_row).map(|v| v.max(0.0))
+        } else {
+            None
+        }
+    }
+}
+
 pub trait Layoutable {
     fn measure(&mut self, constraints: LayoutConstraints);
     fn place(&mut self, placement: LayoutPlacement);
     fn measured_size(&self) -> (f32, f32);
     fn set_layout_width(&mut self, width: f32);
     fn set_layout_height(&mut self, height: f32);
-    fn allows_cross_stretch(&self, is_row: bool) -> bool;
+    fn flex_props(&self) -> FlexProps {
+        FlexProps::default()
+    }
     fn cross_alignment_size(&self, is_row: bool, stretched_cross: Option<f32>) -> f32 {
         let (measured_w, measured_h) = self.measured_size();
         stretched_cross.unwrap_or(if is_row { measured_h } else { measured_w })
-    }
-    fn flex_grow(&self) -> f32 {
-        0.0
-    }
-    fn flex_shrink(&self) -> f32 {
-        1.0
-    }
-    fn flex_basis(&self) -> SizeValue {
-        SizeValue::Auto
-    }
-    fn flex_main_size(&self, _is_row: bool) -> SizeValue {
-        SizeValue::Auto
-    }
-    fn flex_has_explicit_min_main_size(&self, _is_row: bool) -> bool {
-        false
-    }
-    fn flex_auto_min_main_size(&self, _is_row: bool) -> Option<f32> {
-        None
-    }
-    fn flex_auto_base_main_size(&self, _is_row: bool) -> Option<f32> {
-        None
-    }
-    fn flex_min_main_size(&self, _is_row: bool) -> SizeValue {
-        SizeValue::Length(Length::Px(0.0))
-    }
-    fn flex_max_main_size(&self, _is_row: bool) -> SizeValue {
-        SizeValue::Auto
     }
     fn inline_relative_position(&self) -> (f32, f32) {
         (0.0, 0.0)
@@ -1213,6 +1300,8 @@ struct FlexItemPlan {
     used_main: f32,
     min_main: f32,
     max_main: Option<f32>,
+    grow: f32,
+    shrink: f32,
     frozen: bool,
     cross: f32,
 }

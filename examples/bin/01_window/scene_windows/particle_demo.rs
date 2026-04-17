@@ -557,20 +557,17 @@ impl Layoutable for ParticleCanvas {
         self.target_h = h;
     }
 
-    fn allows_cross_stretch(&self, _is_row: bool) -> bool {
-        true
+    fn flex_props(&self) -> rfgui::base_component::FlexProps {
+        rfgui::base_component::FlexProps {
+            grow: 1.0,
+            allows_cross_stretch_when_row: true,
+            allows_cross_stretch_when_col: true,
+            ..Default::default()
+        }
     }
     fn cross_alignment_size(&self, is_row: bool, _: Option<f32>) -> f32 {
         if is_row { self.target_h } else { self.target_w }
     }
-    fn flex_grow(&self) -> f32 { 1.0 }
-    fn flex_shrink(&self) -> f32 { 1.0 }
-    fn flex_basis(&self) -> rfgui::SizeValue { rfgui::SizeValue::Auto }
-    fn flex_main_size(&self, _is_row: bool) -> rfgui::SizeValue { rfgui::SizeValue::Auto }
-    fn flex_has_explicit_min_main_size(&self, _: bool) -> bool { false }
-    fn flex_auto_min_main_size(&self, _: bool) -> Option<f32> { None }
-    fn flex_min_main_size(&self, _: bool) -> rfgui::SizeValue { rfgui::SizeValue::Auto }
-    fn flex_max_main_size(&self, _: bool) -> rfgui::SizeValue { rfgui::SizeValue::Auto }
     fn inline_relative_position(&self) -> (f32, f32) { (self.offset_x, self.offset_y) }
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.offset_x = x;

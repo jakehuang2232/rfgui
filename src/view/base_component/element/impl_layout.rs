@@ -1360,7 +1360,7 @@ impl Element {
                         self.children[child_idx].set_layout_height(item_main);
                     }
                     let stretched_cross = if cross_size == CrossSize::Stretch
-                        && self.children[child_idx].allows_cross_stretch(is_row)
+                        && self.children[child_idx].flex_props().allows_cross_stretch(is_row)
                     {
                         if is_row {
                             self.children[child_idx].set_layout_height(line_cross);
