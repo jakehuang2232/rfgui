@@ -2234,7 +2234,9 @@ mod tests {
         border_width: f32,
     ) -> ElementStylePropSchema {
         ElementStylePropSchema {
-            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(bg_hex)))),
+            background: Some(crate::Background::Color(Box::new(
+                IntoColor::<Color>::into_color(Color::hex(bg_hex)),
+            ))),
             border: Some(Border::uniform(
                 Length::px(border_width),
                 &Color::hex(border_hex),
@@ -2551,9 +2553,9 @@ mod tests {
         let parent_style = ElementStylePropSchema {
             width: Some(Length::px(100.0)),
             height: Some(Length::px(100.0)),
-            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
-                "#101010",
-            )))),
+            background: Some(crate::Background::Color(Box::new(
+                IntoColor::<Color>::into_color(Color::hex("#101010")),
+            ))),
             cursor: Some(Cursor::Pointer),
             ..empty_element_style()
         };
@@ -2561,9 +2563,9 @@ mod tests {
         let child_style = ElementStylePropSchema {
             width: Some(Length::px(40.0)),
             height: Some(Length::px(40.0)),
-            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
-                "#ff0000",
-            )))),
+            background: Some(crate::Background::Color(Box::new(
+                IntoColor::<Color>::into_color(Color::hex("#ff0000")),
+            ))),
             ..empty_element_style()
         };
 
@@ -2604,9 +2606,9 @@ mod tests {
         let parent_style = ElementStylePropSchema {
             width: Some(Length::px(200.0)),
             height: Some(Length::px(80.0)),
-            background: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
-                "#101010",
-            )))),
+            background: Some(crate::Background::Color(Box::new(
+                IntoColor::<Color>::into_color(Color::hex("#101010")),
+            ))),
             cursor: Some(Cursor::Pointer),
             ..empty_element_style()
         };

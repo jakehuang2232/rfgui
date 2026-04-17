@@ -3,6 +3,7 @@
 //! Computed style data used by layout, rendering, and interaction passes.
 
 use crate::style::color::Color;
+use crate::style::gradient::Gradient;
 use crate::style::parsed_style::{
     Align, Animator, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
     PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin, Transitions,
@@ -56,6 +57,8 @@ pub struct ComputedStyle {
     pub color: Color,
     pub selection_background_color: Color,
     pub background_color: Color,
+    pub background_image: Option<Gradient>,
+    pub border_image: Option<Gradient>,
     pub font_families: Vec<String>,
     pub font_size: f32,
     pub font_weight: u16,
@@ -109,6 +112,8 @@ impl Default for ComputedStyle {
             color: Color::rgb(0, 0, 0),
             selection_background_color: Color::rgba(0, 0, 0, 0),
             background_color: Color::rgba(0, 0, 0, 0),
+            background_image: None,
+            border_image: None,
             font_families: Vec::new(),
             font_size: 16.0,
             font_weight: 400,
@@ -381,6 +386,16 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             PropertyId::BackgroundColor => {
                 computed.background_color =
                     parse_color(&declaration.value).unwrap_or(computed.background_color)
+            }
+            PropertyId::BackgroundImage => {
+                if let ParsedValue::Gradient(value) = &declaration.value {
+                    computed.background_image = Some(value.clone());
+                }
+            }
+            PropertyId::BorderImage => {
+                if let ParsedValue::Gradient(value) = &declaration.value {
+                    computed.border_image = Some(value.clone());
+                }
             }
             PropertyId::FontFamily => {
                 if let ParsedValue::FontFamily(value) = &declaration.value {

@@ -158,19 +158,33 @@ struct RectParams {
     inner_rx: vec4<f32>,
     inner_ry: vec4<f32>,
     border_widths: vec4<f32>, // left, top, right, bottom
-    flags: vec4<f32>,         // x: has_inner
+    flags: vec4<f32>,         // x: has_inner, y: depth
     fill_color: vec4<f32>,
     border_left: vec4<f32>,
     border_top: vec4<f32>,
     border_right: vec4<f32>,
     border_bottom: vec4<f32>,
     screen_size: vec4<f32>,
-    depth: f32,
-    _pad2: vec3<f32>,
+    // x: gradient_kind (1=linear, 2=radial, 3=conic)
+    // y: stop_count, z: repeating, w: stops_start_index
+    gradient_info: vec4<f32>,
+    // Linear: [p0.xy, p1.xy]; Radial: [cx,cy,rx,ry]; Conic: [cx,cy,from_rad,_]
+    gradient_axis: vec4<f32>,
+    border_gradient_info: vec4<f32>,
+    border_gradient_axis: vec4<f32>,
+    _pad_tail: array<vec4<f32>, 14>,
+}
+
+struct GradientStop {
+    color: vec4<f32>,
+    pos: vec4<f32>, // x: position (0..1)
 }
 
 @group(0) @binding(0)
 var<uniform> u: RectParams;
+
+@group(0) @binding(1)
+var<storage, read> gradient_stops: array<GradientStop>;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -186,7 +200,7 @@ fn vs_main(@location(0) uv: vec2<f32>) -> VertexOut {
         1.0 - (p.y / u.screen_size.y) * 2.0,
     );
 #ifdef OPAQUE
-    out.position = vec4<f32>(ndc, u.depth, 1.0);
+    out.position = vec4<f32>(ndc, u.flags.y, 1.0);
 #else
     out.position = vec4<f32>(ndc, 0.0, 1.0);
 #endif
@@ -210,8 +224,93 @@ fn cov_inner_of(p: vec2<f32>) -> f32 {
 #endif
 }
 
+fn gradient_stop_color(start: u32, i: u32) -> vec4<f32> {
+    return gradient_stops[start + i].color;
+}
+
+fn gradient_stop_position(start: u32, i: u32) -> f32 {
+    return gradient_stops[start + i].pos.x;
+}
+
+fn gradient_t_of(info: vec4<f32>, axis: vec4<f32>, p: vec2<f32>) -> f32 {
+    let kind = info.x;
+    if (kind < 1.5) {
+        // linear
+        let p0 = axis.xy;
+        let p1 = axis.zw;
+        let d = p1 - p0;
+        let len2 = max(dot(d, d), 1e-6);
+        return dot(p - p0, d) / len2;
+    } else if (kind < 2.5) {
+        // radial
+        let c = axis.xy;
+        let rxry = max(axis.zw, vec2<f32>(1e-4));
+        return length((p - c) / rxry);
+    } else {
+        // conic
+        let c = axis.xy;
+        let from_angle = axis.z;
+        let v = p - c;
+        let a = atan2(v.x, -v.y);
+        let TAU = 6.28318530718;
+        var t = (a - from_angle) / TAU;
+        return t - floor(t);
+    }
+}
+
+fn sample_gradient(info: vec4<f32>, axis: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
+    let count_f = max(info.y, 1.0);
+    let count = u32(count_f);
+    let repeating = info.z > 0.5;
+    let start = u32(info.w);
+    var t = gradient_t_of(info, axis, p);
+    if (repeating) {
+        t = t - floor(t);
+    } else {
+        t = clamp(t, 0.0, 1.0);
+    }
+    if (count <= 1u) {
+        return gradient_stop_color(start, 0u);
+    }
+    let first_pos = gradient_stop_position(start, 0u);
+    if (t <= first_pos) {
+        return gradient_stop_color(start, 0u);
+    }
+    let last_pos = gradient_stop_position(start, count - 1u);
+    if (t >= last_pos) {
+        return gradient_stop_color(start, count - 1u);
+    }
+    var result: vec4<f32> = gradient_stop_color(start, count - 1u);
+    for (var i: u32 = 0u; i < count - 1u; i = i + 1u) {
+        let p0 = gradient_stop_position(start, i);
+        let p1 = gradient_stop_position(start, i + 1u);
+        if (t >= p0 && t <= p1) {
+            let span = max(p1 - p0, 1e-6);
+            let k = (t - p0) / span;
+            result = mix(
+                gradient_stop_color(start, i),
+                gradient_stop_color(start, i + 1u),
+                k,
+            );
+            break;
+        }
+    }
+    return result;
+}
+
+fn fill_at(p: vec2<f32>) -> vec4<f32> {
+#ifdef HAS_GRADIENT
+    return sample_gradient(u.gradient_info, u.gradient_axis, p);
+#else
+    return u.fill_color;
+#endif
+}
+
 #ifndef BORDER_NONE
 fn border_color_of(p: vec2<f32>) -> vec4<f32> {
+#ifdef HAS_BORDER_GRADIENT
+    return sample_gradient(u.border_gradient_info, u.border_gradient_axis, p);
+#else
 #ifdef BORDER_UNIFORM
     return u.border_left;
 #else
@@ -224,6 +323,7 @@ fn border_color_of(p: vec2<f32>) -> vec4<f32> {
         u.border_right,
         u.border_bottom,
     );
+#endif
 #endif
 }
 #endif
@@ -240,7 +340,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
 #endif
-    return premul(u.fill_color) * cov;
+    return premul(fill_at(p)) * cov;
 
 #else
 #ifdef PASS_BORDER_ONLY
@@ -286,7 +386,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     out = out + premul(border_color_of(p)) * border_mask;
 #endif
 #ifdef HAS_FILL
-    out = out + premul(u.fill_color) * fill_mask;
+    out = out + premul(fill_at(p)) * fill_mask;
 #endif
     return out;
 #endif

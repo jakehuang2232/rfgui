@@ -21,6 +21,8 @@ pub(crate) struct RectShaderKey {
     pub rounded: bool,
     pub opaque: bool,
     pub pass: RectRenderMode,
+    pub has_gradient: bool,
+    pub has_border_gradient: bool,
 }
 
 pub(crate) fn build_rect_shader(
@@ -50,6 +52,12 @@ pub(crate) fn build_rect_shader(
         RectRenderMode::Combined => {}
         RectRenderMode::FillOnly => set(&mut defs, "PASS_FILL_ONLY"),
         RectRenderMode::BorderOnly => set(&mut defs, "PASS_BORDER_ONLY"),
+    }
+    if key.has_gradient {
+        set(&mut defs, "HAS_GRADIENT");
+    }
+    if key.has_border_gradient {
+        set(&mut defs, "HAS_BORDER_GRADIENT");
     }
 
     let shader_defs: std::collections::HashMap<String, ShaderDefValue> =
@@ -100,6 +108,12 @@ mod tests {
             RectRenderMode::FillOnly => set("PASS_FILL_ONLY"),
             RectRenderMode::BorderOnly => set("PASS_BORDER_ONLY"),
         }
+        if key.has_gradient {
+            set("HAS_GRADIENT");
+        }
+        if key.has_border_gradient {
+            set("HAS_BORDER_GRADIENT");
+        }
         let shader_defs: std::collections::HashMap<String, ShaderDefValue> =
             defs.into_iter().collect();
 
@@ -125,25 +139,42 @@ mod tests {
                 for &rounded in &[true, false] {
                     for &opaque in &[true, false] {
                         for &pass in &passes {
-                            // skip nonsense combinations that the Rust side will never request
-                            if matches!(pass, FillOnly) && !has_fill {
-                                continue;
-                            }
-                            if matches!(pass, BorderOnly) && matches!(border, None) {
-                                continue;
-                            }
-                            if matches!(pass, Combined) && !has_fill && matches!(border, None) {
-                                continue;
-                            }
-                            let key = RectShaderKey {
-                                has_fill,
-                                border,
-                                rounded,
-                                opaque,
-                                pass,
-                            };
-                            if let Err(e) = compose(key) {
-                                panic!("{}", e);
+                            for &has_gradient in &[false, true] {
+                                for &has_border_gradient in &[false, true] {
+                                    if matches!(pass, FillOnly) && !has_fill {
+                                        continue;
+                                    }
+                                    if matches!(pass, BorderOnly) && matches!(border, None) {
+                                        continue;
+                                    }
+                                    if matches!(pass, Combined)
+                                        && !has_fill
+                                        && matches!(border, None)
+                                    {
+                                        continue;
+                                    }
+                                    if matches!(pass, FillOnly) && has_border_gradient {
+                                        continue;
+                                    }
+                                    if matches!(border, None) && has_border_gradient {
+                                        continue;
+                                    }
+                                    if !has_fill && has_gradient {
+                                        continue;
+                                    }
+                                    let key = RectShaderKey {
+                                        has_fill,
+                                        border,
+                                        rounded,
+                                        opaque,
+                                        pass,
+                                        has_gradient,
+                                        has_border_gradient,
+                                    };
+                                    if let Err(e) = compose(key) {
+                                        panic!("{}", e);
+                                    }
+                                }
                             }
                         }
                     }

@@ -101,8 +101,10 @@ pub struct ElementStylePropSchema {
     pub cursor: Option<Cursor>,
     pub color: Option<Box<dyn ColorLike>>,
     pub border: Option<crate::Border>,
-    pub background: Option<Box<dyn ColorLike>>,
+    pub background: Option<crate::Background>,
     pub background_color: Option<Box<dyn ColorLike>>,
+    pub background_image: Option<crate::Gradient>,
+    pub border_image: Option<crate::Gradient>,
     pub font: Option<FontFamily>,
     pub font_size: Option<FontSize>,
     pub font_weight: Option<FontWeight>,
@@ -138,8 +140,10 @@ pub struct HoverElementStylePropSchema {
     pub cursor: Option<Cursor>,
     pub color: Option<Box<dyn ColorLike>>,
     pub border: Option<crate::Border>,
-    pub background: Option<Box<dyn ColorLike>>,
+    pub background: Option<crate::Background>,
     pub background_color: Option<Box<dyn ColorLike>>,
+    pub background_image: Option<crate::Gradient>,
+    pub border_image: Option<crate::Gradient>,
     pub font: Option<FontFamily>,
     pub font_size: Option<FontSize>,
     pub font_weight: Option<FontWeight>,
@@ -189,7 +193,7 @@ pub struct HoverTextStylePropSchema {
 #[derive(Clone)]
 #[props]
 pub struct SelectionStylePropSchema {
-    pub background: Option<Box<dyn ColorLike>>,
+    pub background: Option<crate::Background>,
 }
 
 #[derive(Clone)]
@@ -1006,11 +1010,36 @@ fn apply_box_color(
     }
 }
 
+fn apply_background(style: &mut Style, background: Option<&crate::Background>) {
+    let Some(background) = background else {
+        return;
+    };
+    match background {
+        crate::Background::Color(color) => {
+            style.insert(
+                crate::PropertyId::BackgroundColor,
+                crate::style_color_value(color.clone()),
+            );
+        }
+        crate::Background::Gradient(gradient) => {
+            style.insert(
+                crate::PropertyId::BackgroundImage,
+                crate::ParsedValue::Gradient(gradient.clone()),
+            );
+        }
+    }
+}
+
 fn apply_selection(selection: &Option<SelectionStylePropSchema>) -> Option<SelectionStyle> {
     let selection = selection.as_ref()?;
     let mut output = SelectionStyle::new();
     if let Some(background) = &selection.background {
-        output.set_background(background.clone());
+        match background {
+            crate::Background::Color(color) => output.set_background(color.clone()),
+            crate::Background::Gradient(_) => {
+                // Selection highlight only supports solid colors; gradients are ignored.
+            }
+        }
     }
     Some(output)
 }
@@ -1074,16 +1103,24 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
         );
     }
     apply_box_color(style, crate::PropertyId::Color, &schema.color);
-    apply_box_color(
-        style,
-        crate::PropertyId::BackgroundColor,
-        &schema.background,
-    );
+    apply_background(style, schema.background.as_ref());
     apply_box_color(
         style,
         crate::PropertyId::BackgroundColor,
         &schema.background_color,
     );
+    if let Some(gradient) = &schema.background_image {
+        style.insert(
+            crate::PropertyId::BackgroundImage,
+            crate::ParsedValue::Gradient(gradient.clone()),
+        );
+    }
+    if let Some(gradient) = &schema.border_image {
+        style.insert(
+            crate::PropertyId::BorderImage,
+            crate::ParsedValue::Gradient(gradient.clone()),
+        );
+    }
     if let Some(border) = &schema.border {
         style.set_border(border.clone());
     }
@@ -1179,6 +1216,8 @@ impl ElementStylePropSchema {
             border: self.border.clone(),
             background: self.background.clone(),
             background_color: self.background_color.clone(),
+            background_image: self.background_image.clone(),
+            border_image: self.border_image.clone(),
             font: self.font.clone(),
             font_size: self.font_size,
             font_weight: self.font_weight,

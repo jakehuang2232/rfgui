@@ -1893,6 +1893,135 @@ pub fn has_animation_frame_request(root: &dyn ElementTrait) -> bool {
     false
 }
 
+/// Forward `EventTarget` methods to an inner field (typically `element`).
+///
+/// Two forms:
+/// - `forward_event_target!(full element)` — forwards every method, used by
+///   wrappers that want the inner `Element` to own all event state
+///   (scroll, hover, transitions…). Image / Svg.
+/// - `forward_event_target!(dispatch_only element)` — only forwards the
+///   pointer/keyboard/focus dispatch pair + `cursor`; the remaining methods
+///   fall back to trait defaults. Text.
+macro_rules! forward_event_target {
+    (full $field:ident) => {
+        $crate::view::base_component::forward_event_target!(@dispatch $field);
+        $crate::view::base_component::forward_event_target!(@state_and_requests $field);
+    };
+    (dispatch_only $field:ident) => {
+        $crate::view::base_component::forward_event_target!(@dispatch $field);
+        fn cursor(&self) -> $crate::Cursor {
+            self.$field.cursor()
+        }
+    };
+    (@dispatch $field:ident) => {
+        fn dispatch_mouse_down(
+            &mut self,
+            event: &mut $crate::ui::MouseDownEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_mouse_down(event, control);
+        }
+        fn dispatch_mouse_up(
+            &mut self,
+            event: &mut $crate::ui::MouseUpEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_mouse_up(event, control);
+        }
+        fn dispatch_mouse_move(
+            &mut self,
+            event: &mut $crate::ui::MouseMoveEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_mouse_move(event, control);
+        }
+        fn dispatch_click(
+            &mut self,
+            event: &mut $crate::ui::ClickEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_click(event, control);
+        }
+        fn dispatch_key_down(
+            &mut self,
+            event: &mut $crate::ui::KeyDownEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_key_down(event, control);
+        }
+        fn dispatch_key_up(
+            &mut self,
+            event: &mut $crate::ui::KeyUpEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_key_up(event, control);
+        }
+        fn dispatch_focus(
+            &mut self,
+            event: &mut $crate::ui::FocusEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_focus(event, control);
+        }
+        fn dispatch_blur(
+            &mut self,
+            event: &mut $crate::ui::BlurEvent,
+            control: &mut $crate::view::viewport::ViewportControl<'_>,
+        ) {
+            self.$field.dispatch_blur(event, control);
+        }
+    };
+    (@state_and_requests $field:ident) => {
+        fn dispatch_mouse_enter(&mut self, event: &mut $crate::ui::MouseEnterEvent) {
+            self.$field.dispatch_mouse_enter(event);
+        }
+        fn dispatch_mouse_leave(&mut self, event: &mut $crate::ui::MouseLeaveEvent) {
+            self.$field.dispatch_mouse_leave(event);
+        }
+        fn cancel_pointer_interaction(&mut self) -> bool {
+            self.$field.cancel_pointer_interaction()
+        }
+        fn set_hovered(&mut self, hovered: bool) -> bool {
+            self.$field.set_hovered(hovered)
+        }
+        fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
+            self.$field.scroll_by(dx, dy)
+        }
+        fn can_scroll_by(&self, dx: f32, dy: f32) -> bool {
+            self.$field.can_scroll_by(dx, dy)
+        }
+        fn get_scroll_offset(&self) -> (f32, f32) {
+            self.$field.get_scroll_offset()
+        }
+        fn set_scroll_offset(&mut self, offset: (f32, f32)) {
+            self.$field.set_scroll_offset(offset);
+        }
+        fn cursor(&self) -> $crate::Cursor {
+            self.$field.cursor()
+        }
+        fn wants_animation_frame(&self) -> bool {
+            self.$field.wants_animation_frame()
+        }
+        fn take_style_transition_requests(
+            &mut self,
+        ) -> Vec<$crate::transition::StyleTrackRequest> {
+            self.$field.take_style_transition_requests()
+        }
+        fn take_layout_transition_requests(
+            &mut self,
+        ) -> Vec<$crate::transition::LayoutTrackRequest> {
+            self.$field.take_layout_transition_requests()
+        }
+        fn take_visual_transition_requests(
+            &mut self,
+        ) -> Vec<$crate::transition::VisualTrackRequest> {
+            self.$field.take_visual_transition_requests()
+        }
+    };
+}
+
+pub(crate) use forward_event_target;
+
 #[cfg(test)]
 mod tests {
     use super::{

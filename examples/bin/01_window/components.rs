@@ -40,10 +40,10 @@ pub fn GlobalKeyCounterCard(title: String) -> RsxNode {
             <Text>{title}</Text>
             <Text>{format!("count={}", count.get())}</Text>
             <Button
-                label="Count +1"
+                
                 variant={Some(ButtonVariant::Outlined)}
                 on_click={increment}
-            />
+>Count +1</Button>
             <Element style={{
                 width: Length::percent(100.0),
                 height: Length::px(120.0),
@@ -69,10 +69,9 @@ pub fn GlobalKeyCounterCard(title: String) -> RsxNode {
             }}>
                 <Text>Transition test: toggle, then move the card.</Text>
                 <Button
-                    label={if transition_alt.get() { "Transition -> base" } else { "Transition -> alt" }}
                     variant={Some(ButtonVariant::Text)}
                     on_click={toggle_transition}
-                />
+                >{if transition_alt.get() { "Transition -> base" } else { "Transition -> alt" }}</Button>
                 <Element style={{
                     width: if transition_alt.get() {
                         Length::percent(100.0)
@@ -140,10 +139,9 @@ pub fn GlobalKeyRenderTestBlock() -> RsxNode {
                 left/right. Their state should stay the same.
             </Text>
             <Button
-                label={if move_to_right.get() { "Move card to left column" } else { "Move card to right column" }}
                 variant={Some(ButtonVariant::Contained)}
                 on_click={toggle_side}
-            />
+            >{if move_to_right.get() { "Move card to left column" } else { "Move card to right column" }}</Button>
             <Element style={{
                 width: Length::percent(100.0),
                 layout: Layout::flow().row().no_wrap(),

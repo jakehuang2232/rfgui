@@ -148,6 +148,87 @@ impl<'a> IntoOptionalProp<Box<dyn crate::ColorLike>> for crate::HexColor<'a> {
     }
 }
 
+// Background accepts colors, gradients, and gradient builders.
+// (Background → Option<Background> is handled by the blanket `impl<T> IntoOptionalProp<T> for T`.)
+impl IntoOptionalProp<crate::Background> for crate::Gradient {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Gradient(self))
+    }
+}
+
+impl IntoOptionalProp<crate::Background> for crate::LinearBuilder {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Gradient(self.build()))
+    }
+}
+
+impl IntoOptionalProp<crate::Background> for crate::RadialBuilder {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Gradient(self.build()))
+    }
+}
+
+impl IntoOptionalProp<crate::Background> for crate::ConicBuilder {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Gradient(self.build()))
+    }
+}
+
+impl IntoOptionalProp<crate::Background> for Box<dyn crate::ColorLike> {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Color(self))
+    }
+}
+
+impl IntoOptionalProp<crate::Background> for crate::Color {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Color(Box::new(self)))
+    }
+}
+
+impl<'a> IntoOptionalProp<crate::Background> for crate::HexColor<'a> {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Color(Box::new(
+            crate::IntoColor::<crate::Color>::into_color(self),
+        )))
+    }
+}
+
+impl IntoOptionalProp<crate::Background> for &str {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Color(Box::new(
+            crate::IntoColor::<crate::Color>::into_color(self),
+        )))
+    }
+}
+
+impl IntoOptionalProp<crate::Background> for String {
+    fn into_optional_prop(self) -> Option<crate::Background> {
+        Some(crate::Background::Color(Box::new(
+            crate::IntoColor::<crate::Color>::into_color(self),
+        )))
+    }
+}
+
+// Gradient (for background_image / border_image fields): accept builders too.
+impl IntoOptionalProp<crate::Gradient> for crate::LinearBuilder {
+    fn into_optional_prop(self) -> Option<crate::Gradient> {
+        Some(self.build())
+    }
+}
+
+impl IntoOptionalProp<crate::Gradient> for crate::RadialBuilder {
+    fn into_optional_prop(self) -> Option<crate::Gradient> {
+        Some(self.build())
+    }
+}
+
+impl IntoOptionalProp<crate::Gradient> for crate::ConicBuilder {
+    fn into_optional_prop(self) -> Option<crate::Gradient> {
+        Some(self.build())
+    }
+}
+
 impl IntoOptionalProp<String> for &str {
     fn into_optional_prop(self) -> Option<String> {
         Some(self.to_string())

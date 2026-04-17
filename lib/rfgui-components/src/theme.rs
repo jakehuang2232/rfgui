@@ -22,8 +22,15 @@ impl PartialEq for Theme {
 
 #[derive(Clone)]
 pub struct ColorTheme {
+    /// Raw Atom One palette. Use `atom.*` when you want a specific hue;
+    /// prefer the semantic sets (`primary`, `error`, ...) for component styling.
+    pub atom: AtomColorSchema,
     pub primary: ColorSet,
     pub secondary: ColorSet,
+    pub error: ColorSet,
+    pub warning: ColorSet,
+    pub info: ColorSet,
+    pub success: ColorSet,
     pub background: ColorSet,
     pub surface: ColorSet,
     pub layer: SurfaceLayerTheme,
@@ -31,6 +38,25 @@ pub struct ColorTheme {
     pub border: Box<dyn ColorLike>,
     pub divider: Box<dyn ColorLike>,
     pub state: StateColorSet,
+}
+
+/// Atom One palette (subset compatible with atom-one-light/dark).
+#[derive(Clone)]
+pub struct AtomColorSchema {
+    pub bg: Box<dyn ColorLike>,
+    pub bg_subtle: Box<dyn ColorLike>,
+    pub fg: Box<dyn ColorLike>,
+    pub fg_subtle: Box<dyn ColorLike>,
+    pub comment: Box<dyn ColorLike>,
+    pub red: Box<dyn ColorLike>,
+    pub red_alt: Box<dyn ColorLike>,
+    pub orange: Box<dyn ColorLike>,
+    pub orange_alt: Box<dyn ColorLike>,
+    pub yellow: Box<dyn ColorLike>,
+    pub green: Box<dyn ColorLike>,
+    pub cyan: Box<dyn ColorLike>,
+    pub blue: Box<dyn ColorLike>,
+    pub purple: Box<dyn ColorLike>,
 }
 
 #[derive(Clone)]
@@ -155,11 +181,32 @@ pub struct ComponentTheme {
     pub switch: SwitchTheme,
 }
 
+/// Shared theme for `Button`, `IconButton`, `ToggleButton`.
 #[derive(Clone)]
 pub struct ButtonTheme {
-    pub padding: Padding,
+    pub size: ButtonSizes,
     pub radius: BorderRadius,
     pub border: Border,
+    pub icon_button_radius: BorderRadius,
+    pub toggle_button_radius: BorderRadius,
+}
+
+#[derive(Clone)]
+pub struct ButtonSizes {
+    pub small: ButtonSizeSpec,
+    pub medium: ButtonSizeSpec,
+    pub large: ButtonSizeSpec,
+}
+
+#[derive(Clone)]
+pub struct ButtonSizeSpec {
+    pub padding: Padding,
+    pub font_size: FontSize,
+    pub icon_size: FontSize,
+    pub icon_gap: Length,
+    pub icon_button_size: Length,
+    pub icon_button_padding: Padding,
+    pub toggle_button_padding: Padding,
 }
 
 #[derive(Clone)]
@@ -224,41 +271,110 @@ pub struct SwitchTheme {
     pub thumb_radius: BorderRadius,
 }
 
+fn button_sizes() -> ButtonSizes {
+    // Medium preserves the pre-refactor Button sizing (padding x=12, y=0,
+    // font size sm). Small/Large scale from there.
+    ButtonSizes {
+        small: ButtonSizeSpec {
+            padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
+            font_size: FontSize::px(12.0),
+            icon_size: FontSize::px(14.0),
+            icon_gap: Length::px(4.0),
+            icon_button_size: Length::px(28.0),
+            icon_button_padding: Padding::uniform(Length::px(4.0)),
+            toggle_button_padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
+        },
+        medium: ButtonSizeSpec {
+            padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+            font_size: FontSize::px(14.0),
+            icon_size: FontSize::px(16.0),
+            icon_gap: Length::px(6.0),
+            icon_button_size: Length::px(36.0),
+            icon_button_padding: Padding::uniform(Length::px(6.0)),
+            toggle_button_padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+        },
+        large: ButtonSizeSpec {
+            padding: Padding::uniform(Length::px(0.0)).x(Length::px(16.0)),
+            font_size: FontSize::px(16.0),
+            icon_size: FontSize::px(20.0),
+            icon_gap: Length::px(8.0),
+            icon_button_size: Length::px(44.0),
+            icon_button_padding: Padding::uniform(Length::px(8.0)),
+            toggle_button_padding: Padding::uniform(Length::px(0.0)).x(Length::px(16.0)),
+        },
+    }
+}
+
 impl Theme {
     pub fn light() -> Self {
         let border_color = Color::rgb(220, 223, 230);
 
+        // Atom One Light palette.
+        let atom = AtomColorSchema {
+            bg: hex("#fafafa"),
+            bg_subtle: hex("#f0f0f0"),
+            fg: hex("#383a42"),
+            fg_subtle: hex("#696c77"),
+            comment: hex("#a0a1a7"),
+            red: hex("#e45649"),
+            red_alt: hex("#ca1243"),
+            orange: hex("#d75f00"),
+            orange_alt: hex("#c18401"),
+            yellow: hex("#c18401"),
+            green: hex("#50a14f"),
+            cyan: hex("#0184bc"),
+            blue: hex("#4078f2"),
+            purple: hex("#a626a4"),
+        };
+
         Self {
             color: ColorTheme {
+                atom: atom.clone(),
                 primary: ColorSet {
-                    base: rgb(64, 120, 242),
-                    on: rgb(255, 255, 255),
+                    base: atom.blue.clone(),
+                    on: hex("#ffffff"),
                 },
                 secondary: ColorSet {
-                    base: rgb(166, 38, 164),
-                    on: rgb(255, 255, 255),
+                    base: atom.purple.clone(),
+                    on: hex("#ffffff"),
+                },
+                error: ColorSet {
+                    base: atom.red.clone(),
+                    on: hex("#ffffff"),
+                },
+                warning: ColorSet {
+                    base: atom.orange.clone(),
+                    on: hex("#ffffff"),
+                },
+                info: ColorSet {
+                    base: atom.cyan.clone(),
+                    on: hex("#ffffff"),
+                },
+                success: ColorSet {
+                    base: atom.green.clone(),
+                    on: hex("#ffffff"),
                 },
                 background: ColorSet {
-                    base: rgb(250, 250, 250),
-                    on: rgb(56, 58, 66),
+                    base: atom.bg.clone(),
+                    on: atom.fg.clone(),
                 },
                 surface: ColorSet {
-                    base: rgb(255, 255, 255),
-                    on: rgb(56, 58, 66),
+                    base: hex("#ffffff"),
+                    on: atom.fg.clone(),
                 },
                 layer: SurfaceLayerTheme {
-                    app: rgb(250, 250, 250),
-                    surface: rgb(255, 255, 255),
-                    raised: rgb(240, 240, 240),
-                    inverse: rgb(56, 58, 66),
-                    on_inverse: rgb(250, 250, 250),
+                    app: atom.bg.clone(),
+                    surface: hex("#ffffff"),
+                    raised: atom.bg_subtle.clone(),
+                    inverse: hex("#282c34"),
+                    on_inverse: hex("#abb2bf"),
                 },
                 text: TextColorSet {
-                    primary: rgb(56, 58, 66),
+                    primary: atom.fg.clone(),
                     primary_selection_background: rgba(64, 120, 242, 89),
-                    secondary: rgb(105, 108, 119),
+                    secondary: atom.fg_subtle.clone(),
                     secondary_selection_background: rgba(166, 38, 164, 64),
-                    disabled: rgb(160, 161, 167),
+                    disabled: atom.comment.clone(),
                 },
                 border: Box::new(border_color),
                 divider: rgb(229, 229, 230),
@@ -266,7 +382,7 @@ impl Theme {
                     hover: rgba(56, 58, 66, 16),
                     active: rgba(56, 58, 66, 28),
                     pressed: rgba(56, 58, 66, 44),
-                    focus: rgb(64, 120, 242),
+                    focus: atom.blue.clone(),
                     disabled: rgba(160, 161, 167, 128),
                 },
             },
@@ -334,9 +450,11 @@ impl Theme {
             },
             component: ComponentTheme {
                 button: ButtonTheme {
-                    padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+                    size: button_sizes(),
                     radius: BorderRadius::uniform(Length::px(4.0)),
                     border: Border::uniform(Length::px(1.0), &border_color),
+                    icon_button_radius: BorderRadius::uniform(Length::px(999.0)),
+                    toggle_button_radius: BorderRadius::uniform(Length::px(4.0)),
                 },
                 input: InputTheme {
                     padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
@@ -395,30 +513,65 @@ impl Theme {
     pub fn dark() -> Self {
         let border_color = Color::rgb(62, 68, 81);
 
+        // Atom One Dark palette.
+        let atom = AtomColorSchema {
+            bg: hex("#282c34"),
+            bg_subtle: hex("#21252b"),
+            fg: hex("#abb2bf"),
+            fg_subtle: hex("#9098a3"),
+            comment: hex("#5c6370"),
+            red: hex("#e06c75"),
+            red_alt: hex("#be5046"),
+            orange: hex("#d19a66"),
+            orange_alt: hex("#e5c07b"),
+            yellow: hex("#e5c07b"),
+            green: hex("#98c379"),
+            cyan: hex("#56b6c2"),
+            blue: hex("#61afef"),
+            purple: hex("#c678dd"),
+        };
+
         Self {
             color: ColorTheme {
+                atom: atom.clone(),
                 primary: ColorSet {
-                    base: rgb(97, 175, 239),
-                    on: rgb(40, 44, 52),
+                    base: atom.blue.clone(),
+                    on: hex("#282c34"),
                 },
                 secondary: ColorSet {
-                    base: rgb(198, 120, 221),
-                    on: rgb(40, 44, 52),
+                    base: atom.purple.clone(),
+                    on: hex("#282c34"),
+                },
+                error: ColorSet {
+                    base: atom.red.clone(),
+                    on: hex("#282c34"),
+                },
+                warning: ColorSet {
+                    base: atom.orange.clone(),
+                    on: hex("#282c34"),
+                },
+                info: ColorSet {
+                    base: atom.cyan.clone(),
+                    on: hex("#282c34"),
+                },
+                success: ColorSet {
+                    base: atom.green.clone(),
+                    on: hex("#282c34"),
                 },
                 background: ColorSet {
-                    base: rgb(40, 44, 52),
-                    on: rgb(171, 178, 191),
+                    base: atom.bg.clone(),
+                    on: atom.fg.clone(),
                 },
                 surface: ColorSet {
-                    base: rgb(33, 37, 43),
-                    on: rgb(171, 178, 191),
+                    base: atom.bg_subtle.clone(),
+                    on: atom.fg.clone(),
                 },
                 layer: SurfaceLayerTheme {
-                    app: rgb(40, 44, 52),
-                    surface: rgb(33, 37, 43),
-                    raised: rgb(44, 49, 60),
-                    inverse: rgb(171, 178, 191),
-                    on_inverse: rgb(40, 44, 52),
+                    app: atom.bg.clone(),
+                    surface: atom.bg_subtle.clone(),
+                    raised: hex("#2c313c"),
+                    inverse: atom.fg.clone(),
+                    on_inverse: atom.bg.clone(),
                 },
                 text: TextColorSet {
                     primary: hex("#b1b9c9"),
@@ -433,7 +586,7 @@ impl Theme {
                     hover: rgba(171, 178, 191, 26),
                     active: rgba(171, 178, 191, 44),
                     pressed: rgba(171, 178, 191, 66),
-                    focus: rgb(97, 175, 239),
+                    focus: atom.blue.clone(),
                     disabled: rgba(92, 99, 112, 128),
                 },
             },
@@ -501,9 +654,11 @@ impl Theme {
             },
             component: ComponentTheme {
                 button: ButtonTheme {
-                    padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+                    size: button_sizes(),
                     radius: BorderRadius::uniform(Length::px(4.0)),
                     border: Border::uniform(Length::px(1.0), &border_color),
+                    icon_button_radius: BorderRadius::uniform(Length::px(999.0)),
+                    toggle_button_radius: BorderRadius::uniform(Length::px(4.0)),
                 },
                 input: InputTheme {
                     padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),

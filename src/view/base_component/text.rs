@@ -1249,73 +1249,7 @@ impl ElementTrait for Text {
 }
 
 impl EventTarget for Text {
-    fn dispatch_mouse_down(
-        &mut self,
-        event: &mut crate::ui::MouseDownEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_mouse_down(event, control);
-    }
-
-    fn dispatch_mouse_up(
-        &mut self,
-        event: &mut crate::ui::MouseUpEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_mouse_up(event, control);
-    }
-
-    fn dispatch_mouse_move(
-        &mut self,
-        event: &mut crate::ui::MouseMoveEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_mouse_move(event, control);
-    }
-
-    fn dispatch_click(
-        &mut self,
-        event: &mut crate::ui::ClickEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_click(event, control);
-    }
-
-    fn dispatch_key_down(
-        &mut self,
-        event: &mut crate::ui::KeyDownEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_key_down(event, control);
-    }
-
-    fn dispatch_key_up(
-        &mut self,
-        event: &mut crate::ui::KeyUpEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_key_up(event, control);
-    }
-
-    fn dispatch_focus(
-        &mut self,
-        event: &mut crate::ui::FocusEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_focus(event, control);
-    }
-
-    fn dispatch_blur(
-        &mut self,
-        event: &mut crate::ui::BlurEvent,
-        control: &mut crate::view::viewport::ViewportControl<'_>,
-    ) {
-        self.element.dispatch_blur(event, control);
-    }
-
-    fn cursor(&self) -> crate::Cursor {
-        self.element.cursor()
-    }
+    crate::view::base_component::forward_event_target!(dispatch_only element);
 }
 
 impl Layoutable for Text {

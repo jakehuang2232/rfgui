@@ -15,10 +15,6 @@ path = "bin/00_hello_world/main.rs"
 name = "01_window"
 path = "bin/01_window/main.rs"
 
-[[bin]]
-name = "99_app_trait_demo"
-path = "bin/99_app_trait_demo/main.rs"
-
 [dependencies]
 rfgui = { path = ".." }
 rfgui-components = { path = "../lib/rfgui-components" }

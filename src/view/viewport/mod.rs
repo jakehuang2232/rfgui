@@ -253,6 +253,8 @@ struct FrameRuntime {
     draw_rect_uniform_pool: Vec<DrawRectUniformBufferEntry>,
     draw_rect_uniform_cursor: usize,
     draw_rect_uniform_offset: u64,
+    gradient_stops_buffer: Option<GradientStopsBufferEntry>,
+    gradient_stops_byte_cursor: u64,
     frame_stats: FrameStats,
     frame_presented: bool,
     last_frame_graph: Option<FrameGraph>,
@@ -275,6 +277,8 @@ impl FrameRuntime {
             draw_rect_uniform_pool: Vec::new(),
             draw_rect_uniform_cursor: 0,
             draw_rect_uniform_offset: 0,
+            gradient_stops_buffer: None,
+            gradient_stops_byte_cursor: 0,
             frame_stats: FrameStats::new(trace_fps),
             frame_presented: false,
             last_frame_graph: None,
@@ -375,7 +379,6 @@ struct CompositorState {
     debug_previous_subtree_signatures: FxHashMap<u64, (u64, u64, u64, bool)>,
     promoted_reuse_cooldown_frames: u8,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
-    cached_root_box_models: FxHashMap<u64, Vec<super::base_component::BoxModelSnapshot>>,
 }
 
 impl CompositorState {
@@ -389,7 +392,6 @@ impl CompositorState {
             debug_previous_subtree_signatures: FxHashMap::default(),
             promoted_reuse_cooldown_frames: 0,
             frame_box_models: Vec::new(),
-            cached_root_box_models: FxHashMap::default(),
         }
     }
 }
@@ -413,6 +415,11 @@ pub(super) struct DrawRectUniformBufferEntry {
     /// at offset 0 / size=slot_size; the per-draw dynamic offset is supplied separately,
     /// so one bind group is valid for *all* slots in this buffer.
     pub(super) bind_groups: FxHashMap<u64, wgpu::BindGroup>,
+}
+
+pub(super) struct GradientStopsBufferEntry {
+    pub(super) buffer: wgpu::Buffer,
+    pub(super) size: u64,
 }
 
 pub(super) struct SampledTextureEntry {

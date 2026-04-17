@@ -261,27 +261,10 @@ impl Viewport {
         roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
     ) {
         self.compositor.frame_box_models.clear();
-        let mut active_root_ids = FxHashSet::default();
-        for root in roots.iter_mut() {
-            let root_id = root.id();
-            active_root_ids.insert(root_id);
-            let dirty = crate::view::base_component::subtree_dirty_flags(root.as_ref());
-            let needs_refresh = dirty.intersects(
-                crate::view::base_component::DirtyFlags::LAYOUT
-                    .union(crate::view::base_component::DirtyFlags::PLACE)
-                    .union(crate::view::base_component::DirtyFlags::BOX_MODEL)
-                    .union(crate::view::base_component::DirtyFlags::HIT_TEST),
-            ) || !self.compositor.cached_root_box_models.contains_key(&root_id);
-            if needs_refresh {
-                let snapshots = crate::view::base_component::collect_box_models(root.as_ref());
-                self.compositor.cached_root_box_models.insert(root_id, snapshots);
-            }
-            if let Some(snapshots) = self.compositor.cached_root_box_models.get(&root_id) {
-                self.compositor.frame_box_models.extend_from_slice(snapshots);
-            }
+        for root in roots.iter() {
+            let snapshots = crate::view::base_component::collect_box_models(root.as_ref());
+            self.compositor.frame_box_models.extend(snapshots);
         }
-        self.compositor.cached_root_box_models
-            .retain(|root_id, _| active_root_ids.contains(root_id));
         for root in roots.iter_mut() {
             crate::view::base_component::clear_subtree_dirty_flags(
                 root.as_mut(),
