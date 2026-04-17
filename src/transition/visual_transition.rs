@@ -1,7 +1,9 @@
 #![allow(missing_docs)]
 
 //! Visual transition primitives for animating paint-only offsets.
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
+#[cfg(test)]
+use rustc_hash::FxHashSet;
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,

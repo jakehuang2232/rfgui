@@ -826,6 +826,7 @@ struct AtlasUpload {
 }
 
 enum TextAtlasCacheError {
+    #[allow(dead_code)]
     Full,
 }
 
@@ -1296,7 +1297,7 @@ struct CachedGlobalsBindGroup {
 }
 
 impl TextResources {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let swash_cache = SwashCache::new();
         let screen_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

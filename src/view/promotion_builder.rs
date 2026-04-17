@@ -519,7 +519,7 @@ mod tests {
         let candidates = collect_promotion_candidates(
             &roots,
             &FxHashMap::default(),
-            &FxHashMap::<u64, FxHashSet<crate::transition::ChannelId>>::new(),
+            &FxHashMap::<u64, FxHashSet<crate::transition::ChannelId>>::default(),
             (320.0, 200.0),
         );
 
@@ -603,7 +603,7 @@ mod tests {
         root.add_child(Box::new(child));
 
         let roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(root)];
-        let promoted = FxHashSet::from([1_u64, 2_u64]);
+        let promoted = FxHashSet::from_iter([1_u64, 2_u64]);
         let (first_updates, first_base_signatures, first_composition_signatures) =
             collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
         assert!(
@@ -650,7 +650,7 @@ mod tests {
         root.add_child(Box::new(child));
 
         let roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(root)];
-        let promoted = FxHashSet::from([1_u64]);
+        let promoted = FxHashSet::from_iter([1_u64]);
         let (first_updates, first_base_signatures, first_composition_signatures) =
             collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
         assert_eq!(first_updates.len(), 1);
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn style_transition_lab_like_nested_non_promoted_child_change_dirties_promoted_root() {
         let roots = build_style_transition_lab_like_tree();
-        let promoted = FxHashSet::from([1_u64]);
+        let promoted = FxHashSet::from_iter([1_u64]);
         let (first_updates, first_base_signatures, first_composition_signatures) =
             collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
         assert_eq!(first_updates.len(), 1);
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn style_transition_plugin_samples_dirty_promoted_root_in_lab_like_structure() {
         let mut roots = build_style_transition_lab_like_tree();
-        let promoted = FxHashSet::from([1_u64]);
+        let promoted = FxHashSet::from_iter([1_u64]);
         let (_, first_base_signatures, first_composition_signatures) =
             collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
 
@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn style_transform_sample_dirty_promoted_root_in_lab_like_structure() {
         let mut roots = build_style_transition_lab_like_tree();
-        let promoted = FxHashSet::from([1_u64]);
+        let promoted = FxHashSet::from_iter([1_u64]);
         let (_, first_base_signatures, first_composition_signatures) =
             collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
 
@@ -811,7 +811,7 @@ mod tests {
 
     #[test]
     fn scrolling_one_root_does_not_dirty_another_roots_nested_promoted_chain() {
-        let promoted = FxHashSet::from([10_u64, 11_u64, 12_u64]);
+        let promoted = FxHashSet::from_iter([10_u64, 11_u64, 12_u64]);
         let roots = build_cross_root_scroll_and_nested_promoted_tree();
         let (first_updates, first_base_signatures, first_composition_signatures) =
             collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
@@ -858,7 +858,7 @@ mod tests {
     fn collect_promotion_candidates_marks_active_animator_targets() {
         let roots: Vec<Box<dyn ElementTrait>> =
             vec![Box::new(Element::new_with_id(1, 0.0, 0.0, 56.0, 56.0))];
-        let active_animator_hints = FxHashMap::from([(
+        let active_animator_hints = FxHashMap::from_iter([(
             1_u64,
             AnimationPromotionHint {
                 composite_only: true,
