@@ -67,6 +67,9 @@ impl Viewport {
                 | CHANNEL_STYLE_BORDER_RIGHT_COLOR
                 | CHANNEL_STYLE_BORDER_BOTTOM_COLOR
                 | CHANNEL_STYLE_BORDER_LEFT_COLOR
+                | CHANNEL_STYLE_TRANSFORM
+                | CHANNEL_STYLE_TRANSFORM_ORIGIN
+                | CHANNEL_STYLE_BOX_SHADOW
         )
     }
 

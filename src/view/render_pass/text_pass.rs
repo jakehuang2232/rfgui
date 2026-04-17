@@ -97,8 +97,8 @@ impl TextPassParams {
 
 struct TextPreparedState {
     renderer_key: TextRendererKey,
-    mask_draw: Option<PreparedTextDraw>,
-    color_draw: Option<PreparedTextDraw>,
+    mask_draws: Vec<(u16, PreparedTextDraw)>,
+    color_draws: Vec<(u16, PreparedTextDraw)>,
     globals_bind_group: wgpu::BindGroup,
     prepare_signature: u64,
     atlas_generation: AtlasGenerations,
@@ -182,8 +182,8 @@ struct PreparedTextDraw {
 
 #[derive(Clone, Default)]
 struct PreparedTextDrawSet {
-    mask_draw: Option<PreparedTextDraw>,
-    color_draw: Option<PreparedTextDraw>,
+    mask_draws: Vec<(u16, PreparedTextDraw)>,
+    color_draws: Vec<(u16, PreparedTextDraw)>,
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -329,8 +329,8 @@ impl GraphicsPass for TextPass {
                 {
                     self.prepared = Some(TextPreparedState {
                         renderer_key,
-                        mask_draw: draw.mask_draw,
-                        color_draw: draw.color_draw,
+                        mask_draws: draw.mask_draws,
+                        color_draws: draw.color_draws,
                         globals_bind_group: globals.bind_group.clone(),
                         prepare_signature,
                         atlas_generation,
@@ -447,8 +447,8 @@ impl GraphicsPass for TextPass {
             {
                 self.prepared = Some(TextPreparedState {
                     renderer_key,
-                    mask_draw: draw.mask_draw,
-                    color_draw: draw.color_draw,
+                    mask_draws: draw.mask_draws,
+                    color_draws: draw.color_draws,
                     globals_bind_group,
                     prepare_signature,
                     atlas_generation,
@@ -485,54 +485,71 @@ impl GraphicsPass for TextPass {
                 }
             }
 
-            let (mask_vertices, color_vertices) = with_shared_font_system(|font_system| {
-                let mut retry_count = 0;
-                loop {
-                    let mut mask_vertices = Vec::new();
-                    let mut color_vertices = Vec::new();
-                    let mut atlas_full = false;
-                    for (fragment_index, text_area) in text_areas.iter().enumerate() {
-                        if resources
-                            .prepare_text_area(
-                                font_system,
-                                &device,
-                                &queue,
-                                text_area,
-                                fragment_index as u32,
-                                &mut mask_vertices,
-                                &mut color_vertices,
-                            )
-                            .is_err()
-                        {
-                            atlas_full = true;
-                            break;
+            let (mask_vertices_per_page, color_vertices_per_page) =
+                with_shared_font_system(|font_system| {
+                    let mut retry_count = 0;
+                    loop {
+                        let mut mask_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
+                        let mut color_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
+                        let mut atlas_full = false;
+                        for (fragment_index, text_area) in text_areas.iter().enumerate() {
+                            if resources
+                                .prepare_text_area(
+                                    font_system,
+                                    &device,
+                                    &queue,
+                                    text_area,
+                                    fragment_index as u32,
+                                    &mut mask_vertices,
+                                    &mut color_vertices,
+                                )
+                                .is_err()
+                            {
+                                atlas_full = true;
+                                break;
+                            }
                         }
+                        if !atlas_full {
+                            break (mask_vertices, color_vertices);
+                        }
+                        if retry_count >= 1 {
+                            break (Vec::new(), Vec::new());
+                        }
+                        retry_count += 1;
+                        resources.reset_atlas();
                     }
-                    if !atlas_full {
-                        break (mask_vertices, color_vertices);
-                    }
-                    if retry_count >= 1 {
-                        break (Vec::new(), Vec::new());
-                    }
-                    retry_count += 1;
-                    resources.reset_atlas();
-                }
-            });
-            if mask_vertices.is_empty() && color_vertices.is_empty() {
+                });
+            let mask_total: usize = mask_vertices_per_page.iter().map(|v| v.len()).sum();
+            let color_total: usize = color_vertices_per_page.iter().map(|v| v.len()).sum();
+            if mask_total == 0 && color_total == 0 {
                 return;
             }
             resources.flush_atlas_uploads(&queue);
+            let mut mask_draws = Vec::new();
+            for (page_idx, verts) in mask_vertices_per_page.iter().enumerate() {
+                if verts.is_empty() {
+                    continue;
+                }
+                if let Some(draw) =
+                    create_prepared_draw(&device, "Text Mask Glyph Vertex Buffer", verts)
+                {
+                    mask_draws.push((page_idx as u16, draw));
+                }
+            }
+            let mut color_draws = Vec::new();
+            for (page_idx, verts) in color_vertices_per_page.iter().enumerate() {
+                if verts.is_empty() {
+                    continue;
+                }
+                if let Some(draw) =
+                    create_prepared_draw(&device, "Text Color Glyph Vertex Buffer", verts)
+                {
+                    color_draws.push((page_idx as u16, draw));
+                }
+            }
             let prepared_draw = PreparedTextDrawSet {
-                mask_draw: create_prepared_draw(
-                    &device,
-                    "Text Mask Glyph Vertex Buffer",
-                    &mask_vertices,
-                ),
-                color_draw: create_prepared_draw(
-                    &device,
-                    "Text Color Glyph Vertex Buffer",
-                    &color_vertices,
-                ),
+                mask_draws,
+                color_draws,
             };
             let atlas_generation = resources.atlas_generations();
             resources.put_prepared_draw(
@@ -543,8 +560,8 @@ impl GraphicsPass for TextPass {
             );
             self.prepared = Some(TextPreparedState {
                 renderer_key,
-                mask_draw: prepared_draw.mask_draw,
-                color_draw: prepared_draw.color_draw,
+                mask_draws: prepared_draw.mask_draws,
+                color_draws: prepared_draw.color_draws,
                 globals_bind_group,
                 prepare_signature,
                 atlas_generation,
@@ -593,21 +610,31 @@ impl GraphicsPass for TextPass {
             }
             ctx.set_stencil_reference(stencil_reference);
             ctx.set_bind_group(0, &prepared.globals_bind_group, &[]);
-            if let Some(draw) = prepared.mask_draw.as_ref() {
+            if !prepared.mask_draws.is_empty() {
                 resources.ensure_pipeline(&device, prepared.renderer_key, TextPipelineKind::Mask);
                 let pipeline = resources.pipeline(prepared.renderer_key, TextPipelineKind::Mask);
                 ctx.set_pipeline(pipeline);
-                ctx.set_bind_group(1, &resources.mask_atlas.bind_group, &[]);
-                ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
-                ctx.draw(0..6, 0..draw.vertex_count);
+                for (page_idx, draw) in &prepared.mask_draws {
+                    let Some(bind_group) = resources.mask_atlas.page_bind_group(*page_idx) else {
+                        continue;
+                    };
+                    ctx.set_bind_group(1, bind_group, &[]);
+                    ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
+                    ctx.draw(0..6, 0..draw.vertex_count);
+                }
             }
-            if let Some(draw) = prepared.color_draw.as_ref() {
+            if !prepared.color_draws.is_empty() {
                 resources.ensure_pipeline(&device, prepared.renderer_key, TextPipelineKind::Color);
                 let pipeline = resources.pipeline(prepared.renderer_key, TextPipelineKind::Color);
                 ctx.set_pipeline(pipeline);
-                ctx.set_bind_group(1, &resources.color_atlas.bind_group, &[]);
-                ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
-                ctx.draw(0..6, 0..draw.vertex_count);
+                for (page_idx, draw) in &prepared.color_draws {
+                    let Some(bind_group) = resources.color_atlas.page_bind_group(*page_idx) else {
+                        continue;
+                    };
+                    ctx.set_bind_group(1, bind_group, &[]);
+                    ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
+                    ctx.draw(0..6, 0..draw.vertex_count);
+                }
             }
         });
     }
@@ -789,20 +816,6 @@ struct AtlasGlyph {
     layout_top: f32,
 }
 
-struct TextAtlas {
-    texture: wgpu::Texture,
-    bind_group_layout: wgpu::BindGroupLayout,
-    bind_group: wgpu::BindGroup,
-    bytes_per_pixel: u32,
-    size: u32,
-    cursor_x: u32,
-    cursor_y: u32,
-    row_height: u32,
-    glyphs: HashMap<CacheKey, AtlasGlyph>,
-    pending_uploads: Vec<AtlasUpload>,
-    generation: u64,
-}
-
 struct AtlasUpload {
     x: u32,
     y: u32,
@@ -811,246 +824,6 @@ struct AtlasUpload {
     data: Vec<u8>,
 }
 
-impl TextAtlas {
-    fn new(
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        label: &'static str,
-        format: wgpu::TextureFormat,
-        bytes_per_pixel: u32,
-    ) -> Self {
-        let size = device.limits().max_texture_dimension_2d.min(4096).max(256);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Text Atlas Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Text Atlas Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Text Atlas Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-        Self {
-            texture,
-            bind_group_layout,
-            bind_group,
-            bytes_per_pixel,
-            size,
-            cursor_x: 1,
-            cursor_y: 1,
-            row_height: 0,
-            glyphs: HashMap::new(),
-            pending_uploads: Vec::new(),
-            generation: 0,
-        }
-    }
-
-    fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    fn reset(&mut self) {
-        self.cursor_x = 1;
-        self.cursor_y = 1;
-        self.row_height = 0;
-        self.glyphs.clear();
-        self.pending_uploads.clear();
-        self.generation = self.generation.wrapping_add(1);
-    }
-
-    fn get_glyph(&self, cache_key: CacheKey) -> Option<AtlasGlyph> {
-        self.glyphs.get(&cache_key).copied()
-    }
-
-    fn cache_glyph(
-        &mut self,
-        cache_key: CacheKey,
-        image_data: Vec<u8>,
-        width: u32,
-        height: u32,
-        left: i32,
-        top: i32,
-        raster_scale: f32,
-    ) -> Result<Option<AtlasGlyph>, TextAtlasCacheError> {
-        if let Some(glyph) = self.get_glyph(cache_key) {
-            return Ok(Some(glyph));
-        }
-        if width == 0 || height == 0 {
-            return Ok(None);
-        }
-        let padded_width = width.saturating_add(2);
-        let padded_height = height.saturating_add(2);
-        if padded_width >= self.size || padded_height >= self.size {
-            return Ok(None);
-        }
-        if self.cursor_x.saturating_add(padded_width) >= self.size {
-            self.cursor_x = 1;
-            self.cursor_y = self
-                .cursor_y
-                .saturating_add(self.row_height)
-                .saturating_add(1);
-            self.row_height = 0;
-        }
-        if self.cursor_y.saturating_add(padded_height) >= self.size {
-            return Err(TextAtlasCacheError::Full);
-        }
-
-        let allocation_x = self.cursor_x;
-        let allocation_y = self.cursor_y;
-        self.cursor_x = self.cursor_x.saturating_add(padded_width);
-        self.row_height = self.row_height.max(padded_height);
-
-        let mut padded_data =
-            vec![
-                0_u8;
-                padded_width as usize * padded_height as usize * self.bytes_per_pixel as usize
-            ];
-        for row in 0..height as usize {
-            let row_bytes = width as usize * self.bytes_per_pixel as usize;
-            let source_start = row * row_bytes;
-            let source_end = source_start + row_bytes;
-            let target_start =
-                ((row + 1) * padded_width as usize + 1) * self.bytes_per_pixel as usize;
-            let target_end = target_start + row_bytes;
-            padded_data[target_start..target_end]
-                .copy_from_slice(&image_data[source_start..source_end]);
-        }
-        self.pending_uploads.push(AtlasUpload {
-            x: allocation_x,
-            y: allocation_y,
-            width: padded_width,
-            height: padded_height,
-            data: padded_data,
-        });
-
-        let glyph = AtlasGlyph {
-            x: allocation_x + 1,
-            y: allocation_y + 1,
-            raster_scale,
-            layout_width: width as f32 / raster_scale,
-            layout_height: height as f32 / raster_scale,
-            layout_left: left as f32 / raster_scale,
-            layout_top: top as f32 / raster_scale,
-        };
-        self.glyphs.insert(cache_key, glyph);
-        Ok(Some(glyph))
-    }
-
-    fn flush_uploads(&mut self, queue: &wgpu::Queue) {
-        let uploads = std::mem::take(&mut self.pending_uploads);
-        if uploads.is_empty() {
-            return;
-        }
-        let mut index = 0;
-        while index < uploads.len() {
-            let row_y = uploads[index].y;
-            let row_x = uploads[index].x;
-            let mut row_right = uploads[index].x + uploads[index].width;
-            let mut row_height = uploads[index].height;
-            let mut end = index + 1;
-            while end < uploads.len() && uploads[end].y == row_y {
-                row_right = row_right.max(uploads[end].x + uploads[end].width);
-                row_height = row_height.max(uploads[end].height);
-                end += 1;
-            }
-
-            let row_width = row_right - row_x;
-            let mut row_data =
-                vec![
-                    0_u8;
-                    row_width as usize * row_height as usize * self.bytes_per_pixel as usize
-                ];
-            for upload in &uploads[index..end] {
-                for row in 0..upload.height as usize {
-                    let row_bytes = upload.width as usize * self.bytes_per_pixel as usize;
-                    let source_start = row * row_bytes;
-                    let source_end = source_start + row_bytes;
-                    let target_x = upload.x - row_x;
-                    let target_start = (row * row_width as usize + target_x as usize)
-                        * self.bytes_per_pixel as usize;
-                    let target_end = target_start + row_bytes;
-                    row_data[target_start..target_end]
-                        .copy_from_slice(&upload.data[source_start..source_end]);
-                }
-            }
-
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: row_x,
-                        y: row_y,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &row_data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row_width * self.bytes_per_pixel),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: row_width,
-                    height: row_height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            index = end;
-        }
-    }
-}
 
 enum TextAtlasCacheError {
     Full,
@@ -1094,10 +867,406 @@ fn swash_mask_image_to_r8(image: &SwashImage) -> Vec<u8> {
     out
 }
 
+#[derive(Clone, Copy)]
+struct PagedAtlasConfig {
+    label: &'static str,
+    format: wgpu::TextureFormat,
+    bytes_per_pixel: u32,
+    plot_size: u32,
+    plots_per_row: u32,
+    soft_page_cap: u32,
+}
+
+impl PagedAtlasConfig {
+    const COLOR: Self = Self {
+        label: "Text Color Atlas",
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        bytes_per_pixel: 4,
+        plot_size: 512,
+        plots_per_row: 4,
+        soft_page_cap: 2,
+    };
+    const MASK: Self = Self {
+        label: "Text Mask Atlas",
+        format: wgpu::TextureFormat::R8Unorm,
+        bytes_per_pixel: 1,
+        plot_size: 256,
+        plots_per_row: 8,
+        soft_page_cap: 2,
+    };
+
+    fn page_size(&self) -> u32 {
+        self.plot_size * self.plots_per_row
+    }
+
+    fn plots_per_page(&self) -> usize {
+        (self.plots_per_row * self.plots_per_row) as usize
+    }
+}
+
+#[derive(Clone, Default)]
+struct Plot {
+    cursor_x: u32,
+    cursor_y: u32,
+    row_height: u32,
+    last_use_frame: u64,
+    keys: Vec<CacheKey>,
+}
+
+#[derive(Clone, Copy)]
+struct GlyphLocation {
+    page: u16,
+    plot: u8,
+    glyph: AtlasGlyph,
+}
+
+struct PagedAtlasPage {
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    plots: Vec<Plot>,
+    pending_uploads: Vec<AtlasUpload>,
+}
+
+impl PagedAtlasPage {
+    fn new(
+        config: &PagedAtlasConfig,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+    ) -> Self {
+        let page_size = config.page_size();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(config.label),
+            size: wgpu::Extent3d {
+                width: page_size,
+                height: page_size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(config.label),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        Self {
+            texture,
+            bind_group,
+            plots: vec![Plot::default(); config.plots_per_page()],
+            pending_uploads: Vec::new(),
+        }
+    }
+
+    fn try_allocate(
+        &mut self,
+        config: &PagedAtlasConfig,
+        padded_w: u32,
+        padded_h: u32,
+        current_frame: u64,
+    ) -> Option<(u8, u32, u32)> {
+        if padded_w > config.plot_size || padded_h > config.plot_size {
+            return None;
+        }
+        for (idx, plot) in self.plots.iter_mut().enumerate() {
+            let mut cx = plot.cursor_x;
+            let mut cy = plot.cursor_y;
+            let mut rh = plot.row_height;
+            if cx + padded_w > config.plot_size {
+                cx = 0;
+                cy = cy.saturating_add(rh);
+                rh = 0;
+            }
+            if cy + padded_h > config.plot_size {
+                continue;
+            }
+            let px = (idx as u32 % config.plots_per_row) * config.plot_size;
+            let py = (idx as u32 / config.plots_per_row) * config.plot_size;
+            let abs_x = px + cx;
+            let abs_y = py + cy;
+            plot.cursor_x = cx + padded_w;
+            plot.cursor_y = cy;
+            plot.row_height = rh.max(padded_h);
+            plot.last_use_frame = current_frame;
+            return Some((idx as u8, abs_x, abs_y));
+        }
+        None
+    }
+}
+
+struct PagedAtlas {
+    config: PagedAtlasConfig,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    pages: Vec<PagedAtlasPage>,
+    glyphs: HashMap<CacheKey, GlyphLocation>,
+    generation: u64,
+    current_frame: u64,
+}
+
+impl PagedAtlas {
+    fn new(device: &wgpu::Device, config: PagedAtlasConfig) -> Self {
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some(config.label),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some(config.label),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        Self {
+            config,
+            bind_group_layout,
+            sampler,
+            pages: Vec::new(),
+            glyphs: HashMap::new(),
+            generation: 0,
+            current_frame: 0,
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn page_size(&self) -> u32 {
+        self.config.page_size()
+    }
+
+    fn page_bind_group(&self, idx: u16) -> Option<&wgpu::BindGroup> {
+        self.pages.get(idx as usize).map(|p| &p.bind_group)
+    }
+
+    fn begin_frame(&mut self) {
+        self.current_frame = self.current_frame.wrapping_add(1);
+    }
+
+    fn reset(&mut self) {
+        self.pages.clear();
+        self.glyphs.clear();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn get_glyph(&mut self, key: CacheKey) -> Option<(u16, AtlasGlyph)> {
+        let entry = *self.glyphs.get(&key)?;
+        if let Some(page) = self.pages.get_mut(entry.page as usize) {
+            if let Some(plot) = page.plots.get_mut(entry.plot as usize) {
+                plot.last_use_frame = self.current_frame;
+            }
+        }
+        Some((entry.page, entry.glyph))
+    }
+
+    fn evict_lru_plot(&mut self) -> bool {
+        let mut target: Option<(u16, u8, u64)> = None;
+        for (pi, page) in self.pages.iter().enumerate() {
+            for (li, plot) in page.plots.iter().enumerate() {
+                if plot.keys.is_empty() {
+                    continue;
+                }
+                if plot.last_use_frame >= self.current_frame {
+                    continue;
+                }
+                match target {
+                    Some((_, _, best)) if best <= plot.last_use_frame => {}
+                    _ => target = Some((pi as u16, li as u8, plot.last_use_frame)),
+                }
+            }
+        }
+        let Some((page_idx, plot_idx, _)) = target else {
+            return false;
+        };
+        let plot = &mut self.pages[page_idx as usize].plots[plot_idx as usize];
+        let keys = std::mem::take(&mut plot.keys);
+        plot.cursor_x = 0;
+        plot.cursor_y = 0;
+        plot.row_height = 0;
+        plot.last_use_frame = 0;
+        for key in keys {
+            self.glyphs.remove(&key);
+        }
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+
+    fn cache_glyph(
+        &mut self,
+        device: &wgpu::Device,
+        cache_key: CacheKey,
+        image_data: Vec<u8>,
+        width: u32,
+        height: u32,
+        left: i32,
+        top: i32,
+        raster_scale: f32,
+    ) -> Result<Option<(u16, AtlasGlyph)>, TextAtlasCacheError> {
+        if let Some(g) = self.get_glyph(cache_key) {
+            return Ok(Some(g));
+        }
+        if width == 0 || height == 0 {
+            return Ok(None);
+        }
+        let padded_w = width.saturating_add(2);
+        let padded_h = height.saturating_add(2);
+        if padded_w > self.config.plot_size || padded_h > self.config.plot_size {
+            return Ok(None);
+        }
+        let current_frame = self.current_frame;
+        let try_existing = |pages: &mut Vec<PagedAtlasPage>,
+                            config: &PagedAtlasConfig|
+         -> Option<(u16, u8, u32, u32)> {
+            for (page_idx, page) in pages.iter_mut().enumerate() {
+                if let Some((plot_idx, ax, ay)) =
+                    page.try_allocate(config, padded_w, padded_h, current_frame)
+                {
+                    return Some((page_idx as u16, plot_idx, ax, ay));
+                }
+            }
+            None
+        };
+        let mut slot = try_existing(&mut self.pages, &self.config);
+        if slot.is_none() && self.pages.len() as u32 >= self.config.soft_page_cap {
+            while self.evict_lru_plot() {
+                slot = try_existing(&mut self.pages, &self.config);
+                if slot.is_some() {
+                    break;
+                }
+            }
+        }
+        let (page_idx, plot_idx, alloc_x, alloc_y) = match slot {
+            Some(v) => v,
+            None => {
+                let mut page = PagedAtlasPage::new(
+                    &self.config,
+                    device,
+                    &self.bind_group_layout,
+                    &self.sampler,
+                );
+                let (plot_idx, ax, ay) = page
+                    .try_allocate(&self.config, padded_w, padded_h, current_frame)
+                    .expect("fresh page must fit a glyph within plot bounds");
+                self.pages.push(page);
+                ((self.pages.len() - 1) as u16, plot_idx, ax, ay)
+            }
+        };
+        let bpp = self.config.bytes_per_pixel;
+        let mut padded_data =
+            vec![0_u8; padded_w as usize * padded_h as usize * bpp as usize];
+        for row in 0..height as usize {
+            let row_bytes = width as usize * bpp as usize;
+            let source_start = row * row_bytes;
+            let source_end = source_start + row_bytes;
+            let target_start = ((row + 1) * padded_w as usize + 1) * bpp as usize;
+            let target_end = target_start + row_bytes;
+            padded_data[target_start..target_end]
+                .copy_from_slice(&image_data[source_start..source_end]);
+        }
+        self.pages[page_idx as usize]
+            .pending_uploads
+            .push(AtlasUpload {
+                x: alloc_x,
+                y: alloc_y,
+                width: padded_w,
+                height: padded_h,
+                data: padded_data,
+            });
+        let glyph = AtlasGlyph {
+            x: alloc_x + 1,
+            y: alloc_y + 1,
+            raster_scale,
+            layout_width: width as f32 / raster_scale,
+            layout_height: height as f32 / raster_scale,
+            layout_left: left as f32 / raster_scale,
+            layout_top: top as f32 / raster_scale,
+        };
+        self.pages[page_idx as usize].plots[plot_idx as usize]
+            .keys
+            .push(cache_key);
+        self.glyphs.insert(
+            cache_key,
+            GlyphLocation {
+                page: page_idx,
+                plot: plot_idx,
+                glyph,
+            },
+        );
+        Ok(Some((page_idx, glyph)))
+    }
+
+    fn flush_uploads(&mut self, queue: &wgpu::Queue) {
+        let bpp = self.config.bytes_per_pixel;
+        for page in self.pages.iter_mut() {
+            let uploads = std::mem::take(&mut page.pending_uploads);
+            for up in &uploads {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &page.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: up.x,
+                            y: up.y,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &up.data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(up.width * bpp),
+                        rows_per_image: None,
+                    },
+                    wgpu::Extent3d {
+                        width: up.width,
+                        height: up.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+    }
+}
+
 struct TextResources {
     swash_cache: SwashCache,
-    mask_atlas: TextAtlas,
-    color_atlas: TextAtlas,
+    mask_atlas: PagedAtlas,
+    color_atlas: PagedAtlas,
     format: wgpu::TextureFormat,
     screen_bind_group_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
@@ -1159,20 +1328,8 @@ impl TextResources {
                     },
                 ],
             });
-        let mask_atlas = TextAtlas::new(
-            device,
-            queue,
-            "Text Mask Atlas Texture",
-            wgpu::TextureFormat::R8Unorm,
-            1,
-        );
-        let color_atlas = TextAtlas::new(
-            device,
-            queue,
-            "Text Color Atlas Texture",
-            wgpu::TextureFormat::Rgba8Unorm,
-            4,
-        );
+        let mask_atlas = PagedAtlas::new(device, PagedAtlasConfig::MASK);
+        let color_atlas = PagedAtlas::new(device, PagedAtlasConfig::COLOR);
 
         Self {
             swash_cache,
@@ -1194,10 +1351,10 @@ impl TextResources {
         self.mask_atlas.reset();
         self.color_atlas.reset();
         for draw_set in self.prepared_draws.values() {
-            if let Some(d) = &draw_set.mask_draw {
+            for (_, d) in &draw_set.mask_draws {
                 d.vertex_buffer.destroy();
             }
-            if let Some(d) = &draw_set.color_draw {
+            for (_, d) in &draw_set.color_draws {
                 d.vertex_buffer.destroy();
             }
         }
@@ -1462,12 +1619,12 @@ impl TextResources {
     fn prepare_text_area(
         &mut self,
         font_system: &mut FontSystem,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         _queue: &wgpu::Queue,
         text_area: &TextArea<'_>,
         fragment_index: u32,
-        mask_out: &mut Vec<TextGlyphVertex>,
-        color_out: &mut Vec<TextGlyphVertex>,
+        mask_out: &mut Vec<Vec<TextGlyphVertex>>,
+        color_out: &mut Vec<Vec<TextGlyphVertex>>,
     ) -> Result<(), TextAtlasCacheError> {
         let is_run_visible = |run: &cosmic_text::LayoutRun<'_>| {
             let start_y = run.line_top * text_area.scale;
@@ -1494,14 +1651,15 @@ impl TextResources {
                 else {
                     continue;
                 };
-                let (atlas_glyph, atlas_size, is_color_glyph) = match image.content {
+                let (atlas_glyph, atlas_size, page_idx, is_color) = match image.content {
                     SwashContent::Color => {
-                        let atlas_glyph = if let Some(atlas_glyph) =
+                        let entry = if let Some(entry) =
                             self.color_atlas.get_glyph(physical_glyph.cache_key)
                         {
-                            atlas_glyph
+                            entry
                         } else {
-                            let Some(atlas_glyph) = self.color_atlas.cache_glyph(
+                            let Some(entry) = self.color_atlas.cache_glyph(
+                                device,
                                 physical_glyph.cache_key,
                                 swash_color_image_to_rgba(&image),
                                 image.placement.width,
@@ -1513,17 +1671,24 @@ impl TextResources {
                             else {
                                 continue;
                             };
-                            atlas_glyph
+                            entry
                         };
-                        (atlas_glyph, self.color_atlas.size as f32, true)
+                        let (page_idx, atlas_glyph) = entry;
+                        (
+                            atlas_glyph,
+                            self.color_atlas.page_size() as f32,
+                            page_idx,
+                            true,
+                        )
                     }
                     SwashContent::Mask | SwashContent::SubpixelMask => {
-                        let atlas_glyph = if let Some(atlas_glyph) =
+                        let entry = if let Some(entry) =
                             self.mask_atlas.get_glyph(physical_glyph.cache_key)
                         {
-                            atlas_glyph
+                            entry
                         } else {
-                            let Some(atlas_glyph) = self.mask_atlas.cache_glyph(
+                            let Some(entry) = self.mask_atlas.cache_glyph(
+                                device,
                                 physical_glyph.cache_key,
                                 swash_mask_image_to_r8(&image),
                                 image.placement.width,
@@ -1535,9 +1700,15 @@ impl TextResources {
                             else {
                                 continue;
                             };
-                            atlas_glyph
+                            entry
                         };
-                        (atlas_glyph, self.mask_atlas.size as f32, false)
+                        let (page_idx, atlas_glyph) = entry;
+                        (
+                            atlas_glyph,
+                            self.mask_atlas.page_size() as f32,
+                            page_idx,
+                            false,
+                        )
                     }
                 };
 
@@ -1607,11 +1778,12 @@ impl TextResources {
                     opacity: 1.0,
                     fragment_index,
                 };
-                if is_color_glyph {
-                    color_out.push(vertex);
-                } else {
-                    mask_out.push(vertex);
+                let bucket = if is_color { &mut *color_out } else { &mut *mask_out };
+                let idx = page_idx as usize;
+                if bucket.len() <= idx {
+                    bucket.resize_with(idx + 1, Vec::new);
                 }
+                bucket[idx].push(vertex);
             }
         }
         Ok(())
@@ -2042,6 +2214,15 @@ pub fn prewarm_text_pipeline(
 pub fn clear_text_resources_cache() {
     TEXT_GLOBAL_CACHE.with(|cache| {
         cache.borrow_mut().resources = None;
+    });
+}
+
+pub fn begin_text_resources_frame() {
+    TEXT_GLOBAL_CACHE.with(|cache| {
+        if let Some(resources) = cache.borrow_mut().resources.as_mut() {
+            resources.mask_atlas.begin_frame();
+            resources.color_atlas.begin_frame();
+        }
     });
 }
 

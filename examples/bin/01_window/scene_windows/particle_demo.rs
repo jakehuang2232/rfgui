@@ -33,7 +33,7 @@ use wgpu::util::DeviceExt;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const MAX_PARTICLES: usize = 1000;
-const SPAWN_RATE: f32 = 50.0; // particles per second
+const SPAWN_RATE: f32 = 100.0; // particles per second
 
 /// 3D particle in normalised space. Projected to 2D for rendering.
 struct Particle {

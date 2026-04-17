@@ -90,6 +90,28 @@ struct FirstLineLayoutCacheEntry {
     fragment: InlineTextFragment,
 }
 
+#[derive(Clone)]
+struct TextMeasurementSnapshot {
+    signature: u64,
+    measure_revision: u64,
+    cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
+    cached_height_for_width: Option<(u64, f32, f32)>,
+    layout_cache: HashMap<TextLayoutCacheKey, MeasuredTextLayout>,
+    inline_plan_cache: HashMap<InlinePlanCacheKey, InlineTextPlan>,
+    first_line_fragment_cache: HashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
+    wrapped_suffix_cache: HashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
+    layout_buffer: Option<Arc<GlyphBuffer>>,
+    inline_plan: Option<InlineTextPlan>,
+    last_inline_measure_context: Option<InlineMeasureContext>,
+    dirty_flags: super::DirtyFlags,
+    size: Size,
+    render_size: Size,
+    layout_size: Size,
+    layout_override_width: Option<f32>,
+    layout_override_height: Option<f32>,
+    allow_wrap: bool,
+}
+
 pub struct Text {
     element: Element,
     position: Position,
@@ -121,6 +143,7 @@ pub struct Text {
     wrapped_suffix_cache: HashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
     layout_buffer: Option<Arc<GlyphBuffer>>,
     inline_plan: Option<InlineTextPlan>,
+    last_inline_measure_context: Option<InlineMeasureContext>,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
 }
@@ -768,9 +791,24 @@ impl Text {
             wrapped_suffix_cache: HashMap::new(),
             layout_buffer: None,
             inline_plan: None,
+            last_inline_measure_context: None,
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
         }
+    }
+
+    fn measurement_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.content.hash(&mut hasher);
+        self.font_families.hash(&mut hasher);
+        self.font_size.to_bits().hash(&mut hasher);
+        self.line_height.to_bits().hash(&mut hasher);
+        self.font_weight.hash(&mut hasher);
+        std::mem::discriminant(&self.align).hash(&mut hasher);
+        std::mem::discriminant(&self.text_wrap).hash(&mut hasher);
+        self.auto_width.hash(&mut hasher);
+        self.auto_height.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn clear_layout_caches(&mut self) {
@@ -1092,6 +1130,57 @@ impl ElementTrait for Text {
         self
     }
 
+    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(TextMeasurementSnapshot {
+            signature: self.measurement_signature(),
+            measure_revision: self.measure_revision,
+            cached_intrinsic_layout: self.cached_intrinsic_layout.clone(),
+            cached_height_for_width: self.cached_height_for_width,
+            layout_cache: self.layout_cache.clone(),
+            inline_plan_cache: self.inline_plan_cache.clone(),
+            first_line_fragment_cache: self.first_line_fragment_cache.clone(),
+            wrapped_suffix_cache: self.wrapped_suffix_cache.clone(),
+            layout_buffer: self.layout_buffer.clone(),
+            inline_plan: self.inline_plan.clone(),
+            last_inline_measure_context: self.last_inline_measure_context,
+            dirty_flags: self.dirty_flags,
+            size: self.size,
+            render_size: self.render_size,
+            layout_size: self.layout_size,
+            layout_override_width: self.layout_override_width,
+            layout_override_height: self.layout_override_height,
+            allow_wrap: self.allow_wrap,
+        }))
+    }
+
+    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
+        let Some(snapshot) = snapshot.downcast_ref::<TextMeasurementSnapshot>() else {
+            return false;
+        };
+        if snapshot.signature != self.measurement_signature() {
+            return false;
+        }
+        self.measure_revision = snapshot.measure_revision;
+        self.cached_intrinsic_layout = snapshot.cached_intrinsic_layout.clone();
+        self.cached_height_for_width = snapshot.cached_height_for_width;
+        self.layout_cache = snapshot.layout_cache.clone();
+        self.inline_plan_cache = snapshot.inline_plan_cache.clone();
+        self.first_line_fragment_cache = snapshot.first_line_fragment_cache.clone();
+        self.wrapped_suffix_cache = snapshot.wrapped_suffix_cache.clone();
+        self.layout_buffer = snapshot.layout_buffer.clone();
+        self.inline_plan = snapshot.inline_plan.clone();
+        self.last_inline_measure_context = snapshot.last_inline_measure_context;
+        self.dirty_flags = snapshot.dirty_flags;
+        self.size = snapshot.size;
+        self.render_size = snapshot.render_size;
+        self.layout_size = snapshot.layout_size;
+        self.layout_override_width = snapshot.layout_override_width;
+        self.layout_override_height = snapshot.layout_override_height;
+        self.allow_wrap = snapshot.allow_wrap;
+        self.element.set_size(self.size.width, self.size.height);
+        true
+    }
+
     fn promotion_node_info(&self) -> PromotionNodeInfo {
         PromotionNodeInfo {
             estimated_pass_count: 1,
@@ -1285,8 +1374,14 @@ impl Layoutable for Text {
     }
 
     fn measure_inline(&mut self, context: InlineMeasureContext) {
+        if !self.dirty_flags.intersects(super::DirtyFlags::LAYOUT)
+            && self.last_inline_measure_context == Some(context)
+        {
+            return;
+        }
         let started_at = text_measure_profile_enabled().then(Instant::now);
         self.inline_plan = None;
+        self.last_inline_measure_context = Some(context);
 
         if self.content.is_empty() {
             self.size = Size {
@@ -1409,6 +1504,7 @@ impl Layoutable for Text {
 
     fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
         self.inline_plan = None;
+        self.last_inline_measure_context = None;
         self.layout_override_width = None;
         self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();

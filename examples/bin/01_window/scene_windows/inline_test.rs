@@ -69,7 +69,7 @@ pub fn build(theme: &Theme) -> RsxNode {
             <Text>{"This window demonstrates Layout::Inline behavior: content participates in line boxes, wraps based on available width, and grows vertically as more lines are formed."}</Text>
             {demo_section(
                 theme,
-                "Mixed Text / Element",
+                "Mixed Text / Element😀",
                 "Text nodes and Elements participate in the same inline formatting context.",
                 rsx! {
                     <Element style={{

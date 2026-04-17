@@ -665,6 +665,11 @@ impl Viewport {
                 &layout_snapshots,
             );
             let mut rebuilt_roots = std::mem::take(&mut self.scene.ui_roots);
+            // Drop tracks for channels the rebuilt tree no longer declares
+            // before applying in-flight samples — otherwise a removed
+            // transition would re-stamp the stale interpolated value over
+            // the freshly synced target.
+            let _ = self.cancel_disallowed_transition_tracks(&rebuilt_roots);
             let has_inflight_transition =
                 self.sync_inflight_transition_state(&mut rebuilt_roots);
             self.scene.ui_roots = rebuilt_roots;
@@ -893,6 +898,7 @@ impl Viewport {
         self.frame.draw_rect_uniform_offset = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
+        crate::view::render_pass::text_pass::begin_text_resources_frame();
 
         let surface = match &self.gpu.surface {
             Some(s) => s,

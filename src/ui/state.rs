@@ -797,10 +797,6 @@ pub fn use_state<T: Clone + PartialEq + 'static>(init: impl FnOnce() -> T) -> St
     use_state_with_dirty_state(init, UiDirtyState::REBUILD)
 }
 
-pub fn use_redraw_state<T: Clone + PartialEq + 'static>(init: impl FnOnce() -> T) -> State<T> {
-    use_state_with_dirty_state(init, UiDirtyState::REDRAW)
-}
-
 pub fn use_state_with_dirty_state<T: Clone + PartialEq + 'static>(
     init: impl FnOnce() -> T,
     dirty_state: UiDirtyState,
@@ -1085,8 +1081,8 @@ pub fn use_global_state<T: Clone + PartialEq + 'static>() -> GlobalState<T> {
 mod tests {
     use super::{
         UiDirtyState, build_scope, next_timer_deadline, render_memoized_component,
-        run_due_timers, take_state_dirty, use_interval, use_mount, use_redraw_state,
-        use_state, use_timeout, with_component_key,
+        run_due_timers, take_state_dirty, use_interval, use_mount, use_state, use_timeout,
+        with_component_key,
     };
     use crate::time::{Duration, Instant};
     use crate::ui::{GlobalKey, RsxKey, RsxNode};
@@ -1250,19 +1246,6 @@ mod tests {
         run_due_timers(reset_deadline);
         assert_eq!(fired.get(), 2);
         clear_test_timers();
-    }
-
-    #[test]
-    fn redraw_state_marks_redraw_without_rebuild() {
-        let redraw = build_scope(|| {
-            crate::ui::render_component::<u32, _>(|| {
-                let value = use_redraw_state(|| 0_i32);
-                value.set(1);
-                value
-            })
-        });
-        assert_eq!(redraw.get(), 1);
-        assert_eq!(take_state_dirty(), UiDirtyState::REDRAW);
     }
 
     #[test]
