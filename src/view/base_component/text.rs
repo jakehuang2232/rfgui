@@ -208,7 +208,7 @@ impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
 thread_local! {
     static MEASURE_TEXT_CACHE: RefCell<LruCache<TextMeasureCacheKey, MeasuredTextLayout>> =
         RefCell::new(LruCache::new());
-    static SHAPED_TEXT_CACHE: RefCell<LruCache<TextShapeCacheKey, GlobalShapedText>> =
+    static SHAPED_TEXT_CACHE: RefCell<LruCache<TextShapeCacheKey, Arc<GlobalShapedText>>> =
         RefCell::new(LruCache::new());
     static TEXT_MEASURE_PROFILE: RefCell<TextMeasureProfile> =
         RefCell::new(TextMeasureProfile::default());
@@ -333,10 +333,52 @@ fn make_shape_cache_key(
     }
 }
 
+fn shape_text_global(
+    content: &str,
+    font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+    align: Align,
+    font_families: &[String],
+) -> (bool, Arc<GlobalShapedText>) {
+    let key = make_shape_cache_key(
+        content,
+        font_size,
+        line_height,
+        font_weight,
+        align,
+        font_families,
+    );
+    SHAPED_TEXT_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(cached) = cache.get_cloned(&key) {
+            return (true, cached);
+        }
+        let shaped = with_shared_font_system(|font_system| {
+            let mut buffer = build_text_buffer(
+                font_system,
+                content,
+                None,
+                None,
+                false,
+                font_size,
+                line_height,
+                font_weight,
+                align,
+                font_families,
+            );
+            let shape_line = buffer.line_shape(font_system, 0).cloned();
+            Arc::new(GlobalShapedText { buffer, shape_line })
+        });
+        cache.insert(key, Arc::clone(&shaped));
+        (false, shaped)
+    })
+}
+
 impl Text {
-    fn get_global_shaped_text(&self) -> GlobalShapedText {
+    fn get_global_shaped_text(&self) -> Arc<GlobalShapedText> {
         let started_at = text_measure_profile_enabled().then(Instant::now);
-        let key = make_shape_cache_key(
+        let (cache_hit, shaped) = shape_text_global(
             self.content.as_str(),
             self.font_size,
             self.line_height,
@@ -344,30 +386,6 @@ impl Text {
             self.align,
             self.font_families.as_slice(),
         );
-        let (cache_hit, shaped) = SHAPED_TEXT_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if let Some(cached) = cache.get_cloned(&key) {
-                return (true, cached);
-            }
-            let shaped = with_shared_font_system(|font_system| {
-                let mut buffer = build_text_buffer(
-                    font_system,
-                    self.content.as_str(),
-                    None,
-                    None,
-                    false,
-                    self.font_size,
-                    self.line_height,
-                    self.font_weight,
-                    self.align,
-                    self.font_families.as_slice(),
-                );
-                let shape_line = buffer.line_shape(font_system, 0).cloned();
-                GlobalShapedText { buffer, shape_line }
-            });
-            cache.insert(key, shaped.clone());
-            (false, shaped)
-        });
         if let Some(started_at) = started_at {
             let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
             record_text_measure_profile(|profile| {
@@ -381,13 +399,6 @@ impl Text {
         shaped
     }
 
-    fn ensure_shaped_base_buffer(&self) -> GlyphBuffer {
-        self.get_global_shaped_text().buffer
-    }
-
-    fn base_shape_line(&self) -> Option<ShapeLine> {
-        self.get_global_shaped_text().shape_line
-    }
 
     fn relayout_from_base(&mut self, width: Option<f32>, allow_wrap: bool) -> MeasuredTextLayout {
         let started_at = text_measure_profile_enabled().then(Instant::now);
@@ -407,7 +418,7 @@ impl Text {
             return cached;
         }
 
-        let mut buffer = self.ensure_shaped_base_buffer();
+        let mut buffer = self.get_global_shaped_text().buffer.clone();
         with_shared_font_system(|font_system| {
             buffer.set_wrap(
                 font_system,
@@ -453,7 +464,8 @@ impl Text {
             return Some(cached);
         }
 
-        let shape_line = self.base_shape_line()?;
+        let shaped = self.get_global_shaped_text();
+        let shape_line = shaped.shape_line.as_ref()?;
         let layout_line = shape_line
             .layout(
                 self.font_size,
@@ -1031,19 +1043,26 @@ fn measure_text_layout(
         return cached;
     }
 
+    let (_, shaped) = shape_text_global(
+        content,
+        font_size,
+        line_height,
+        font_weight,
+        align,
+        font_families,
+    );
     with_shared_font_system(|font_system| {
-        let buffer = build_text_buffer(
+        let mut buffer = shaped.buffer.clone();
+        buffer.set_wrap(
             font_system,
-            content,
-            max_width,
-            None,
-            allow_wrap,
-            font_size,
-            line_height,
-            font_weight,
-            align,
-            font_families,
+            if allow_wrap {
+                Wrap::WordOrGlyph
+            } else {
+                Wrap::None
+            },
         );
+        buffer.set_size(font_system, max_width.map(|w| w.max(1.0)), None);
+        buffer.shape_until_scroll(font_system, false);
         let (width, height) = measure_buffer_size(&buffer);
         let measured = MeasuredTextLayout {
             buffer: Arc::new(buffer),
