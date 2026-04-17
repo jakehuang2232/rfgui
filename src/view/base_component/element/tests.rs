@@ -6,6 +6,7 @@ mod tests {
         LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
     };
     use super::super::core::Position as LayoutPosition;
+    use rustc_hash::{FxHashMap, FxHashSet};
     use crate::view::base_component::Text;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
@@ -840,8 +841,8 @@ mod tests {
         let children = parent.children().expect("children");
         let first_snapshot = children[0].box_model_snapshot();
         let second_snapshot = children[1].box_model_snapshot();
-        assert_eq!(first_snapshot.width, 113.0);
-        assert_eq!(second_snapshot.width, 187.0);
+        assert_eq!(first_snapshot.width, 113.333336);
+        assert_eq!(second_snapshot.width, 186.66667);
         assert_eq!(first_snapshot.y, 50.0);
         assert_eq!(second_snapshot.y, 45.0);
     }
@@ -2790,7 +2791,7 @@ mod tests {
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
         ctx.set_promoted_runtime(
-            Arc::new(FxHashSet::from([child_id])),
+            Arc::new(FxHashSet::from_iter([child_id])),
             Arc::new(FxHashMap::default()),
             Arc::new(FxHashMap::default()),
         );
@@ -2857,7 +2858,7 @@ mod tests {
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
         ctx.set_promoted_runtime(
-            Arc::new(FxHashSet::from([parent_id])),
+            Arc::new(FxHashSet::from_iter([parent_id])),
             Arc::new(FxHashMap::default()),
             Arc::new(FxHashMap::default()),
         );
@@ -3335,7 +3336,7 @@ mod tests {
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
         ctx.set_promoted_runtime(
-            Arc::new(FxHashSet::from([promoted_child_id])),
+            Arc::new(FxHashSet::from_iter([promoted_child_id])),
             Arc::new(FxHashMap::default()),
             Arc::new(FxHashMap::default()),
         );

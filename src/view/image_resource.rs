@@ -42,19 +42,30 @@ enum ImageState {
 }
 
 #[derive(Debug)]
-enum ImageOrigin {
-    Path {
-        _normalized_path: Arc<str>,
-        ref_count: usize,
-        last_access_tick: u64,
-    },
-    Rgba,
-}
-
-#[derive(Debug)]
 struct ImageEntry {
     state: ImageState,
-    origin: ImageOrigin,
+    ref_count: usize,
+    last_access_tick: u64,
+}
+
+/// RAII handle for a cached image asset. Holds a ref on the entry for its
+/// lifetime; dropping the handle decrements the ref count so the entry can be
+/// evicted under memory pressure.
+#[derive(Debug)]
+pub struct ImageHandle {
+    key: u64,
+}
+
+impl ImageHandle {
+    pub fn key(&self) -> u64 {
+        self.key
+    }
+}
+
+impl Drop for ImageHandle {
+    fn drop(&mut self) {
+        release_image_entry(self.key);
+    }
 }
 
 fn image_entries() -> &'static Mutex<FxHashMap<u64, ImageEntry>> {
@@ -135,7 +146,7 @@ fn decode_path_image(path: &Path) -> Result<(u32, u32, Arc<[u8]>), Arc<str>> {
     Ok((width, height, Arc::<[u8]>::from(rgba.into_raw())))
 }
 
-pub fn acquire_image_resource(source: &ImageSource) -> u64 {
+pub fn acquire_image_resource(source: &ImageSource) -> ImageHandle {
     match source {
         ImageSource::Path(path) => {
             let (key, normalized_path) = normalized_path_key(path);
@@ -144,25 +155,15 @@ pub fn acquire_image_resource(source: &ImageSource) -> u64 {
                 let tick = next_access_tick();
                 let mut entries = image_entries().lock().unwrap();
                 if let Some(entry) = entries.get_mut(&key) {
-                    if let ImageOrigin::Path {
-                        ref mut ref_count,
-                        ref mut last_access_tick,
-                        ..
-                    } = entry.origin
-                    {
-                        *ref_count += 1;
-                        *last_access_tick = tick;
-                    }
+                    entry.ref_count += 1;
+                    entry.last_access_tick = tick;
                 } else {
                     entries.insert(
                         key,
                         ImageEntry {
                             state: ImageState::Loading,
-                            origin: ImageOrigin::Path {
-                                _normalized_path: normalized_path.clone(),
-                                ref_count: 1,
-                                last_access_tick: tick,
-                            },
+                            ref_count: 1,
+                            last_access_tick: tick,
                         },
                     );
                     spawn_loader = true;
@@ -174,7 +175,7 @@ pub fn acquire_image_resource(source: &ImageSource) -> u64 {
                     let decoded = decode_path_image(Path::new(normalized_path.as_ref()));
                     let mut entries = image_entries().lock().unwrap();
                     let Some(entry) = entries.get_mut(&key) else {
-                        return key;
+                        return ImageHandle { key };
                     };
                     match decoded {
                         Ok((width, height, pixels)) => {
@@ -220,7 +221,7 @@ pub fn acquire_image_resource(source: &ImageSource) -> u64 {
                     });
                 }
             }
-            key
+            ImageHandle { key }
         }
         ImageSource::Rgba {
             width,
@@ -228,54 +229,46 @@ pub fn acquire_image_resource(source: &ImageSource) -> u64 {
             pixels,
         } => {
             let key = rgba_key(*width, *height, pixels);
+            let tick = next_access_tick();
             let mut entries = image_entries().lock().unwrap();
-            entries.entry(key).or_insert_with(|| ImageEntry {
-                state: ImageState::Ready {
-                    width: (*width).max(1),
-                    height: (*height).max(1),
-                    pixels: pixels.clone(),
-                    generation: next_generation(),
-                    uploaded_generation: None,
-                },
-                origin: ImageOrigin::Rgba,
-            });
-            key
+            entries
+                .entry(key)
+                .and_modify(|entry| {
+                    entry.ref_count += 1;
+                    entry.last_access_tick = tick;
+                })
+                .or_insert_with(|| ImageEntry {
+                    state: ImageState::Ready {
+                        width: (*width).max(1),
+                        height: (*height).max(1),
+                        pixels: pixels.clone(),
+                        generation: next_generation(),
+                        uploaded_generation: None,
+                    },
+                    ref_count: 1,
+                    last_access_tick: tick,
+                });
+            ImageHandle { key }
         }
     }
 }
 
-pub fn release_image_resource(source: &ImageSource, key: u64) {
-    if !matches!(source, ImageSource::Path(_)) {
-        return;
-    }
+fn release_image_entry(key: u64) {
     let tick = next_access_tick();
     let mut entries = image_entries().lock().unwrap();
     let Some(entry) = entries.get_mut(&key) else {
         return;
     };
-    if let ImageOrigin::Path {
-        ref mut ref_count,
-        ref mut last_access_tick,
-        ..
-    } = entry.origin
-    {
-        if *ref_count > 0 {
-            *ref_count -= 1;
-        }
-        *last_access_tick = tick;
+    if entry.ref_count > 0 {
+        entry.ref_count -= 1;
     }
+    entry.last_access_tick = tick;
 }
 
 pub fn snapshot_image(key: u64) -> Option<ImageSnapshot> {
     let mut entries = image_entries().lock().unwrap();
     let entry = entries.get_mut(&key)?;
-    if let ImageOrigin::Path {
-        ref mut last_access_tick,
-        ..
-    } = entry.origin
-    {
-        *last_access_tick = next_access_tick();
-    }
+    entry.last_access_tick = next_access_tick();
     match &entry.state {
         ImageState::Loading => Some(ImageSnapshot::Loading),
         ImageState::Ready {
@@ -338,17 +331,10 @@ pub fn invalidate_uploaded_images() {
 pub fn image_asset_retention_info(key: u64) -> Option<ImageAssetRetentionInfo> {
     let entries = image_entries().lock().unwrap();
     let entry = entries.get(&key)?;
-    match &entry.origin {
-        ImageOrigin::Path {
-            ref_count,
-            last_access_tick,
-            ..
-        } => Some(ImageAssetRetentionInfo {
-            ref_count: *ref_count,
-            last_access_tick: *last_access_tick,
-        }),
-        ImageOrigin::Rgba => None,
-    }
+    Some(ImageAssetRetentionInfo {
+        ref_count: entry.ref_count,
+        last_access_tick: entry.last_access_tick,
+    })
 }
 
 #[cfg(test)]

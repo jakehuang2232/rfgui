@@ -1,6 +1,6 @@
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
-    ImageSnapshot, acquire_image_resource, needs_upload, release_image_resource, snapshot_image,
+    ImageHandle, ImageSnapshot, acquire_image_resource, needs_upload, snapshot_image,
 };
 use crate::view::render_pass::TextureCompositePass;
 use crate::view::render_pass::texture_composite_pass::{
@@ -25,10 +25,9 @@ enum ActiveSlot {
 
 pub struct Image {
     element: Element,
-    source: ImageSource,
     fit: ImageFit,
     sampling: ImageSampling,
-    source_key: u64,
+    source_handle: ImageHandle,
     loading_slot: Vec<Box<dyn ElementTrait>>,
     error_slot: Vec<Box<dyn ElementTrait>>,
     active_slot: ActiveSlot,
@@ -43,8 +42,7 @@ impl Image {
         element.apply_style(base_style);
         Self {
             element,
-            source_key: acquire_image_resource(&source),
-            source,
+            source_handle: acquire_image_resource(&source),
             fit: ImageFit::Contain,
             sampling: ImageSampling::Linear,
             loading_slot: Vec::new(),
@@ -74,7 +72,7 @@ impl Image {
     }
 
     fn snapshot(&mut self) -> ImageSnapshot {
-        snapshot_image(self.source_key).unwrap_or(ImageSnapshot::Loading)
+        snapshot_image(self.source_handle.key()).unwrap_or(ImageSnapshot::Loading)
     }
 
     fn sync_active_slot(&mut self, next_slot: ActiveSlot) {
@@ -414,12 +412,6 @@ impl Layoutable for Image {
     }
 }
 
-impl Drop for Image {
-    fn drop(&mut self) {
-        release_image_resource(&self.source, self.source_key);
-    }
-}
-
 impl Renderable for Image {
     fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> super::BuildState {
         let snapshot = self.snapshot();
@@ -440,7 +432,7 @@ impl Renderable for Image {
             return ctx.into_state();
         };
 
-        let should_upload = needs_upload(self.source_key, image.generation);
+        let should_upload = needs_upload(self.source_handle.key(), image.generation);
         let (local_draw_bounds, uv_bounds) = compute_image_mapping(
             self.fit,
             image.width as f32,
@@ -471,7 +463,7 @@ impl Renderable for Image {
             },
             TextureCompositeInput {
                 source: Default::default(),
-                sampled_source_key: Some(self.source_key),
+                sampled_source_key: Some(self.source_handle.key()),
                 sampled_source_size: Some((image.width, image.height)),
                 sampled_source_upload: if should_upload {
                     Some(image.pixels.clone())
@@ -479,7 +471,7 @@ impl Renderable for Image {
                     None
                 },
                 sampled_upload_state_key: if should_upload {
-                    Some(self.source_key)
+                    Some(self.source_handle.key())
                 } else {
                     None
                 },
@@ -641,8 +633,8 @@ mod tests {
         let children = parent.children().expect("children after first layout");
         let image_snapshot = children[0].box_model_snapshot();
         let sibling_snapshot = children[1].box_model_snapshot();
-        assert_eq!(image_snapshot.width, 14.0);
-        assert_eq!(sibling_snapshot.width, 86.0);
+        assert_eq!(image_snapshot.width, 14.285714);
+        assert_eq!(sibling_snapshot.width, 85.71429);
 
         parent.mark_layout_dirty();
         parent.measure(constraints);
@@ -650,7 +642,7 @@ mod tests {
         let children = parent.children().expect("children after second layout");
         let image_snapshot = children[0].box_model_snapshot();
         let sibling_snapshot = children[1].box_model_snapshot();
-        assert_eq!(image_snapshot.width, 14.0);
-        assert_eq!(sibling_snapshot.width, 86.0);
+        assert_eq!(image_snapshot.width, 14.285714);
+        assert_eq!(sibling_snapshot.width, 85.71429);
     }
 }

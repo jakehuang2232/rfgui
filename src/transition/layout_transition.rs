@@ -1,7 +1,9 @@
 #![allow(missing_docs)]
 
 //! Layout transition primitives for animating retained layout fields.
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
+#[cfg(test)]
+use rustc_hash::FxHashSet;
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
