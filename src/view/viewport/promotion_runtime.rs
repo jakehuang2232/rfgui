@@ -4,7 +4,6 @@ use super::*;
 
 impl Viewport {
     pub(super) fn update_promotion_state(&mut self, roots: &[Box<dyn crate::view::base_component::ElementTrait>]) {
-        let previous_promoted_node_ids = self.compositor.promotion_state.promoted_node_ids.clone();
         let active_animator_hints = self.transitions.animation_plugin.active_promotion_hints();
         let active_channels = active_channels_by_node(&self.transitions.transition_claims);
         let candidates = collect_promotion_candidates(
@@ -18,8 +17,8 @@ impl Viewport {
             (self.logical_width, self.logical_height),
             self.compositor.promotion_config,
         );
-        let promotion_topology_changed =
-            previous_promoted_node_ids != next_promotion_state.promoted_node_ids;
+        let promotion_topology_changed = self.compositor.promotion_state.promoted_node_ids
+            != next_promotion_state.promoted_node_ids;
         self.compositor.promotion_state = next_promotion_state;
         if promotion_topology_changed {
             self.compositor.promoted_base_signatures.clear();
@@ -105,18 +104,13 @@ impl Viewport {
     }
 
     pub(super) fn apply_promotion_runtime(&self, ctx: &mut crate::view::base_component::UiBuildContext) {
-        let promoted_update_kinds = self
-            .compositor
-            .promoted_layer_updates
-            .iter()
-            .map(|update| (update.node_id, update.kind))
-            .collect::<HashMap<_, _>>();
-        let promoted_composition_update_kinds = self
-            .compositor
-            .promoted_layer_updates
-            .iter()
-            .map(|update| (update.node_id, update.composition_kind))
-            .collect::<HashMap<_, _>>();
+        let updates = &self.compositor.promoted_layer_updates;
+        let mut promoted_update_kinds = HashMap::with_capacity(updates.len());
+        let mut promoted_composition_update_kinds = HashMap::with_capacity(updates.len());
+        for update in updates {
+            promoted_update_kinds.insert(update.node_id, update.kind);
+            promoted_composition_update_kinds.insert(update.node_id, update.composition_kind);
+        }
         ctx.set_promoted_runtime(
             Arc::new(self.compositor.promotion_state.promoted_node_ids.clone()),
             Arc::new(promoted_update_kinds),

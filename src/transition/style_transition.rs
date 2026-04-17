@@ -257,7 +257,10 @@ impl StyleTransitionPlugin {
             channel: field.channel_id(),
         };
         if let Some(existing) = self.tracks.get(&key) {
-            if existing.to == to && existing.from == from {
+            // Same target -> keep the running track. A rebuild restores the
+            // interpolated value into `from`, but the in-flight track already
+            // owns the timeline; replacing it would restart from progress 0.
+            if existing.to == to {
                 return Ok(());
             }
         }

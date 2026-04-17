@@ -221,9 +221,10 @@ pub(crate) fn collect_promoted_layer_updates(
         }
     }
 
-    let mut updates = Vec::new();
-    let mut next_base_signatures = HashMap::new();
-    let mut next_composition_signatures = HashMap::new();
+    let cap = promoted_node_ids.len();
+    let mut updates = Vec::with_capacity(cap);
+    let mut next_base_signatures = HashMap::with_capacity(cap);
+    let mut next_composition_signatures = HashMap::with_capacity(cap);
     for root in roots {
         walk(
             root.as_ref(),

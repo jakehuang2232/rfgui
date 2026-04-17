@@ -619,10 +619,10 @@ impl Element {
             self.layout_transition_override_height = None;
             self.layout_transition_target_height = None;
         }
-        let current_visual_rel_x =
-            (self.layout_flow_position.x - parent_x) + self.layout_transition_visual_offset_x;
-        let current_visual_rel_y =
-            (self.layout_flow_position.y - parent_y) + self.layout_transition_visual_offset_y;
+        let current_visual_rel_x = (self.layout_flow_position.x - self.last_parent_layout_x)
+            + self.layout_transition_visual_offset_x;
+        let current_visual_rel_y = (self.layout_flow_position.y - self.last_parent_layout_y)
+            + self.layout_transition_visual_offset_y;
         let prev_target_rel_x = self.layout_flow_position.x - self.last_parent_layout_x;
         let prev_target_rel_y = self.layout_flow_position.y - self.last_parent_layout_y;
         let current_offset_x = current_visual_rel_x - target_rel_x;

@@ -1495,8 +1495,8 @@ mod tests {
             .iter()
             .find(|r| r.field == VisualField::X)
             .expect("x transition request should exist");
-        // current abs(180) - new parent_x(130) = 50, target rel-x=120 => offset = -70
-        assert!((x_req.from + 70.0).abs() < 0.01);
+        // current rendered rel-x(80 = base 50 + offset 30) - new target rel-x(120) => offset = -40
+        assert!((x_req.from + 40.0).abs() < 0.01);
         assert!((x_req.to - 0.0).abs() < 0.01);
     }
 

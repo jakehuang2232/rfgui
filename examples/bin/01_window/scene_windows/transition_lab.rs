@@ -1,4 +1,4 @@
-use crate::rfgui::ui::{RsxNode, component, rsx, use_redraw_state, use_state};
+use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{
     Angle, Border, Color, JustifyContent, Layout, Length, Padding, Perspective, Rotate, Scale,
@@ -10,8 +10,8 @@ use crate::rfgui_components::{Button, Theme};
 pub fn TransitionLab(theme: Theme) -> RsxNode {
     let style_enabled = use_state(|| true);
     let style_target_alt = use_state(|| false);
-    let transform_enabled = use_redraw_state(|| true);
-    let transform_target_alt = use_redraw_state(|| false);
+    let transform_enabled = use_state(|| true);
+    let transform_target_alt = use_state(|| false);
     let layout_enabled = use_state(|| true);
     let layout_expanded = use_state(|| false);
     let visual_enabled = use_state(|| true);
