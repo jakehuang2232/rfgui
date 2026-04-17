@@ -140,7 +140,7 @@ pub(super) fn build_execute_detail_trace_nodes(
     ordered_passes: Vec<(String, f64, usize)>,
 ) -> Vec<TraceRenderNode> {
     let mut out = Vec::new();
-    let mut grouped_indices: HashMap<String, usize> = HashMap::new();
+    let mut grouped_indices: FxHashMap<String, usize> = FxHashMap::default();
 
     for (name, elapsed_ms, count) in ordered_passes {
         if let Some((group, detail)) = name.split_once("::") {

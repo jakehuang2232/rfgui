@@ -1,4 +1,5 @@
 //! Low-level retained host elements and traversal helpers used to build custom elements.
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::transition::{
     AnimationRequest, LayoutField, LayoutTrackRequest, StyleField, StyleTrackRequest, StyleValue,
@@ -10,8 +11,6 @@ use crate::ui::{
     MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent, TextInputEvent,
 };
 use crate::view::viewport::ViewportControl;
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod core;
@@ -345,14 +344,14 @@ pub(crate) struct LayoutTransitionSnapshotSeed {
 
 pub(crate) fn collect_layout_transition_snapshots(
     roots: &[Box<dyn ElementTrait>],
-) -> HashMap<u64, LayoutTransitionSnapshotSeed> {
-    let mut out = HashMap::new();
+) -> FxHashMap<u64, LayoutTransitionSnapshotSeed> {
+    let mut out = FxHashMap::default();
 
     fn walk(
         node: &dyn ElementTrait,
         parent_layout_x: f32,
         parent_layout_y: f32,
-        out: &mut HashMap<u64, LayoutTransitionSnapshotSeed>,
+        out: &mut FxHashMap<u64, LayoutTransitionSnapshotSeed>,
     ) {
         let snapshot = node.box_model_snapshot();
         let can_seed_snapshot = node
@@ -403,9 +402,9 @@ pub(crate) fn collect_layout_transition_snapshots(
 
 pub(crate) fn seed_layout_transition_snapshots(
     roots: &mut [Box<dyn ElementTrait>],
-    snapshots: &HashMap<u64, LayoutTransitionSnapshotSeed>,
+    snapshots: &FxHashMap<u64, LayoutTransitionSnapshotSeed>,
 ) {
-    fn apply(node: &mut dyn ElementTrait, snapshots: &HashMap<u64, LayoutTransitionSnapshotSeed>) {
+    fn apply(node: &mut dyn ElementTrait, snapshots: &FxHashMap<u64, LayoutTransitionSnapshotSeed>) {
         if let Some(seed) = snapshots.get(&node.id()) {
             if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
                 element.seed_layout_transition_snapshot(
@@ -833,10 +832,10 @@ pub(crate) fn take_visual_transition_requests(
 
 pub(crate) fn collect_transition_track_allowlist(
     roots: &[Box<dyn ElementTrait>],
-) -> HashSet<TrackKey<TrackTarget>> {
-    let mut out = HashSet::new();
+) -> FxHashSet<TrackKey<TrackTarget>> {
+    let mut out = FxHashSet::default();
 
-    fn walk(node: &dyn ElementTrait, out: &mut HashSet<TrackKey<TrackTarget>>) {
+    fn walk(node: &dyn ElementTrait, out: &mut FxHashSet<TrackKey<TrackTarget>>) {
         if let Some(element) = node.as_any().downcast_ref::<Element>() {
             for channel in element.active_transition_channels() {
                 out.insert(TrackKey {
@@ -859,10 +858,10 @@ pub(crate) fn collect_transition_track_allowlist(
     out
 }
 
-pub(crate) fn collect_node_id_allowlist(roots: &[Box<dyn ElementTrait>]) -> HashSet<u64> {
-    let mut out = HashSet::new();
+pub(crate) fn collect_node_id_allowlist(roots: &[Box<dyn ElementTrait>]) -> FxHashSet<u64> {
+    let mut out = FxHashSet::default();
 
-    fn walk(node: &dyn ElementTrait, out: &mut HashSet<u64>) {
+    fn walk(node: &dyn ElementTrait, out: &mut FxHashSet<u64>) {
         out.insert(node.id());
         if let Some(children) = node.children() {
             for child in children {
@@ -880,11 +879,11 @@ pub(crate) fn collect_node_id_allowlist(roots: &[Box<dyn ElementTrait>]) -> Hash
 
 pub(crate) fn reconcile_transition_runtime_state(
     roots: &mut [Box<dyn ElementTrait>],
-    active_channels_by_node: &HashMap<u64, HashSet<ChannelId>>,
+    active_channels_by_node: &FxHashMap<u64, FxHashSet<ChannelId>>,
 ) -> bool {
     fn walk(
         node: &mut dyn ElementTrait,
-        active_channels_by_node: &HashMap<u64, HashSet<ChannelId>>,
+        active_channels_by_node: &FxHashMap<u64, FxHashSet<ChannelId>>,
     ) -> bool {
         let mut changed = false;
         let node_id = node.id();

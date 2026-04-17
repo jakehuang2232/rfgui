@@ -20,7 +20,7 @@ mod tests {
         Position, Rotate, Transform, TransformOrigin, Translate, Style,
     };
     use glam::{Mat4, Vec3};
-    use std::collections::{HashMap, HashSet};
+    
     use std::sync::Arc;
 
     #[test]
@@ -2790,9 +2790,9 @@ mod tests {
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
         ctx.set_promoted_runtime(
-            Arc::new(HashSet::from([child_id])),
-            Arc::new(HashMap::new()),
-            Arc::new(HashMap::new()),
+            Arc::new(FxHashSet::from([child_id])),
+            Arc::new(FxHashMap::default()),
+            Arc::new(FxHashMap::default()),
         );
 
         let next_state = parent.build(
@@ -2857,9 +2857,9 @@ mod tests {
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
         ctx.set_promoted_runtime(
-            Arc::new(HashSet::from([parent_id])),
-            Arc::new(HashMap::new()),
-            Arc::new(HashMap::new()),
+            Arc::new(FxHashSet::from([parent_id])),
+            Arc::new(FxHashMap::default()),
+            Arc::new(FxHashMap::default()),
         );
 
         let mut layer_ctx = UiBuildContext::from_parts(
@@ -3335,9 +3335,9 @@ mod tests {
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
         ctx.set_promoted_runtime(
-            Arc::new(HashSet::from([promoted_child_id])),
-            Arc::new(HashMap::new()),
-            Arc::new(HashMap::new()),
+            Arc::new(FxHashSet::from([promoted_child_id])),
+            Arc::new(FxHashMap::default()),
+            Arc::new(FxHashMap::default()),
         );
         reset_test_promoted_build_counts();
 
@@ -4072,7 +4072,7 @@ mod tests {
         let mut roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(rebuilt)];
         assert!(crate::view::base_component::reconcile_transition_runtime_state(
             &mut roots,
-            &HashMap::new(),
+            &FxHashMap::default(),
         ));
         let rebuilt = roots[0]
             .as_any_mut()

@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+use rustc_hash::{FxHashMap, FxHashSet};
 
 mod debug;
 mod dispatch;
@@ -47,7 +48,7 @@ use crate::{
     ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style,
 };
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+
 use std::ops::Sub;
 use std::sync::Arc;
 use wgpu::util::StagingBelt;
@@ -224,8 +225,8 @@ pub struct Viewport {
 /// blobs, and the last `RsxNode` seen from the caller. Non-pub.
 struct SceneState {
     ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
-    scroll_offsets: HashMap<u64, (f32, f32)>,
-    element_snapshots: HashMap<u64, Box<dyn Any>>,
+    scroll_offsets: FxHashMap<u64, (f32, f32)>,
+    element_snapshots: FxHashMap<u64, Box<dyn Any>>,
     last_rsx_root: Option<RsxNode>,
 }
 
@@ -233,8 +234,8 @@ impl SceneState {
     fn new() -> Self {
         Self {
             ui_roots: Vec::new(),
-            scroll_offsets: HashMap::new(),
-            element_snapshots: HashMap::new(),
+            scroll_offsets: FxHashMap::default(),
+            element_snapshots: FxHashMap::default(),
             last_rsx_root: None,
         }
     }
@@ -247,8 +248,8 @@ impl SceneState {
 struct FrameRuntime {
     frame_state: Option<FrameState>,
     offscreen_render_target_pool: OffscreenRenderTargetPool,
-    sampled_texture_cache: HashMap<u64, SampledTextureEntry>,
-    frame_buffer_pool: HashMap<u32, FrameBufferEntry>,
+    sampled_texture_cache: FxHashMap<u64, SampledTextureEntry>,
+    frame_buffer_pool: FxHashMap<u32, FrameBufferEntry>,
     draw_rect_uniform_pool: Vec<DrawRectUniformBufferEntry>,
     draw_rect_uniform_cursor: usize,
     draw_rect_uniform_offset: u64,
@@ -269,8 +270,8 @@ impl FrameRuntime {
         Self {
             frame_state: None,
             offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
-            sampled_texture_cache: HashMap::new(),
-            frame_buffer_pool: HashMap::new(),
+            sampled_texture_cache: FxHashMap::default(),
+            frame_buffer_pool: FxHashMap::default(),
             draw_rect_uniform_pool: Vec::new(),
             draw_rect_uniform_cursor: 0,
             draw_rect_uniform_offset: 0,
@@ -291,8 +292,8 @@ impl FrameRuntime {
 /// immutably and `transition_claims` mutably from here, so field names are
 /// preserved verbatim to keep the adapter sites mechanical.
 struct TransitionRuntime {
-    transition_channels: HashSet<ChannelId>,
-    transition_claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+    transition_channels: FxHashSet<ChannelId>,
+    transition_claims: FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
     scroll_transition_plugin: ScrollTransitionPlugin,
     layout_transition_plugin: LayoutTransitionPlugin,
     visual_transition_plugin: VisualTransitionPlugin,
@@ -306,7 +307,7 @@ struct TransitionRuntime {
 impl TransitionRuntime {
     fn new() -> Self {
         Self {
-            transition_channels: HashSet::from([
+            transition_channels: [
                 CHANNEL_SCROLL_X,
                 CHANNEL_SCROLL_Y,
                 CHANNEL_LAYOUT_X,
@@ -326,8 +327,10 @@ impl TransitionRuntime {
                 CHANNEL_STYLE_BOX_SHADOW,
                 CHANNEL_STYLE_TRANSFORM,
                 CHANNEL_STYLE_TRANSFORM_ORIGIN,
-            ]),
-            transition_claims: HashMap::new(),
+            ]
+            .into_iter()
+            .collect(),
+            transition_claims: FxHashMap::default(),
             scroll_transition_plugin: ScrollTransitionPlugin::new(),
             layout_transition_plugin: LayoutTransitionPlugin::new(),
             visual_transition_plugin: VisualTransitionPlugin::new(),
@@ -367,12 +370,12 @@ struct CompositorState {
     promotion_state: PromotionState,
     promotion_config: ViewportPromotionConfig,
     promoted_layer_updates: Vec<PromotedLayerUpdate>,
-    promoted_base_signatures: HashMap<u64, u64>,
-    promoted_composition_signatures: HashMap<u64, u64>,
-    debug_previous_subtree_signatures: HashMap<u64, (u64, u64, u64, bool)>,
+    promoted_base_signatures: FxHashMap<u64, u64>,
+    promoted_composition_signatures: FxHashMap<u64, u64>,
+    debug_previous_subtree_signatures: FxHashMap<u64, (u64, u64, u64, bool)>,
     promoted_reuse_cooldown_frames: u8,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
-    cached_root_box_models: HashMap<u64, Vec<super::base_component::BoxModelSnapshot>>,
+    cached_root_box_models: FxHashMap<u64, Vec<super::base_component::BoxModelSnapshot>>,
 }
 
 impl CompositorState {
@@ -381,12 +384,12 @@ impl CompositorState {
             promotion_state: PromotionState::default(),
             promotion_config: ViewportPromotionConfig::default(),
             promoted_layer_updates: Vec::new(),
-            promoted_base_signatures: HashMap::new(),
-            promoted_composition_signatures: HashMap::new(),
-            debug_previous_subtree_signatures: HashMap::new(),
+            promoted_base_signatures: FxHashMap::default(),
+            promoted_composition_signatures: FxHashMap::default(),
+            debug_previous_subtree_signatures: FxHashMap::default(),
             promoted_reuse_cooldown_frames: 0,
             frame_box_models: Vec::new(),
-            cached_root_box_models: HashMap::new(),
+            cached_root_box_models: FxHashMap::default(),
         }
     }
 }
@@ -409,7 +412,7 @@ pub(super) struct DrawRectUniformBufferEntry {
     /// Cached bind groups keyed by layout_cache_key.  The bind group binds the buffer
     /// at offset 0 / size=slot_size; the per-draw dynamic offset is supplied separately,
     /// so one bind group is valid for *all* slots in this buffer.
-    pub(super) bind_groups: HashMap<u64, wgpu::BindGroup>,
+    pub(super) bind_groups: FxHashMap<u64, wgpu::BindGroup>,
 }
 
 pub(super) struct SampledTextureEntry {

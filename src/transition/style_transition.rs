@@ -1,8 +1,7 @@
 #![allow(missing_docs)]
 
 //! Style transition primitives for animating style-derived values.
-
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
@@ -218,7 +217,7 @@ struct StyleTrackState {
 #[derive(Debug)]
 pub struct StyleTransitionPlugin {
     plugin_id: TransitionPluginId,
-    tracks: HashMap<TrackKey<TrackTarget>, StyleTrackState>,
+    tracks: FxHashMap<TrackKey<TrackTarget>, StyleTrackState>,
     frame_samples: Vec<StyleSample>,
 }
 
@@ -238,7 +237,7 @@ impl StyleTransitionPlugin {
     pub fn with_plugin_id(plugin_id: TransitionPluginId) -> Self {
         Self {
             plugin_id,
-            tracks: HashMap::new(),
+            tracks: FxHashMap::default(),
             frame_samples: Vec::new(),
         }
     }

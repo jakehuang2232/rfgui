@@ -1,6 +1,6 @@
+use rustc_hash::FxHashMap;
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
 use crate::view::frame_graph::{AllocationId, FrameResourceContext};
-use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GraphicsPassContext {
@@ -117,9 +117,9 @@ pub(crate) struct RenderTargetBundle {
 }
 
 pub(crate) struct OffscreenRenderTargetPool {
-    entries: HashMap<u32, RenderTargetEntry>,
-    frame_bindings: HashMap<u32, u32>,
-    persistent_bindings: HashMap<u64, u32>,
+    entries: FxHashMap<u32, RenderTargetEntry>,
+    frame_bindings: FxHashMap<u32, u32>,
+    persistent_bindings: FxHashMap<u64, u32>,
     frame_epoch: u64,
     next_entry_id: u32,
 }
@@ -132,9 +132,9 @@ impl OffscreenRenderTargetPool {
 
     pub fn new() -> Self {
         Self {
-            entries: HashMap::new(),
-            frame_bindings: HashMap::new(),
-            persistent_bindings: HashMap::new(),
+            entries: FxHashMap::default(),
+            frame_bindings: FxHashMap::default(),
+            persistent_bindings: FxHashMap::default(),
             frame_epoch: 0,
             next_entry_id: 0,
         }

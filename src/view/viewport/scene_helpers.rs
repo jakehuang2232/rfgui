@@ -49,7 +49,7 @@ impl Viewport {
 
     pub(super) fn save_scroll_states(
         roots: &[Box<dyn crate::view::base_component::ElementTrait>],
-        map: &mut HashMap<u64, (f32, f32)>,
+        map: &mut FxHashMap<u64, (f32, f32)>,
     ) {
         for root in roots {
             let offset = root.get_scroll_offset();
@@ -64,7 +64,7 @@ impl Viewport {
 
     pub(super) fn restore_scroll_states(
         roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
-        map: &HashMap<u64, (f32, f32)>,
+        map: &FxHashMap<u64, (f32, f32)>,
     ) {
         for root in roots {
             if let Some(offset) = map.get(&root.id()) {
@@ -78,7 +78,7 @@ impl Viewport {
 
     pub(super) fn save_element_snapshots(
         roots: &[Box<dyn crate::view::base_component::ElementTrait>],
-        map: &mut HashMap<u64, Box<dyn Any>>,
+        map: &mut FxHashMap<u64, Box<dyn Any>>,
     ) {
         for root in roots {
             if let Some(snapshot) = root.snapshot_state() {
@@ -92,7 +92,7 @@ impl Viewport {
 
     pub(super) fn restore_element_snapshots(
         roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
-        map: &HashMap<u64, Box<dyn Any>>,
+        map: &FxHashMap<u64, Box<dyn Any>>,
     ) {
         for root in roots {
             if let Some(snapshot) = map.get(&root.id()) {
@@ -261,7 +261,7 @@ impl Viewport {
         roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
     ) {
         self.compositor.frame_box_models.clear();
-        let mut active_root_ids = HashSet::new();
+        let mut active_root_ids = FxHashSet::default();
         for root in roots.iter_mut() {
             let root_id = root.id();
             active_root_ids.insert(root_id);

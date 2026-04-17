@@ -1,3 +1,4 @@
+use rustc_hash::FxHashMap;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
@@ -13,7 +14,7 @@ use cosmic_text::{
     Align, Buffer, CacheKey, Color as CosmicColor, FontSystem, SwashCache, SwashContent, SwashImage,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{VecDeque};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -824,7 +825,6 @@ struct AtlasUpload {
     data: Vec<u8>,
 }
 
-
 enum TextAtlasCacheError {
     Full,
 }
@@ -1013,7 +1013,7 @@ struct PagedAtlas {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pages: Vec<PagedAtlasPage>,
-    glyphs: HashMap<CacheKey, GlyphLocation>,
+    glyphs: FxHashMap<CacheKey, GlyphLocation>,
     generation: u64,
     current_frame: u64,
 }
@@ -1056,7 +1056,7 @@ impl PagedAtlas {
             bind_group_layout,
             sampler,
             pages: Vec::new(),
-            glyphs: HashMap::new(),
+            glyphs: FxHashMap::default(),
             generation: 0,
             current_frame: 0,
         }
@@ -1079,7 +1079,9 @@ impl PagedAtlas {
     }
 
     fn reset(&mut self) {
-        self.pages.clear();
+        for page in self.pages.drain(..) {
+            page.texture.destroy();
+        }
         self.glyphs.clear();
         self.generation = self.generation.wrapping_add(1);
     }
@@ -1269,12 +1271,12 @@ struct TextResources {
     color_atlas: PagedAtlas,
     format: wgpu::TextureFormat,
     screen_bind_group_layout: wgpu::BindGroupLayout,
-    pipelines: HashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
-    layout_buffers: HashMap<u64, Arc<Buffer>>,
+    pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
+    layout_buffers: FxHashMap<u64, Arc<Buffer>>,
     layout_buffer_lru: VecDeque<u64>,
-    prepared_draws: HashMap<PreparedTextDrawKey, PreparedTextDrawSet>,
+    prepared_draws: FxHashMap<PreparedTextDrawKey, PreparedTextDrawSet>,
     prepared_draw_lru: VecDeque<PreparedTextDrawKey>,
-    globals_bind_groups: HashMap<u64, CachedGlobalsBindGroup>,
+    globals_bind_groups: FxHashMap<u64, CachedGlobalsBindGroup>,
     globals_bind_group_lru: VecDeque<u64>,
 }
 
@@ -1337,12 +1339,12 @@ impl TextResources {
             color_atlas,
             format,
             screen_bind_group_layout,
-            pipelines: HashMap::new(),
-            layout_buffers: HashMap::new(),
+            pipelines: FxHashMap::default(),
+            layout_buffers: FxHashMap::default(),
             layout_buffer_lru: VecDeque::new(),
-            prepared_draws: HashMap::new(),
+            prepared_draws: FxHashMap::default(),
             prepared_draw_lru: VecDeque::new(),
-            globals_bind_groups: HashMap::new(),
+            globals_bind_groups: FxHashMap::default(),
             globals_bind_group_lru: VecDeque::new(),
         }
     }

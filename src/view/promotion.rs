@@ -1,13 +1,13 @@
 #![allow(missing_docs)]
 
 //! Layer-promotion scoring and diagnostic data exposed by the viewport.
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::transition::{
     CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_OPACITY, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
     ChannelId, TrackKey, TrackTarget, TransitionPluginId,
 };
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PromotionNodeInfo {
@@ -93,7 +93,7 @@ pub struct PromotionDecision {
 #[derive(Clone, Debug, Default)]
 pub struct PromotionState {
     pub decisions: Vec<PromotionDecision>,
-    pub promoted_node_ids: HashSet<u64>,
+    pub promoted_node_ids: FxHashSet<u64>,
     pub total_estimated_memory_bytes: usize,
 }
 
@@ -129,7 +129,7 @@ pub(crate) struct PromotionCandidate {
     pub info: PromotionNodeInfo,
     pub has_active_animator: bool,
     pub has_composite_only_animator: bool,
-    pub active_channels: HashSet<ChannelId>,
+    pub active_channels: FxHashSet<ChannelId>,
 }
 
 pub(crate) fn evaluate_promotion(
@@ -233,7 +233,7 @@ fn estimate_surface_budget_bytes(
     ((viewport_area * 4.0) * config.max_surface_bytes_multiplier.max(1.0)) as usize
 }
 
-fn hard_reason(active_channels: &HashSet<ChannelId>) -> Option<PromotionHardReason> {
+fn hard_reason(active_channels: &FxHashSet<ChannelId>) -> Option<PromotionHardReason> {
     if active_channels.contains(&CHANNEL_STYLE_OPACITY) {
         return Some(PromotionHardReason::ActiveOpacityAnimation);
     }
@@ -392,9 +392,9 @@ fn estimate_memory_bytes(width: f32, height: f32) -> usize {
 }
 
 pub(crate) fn active_channels_by_node(
-    claims: &HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
-) -> HashMap<u64, HashSet<ChannelId>> {
-    let mut out = HashMap::<u64, HashSet<ChannelId>>::new();
+    claims: &FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+) -> FxHashMap<u64, FxHashSet<ChannelId>> {
+    let mut out = FxHashMap::<u64, FxHashSet<ChannelId>>::default();
     for key in claims.keys() {
         out.entry(key.target).or_default().insert(key.channel);
     }
@@ -427,7 +427,7 @@ mod tests {
             },
             has_active_animator: false,
             has_composite_only_animator: false,
-            active_channels: HashSet::new(),
+            active_channels: FxHashSet::default(),
         }
     }
 

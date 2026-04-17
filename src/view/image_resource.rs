@@ -1,5 +1,5 @@
+use rustc_hash::FxHashMap;
 use crate::view::ImageSource;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -57,9 +57,9 @@ struct ImageEntry {
     origin: ImageOrigin,
 }
 
-fn image_entries() -> &'static Mutex<HashMap<u64, ImageEntry>> {
-    static ENTRIES: OnceLock<Mutex<HashMap<u64, ImageEntry>>> = OnceLock::new();
-    ENTRIES.get_or_init(|| Mutex::new(HashMap::new()))
+fn image_entries() -> &'static Mutex<FxHashMap<u64, ImageEntry>> {
+    static ENTRIES: OnceLock<Mutex<FxHashMap<u64, ImageEntry>>> = OnceLock::new();
+    ENTRIES.get_or_init(|| Mutex::new(FxHashMap::default()))
 }
 
 fn next_generation() -> u64 {

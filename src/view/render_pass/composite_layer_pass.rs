@@ -1,3 +1,4 @@
+use rustc_hash::FxHashSet;
 use crate::view::frame_graph::ResourceCache;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
@@ -13,7 +14,6 @@ use crate::view::render_pass::render_target::{
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 const COMPOSITE_LAYER_RESOURCES: u64 = 201;
 
@@ -1030,7 +1030,7 @@ fn build_debug_overlay_geometry(
         return (out_vertices, out_indices);
     }
 
-    let mut edges: HashSet<(u32, u32)> = HashSet::new();
+    let mut edges: FxHashSet<(u32, u32)> = FxHashSet::default();
     for tri in indices.chunks_exact(3) {
         let a = tri[0];
         let b = tri[1];

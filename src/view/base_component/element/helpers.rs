@@ -251,8 +251,8 @@ pub(crate) fn trace_promoted_build(
 
 #[cfg(test)]
 thread_local! {
-    static TEST_PROMOTED_BUILD_COUNTS: RefCell<HashMap<(u64, String), usize>> =
-        RefCell::new(HashMap::new());
+    static TEST_PROMOTED_BUILD_COUNTS: RefCell<FxHashMap<(u64, String), usize>> =
+        RefCell::new(FxHashMap::default());
 }
 
 #[cfg(test)]

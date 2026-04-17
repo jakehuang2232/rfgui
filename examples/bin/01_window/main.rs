@@ -1,6 +1,10 @@
 extern crate rfgui;
 extern crate rfgui_components;
 
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static ALLOCATOR: rlsf::SmallGlobalTlsf = rlsf::SmallGlobalTlsf::new();
+
 mod components;
 mod scene;
 mod scene_windows;

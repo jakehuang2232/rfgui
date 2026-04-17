@@ -501,7 +501,7 @@ impl Element {
 
     pub(crate) fn reconcile_transition_runtime_state(
         &mut self,
-        active_channels: Option<&std::collections::HashSet<ChannelId>>,
+        active_channels: Option<&FxHashSet<ChannelId>>,
     ) -> bool {
         let has_channel = |channel| active_channels.is_some_and(|channels| channels.contains(&channel));
         let mut needs_layout = false;

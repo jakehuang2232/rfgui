@@ -194,14 +194,16 @@ impl Viewport {
                 usage,
                 mapped_at_creation: false,
             });
-            self.frame.frame_buffer_pool.insert(
+            if let Some(old) = self.frame.frame_buffer_pool.insert(
                 key,
                 FrameBufferEntry {
                     buffer: buffer.clone(),
                     size: desc.size.max(1),
                     usage: desc.usage,
                 },
-            );
+            ) {
+                old.buffer.destroy();
+            }
         }
         self.frame.frame_buffer_pool
             .get(&key)
@@ -318,20 +320,24 @@ impl Viewport {
             self.frame.draw_rect_uniform_pool.push(DrawRectUniformBufferEntry {
                 buffer,
                 size: required_size,
-                bind_groups: HashMap::new(),
+                bind_groups: FxHashMap::default(),
             });
         } else if self.frame.draw_rect_uniform_pool[target_index].size < required_size {
             // Buffer reallocated — invalidate all cached bind groups for this slot.
-            self.frame.draw_rect_uniform_pool[target_index] = DrawRectUniformBufferEntry {
-                buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("DrawRect Uniform Ring Buffer"),
+            let old = std::mem::replace(
+                &mut self.frame.draw_rect_uniform_pool[target_index],
+                DrawRectUniformBufferEntry {
+                    buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("DrawRect Uniform Ring Buffer"),
+                        size: required_size,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
                     size: required_size,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-                size: required_size,
-                bind_groups: HashMap::new(),
-            };
+                    bind_groups: FxHashMap::default(),
+                },
+            );
+            old.buffer.destroy();
         }
         let dynamic_offset = self.frame.draw_rect_uniform_offset;
         let buffer = self.frame.draw_rect_uniform_pool[target_index].buffer.clone();

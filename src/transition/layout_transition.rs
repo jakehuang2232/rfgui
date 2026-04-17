@@ -1,8 +1,7 @@
 #![allow(missing_docs)]
 
 //! Layout transition primitives for animating retained layout fields.
-
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     ChannelId, ClaimMode, RunResult, StartTrackError, TimeFunction, TrackKey, TrackTarget,
@@ -89,7 +88,7 @@ struct LayoutTrackState {
 #[derive(Debug)]
 pub struct LayoutTransitionPlugin {
     plugin_id: TransitionPluginId,
-    tracks: HashMap<TrackKey<TrackTarget>, LayoutTrackState>,
+    tracks: FxHashMap<TrackKey<TrackTarget>, LayoutTrackState>,
     frame_samples: Vec<LayoutSample>,
 }
 
@@ -109,7 +108,7 @@ impl LayoutTransitionPlugin {
     pub fn with_plugin_id(plugin_id: TransitionPluginId) -> Self {
         Self {
             plugin_id,
-            tracks: HashMap::new(),
+            tracks: FxHashMap::default(),
             frame_samples: Vec::new(),
         }
     }
@@ -258,18 +257,18 @@ impl Transition<TrackTarget> for LayoutTransitionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    
 
     struct TestHost {
-        registered_channels: HashSet<ChannelId>,
-        claims: HashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+        registered_channels: FxHashSet<ChannelId>,
+        claims: FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
     }
 
     impl TestHost {
         fn with_channels(channels: &[ChannelId]) -> Self {
             Self {
                 registered_channels: channels.iter().copied().collect(),
-                claims: HashMap::new(),
+                claims: FxHashMap::default(),
             }
         }
     }
