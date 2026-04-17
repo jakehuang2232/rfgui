@@ -13,7 +13,7 @@ use crate::view::text_layout::build_text_buffer;
 use cosmic_text::{
     Align, Buffer, CacheKey, Color as CosmicColor, FontSystem, SwashCache, SwashContent, SwashImage,
 };
-use std::cell::RefCell;
+use std::sync::{Mutex, OnceLock};
 use std::collections::{VecDeque};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -1843,9 +1843,9 @@ struct TextGlobalCache {
     resources: Option<TextResources>,
 }
 
-thread_local! {
-    static TEXT_GLOBAL_CACHE: RefCell<TextGlobalCache> =
-        const { RefCell::new(TextGlobalCache { resources: None }) };
+fn text_global_cache() -> &'static Mutex<TextGlobalCache> {
+    static CACHE: OnceLock<Mutex<TextGlobalCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(TextGlobalCache { resources: None }))
 }
 
 fn build_text_debug_overlay(
@@ -2045,34 +2045,30 @@ fn with_text_resources<R>(
     format: wgpu::TextureFormat,
     f: impl FnOnce(&mut TextResources) -> R,
 ) -> R {
-    TEXT_GLOBAL_CACHE.with(|cache| {
-        let mut guard = cache.borrow_mut();
-        let rebuild = guard
-            .resources
-            .as_ref()
-            .map(|r| r.format != format)
-            .unwrap_or(true);
+    let mut guard = text_global_cache().lock().unwrap();
+    let rebuild = guard
+        .resources
+        .as_ref()
+        .map(|r| r.format != format)
+        .unwrap_or(true);
 
-        if rebuild {
-            guard.resources = Some(TextResources::new(device, queue, format));
-        }
+    if rebuild {
+        guard.resources = Some(TextResources::new(device, queue, format));
+    }
 
-        let resources = guard.resources.as_mut().expect("text resources must exist");
-        f(resources)
-    })
+    let resources = guard.resources.as_mut().expect("text resources must exist");
+    f(resources)
 }
 
 fn with_text_resources_for_render(format: wgpu::TextureFormat, f: impl FnOnce(&mut TextResources)) {
-    TEXT_GLOBAL_CACHE.with(|cache| {
-        let mut guard = cache.borrow_mut();
-        let Some(resources) = guard.resources.as_mut() else {
-            return;
-        };
-        if resources.format != format {
-            return;
-        }
-        f(resources);
-    });
+    let mut guard = text_global_cache().lock().unwrap();
+    let Some(resources) = guard.resources.as_mut() else {
+        return;
+    };
+    if resources.format != format {
+        return;
+    }
+    f(resources);
 }
 
 fn text_depth_stencil_state() -> wgpu::DepthStencilState {
@@ -2215,18 +2211,14 @@ pub fn prewarm_text_pipeline(
 }
 
 pub fn clear_text_resources_cache() {
-    TEXT_GLOBAL_CACHE.with(|cache| {
-        cache.borrow_mut().resources = None;
-    });
+    text_global_cache().lock().unwrap().resources = None;
 }
 
 pub fn begin_text_resources_frame() {
-    TEXT_GLOBAL_CACHE.with(|cache| {
-        if let Some(resources) = cache.borrow_mut().resources.as_mut() {
-            resources.mask_atlas.begin_frame();
-            resources.color_atlas.begin_frame();
-        }
-    });
+    if let Some(resources) = text_global_cache().lock().unwrap().resources.as_mut() {
+        resources.mask_atlas.begin_frame();
+        resources.color_atlas.begin_frame();
+    }
 }
 
 #[cfg(test)]

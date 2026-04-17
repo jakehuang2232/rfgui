@@ -1,16 +1,17 @@
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
+    CacheStats, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext, ResourceCache, register_cache_stats,
 };
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
     render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::cell::RefCell;
 use std::num::NonZeroU64;
+use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -1355,47 +1356,20 @@ fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
     [nx * 2.0 - 1.0, 1.0 - ny * 2.0]
 }
 
-struct DrawRectResourcesCache<T> {
-    entries: FxHashMap<u64, T>,
-}
-
-impl<T> DrawRectResourcesCache<T> {
-    fn new() -> Self {
-        Self {
-            entries: FxHashMap::default(),
-        }
-    }
-
-    fn get_or_insert_with<F: FnOnce() -> T>(&mut self, key: u64, create: F) -> &mut T {
-        self.entries.entry(key).or_insert_with(create)
-    }
-
-    fn begin_frame(&mut self) {
-        let _ = &self.entries;
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-    }
-}
-
 fn with_draw_rect_resources_cache<R>(
-    f: impl FnOnce(&mut DrawRectResourcesCache<DrawRectResources>) -> R,
+    f: impl FnOnce(&mut ResourceCache<DrawRectResources>) -> R,
 ) -> R {
-    thread_local! {
-        static CACHE: RefCell<DrawRectResourcesCache<DrawRectResources>> =
-            RefCell::new(DrawRectResourcesCache::new());
-    }
-    CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        f(&mut cache)
-    })
+    static STATS: CacheStats = CacheStats::new("draw_rect_pipeline");
+    static CACHE: OnceLock<Mutex<ResourceCache<DrawRectResources>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| {
+        register_cache_stats(&STATS);
+        Mutex::new(ResourceCache::with_stats(&STATS))
+    });
+    f(&mut cache.lock().unwrap())
 }
 
 pub fn begin_draw_rect_resources_frame() {
-    with_draw_rect_resources_cache(|cache| {
-        cache.begin_frame();
-    });
+    with_draw_rect_resources_cache(|_cache| {});
 }
 
 pub fn clear_draw_rect_resources_cache() {

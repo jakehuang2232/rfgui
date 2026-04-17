@@ -2,7 +2,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::time::Instant;
 use std::collections::{VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use super::buffer_resource::{BufferDesc, BufferHandle};
 use super::builder::PassBuilderState;
@@ -4598,23 +4599,106 @@ pub enum FrameGraphError {
     NotCompiled,
 }
 
+/// Counters for a cache's lifetime. Incremented with `Relaxed` atomics so the
+/// overhead is ~2ns per access; kept in every build so stats work in release.
+pub struct CacheStats {
+    pub name: &'static str,
+    pub hits: AtomicU64,
+    pub misses: AtomicU64,
+    pub evictions: AtomicU64,
+}
+
+impl CacheStats {
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheStatSnapshot {
+    pub name: &'static str,
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+}
+
+impl CacheStatSnapshot {
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 { 0.0 } else { self.hits as f64 / total as f64 }
+    }
+}
+
+fn cache_stats_registry() -> &'static Mutex<Vec<&'static CacheStats>> {
+    static REGISTRY: OnceLock<Mutex<Vec<&'static CacheStats>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn register_cache_stats(stats: &'static CacheStats) {
+    cache_stats_registry().lock().unwrap().push(stats);
+}
+
+pub fn dump_cache_stats() -> Vec<CacheStatSnapshot> {
+    cache_stats_registry()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| CacheStatSnapshot {
+            name: s.name,
+            hits: s.hits.load(Ordering::Relaxed),
+            misses: s.misses.load(Ordering::Relaxed),
+            evictions: s.evictions.load(Ordering::Relaxed),
+        })
+        .collect()
+}
+
 pub struct ResourceCache<T> {
     store: FxHashMap<u64, T>,
+    stats: Option<&'static CacheStats>,
 }
 
 impl<T> ResourceCache<T> {
     pub fn new() -> Self {
         Self {
             store: FxHashMap::default(),
+            stats: None,
+        }
+    }
+
+    pub fn with_stats(stats: &'static CacheStats) -> Self {
+        Self {
+            store: FxHashMap::default(),
+            stats: Some(stats),
         }
     }
 
     pub fn clear(&mut self) {
+        if let Some(stats) = self.stats {
+            stats
+                .evictions
+                .fetch_add(self.store.len() as u64, Ordering::Relaxed);
+        }
         self.store.clear();
     }
 
     pub fn get_or_insert_with<F: FnOnce() -> T>(&mut self, key: u64, create: F) -> &mut T {
+        if let Some(stats) = self.stats {
+            if self.store.contains_key(&key) {
+                stats.hits.fetch_add(1, Ordering::Relaxed);
+            } else {
+                stats.misses.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         self.store.entry(key).or_insert_with(create)
+    }
+
+    pub fn len(&self) -> usize {
+        self.store.len()
     }
 }
 

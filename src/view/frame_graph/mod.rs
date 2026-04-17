@@ -15,6 +15,7 @@ pub use frame_graph::{
     AllocationId, AttachmentLoadOp, AttachmentTarget, CompileProfile, CompiledGraph,
     ComputeRecordContext, ExternalSinkKind, FrameGraph, FrameResourceContext,
     GraphicsColorAttachmentOps, GraphicsPassMergePolicy, GraphicsRecordContext, PrepareContext,
-    ResourceCache, ResourceLifetime, SampleCountPolicy, TransferRecordContext,
+    CacheStatSnapshot, CacheStats, ResourceCache, ResourceLifetime, SampleCountPolicy,
+    TransferRecordContext, dump_cache_stats, register_cache_stats,
 };
 pub use texture_resource::TextureDesc;

@@ -1,7 +1,7 @@
-use crate::view::frame_graph::ResourceCache;
+use crate::view::frame_graph::{CacheStats, ResourceCache, register_cache_stats};
 use crate::view::render_pass::GraphicsCtx;
 use crate::view::render_pass::render_target::{render_target_ref, render_target_sample_count};
-use std::cell::RefCell;
+use std::sync::{Mutex, OnceLock};
 
 const DEBUG_OVERLAY_RESOURCES: u64 = 402;
 
@@ -168,12 +168,11 @@ impl DebugOverlayResources {
 fn with_debug_overlay_resources_cache<R>(
     f: impl FnOnce(&mut ResourceCache<DebugOverlayResources>) -> R,
 ) -> R {
-    thread_local! {
-        static CACHE: RefCell<ResourceCache<DebugOverlayResources>> =
-            RefCell::new(ResourceCache::new());
-    }
-    CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        f(&mut cache)
-    })
+    static STATS: CacheStats = CacheStats::new("debug_overlay_pipeline");
+    static CACHE: OnceLock<Mutex<ResourceCache<DebugOverlayResources>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| {
+        register_cache_stats(&STATS);
+        Mutex::new(ResourceCache::with_stats(&STATS))
+    });
+    f(&mut cache.lock().unwrap())
 }

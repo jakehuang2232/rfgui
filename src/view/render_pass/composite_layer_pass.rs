@@ -1,5 +1,5 @@
 use rustc_hash::FxHashSet;
-use crate::view::frame_graph::ResourceCache;
+use crate::view::frame_graph::{CacheStats, ResourceCache, register_cache_stats};
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
@@ -13,7 +13,7 @@ use crate::view::render_pass::render_target::{
     render_target_origin, render_target_sample_count, render_target_view, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::cell::RefCell;
+use std::sync::{Mutex, OnceLock};
 
 const COMPOSITE_LAYER_RESOURCES: u64 = 201;
 
@@ -632,14 +632,13 @@ fn composite_layer_depth_stencil_state(mode: CompositeLayerStencilMode) -> wgpu:
 fn with_composite_layer_resources_cache<R>(
     f: impl FnOnce(&mut ResourceCache<CompositeLayerResources>) -> R,
 ) -> R {
-    thread_local! {
-        static CACHE: RefCell<ResourceCache<CompositeLayerResources>> =
-            RefCell::new(ResourceCache::new());
-    }
-    CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        f(&mut cache)
-    })
+    static STATS: CacheStats = CacheStats::new("composite_layer_pipeline");
+    static CACHE: OnceLock<Mutex<ResourceCache<CompositeLayerResources>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| {
+        register_cache_stats(&STATS);
+        Mutex::new(ResourceCache::with_stats(&STATS))
+    });
+    f(&mut cache.lock().unwrap())
 }
 
 pub fn clear_composite_layer_resources_cache() {
