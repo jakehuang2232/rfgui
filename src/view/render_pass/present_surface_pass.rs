@@ -3,7 +3,7 @@ use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
     BufferDesc, BufferReadUsage, BufferResource, FrameResourceContext, GraphicsColorAttachmentOps,
-    GraphicsPassBuilder, GraphicsPassMergePolicy, SampleCountPolicy,
+    GraphicsPassBuilder, GraphicsPassMergePolicy,
 };
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::{render_target_ref, render_target_view};
@@ -58,7 +58,6 @@ impl PresentSurfacePass {
 impl GraphicsPass for PresentSurfacePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
-        builder.set_sample_count(SampleCountPolicy::Fixed(1));
         self.uniform_buffer = builder.create_buffer(BufferDesc {
             size: std::mem::size_of::<PresentSurfaceUniform>() as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,

@@ -2664,7 +2664,7 @@ impl FrameGraph {
             owned_color_views.push((view, resolve_target));
         }
         let expected_sample_count =
-            resolve_pass_sample_count(compatibility.sample_count, ctx.viewport.msaa_sample_count());
+            resolve_pass_sample_count(compatibility.sample_count);
         for attachment in &compatibility.color_attachments {
             let actual_sample_count =
                 color_attachment_sample_count(ctx, attachment.target, attachment.resolve_target);
@@ -2817,10 +2817,10 @@ fn resolve_color_attachment_views(
     }
 }
 
-fn resolve_pass_sample_count(policy: SampleCountPolicy, surface_sample_count: u32) -> u32 {
+fn resolve_pass_sample_count(policy: SampleCountPolicy) -> u32 {
     match policy {
         SampleCountPolicy::Fixed(count) => count.max(1),
-        SampleCountPolicy::SurfaceDefault => surface_sample_count.max(1),
+        SampleCountPolicy::SurfaceDefault => 1,
     }
 }
 
@@ -2830,13 +2830,7 @@ fn color_attachment_sample_count(
     resolve_target: Option<AttachmentTarget>,
 ) -> u32 {
     match target {
-        AttachmentTarget::Surface => {
-            if resolve_target.is_some() {
-                ctx.viewport.msaa_sample_count()
-            } else {
-                1
-            }
-        }
+        AttachmentTarget::Surface => 1,
         AttachmentTarget::Texture(handle) => {
             if resolve_target.is_some() && render_target_msaa_view(ctx, handle).is_some() {
                 ctx.viewport.msaa_sample_count()
@@ -2849,19 +2843,7 @@ fn color_attachment_sample_count(
 
 fn depth_attachment_sample_count(ctx: &mut RecordContext<'_, '_>, target: AttachmentTarget) -> u32 {
     match target {
-        AttachmentTarget::Surface => {
-            if ctx
-                .viewport
-                .frame_parts()
-                .and_then(|parts| parts.depth_view)
-                .is_some()
-                && ctx.viewport.msaa_sample_count() > 1
-            {
-                ctx.viewport.msaa_sample_count()
-            } else {
-                1
-            }
-        }
+        AttachmentTarget::Surface => 1,
         AttachmentTarget::Texture(handle) => {
             let Some(desc) = ctx.textures().get(handle.0 as usize) else {
                 return 1;
@@ -3813,6 +3795,9 @@ fn resolve_target_for_attachment(
     target: AttachmentTarget,
     sample_count: SampleCountPolicy,
 ) -> Option<AttachmentTarget> {
+    if matches!(target, AttachmentTarget::Surface) {
+        return None;
+    }
     match sample_count {
         SampleCountPolicy::Fixed(count) if count <= 1 => None,
         _ => Some(target),

@@ -935,14 +935,7 @@ impl Viewport {
         let surface_view = render_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let (view, resolve_view) = if self.gpu.msaa_sample_count > 1 {
-            let Some(msaa_view) = self.gpu.surface_msaa_view.as_ref() else {
-                return None;
-            };
-            (msaa_view.clone(), Some(surface_view))
-        } else {
-            (surface_view, None)
-        };
+        let (view, resolve_view) = (surface_view, None);
         let create_view_ms = create_view_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let create_encoder_started_at = Instant::now();

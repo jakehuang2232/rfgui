@@ -490,10 +490,6 @@ impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
         Self { state }
     }
 
-    pub fn set_sample_count(&mut self, sample_count: SampleCountPolicy) {
-        self.state.descriptor.graphics_mut().sample_count = sample_count;
-    }
-
     pub fn set_viewport_policy(&mut self, policy: ViewportPolicy) {
         self.state.descriptor.graphics_mut().viewport_policy = policy;
     }
