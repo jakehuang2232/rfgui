@@ -10,6 +10,7 @@ pub mod clear_pass;
 pub mod composite_layer_pass;
 pub mod debug_overlay_pass;
 pub mod draw_rect_pass;
+mod rect_shader;
 pub mod present_surface_pass;
 pub mod render_target;
 pub mod shadow_module;

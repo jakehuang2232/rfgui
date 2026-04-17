@@ -380,11 +380,21 @@ impl DrawRectPass {
             .and_then(|handle| render_target_sample_count(ctx, handle))
             .unwrap_or_else(|| ctx.viewport.msaa_sample_count());
         let (stencil_class, _) = stencil_class_and_reference(self.stencil_mode);
+        let shape = RectShaderShape::detect(
+            self.render_mode,
+            self.params.fill_color,
+            self.params.border_widths,
+            self.params.border_color,
+            self.params.border_side_colors,
+            self.params.use_border_side_colors,
+            self.params.border_radii,
+        );
         let cache_key = rect_resource_cache_key(
             variant,
             stencil_class,
             self.color_write_enabled,
             self.render_mode,
+            shape,
         );
 
         // Get or create the pipeline resources, then extract the bind group layout.
@@ -399,6 +409,7 @@ impl DrawRectPass {
                     stencil_class,
                     self.color_write_enabled,
                     self.render_mode,
+                    shape,
                 )
             });
             if resources.pipeline_format != format
@@ -407,6 +418,7 @@ impl DrawRectPass {
                 || resources.stencil_class != stencil_class
                 || resources.color_write_enabled != self.color_write_enabled
                 || resources.render_mode != self.render_mode
+                || resources.shape != shape
             {
                 *resources = create_draw_rect_resources(
                     &device,
@@ -416,6 +428,7 @@ impl DrawRectPass {
                     stencil_class,
                     self.color_write_enabled,
                     self.render_mode,
+                    shape,
                 );
             }
             resources.bind_group_layout.clone()
@@ -654,6 +667,7 @@ fn rect_resource_cache_key(
     stencil_class: RectStencilClass,
     color_write_enabled: bool,
     render_mode: RectRenderMode,
+    shape: RectShaderShape,
 ) -> u64 {
     let variant_id = match variant {
         RectShaderVariant::Alpha => 0_u64,
@@ -671,7 +685,91 @@ fn rect_resource_cache_key(
         RectRenderMode::FillOnly => 1_u64,
         RectRenderMode::BorderOnly => 2_u64,
     };
-    RECT_RESOURCES_BASE + variant_id * 1000 + stencil_id * 100 + color_id * 10 + mode_id
+    let border_id = match shape.border {
+        super::rect_shader::RectBorderKind::None => 0_u64,
+        super::rect_shader::RectBorderKind::Uniform => 1_u64,
+        super::rect_shader::RectBorderKind::PerSide => 2_u64,
+    };
+    let fill_id = if shape.has_fill { 1_u64 } else { 0_u64 };
+    let round_id = if shape.rounded { 1_u64 } else { 0_u64 };
+    RECT_RESOURCES_BASE
+        + variant_id * 100_000
+        + stencil_id * 10_000
+        + color_id * 1_000
+        + mode_id * 100
+        + border_id * 16
+        + fill_id * 4
+        + round_id
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct RectShaderShape {
+    pub has_fill: bool,
+    pub border: super::rect_shader::RectBorderKind,
+    pub rounded: bool,
+}
+
+impl RectShaderShape {
+    pub(crate) fn detect(
+        render_mode: RectRenderMode,
+        fill_color: [f32; 4],
+        border_widths: [f32; 4],
+        border_color: [f32; 4],
+        border_side_colors: [[f32; 4]; 4],
+        use_border_side_colors: bool,
+        border_radii: [[f32; 2]; 4],
+    ) -> Self {
+        use super::rect_shader::RectBorderKind;
+        let has_any_border_width = border_widths.iter().any(|&w| w > 0.0);
+        let effective_sides = if use_border_side_colors {
+            border_side_colors
+        } else {
+            [border_color; 4]
+        };
+        let border_alpha_zero = effective_sides.iter().all(|c| c[3] <= 0.0);
+        let border = if !has_any_border_width || border_alpha_zero {
+            RectBorderKind::None
+        } else {
+            let c0 = effective_sides[0];
+            let uniform = effective_sides
+                .iter()
+                .all(|c| (c[0] - c0[0]).abs() < 1e-6
+                    && (c[1] - c0[1]).abs() < 1e-6
+                    && (c[2] - c0[2]).abs() < 1e-6
+                    && (c[3] - c0[3]).abs() < 1e-6);
+            if uniform {
+                RectBorderKind::Uniform
+            } else {
+                RectBorderKind::PerSide
+            }
+        };
+        let rounded = border_radii
+            .iter()
+            .any(|r| r[0] > 0.0 || r[1] > 0.0);
+        let has_fill = fill_color[3] > 0.0;
+        // Narrow per render_mode so unused axes don't bloat pipeline cache.
+        match render_mode {
+            RectRenderMode::FillOnly => Self {
+                has_fill: true,
+                border: RectBorderKind::None,
+                rounded,
+            },
+            RectRenderMode::BorderOnly => Self {
+                has_fill: false,
+                border: if matches!(border, RectBorderKind::None) {
+                    RectBorderKind::Uniform
+                } else {
+                    border
+                },
+                rounded,
+            },
+            RectRenderMode::Combined => Self {
+                has_fill,
+                border,
+                rounded,
+            },
+        }
+    }
 }
 
 fn stencil_class_and_reference(stencil_mode: RectStencilMode) -> (RectStencilClass, Option<u8>) {
@@ -738,11 +836,21 @@ fn encode_draw_rect_into_existing_pass(
         return;
     }
     let (stencil_class, stencil_reference) = stencil_class_and_reference(draw.stencil_mode);
+    let shape = RectShaderShape::detect(
+        draw.render_mode,
+        draw.fill_color,
+        draw.border_widths,
+        draw.border_color,
+        draw.border_side_colors,
+        draw.use_border_side_colors,
+        draw.border_radii,
+    );
     let cache_key = rect_resource_cache_key(
         variant,
         stencil_class,
         draw.color_write_enabled,
         draw.render_mode,
+        shape,
     );
     let (pipeline, bind_group_layout, vertex_buffer, index_buffer, index_count) = {
         with_draw_rect_resources_cache(|cache| {
@@ -755,6 +863,7 @@ fn encode_draw_rect_into_existing_pass(
                     stencil_class,
                     draw.color_write_enabled,
                     draw.render_mode,
+                    shape,
                 )
             });
             if resources.pipeline_format != format
@@ -763,6 +872,7 @@ fn encode_draw_rect_into_existing_pass(
                 || resources.stencil_class != stencil_class
                 || resources.color_write_enabled != draw.color_write_enabled
                 || resources.render_mode != draw.render_mode
+                || resources.shape != shape
             {
                 *resources = create_draw_rect_resources(
                     &device,
@@ -772,6 +882,7 @@ fn encode_draw_rect_into_existing_pass(
                     stencil_class,
                     draw.color_write_enabled,
                     draw.render_mode,
+                    shape,
                 );
             }
             (
@@ -884,6 +995,7 @@ pub(crate) struct DrawRectResources {
     stencil_class: RectStencilClass,
     color_write_enabled: bool,
     render_mode: RectRenderMode,
+    shape: RectShaderShape,
 }
 
 fn create_draw_rect_resources(
@@ -894,26 +1006,19 @@ fn create_draw_rect_resources(
     stencil_class: RectStencilClass,
     color_write_enabled: bool,
     render_mode: RectRenderMode,
+    shape: RectShaderShape,
 ) -> DrawRectResources {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(match variant {
-            RectShaderVariant::Alpha => "DrawRect Alpha Shader",
-            RectShaderVariant::Opaque => "DrawRect Opaque Shader",
-        }),
-        source: wgpu::ShaderSource::Wgsl(
-            match (variant, render_mode) {
-                (RectShaderVariant::Alpha, RectRenderMode::Combined) => {
-                    include_str!("../../shader/rect_alpha.wgsl")
-                }
-                (RectShaderVariant::Opaque, RectRenderMode::Combined) => {
-                    include_str!("../../shader/rect_opaque.wgsl")
-                }
-                (_, RectRenderMode::FillOnly) => include_str!("../../shader/rect_fill.wgsl"),
-                (_, RectRenderMode::BorderOnly) => include_str!("../../shader/rect_border.wgsl"),
-            }
-            .into(),
-        ),
-    });
+    use super::rect_shader::{RectShaderKey, build_rect_shader};
+    let shader = build_rect_shader(
+        device,
+        RectShaderKey {
+            has_fill: shape.has_fill,
+            border: shape.border,
+            rounded: shape.rounded,
+            opaque: matches!(variant, RectShaderVariant::Opaque),
+            pass: render_mode,
+        },
+    );
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("DrawRect Bind Group Layout"),
@@ -1121,6 +1226,7 @@ fn create_draw_rect_resources(
         stencil_class,
         color_write_enabled,
         render_mode,
+        shape,
     }
 }
 

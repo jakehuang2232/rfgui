@@ -1,28 +1,3 @@
-struct RectParams {
-    outer_rect: vec4<f32>,    // min_x, min_y, max_x, max_y (pixel space)
-    inner_rect: vec4<f32>,    // min_x, min_y, max_x, max_y (pixel space)
-    outer_rx: vec4<f32>,      // TL, TR, BR, BL
-    outer_ry: vec4<f32>,
-    inner_rx: vec4<f32>,
-    inner_ry: vec4<f32>,
-    border_widths: vec4<f32>, // left, top, right, bottom
-    flags: vec4<f32>,         // x: has_inner
-    fill_color: vec4<f32>,
-    border_left: vec4<f32>,
-    border_top: vec4<f32>,
-    border_right: vec4<f32>,
-    border_bottom: vec4<f32>,
-    screen_size: vec4<f32>,
-}
-
-@group(0) @binding(0)
-var<uniform> u: RectParams;
-
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) pixel_pos: vec2<f32>,
-}
-
 struct Radii4 {
     rx: vec4<f32>,
     ry: vec4<f32>,
@@ -103,18 +78,31 @@ fn sd_rrect(p: vec2<f32>, rect: vec4<f32>, radii: Radii4) -> f32 {
     return d;
 }
 
-fn coverageRRect(p: vec2<f32>, rect: vec4<f32>, radii: Radii4) -> f32 {
+fn coverage_rrect(p: vec2<f32>, rect: vec4<f32>, radii: Radii4) -> f32 {
     let d = sd_rrect(p, rect, radii);
     let aa = aa_width_px(p);
     return smoothstep(aa, -aa, d);
 }
 
-fn pickBorderColor(p: vec2<f32>) -> vec4<f32> {
-    // Border side selection with narrow AA only at side junctions.
-    // score = distance_to_edge / border_width_of_edge.
-    let minp = u.outer_rect.xy;
-    let maxp = u.outer_rect.zw;
-    let b = u.border_widths; // left, top, right, bottom
+fn coverage_rect(p: vec2<f32>, rect: vec4<f32>) -> f32 {
+    let d = sd_axis_aligned_rect(p, rect);
+    let aa = aa_width_px(p);
+    return smoothstep(aa, -aa, d);
+}
+
+// Per-side border color pick. Branchless min/second-min over 4 edges.
+fn pick_border_side(
+    p: vec2<f32>,
+    outer_rect: vec4<f32>,
+    border_widths: vec4<f32>,
+    c_l: vec4<f32>,
+    c_t: vec4<f32>,
+    c_r: vec4<f32>,
+    c_b: vec4<f32>,
+) -> vec4<f32> {
+    let minp = outer_rect.xy;
+    let maxp = outer_rect.zw;
+    let b = border_widths;
 
     let dL = max(p.x - minp.x, 0.0);
     let dT = max(p.y - minp.y, 0.0);
@@ -127,9 +115,8 @@ fn pickBorderColor(p: vec2<f32>) -> vec4<f32> {
     let sR = select(inf, safe_div(dR, b.z, inf), b.z > 1e-6);
     let sB = select(inf, safe_div(dB, b.w, inf), b.w > 1e-6);
 
-    // Branchless min/second-min over four scores.
     let s = vec4<f32>(sL, sT, sR, sB);
-    let c = array<vec4<f32>, 4>(u.border_left, u.border_top, u.border_right, u.border_bottom);
+    let c = array<vec4<f32>, 4>(c_l, c_t, c_r, c_b);
 
     let min_score = min(min(s.x, s.y), min(s.z, s.w));
     let is_min = vec4<f32>(
@@ -157,10 +144,37 @@ fn pickBorderColor(p: vec2<f32>) -> vec4<f32> {
     let second_mask = is_second / max(dot(is_second, vec4<f32>(1.0)), 1.0);
     let c1 = c[0] * second_mask.x + c[1] * second_mask.y + c[2] * second_mask.z + c[3] * second_mask.w;
 
-    // Very narrow blend only when the two best scores are almost equal.
     let aa = max(max(fwidth(min_score), fwidth(second_score)) * 0.75, 1e-4);
     let t = smoothstep(-aa, aa, second_score - min_score);
     return mix(c1, c0, t);
+}
+
+
+struct RectParams {
+    outer_rect: vec4<f32>,    // min_x, min_y, max_x, max_y (pixel space)
+    inner_rect: vec4<f32>,
+    outer_rx: vec4<f32>,      // TL, TR, BR, BL
+    outer_ry: vec4<f32>,
+    inner_rx: vec4<f32>,
+    inner_ry: vec4<f32>,
+    border_widths: vec4<f32>, // left, top, right, bottom
+    flags: vec4<f32>,         // x: has_inner
+    fill_color: vec4<f32>,
+    border_left: vec4<f32>,
+    border_top: vec4<f32>,
+    border_right: vec4<f32>,
+    border_bottom: vec4<f32>,
+    screen_size: vec4<f32>,
+    depth: f32,
+    _pad2: vec3<f32>,
+}
+
+@group(0) @binding(0)
+var<uniform> u: RectParams;
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) pixel_pos: vec2<f32>,
 }
 
 @vertex
@@ -171,31 +185,110 @@ fn vs_main(@location(0) uv: vec2<f32>) -> VertexOut {
         (p.x / u.screen_size.x) * 2.0 - 1.0,
         1.0 - (p.y / u.screen_size.y) * 2.0,
     );
+#ifdef OPAQUE
+    out.position = vec4<f32>(ndc, u.depth, 1.0);
+#else
     out.position = vec4<f32>(ndc, 0.0, 1.0);
+#endif
     out.pixel_pos = p;
     return out;
 }
+
+fn cov_outer_of(p: vec2<f32>) -> f32 {
+#ifdef ROUNDED
+    return coverage_rrect(p, u.outer_rect, Radii4(u.outer_rx, u.outer_ry));
+#else
+    return coverage_rect(p, u.outer_rect);
+#endif
+}
+
+fn cov_inner_of(p: vec2<f32>) -> f32 {
+#ifdef ROUNDED
+    return coverage_rrect(p, u.inner_rect, Radii4(u.inner_rx, u.inner_ry));
+#else
+    return coverage_rect(p, u.inner_rect);
+#endif
+}
+
+#ifndef BORDER_NONE
+fn border_color_of(p: vec2<f32>) -> vec4<f32> {
+#ifdef BORDER_UNIFORM
+    return u.border_left;
+#else
+    return pick_border_side(
+        p,
+        u.outer_rect,
+        u.border_widths,
+        u.border_left,
+        u.border_top,
+        u.border_right,
+        u.border_bottom,
+    );
+#endif
+}
+#endif
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let p = in.pixel_pos;
 
-    let outer_r = Radii4(u.outer_rx, u.outer_ry);
-    let inner_r = Radii4(u.inner_rx, u.inner_ry);
+#ifdef PASS_FILL_ONLY
+    // Fill only: cov_inner area with fill_color.
+    let cov = cov_inner_of(p);
+#ifdef OPAQUE
+    if cov <= 1e-5 {
+        discard;
+    }
+#endif
+    return premul(u.fill_color) * cov;
 
-    let cov_outer = coverageRRect(p, u.outer_rect, outer_r);
+#else
+#ifdef PASS_BORDER_ONLY
+    // Border only: annulus = cov_outer - cov_inner.
+    let cov_outer = cov_outer_of(p);
+    let cov_inner = cov_inner_of(p);
+    let border_mask = clamp(cov_outer - cov_inner, 0.0, 1.0);
+#ifdef OPAQUE
+    if border_mask <= 1e-5 {
+        discard;
+    }
+#endif
+#ifdef BORDER_NONE
+    return vec4<f32>(0.0);
+#else
+    return premul(border_color_of(p)) * border_mask;
+#endif
 
+#else
+    // Combined.
+    let cov_outer = cov_outer_of(p);
+#ifdef BORDER_NONE
+    let cov_inner = cov_outer;
+#else
     let has_inner = u.flags.x > 0.5;
     var cov_inner = 0.0;
     if has_inner {
-        cov_inner = coverageRRect(p, u.inner_rect, inner_r);
+        cov_inner = cov_inner_of(p);
     }
+#endif
 
     let border_mask = clamp(cov_outer - cov_inner, 0.0, 1.0);
     let fill_mask = cov_inner;
-    let border_pm = premul(pickBorderColor(p)) * border_mask;
+    let shape_mask = max(border_mask, fill_mask);
+#ifdef OPAQUE
+    if shape_mask <= 1e-5 {
+        discard;
+    }
+#endif
 
-    let fill_pm = premul(u.fill_color) * fill_mask;
-
-    return border_pm + fill_pm;
+    var out = vec4<f32>(0.0);
+#ifndef BORDER_NONE
+    out = out + premul(border_color_of(p)) * border_mask;
+#endif
+#ifdef HAS_FILL
+    out = out + premul(u.fill_color) * fill_mask;
+#endif
+    return out;
+#endif
+#endif
 }

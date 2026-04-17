@@ -14,7 +14,7 @@ members = [
 ]
 
 [dependencies]
-wgpu = "29.0.1"
+wgpu = { version = "29.0.1", features = ["naga-ir"] }
 bytemuck = { version = "1.14", features = ["derive"] }
 once_cell = "1.21.3"
 cosmic-text = "0.18.2"
@@ -23,6 +23,8 @@ resvg = "0.45.1"
 rfgui-rsx = { version = "0.1.0-alpha.2", path = "rsx-macro" }
 glam = "0.30.5"
 rustc-hash = "2"
+naga_oil = { version = "0.22", default-features = false }
+naga = "29.0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.6.1"
