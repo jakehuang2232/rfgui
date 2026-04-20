@@ -68,6 +68,22 @@ impl_event_into_optional_prop!(crate::ui::PointerMoveHandlerProp, crate::ui::Poi
 impl_event_into_optional_prop!(crate::ui::PointerEnterHandlerProp, crate::ui::PointerEnterEvent);
 impl_event_into_optional_prop!(crate::ui::PointerLeaveHandlerProp, crate::ui::PointerLeaveEvent);
 impl_event_into_optional_prop!(crate::ui::ClickHandlerProp, crate::ui::ClickEvent);
+impl_event_into_optional_prop!(
+    crate::ui::ContextMenuHandlerProp,
+    crate::ui::ContextMenuEvent
+);
+impl_event_into_optional_prop!(crate::ui::WheelHandlerProp, crate::ui::WheelEvent);
+impl_event_into_optional_prop!(crate::ui::ImeCommitHandlerProp, crate::ui::ImeCommitEvent);
+impl_event_into_optional_prop!(crate::ui::ImeEnabledHandlerProp, crate::ui::ImeEnabledEvent);
+impl_event_into_optional_prop!(crate::ui::ImeDisabledHandlerProp, crate::ui::ImeDisabledEvent);
+impl_event_into_optional_prop!(crate::ui::DragStartHandlerProp, crate::ui::DragStartEvent);
+impl_event_into_optional_prop!(crate::ui::DragOverHandlerProp, crate::ui::DragOverEvent);
+impl_event_into_optional_prop!(crate::ui::DragLeaveHandlerProp, crate::ui::DragLeaveEvent);
+impl_event_into_optional_prop!(crate::ui::DropHandlerProp, crate::ui::DropEvent);
+impl_event_into_optional_prop!(crate::ui::DragEndHandlerProp, crate::ui::DragEndEvent);
+impl_event_into_optional_prop!(crate::ui::CopyHandlerProp, crate::ui::CopyEvent);
+impl_event_into_optional_prop!(crate::ui::CutHandlerProp, crate::ui::CutEvent);
+impl_event_into_optional_prop!(crate::ui::PasteHandlerProp, crate::ui::PasteEvent);
 impl_event_into_optional_prop!(crate::ui::KeyDownHandlerProp, crate::ui::KeyDownEvent);
 impl_event_into_optional_prop!(crate::ui::KeyUpHandlerProp, crate::ui::KeyUpEvent);
 impl_event_into_optional_prop!(crate::ui::FocusHandlerProp, crate::ui::FocusEvent);
@@ -528,6 +544,12 @@ pub fn create_element<T: RsxTag>(
             node
         })
     })
+}
+
+#[doc(hidden)]
+#[inline(always)]
+pub fn __rsx_default_inner_option<T: Default>(_: &Option<T>) -> T {
+    T::default()
 }
 
 #[doc(hidden)]

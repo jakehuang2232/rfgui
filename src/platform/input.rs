@@ -49,10 +49,51 @@ pub struct PlatformPointerEvent {
     pub pressure: f32,
 }
 
+/// Unit interpretation of [`PlatformWheelEvent::delta_x`] / `delta_y`.
+/// Mirrors the W3C `WheelEvent.deltaMode` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WheelDeltaMode {
+    /// Deltas are logical pixels. Typical for trackpads, high-resolution
+    /// mice, and web browsers after normalization.
+    #[default]
+    Pixel,
+    /// Deltas count lines of text (classic mouse wheels). The engine
+    /// multiplies by `WheelConfig::mouse_line_step` downstream.
+    Line,
+    /// Deltas count viewport pages (Page Up / Page Down style scrolling).
+    Page,
+}
+
+/// Lifecycle phase of a wheel / trackpad gesture. Lets handlers react to
+/// gesture boundaries (start a scroll animation on `Began`, resume on
+/// `Momentum`, snap on `Ended`). Most platforms only emit `Changed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WheelPhase {
+    /// Gesture just started (first event after fingers touch).
+    Began,
+    /// Continuous delta while the gesture is active. Default for single
+    /// mouse-wheel ticks that have no explicit phase.
+    #[default]
+    Changed,
+    /// Fingers lifted; momentum (if any) begins separately.
+    Ended,
+    /// Inertial / kinetic scrolling after the fingers lifted. Comes from
+    /// the OS, not user motion.
+    Momentum,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlatformWheelEvent {
     pub delta_x: f32,
     pub delta_y: f32,
+    /// Pointer position (viewport-space logical pixels) at the time of the
+    /// event. Lets hit-testing target the node under the pointer when
+    /// routing to user `on_wheel` handlers.
+    pub position: (f32, f32),
+    pub modifiers: Modifiers,
+    pub delta_mode: WheelDeltaMode,
+    pub phase: WheelPhase,
+    pub timestamp: Instant,
 }
 
 bitflags! {
@@ -241,9 +282,45 @@ pub struct PlatformKeyEvent {
     pub timestamp: Instant,
 }
 
+/// Origin classification for a [`PlatformTextInput`]. Mirrors the
+/// subset of `InputEvent.inputType` values rfgui keeps at the platform
+/// layer so backends can distinguish paste / drop / IME commit from
+/// plain typing. The ui layer re-exports this as [`crate::ui::InputType`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlatformInputType {
+    #[default]
+    Typing,
+    Paste,
+    Drop,
+    ImeCommit,
+    Programmatic,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformTextInput {
     pub text: String,
+    pub input_type: PlatformInputType,
+    /// True if the platform reports this text as arriving while an IME
+    /// composition is still open (rare; the commit path usually closes
+    /// the composition first and flips this back to false).
+    pub is_composing: bool,
+}
+
+/// Style hint for a preedit span (see [`PlatformPreeditAttribute`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformPreeditStyle {
+    Underline,
+    DottedUnderline,
+    Highlight,
+}
+
+/// Styled span inside a preedit string. Byte offsets index into
+/// [`PlatformImePreedit::text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformPreeditAttribute {
+    pub start: usize,
+    pub end: usize,
+    pub style: PlatformPreeditStyle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,4 +328,11 @@ pub struct PlatformImePreedit {
     pub text: String,
     pub cursor_start: Option<usize>,
     pub cursor_end: Option<usize>,
+    /// Selection range inside `text` (byte offsets), independent of the
+    /// caret. Most backends only report caret, leaving this `None`.
+    pub selection_start: Option<usize>,
+    pub selection_end: Option<usize>,
+    /// Styled sub-runs for underline / highlight. Empty when the
+    /// backend only delivers plain preedit text.
+    pub attributes: Vec<PlatformPreeditAttribute>,
 }

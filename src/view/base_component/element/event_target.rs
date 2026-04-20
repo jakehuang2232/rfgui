@@ -7,13 +7,14 @@ impl EventTarget for Element {
         self_key: crate::view::node_arena::NodeKey,
     ) {
         if self.handle_scrollbar_pointer_down(event, control, self_key) {
-            event.meta.keep_focus();
+            event.meta.suppress_focus_change();
             event.meta.stop_propagation();
             return;
         }
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_down {
                 handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -32,6 +33,7 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_up {
                 handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -50,6 +52,7 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_move {
                 handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -68,6 +71,41 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.click {
                 handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_wheel(
+        &mut self,
+        event: &mut crate::ui::WheelEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.wheel {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_context_menu(
+        &mut self,
+        event: &mut crate::ui::ContextMenuEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if self.is_scrollbar_hit(event.pointer.local_x, event.pointer.local_y) {
+            event.meta.stop_propagation();
+            return;
+        }
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.context_menu {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -82,6 +120,7 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.key_down {
                 handler(event, _control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -96,6 +135,7 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.key_up {
                 handler(event, _control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -110,6 +150,7 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.focus {
                 handler(event, _control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -124,6 +165,172 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.blur {
                 handler(event, _control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_ime_commit(
+        &mut self,
+        event: &mut crate::ui::ImeCommitEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.ime_commit {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_ime_enabled(
+        &mut self,
+        event: &mut crate::ui::ImeEnabledEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.ime_enabled {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_ime_disabled(
+        &mut self,
+        event: &mut crate::ui::ImeDisabledEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.ime_disabled {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_drag_start(
+        &mut self,
+        event: &mut crate::ui::DragStartEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.drag_start {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_drag_over(
+        &mut self,
+        event: &mut crate::ui::DragOverEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.drag_over {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_drag_leave(
+        &mut self,
+        event: &mut crate::ui::DragLeaveEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.drag_leave {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_drop(
+        &mut self,
+        event: &mut crate::ui::DropEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.drop {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_drag_end(
+        &mut self,
+        event: &mut crate::ui::DragEndEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.drag_end {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_copy(
+        &mut self,
+        event: &mut crate::ui::CopyEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.copy {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_cut(
+        &mut self,
+        event: &mut crate::ui::CutEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.cut {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
+            }
+        }
+    }
+
+    fn dispatch_paste(
+        &mut self,
+        event: &mut crate::ui::PasteEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if let Some(h) = &mut self.event_handlers {
+            for handler in &mut h.paste {
+                handler(event, control);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -153,6 +360,7 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_enter {
                 handler(event);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }
@@ -166,6 +374,7 @@ impl EventTarget for Element {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_leave {
                 handler(event);
+                if event.meta.immediate_propagation_stopped() { break; }
             }
         }
     }

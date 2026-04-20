@@ -595,6 +595,26 @@ impl Element {
         self.event_handlers.get_or_insert_with(Default::default).click.push(Box::new(handler));
     }
 
+    pub fn on_context_menu<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::ContextMenuEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .context_menu
+            .push(Box::new(handler));
+    }
+
+    pub fn on_wheel<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::WheelEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .wheel
+            .push(Box::new(handler));
+    }
+
     pub fn on_key_down<F>(&mut self, handler: F)
     where
         F: FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>) + 'static,
@@ -621,6 +641,116 @@ impl Element {
         F: FnMut(&mut BlurEvent, &mut ViewportControl<'_>) + 'static,
     {
         self.event_handlers.get_or_insert_with(Default::default).blur.push(Box::new(handler));
+    }
+
+    pub fn on_ime_commit<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::ImeCommitEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .ime_commit
+            .push(Box::new(handler));
+    }
+
+    pub fn on_ime_enabled<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::ImeEnabledEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .ime_enabled
+            .push(Box::new(handler));
+    }
+
+    pub fn on_ime_disabled<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::ImeDisabledEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .ime_disabled
+            .push(Box::new(handler));
+    }
+
+    pub fn on_drag_start<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::DragStartEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .drag_start
+            .push(Box::new(handler));
+    }
+
+    pub fn on_drag_over<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::DragOverEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .drag_over
+            .push(Box::new(handler));
+    }
+
+    pub fn on_drag_leave<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::DragLeaveEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .drag_leave
+            .push(Box::new(handler));
+    }
+
+    pub fn on_drop<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::DropEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .drop
+            .push(Box::new(handler));
+    }
+
+    pub fn on_drag_end<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::DragEndEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .drag_end
+            .push(Box::new(handler));
+    }
+
+    pub fn on_copy<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::CopyEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .copy
+            .push(Box::new(handler));
+    }
+
+    pub fn on_cut<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::CutEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .cut
+            .push(Box::new(handler));
+    }
+
+    pub fn on_paste<F>(&mut self, handler: F)
+    where
+        F: FnMut(&mut crate::ui::PasteEvent, &mut ViewportControl<'_>) + 'static,
+    {
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .paste
+            .push(Box::new(handler));
     }
 
     pub fn stable_id(&self) -> u64 {

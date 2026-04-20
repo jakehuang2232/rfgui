@@ -208,6 +208,7 @@ impl Runner {
 
     fn drain_and_apply(&mut self) {
         let mut want_redraw = self.redraw.take();
+        let mut paste_needed = false;
         if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
             let requests = viewport.drain_platform_requests();
             if let Some(cursor) = requests.cursor {
@@ -220,6 +221,22 @@ impl Runner {
             }
             if let Some(text) = requests.clipboard_write {
                 self.clipboard.set(&text);
+            }
+            if requests.request_paste {
+                paste_needed = true;
+            }
+            let _ = requests.window_commands;
+            let _ = requests.ime_commands;
+            let _ = requests.pending_drags;
+        }
+        if paste_needed {
+            if let Some(text) = self.clipboard.get() {
+                if !text.is_empty() {
+                    let mut vp = self.viewport.borrow_mut();
+                    if let Some(viewport) = vp.as_mut() {
+                        let _ = viewport.dispatch_paste_event(text);
+                    }
+                }
             }
         }
         if want_redraw {
@@ -294,6 +311,36 @@ impl Runner {
                 let _ = viewport.dispatch_platform_key_event(&platform_event);
             }
         }
+        // Clipboard shortcuts: Cmd/Ctrl+C/X/V.
+        if pressed && !self.ime_composing && modifiers.command() {
+            use rfgui::platform::input::Key;
+            match rf_key {
+                Key::KeyC => {
+                    let mut vp = self.viewport.borrow_mut();
+                    if let Some(viewport) = vp.as_mut() {
+                        let _ = viewport.dispatch_copy_event();
+                    }
+                }
+                Key::KeyX => {
+                    let mut vp = self.viewport.borrow_mut();
+                    if let Some(viewport) = vp.as_mut() {
+                        let _ = viewport.dispatch_cut_event();
+                    }
+                }
+                Key::KeyV => {
+                    let text = self.clipboard.get();
+                    if let Some(text) = text {
+                        if !text.is_empty() {
+                            let mut vp = self.viewport.borrow_mut();
+                            if let Some(viewport) = vp.as_mut() {
+                                let _ = viewport.dispatch_paste_event(text);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         if pressed && !self.ime_composing {
             if let Some(text) = event.text.as_ref() {
                 if !text.is_empty() {
@@ -306,6 +353,8 @@ impl Runner {
                     if allow {
                         let ti = PlatformTextInput {
                             text: text.to_string(),
+                            input_type: rfgui::platform::PlatformInputType::Typing,
+                            is_composing: false,
                         };
                         let ti_event = AppEvent::TextInput(ti.clone());
                         let mut vp = self.viewport.borrow_mut();
@@ -331,6 +380,9 @@ impl Runner {
         match ime {
             Ime::Enabled => {
                 self.ime_composing = false;
+                if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
+                    let _ = viewport.dispatch_ime_enabled_event();
+                }
             }
             Ime::Disabled => {
                 self.ime_composing = false;
@@ -338,9 +390,13 @@ impl Runner {
                     text: String::new(),
                     cursor_start: None,
                     cursor_end: None,
+                    selection_start: None,
+                    selection_end: None,
+                    attributes: Vec::new(),
                 };
                 if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
                     let _ = viewport.dispatch_platform_ime_preedit(&preedit);
+                    let _ = viewport.dispatch_ime_disabled_event();
                 }
             }
             Ime::Preedit(text, cursor) => {
@@ -353,6 +409,9 @@ impl Runner {
                     text,
                     cursor_start: start,
                     cursor_end: end,
+                    selection_start: None,
+                    selection_end: None,
+                    attributes: Vec::new(),
                 };
                 let app_event = AppEvent::ImePreedit(preedit.clone());
                 let mut vp = self.viewport.borrow_mut();
@@ -374,7 +433,11 @@ impl Runner {
                 if text.is_empty() {
                     return;
                 }
-                let ti = PlatformTextInput { text };
+                let ti = PlatformTextInput {
+                    text: text.clone(),
+                    input_type: rfgui::platform::PlatformInputType::ImeCommit,
+                    is_composing: false,
+                };
                 let app_event = AppEvent::TextInput(ti.clone());
                 let mut vp = self.viewport.borrow_mut();
                 if let Some(viewport) = vp.as_mut() {
@@ -387,6 +450,7 @@ impl Runner {
                         cursor: cursor_sink,
                         redraw: &self.redraw,
                     });
+                    let _ = viewport.dispatch_ime_commit_event(text);
                     let _ = viewport.dispatch_platform_text_input(&ti);
                 }
             }
@@ -466,9 +530,11 @@ impl ApplicationHandler for Runner {
                 let mut vp = self.viewport.borrow_mut();
                 if let Some(viewport) = vp.as_mut() {
                     viewport.set_size(size.width, size.height);
+                    let scale = viewport.scale_factor();
                     let ev = AppEvent::Resized {
                         width: size.width,
                         height: size.height,
+                        scale,
                     };
                     let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
                         Some(sink) => sink,
@@ -491,6 +557,7 @@ impl ApplicationHandler for Runner {
                     viewport.set_scale_factor(scale_factor as f32);
                     let ev = AppEvent::ScaleFactorChanged {
                         scale: scale_factor as f32,
+                        suggested_size: None,
                     };
                     let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
                         Some(sink) => sink,
@@ -605,10 +672,16 @@ impl ApplicationHandler for Runner {
                 let Some((dx, dy)) = self.normalize_wheel(delta) else {
                     return;
                 };
-                let ev = AppEvent::Wheel(PlatformWheelEvent {
+                let wheel = PlatformWheelEvent {
                     delta_x: -dx,
                     delta_y: -dy,
-                });
+                    position: (0.0, 0.0),
+                    modifiers: rfgui::platform::Modifiers::empty(),
+                    delta_mode: rfgui::platform::WheelDeltaMode::Pixel,
+                    phase: rfgui::platform::WheelPhase::Changed,
+                    timestamp: rfgui::time::Instant::now(),
+                };
+                let ev = AppEvent::Wheel(wheel);
                 let mut vp = self.viewport.borrow_mut();
                 if let Some(viewport) = vp.as_mut() {
                     let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
@@ -620,10 +693,7 @@ impl ApplicationHandler for Runner {
                         cursor: cursor_sink,
                         redraw: &self.redraw,
                     });
-                    let _ = viewport.dispatch_platform_wheel_event(&PlatformWheelEvent {
-                        delta_x: -dx,
-                        delta_y: -dy,
-                    });
+                    let _ = viewport.dispatch_platform_wheel_event(&wheel);
                 }
             }
             WindowEvent::Focused(focused) => {

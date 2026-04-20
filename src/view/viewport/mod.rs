@@ -16,29 +16,29 @@ mod tests;
 
 use crate::time::Instant;
 use crate::transition::{
-    AnimationPlugin, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X,
-    CHANNEL_LAYOUT_Y, CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
-    CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
-    CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
-    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId, ClaimMode,
-    LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleField,
-    StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition, TransitionFrame,
-    TransitionHost, TransitionPluginId, VisualTransitionPlugin,
+    AnimationPlugin, ChannelId, ClaimMode, LayoutTransitionPlugin,
+    ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleField,
+    StyleTransitionPlugin, StyleValue,
+    TrackKey, TrackTarget, Transition,
+    TransitionFrame, TransitionHost, TransitionPluginId, VisualTransitionPlugin,
+    CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y, CHANNEL_SCROLL_X,
+    CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR, CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR, CHANNEL_STYLE_BORDER_RADIUS,
+    CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR, CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
+    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
 };
 use crate::ui::{
-    BlurEvent, ClickEvent, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent, KeyDownEvent,
-    KeyEventData, KeyUpEvent, NodeId, Patch, PointerButtons as UiPointerButtons,
-    PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler,
-    PropValue, RsxNode, TextInputEvent, ViewportListenerAction, ViewportListenerHandle,
-    peek_state_dirty, reconcile, take_state_dirty,
+    peek_state_dirty, reconcile, take_state_dirty, BlurEvent, ClickEvent, EventCommand, EventMeta,
+    FocusEvent, FromPropValue, ImePreeditEvent, KeyDownEvent, KeyEventData,
+    KeyUpEvent, NodeId, Patch, PointerButtons as UiPointerButtons, PointerDownEvent,
+    PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler, PropValue,
+    RsxNode, TextInputEvent, ViewportListenerHandle,
 };
 use crate::view::base_component::Renderable;
 use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
 use crate::view::promotion::{
-    PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionDecision, PromotionState,
-    ViewportPromotionConfig, active_channels_by_node, evaluate_promotion,
+    active_channels_by_node, evaluate_promotion, PromotedLayerUpdate, PromotedLayerUpdateKind,
+    PromotionDecision, PromotionState, ViewportPromotionConfig,
 };
 use crate::view::promotion_builder::{
     collect_debug_subtree_signatures, collect_promoted_layer_updates, collect_promotion_candidates,
@@ -53,38 +53,37 @@ use std::ops::Sub;
 use std::sync::Arc;
 use wgpu::util::StagingBelt;
 use wgpu::{
-    Instance, Queue, TextureUsages,
-    rwh::{HasDisplayHandle, HasWindowHandle},
+    rwh::{HasDisplayHandle, HasWindowHandle}, Instance, Queue,
+    TextureUsages,
 };
 
 pub(crate) use self::debug::{
-    DebugReusePathContext, DebugReusePathRecord, begin_debug_reuse_path_frame,
-    record_debug_reuse_path, set_debug_trace_enabled,
+    begin_debug_reuse_path_frame, record_debug_reuse_path, set_debug_trace_enabled,
+    DebugReusePathContext, DebugReusePathRecord,
 };
 use self::debug::{
-    DebugStyleSampleRecord, PostLayoutTransitionResult, TraceRenderNode, build_compile_trace_nodes,
-    build_execute_detail_trace_nodes, build_layout_place_trace_nodes,
-    build_text_measure_trace_nodes, build_reuse_overlay_geometry,
-    format_promotion_trace, format_reuse_path_trace, format_style_field,
+    build_compile_trace_nodes, build_execute_detail_trace_nodes, build_layout_place_trace_nodes, build_reuse_overlay_geometry,
+    build_text_measure_trace_nodes, format_promotion_trace,
+    format_reuse_path_trace, format_style_field,
     format_style_promotion_trace, format_style_request_trace, format_style_sample_trace,
     format_style_value, format_trace_render_tree, record_debug_style_promotion,
     record_debug_style_request, record_debug_style_sample, record_debug_style_sample_record,
-    take_debug_reuse_path, take_debug_style_sample_records, style_field_requires_relayout,
-    trace_promoted_build_frame_marker,
+    style_field_requires_relayout, take_debug_reuse_path, take_debug_style_sample_records,
+    trace_promoted_build_frame_marker, DebugStyleSampleRecord, PostLayoutTransitionResult,
+    TraceRenderNode,
 };
 pub use self::frame::FrameParts;
 use self::frame::{
     BeginFrameProfile, EndFrameProfile, FrameState, FrameStats, FrameTimings, LayoutPassResult,
 };
 use self::input::{
-    InputState, PendingClick, ViewportPointerUpListener, is_valid_click_candidate,
-    to_ui_pointer_button,
+    is_valid_click_candidate, DragState, InputState, PendingClick, ViewportPointerUpListener,
 };
 pub use self::input::{PointerButton, ViewportDebugOptions};
 use self::transitions_tick::TransitionHostAdapter;
 use crate::app::App;
 use crate::platform::{
-    Modifiers, PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent,
+    Modifiers, PlatformImePreedit, PlatformKeyEvent, PlatformPointerEvent,
     PlatformPointerEventKind, PlatformRequests, PlatformTextInput, PlatformWheelEvent,
     PointerType,
 };
@@ -644,6 +643,22 @@ impl Viewport {
 
     pub fn focused_node_id(&self) -> Option<crate::view::node_arena::NodeKey> {
         self.input_state.focused_node_id
+    }
+
+    /// Node currently holding keyboard capture, if any. Returns `None`
+    /// when no handler has requested capture via
+    /// [`crate::ui::EventViewport::acquire_keyboard_capture`].
+    pub fn keyboard_capture_node_id(&self) -> Option<crate::view::node_arena::NodeKey> {
+        self.input_state.keyboard_capture_node_id
+    }
+
+    /// Target for key / text / IME dispatch: keyboard capture takes
+    /// precedence over focus. Used by all `dispatch_key_*` /
+    /// `dispatch_text_input_*` / `dispatch_ime_*` entry points.
+    pub fn keyboard_dispatch_target(&self) -> Option<crate::view::node_arena::NodeKey> {
+        self.input_state
+            .keyboard_capture_node_id
+            .or(self.input_state.focused_node_id)
     }
 
     pub fn set_pointer_capture_node_id(&mut self, node_id: Option<crate::view::node_arena::NodeKey>) {

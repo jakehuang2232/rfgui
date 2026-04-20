@@ -93,23 +93,9 @@ struct Prop {
 enum PropValueExpr {
     Expr(Expr),
     Macro(proc_macro2::TokenStream),
-    StyleObject(Vec<StyleEntry>),
     Object(Vec<ObjectEntry>),
     Missing,
     Invalid(proc_macro2::TokenStream),
-}
-
-#[derive(Clone)]
-enum StyleValueExpr {
-    Expr(Expr),
-    StyleObject(Vec<StyleEntry>),
-    Missing,
-}
-
-#[derive(Clone)]
-struct StyleEntry {
-    key: Ident,
-    value: StyleValueExpr,
 }
 
 #[derive(Clone)]
@@ -121,8 +107,8 @@ struct ObjectEntry {
 #[derive(Clone)]
 enum ObjectValueExpr {
     Expr(Expr),
-    StyleObject(Vec<StyleEntry>),
     Object(Vec<ObjectEntry>),
+    Missing,
 }
 
 #[derive(Clone)]
@@ -313,25 +299,21 @@ fn can_recover_incomplete_prop(input: ParseStream) -> bool {
 }
 
 fn parse_prop_value_expr(key: &Ident, input: ParseStream) -> Result<PropValueExpr> {
-    if key == "style" && input.peek(syn::token::Brace) {
-        let style_content;
-        braced!(style_content in input);
-        let entries = parse_style_entries(&style_content)?;
-        if !input.is_empty() {
-            return Err(syn::Error::new(input.span(), "style object syntax error"));
-        }
-        return Ok(PropValueExpr::StyleObject(entries));
-    }
-
     let object_tokens: proc_macro2::TokenStream = input.fork().parse()?;
+    // Double-brace (`prop={{...}}`) is the committed-object signal: the inner
+    // brace group was preserved after the outer `braced!` strip. Once
+    // committed, enable recovery so partial entries (e.g. `w` with no `:`)
+    // survive parse and rust-analyzer can offer field completions.
     if let Some(inner_tokens) = unwrap_single_brace_group(&object_tokens)
-        && let Ok(entries) = parse_object_entries_from_tokens(inner_tokens)
+        && let Ok(entries) = parse_object_entries_from_tokens(inner_tokens, true)
     {
         let _: proc_macro2::TokenStream = input.parse()?;
         return Ok(PropValueExpr::Object(entries));
     }
 
-    if let Ok(entries) = parse_object_entries_from_tokens(object_tokens.clone()) {
+    // Single-brace object (`prop={foo: bar}`) — probe strict to avoid
+    // misclassifying plain ident exprs like `prop={ident}` as `{ident: Missing}`.
+    if let Ok(entries) = parse_object_entries_from_tokens(object_tokens.clone(), false) {
         let _: proc_macro2::TokenStream = input.parse()?;
         return Ok(PropValueExpr::Object(entries));
     }
@@ -341,13 +323,13 @@ fn parse_prop_value_expr(key: &Ident, input: ParseStream) -> Result<PropValueExp
         let nested;
         braced!(nested in fork);
         let nested_tokens: proc_macro2::TokenStream = nested.parse()?;
-        if let Ok(_entries) = parse_object_entries_from_tokens(nested_tokens)
+        if let Ok(_entries) = parse_object_entries_from_tokens(nested_tokens, false)
             && fork.is_empty()
         {
             let object_content;
             braced!(object_content in input);
             let object_tokens: proc_macro2::TokenStream = object_content.parse()?;
-            let entries = parse_object_entries_from_tokens(object_tokens)?;
+            let entries = parse_object_entries_from_tokens(object_tokens, true)?;
             if !input.is_empty() {
                 return Err(syn::Error::new(input.span(), "object syntax error"));
             }
@@ -399,7 +381,7 @@ fn prop_assignment_like_span(tokens: &proc_macro2::TokenStream) -> Option<Span> 
     None
 }
 
-fn parse_object_entries(input: ParseStream) -> Result<Vec<ObjectEntry>> {
+fn parse_object_entries(input: ParseStream, recover: bool) -> Result<Vec<ObjectEntry>> {
     let mut entries = Vec::new();
     while !input.is_empty() {
         let key: Ident = input.parse()?;
@@ -413,16 +395,28 @@ fn parse_object_entries(input: ParseStream) -> Result<Vec<ObjectEntry>> {
                 ),
             ));
         }
+        if !input.peek(Token![:]) {
+            if recover && can_recover_incomplete_object_entry(input) {
+                entries.push(ObjectEntry {
+                    key,
+                    value: ObjectValueExpr::Missing,
+                });
+                if input.peek(Token![,]) {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
+            return Err(syn::Error::new(
+                input.span(),
+                format!("expected `:` after key `{}`", key),
+            ));
+        }
         input.parse::<Token![:]>()?;
-        let value = if key == "style" && input.peek(syn::token::Brace) {
-            let nested;
-            braced!(nested in input);
-            ObjectValueExpr::StyleObject(parse_style_entries(&nested)?)
-        } else if input.peek(syn::token::Brace) {
+        let value = if input.peek(syn::token::Brace) {
             let nested;
             braced!(nested in input);
             let nested_tokens: proc_macro2::TokenStream = nested.parse()?;
-            ObjectValueExpr::Object(parse_object_entries_from_tokens(nested_tokens)?)
+            ObjectValueExpr::Object(parse_object_entries_from_tokens(nested_tokens, recover)?)
         } else {
             ObjectValueExpr::Expr(input.parse()?)
         };
@@ -434,20 +428,41 @@ fn parse_object_entries(input: ParseStream) -> Result<Vec<ObjectEntry>> {
     Ok(entries)
 }
 
-fn parse_object_entries_from_tokens(tokens: proc_macro2::TokenStream) -> Result<Vec<ObjectEntry>> {
+fn can_recover_incomplete_object_entry(input: ParseStream) -> bool {
+    input.is_empty() || input.peek(Token![,])
+}
+
+fn parse_object_entries_from_tokens(
+    tokens: proc_macro2::TokenStream,
+    recover: bool,
+) -> Result<Vec<ObjectEntry>> {
     struct ObjectEntries {
+        entries: Vec<ObjectEntry>,
+    }
+    struct ObjectEntriesRecover {
         entries: Vec<ObjectEntry>,
     }
 
     impl Parse for ObjectEntries {
         fn parse(input: ParseStream) -> Result<Self> {
             Ok(Self {
-                entries: parse_object_entries(input)?,
+                entries: parse_object_entries(input, false)?,
+            })
+        }
+    }
+    impl Parse for ObjectEntriesRecover {
+        fn parse(input: ParseStream) -> Result<Self> {
+            Ok(Self {
+                entries: parse_object_entries(input, true)?,
             })
         }
     }
 
-    syn::parse2::<ObjectEntries>(tokens).map(|parsed| parsed.entries)
+    if recover {
+        syn::parse2::<ObjectEntriesRecover>(tokens).map(|p| p.entries)
+    } else {
+        syn::parse2::<ObjectEntries>(tokens).map(|p| p.entries)
+    }
 }
 
 fn unwrap_single_brace_group(
@@ -461,61 +476,6 @@ fn unwrap_single_brace_group(
         return None;
     }
     Some(group.stream())
-}
-
-fn parse_style_entries(input: ParseStream) -> Result<Vec<StyleEntry>> {
-    let mut entries = Vec::new();
-    while !input.is_empty() {
-        let style_key: Ident = input.parse()?;
-        if input.peek(Token![=]) {
-            let eq: Token![=] = input.parse()?;
-            return Err(syn::Error::new(
-                eq.spans[0],
-                format!(
-                    "invalid style syntax on `{}`: use `:` inside style objects (for example `{}: value`).",
-                    style_key, style_key
-                ),
-            ));
-        }
-        if !input.peek(Token![:]) {
-            if can_recover_incomplete_style_entry(input) {
-                entries.push(StyleEntry {
-                    key: style_key,
-                    value: StyleValueExpr::Missing,
-                });
-                if input.peek(Token![,]) {
-                    input.parse::<Token![,]>()?;
-                }
-                continue;
-            }
-            return Err(syn::Error::new(
-                input.span(),
-                format!("expected `:` after style key `{}`", style_key),
-            ));
-        }
-        input.parse::<Token![:]>()?;
-        let style_value = if matches!(style_key.to_string().as_str(), "hover" | "selection")
-            && input.peek(syn::token::Brace)
-        {
-            let nested;
-            braced!(nested in input);
-            StyleValueExpr::StyleObject(parse_style_entries(&nested)?)
-        } else {
-            StyleValueExpr::Expr(input.parse()?)
-        };
-        entries.push(StyleEntry {
-            key: style_key,
-            value: style_value,
-        });
-        if input.peek(Token![,]) {
-            input.parse::<Token![,]>()?;
-        }
-    }
-    Ok(entries)
-}
-
-fn can_recover_incomplete_style_entry(input: ParseStream) -> bool {
-    input.is_empty() || input.peek(Token![,])
 }
 
 fn parse_raw_text(input: ParseStream) -> Result<String> {
@@ -549,7 +509,7 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
         PropValueExpr::Expr(expr) => {
             quote! { ::core::option::Option::Some(::rfgui::ui::classify_component_key(&(#expr))) }
         }
-        PropValueExpr::Macro(_) | PropValueExpr::StyleObject(_) | PropValueExpr::Object(_) => {
+        PropValueExpr::Macro(_) | PropValueExpr::Object(_) => {
             quote_spanned! {prop.key.span()=>
                 compile_error!("`key` must be a Rust expression")
             }
@@ -601,10 +561,10 @@ fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
             }
         };
         let field_ty = &field.ty;
-        if is_children_field(field_ident, field_ty) {
+        if field_ident == "children" {
             return syn::Error::new(
                 field.span(),
-                "`children` is no longer a props field; declare it only as a #[component] function parameter",
+                "`children` is not a props field; declare it only as a #[component] function parameter",
             )
             .to_compile_error();
         }
@@ -700,127 +660,31 @@ fn option_inner_type(ty: &Type) -> Option<&Type> {
     Some(inner_ty)
 }
 
-fn is_children_field(field_ident: &Ident, field_ty: &Type) -> bool {
-    if field_ident != "children" {
-        return false;
-    }
-    let Type::Path(TypePath { qself: None, path }) = field_ty else {
-        return false;
-    };
-    let Some(last) = path.segments.last() else {
-        return false;
-    };
-    if last.ident != "Vec" {
-        return false;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
-        return false;
-    };
-    let Some(syn::GenericArgument::Type(Type::Path(TypePath { qself: None, path }))) =
-        args.args.first()
-    else {
-        return false;
-    };
-    path.segments.last().is_some_and(|s| s.ident == "RsxNode")
-}
-
-
-fn is_text_area_tag(tag: &Path) -> bool {
-    path_key(tag).ends_with("TextArea")
-}
-
-fn is_zero_arg_closure(expr: &Expr) -> bool {
-    match expr {
-        Expr::Closure(closure) => closure.inputs.is_empty(),
-        _ => false,
-    }
-}
-
-fn event_handler_binding(
-    tag: &Path,
+/// Closure-valued props route through `From<F>` / `From<NoArgHandler<F>>`
+/// so the concrete handler type is selected directly (single matching impl,
+/// no ambiguity). The macro stays ignorant of both event names and the `on_*`
+/// naming convention — handler-ness falls out of the field's declared type
+/// via the `__RsxHandlerField` trait impl. Non-handler props receiving a
+/// closure will fail to compile at the helper bound, which is the correct
+/// signal.
+fn expand_event_closure_assignment(
     key: &Ident,
-) -> Option<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
-    let binding = match key.to_string().as_str() {
-        "on_pointer_down" => (
-            quote!(::rfgui::ui::into_pointer_down_handler),
-            quote!(::rfgui::ui::PointerDownEvent),
-        ),
-        "on_pointer_up" => (
-            quote!(::rfgui::ui::into_pointer_up_handler),
-            quote!(::rfgui::ui::PointerUpEvent),
-        ),
-        "on_pointer_move" => (
-            quote!(::rfgui::ui::into_pointer_move_handler),
-            quote!(::rfgui::ui::PointerMoveEvent),
-        ),
-        "on_pointer_enter" => (
-            quote!(::rfgui::ui::into_pointer_enter_handler),
-            quote!(::rfgui::ui::PointerEnterEvent),
-        ),
-        "on_pointer_leave" => (
-            quote!(::rfgui::ui::into_pointer_leave_handler),
-            quote!(::rfgui::ui::PointerLeaveEvent),
-        ),
-        "on_click" => (
-            quote!(::rfgui::ui::into_click_handler),
-            quote!(::rfgui::ui::ClickEvent),
-        ),
-        "on_key_down" => (
-            quote!(::rfgui::ui::into_key_down_handler),
-            quote!(::rfgui::ui::KeyDownEvent),
-        ),
-        "on_key_up" => (
-            quote!(::rfgui::ui::into_key_up_handler),
-            quote!(::rfgui::ui::KeyUpEvent),
-        ),
-        "on_focus" if is_text_area_tag(tag) => (
-            quote!(::rfgui::ui::into_text_area_focus_handler),
-            quote!(::rfgui::ui::TextAreaFocusEvent),
-        ),
-        "on_focus" => (
-            quote!(::rfgui::ui::into_focus_handler),
-            quote!(::rfgui::ui::FocusEvent),
-        ),
-        "on_blur" => (
-            quote!(::rfgui::ui::into_blur_handler),
-            quote!(::rfgui::ui::BlurEvent),
-        ),
-        "on_change" => (
-            quote!(::rfgui::ui::into_text_change_handler),
-            quote!(::rfgui::ui::TextChangeEvent),
-        ),
-        _ => return None,
+    expr: &Expr,
+    parent_path: &proc_macro2::TokenStream,
+) -> Option<proc_macro2::TokenStream> {
+    let Expr::Closure(closure) = expr else {
+        return None;
     };
-    Some(binding)
-}
-
-fn wrap_event_expr(tag: &Path, key: &Ident, expr: &Expr) -> proc_macro2::TokenStream {
-    let Some((converter, event_ty)) = event_handler_binding(tag, key) else {
-        return quote! { #expr };
+    let helper = if closure.inputs.is_empty() {
+        quote!(::rfgui::ui::__rsx_ev_no_arg_to_handler)
+    } else {
+        quote!(::rfgui::ui::__rsx_ev_to_handler)
     };
-    match expr {
-        Expr::Closure(closure) if is_zero_arg_closure(expr) => {
-            let _ = closure;
-            quote! { #converter(::rfgui::ui::no_arg_handler(#expr)) }
-        }
-        Expr::Closure(closure) => {
-            let capture = &closure.capture;
-            if let Some(input) = closure.inputs.first() {
-                match input {
-                    Pat::Type(_) => quote! { #converter(#expr) },
-                    _ => {
-                        let body = &closure.body;
-                        quote! {
-                            #converter(#capture |#input: &mut #event_ty| #body)
-                        }
-                    }
-                }
-            } else {
-                quote! { #converter(#expr) }
-            }
-        }
-        _ => quote! { #expr },
-    }
+    Some(quote_spanned! {key.span()=>
+        #parent_path.#key = ::core::option::Option::Some(
+            #helper(&#parent_path.#key, #expr)
+        );
+    })
 }
 
 fn block_single_expr(block: &syn::Block) -> Option<&Expr> {
@@ -895,11 +759,12 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         let ty = pat_ty.ty.as_ref().clone();
 
         let props_field_ty = if field_ident == "children" {
-            let is_children_ty = is_vec_rsx_node(&ty);
-            if !is_children_ty {
-                return syn::Error::new(ty.span(), "children type must be Vec<RsxNode>")
-                    .to_compile_error();
-            }
+            // `children` is the only rsx-semantic reserved param: it maps to
+            // the second positional arg of `RsxComponent::render`. The macro
+            // does not constrain its declared type — the generated
+            // `render(props, children)` call fails at the `RsxComponent` trait
+            // bound if the user's type is incompatible, which is the right
+            // place for that error.
             accepts_children = true;
             helper_args.push(parse_quote!(#field_ident: #ty));
             helper_call_args.push(quote!(children));
@@ -1032,32 +897,6 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
 }
 
 
-fn is_vec_rsx_node(ty: &Type) -> bool {
-    let Type::Path(TypePath { path, .. }) = ty else {
-        return false;
-    };
-    let Some(seg) = path.segments.last() else {
-        return false;
-    };
-    if seg.ident != "Vec" {
-        return false;
-    }
-
-    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
-        return false;
-    };
-    let Some(syn::GenericArgument::Type(Type::Path(inner))) = args.args.first() else {
-        return false;
-    };
-
-    inner
-        .path
-        .segments
-        .last()
-        .map(|s| s.ident == "RsxNode")
-        .unwrap_or(false)
-}
-
 // ============================================================================
 // v2 expansion: React-style shared createElement path
 // ============================================================================
@@ -1087,7 +926,6 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     let tag = &element.tag;
     let close_tag = &element.close_tag;
     let has_children = !element.children.is_empty();
-    let diagnostics = &element.diagnostics;
     let child_appends = element.children.iter().map(expand_child_append);
 
     let parent_path = quote!(__init);
@@ -1095,7 +933,17 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         .props
         .iter()
         .filter(|p| p.key != "key")
-        .map(|prop| expand_prop_assignment(&element.tag, prop, &parent_path));
+        .map(|prop| expand_prop_assignment(prop, &parent_path));
+
+    // Hoist `Missing`-style / incomplete entry diagnostics to the top of the
+    // element block. Emitting `compile_error!` from deep inside the init
+    // closure works for rustc but rust-analyzer routinely loses the span
+    // mapping and plants the squiggle on the whole `rsx!` invocation. At
+    // block-top level r-a tracks the span far more reliably.
+    let mut diagnostics: Vec<proc_macro2::TokenStream> = element.diagnostics.clone();
+    for prop in &element.props {
+        collect_prop_missing_errors(prop, &mut diagnostics);
+    }
     let component_key = component_key_tokens(element);
     let children_schema_check = if has_children {
         quote! {
@@ -1130,78 +978,82 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     }
 }
 
+/// Walks a prop value and pushes a `compile_error!` for every `Missing`
+/// style/object entry onto `out`. Emitted at element-block top level so
+/// rust-analyzer's span mapping survives (see `expand_element`).
+fn collect_prop_missing_errors(prop: &Prop, out: &mut Vec<proc_macro2::TokenStream>) {
+    if let PropValueExpr::Object(entries) = &prop.value {
+        for e in entries {
+            collect_object_entry_missing(e, out);
+        }
+    }
+}
+
+fn collect_object_entry_missing(entry: &ObjectEntry, out: &mut Vec<proc_macro2::TokenStream>) {
+    match &entry.value {
+        ObjectValueExpr::Missing => {
+            out.push(
+                syn::Error::new(
+                    entry.key.span(),
+                    "value is incomplete; expected `:` and a value",
+                )
+                .to_compile_error(),
+            );
+        }
+        ObjectValueExpr::Object(inner) => {
+            for e in inner {
+                collect_object_entry_missing(e, out);
+            }
+        }
+        ObjectValueExpr::Expr(_) => {}
+    }
+}
+
 fn expand_prop_assignment(
-    tag: &Path,
     prop: &Prop,
     parent_path: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let key = &prop.key;
+    let key_span = key.span();
     match &prop.value {
         PropValueExpr::Missing => {
             // `<Element disabled />` shorthand — set to `Some(true)`.
-            quote! {
+            quote_spanned! {key_span=>
                 #parent_path.#key = ::core::option::Option::Some(true);
             }
         }
         PropValueExpr::Expr(expr) => {
-            let wrapped = wrap_event_expr(tag, key, expr);
-            quote! {
-                #parent_path.#key = ::rfgui::ui::IntoOptionalProp::into_optional_prop(#wrapped);
+            if let Some(tokens) = expand_event_closure_assignment(key, expr, parent_path) {
+                return tokens;
+            }
+            quote_spanned! {key_span=>
+                #parent_path.#key = ::rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
             }
         }
-        PropValueExpr::Macro(tokens) => quote! {
+        PropValueExpr::Macro(tokens) => quote_spanned! {key_span=>
             #parent_path.#key = ::rfgui::ui::IntoOptionalProp::into_optional_prop(#tokens);
         },
-        PropValueExpr::StyleObject(entries) => {
-            expand_object_literal(key, parent_path, entries.iter().map(StyleOrObjectEntry::Style))
-        }
-        PropValueExpr::Object(entries) => expand_object_literal(
-            key,
-            parent_path,
-            entries.iter().map(StyleOrObjectEntry::Object),
-        ),
+        PropValueExpr::Object(entries) => expand_object_literal(key, parent_path, entries),
         PropValueExpr::Invalid(error_tokens) => quote! {
             #error_tokens
         },
     }
 }
 
-// Union view over StyleEntry and ObjectEntry so we can share nested object expansion.
-#[derive(Clone, Copy)]
-enum StyleOrObjectEntry<'a> {
-    Style(&'a StyleEntry),
-    Object(&'a ObjectEntry),
-}
-
-
-fn expand_object_literal<'a, I>(
+fn expand_object_literal(
     key: &Ident,
     parent_path: &proc_macro2::TokenStream,
-    entries: I,
-) -> proc_macro2::TokenStream
-where
-    I: IntoIterator<Item = StyleOrObjectEntry<'a>>,
-{
+    entries: &[ObjectEntry],
+) -> proc_macro2::TokenStream {
+    let inner_parent = quote!(__obj);
     let inner_assignments: Vec<proc_macro2::TokenStream> = entries
-        .into_iter()
-        .map(|entry| {
-            let inner_parent = quote!(__obj);
-            match entry {
-                StyleOrObjectEntry::Style(e) => {
-                    expand_style_entry_assignment(e, &inner_parent)
-                }
-                StyleOrObjectEntry::Object(e) => {
-                    expand_object_entry_assignment(e, &inner_parent)
-                }
-            }
-        })
+        .iter()
+        .map(|e| expand_object_entry_assignment(e, &inner_parent))
         .collect();
 
-    quote! {
+    quote_spanned! {key.span()=>
         #parent_path.#key = ::core::option::Option::Some({
-            let mut __obj = ::rfgui::ui::__rsx_default_from_phantom(
-                ::rfgui::ui::__rsx_infer_inner_option(&#parent_path.#key)
-            );
+            let mut __obj = ::rfgui::ui::__rsx_default_inner_option(&#parent_path.#key);
             #(#inner_assignments)*
             __obj
         });
@@ -1290,47 +1142,27 @@ fn rewrite_conditional_assignment(
     })
 }
 
-fn expand_style_entry_assignment(
-    entry: &StyleEntry,
-    parent_path: &proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let key = &entry.key;
-    match &entry.value {
-        StyleValueExpr::Missing => quote_spanned! {entry.key.span()=>
-            compile_error!("style value is incomplete; expected `:` and a value");
-        },
-        StyleValueExpr::Expr(expr) => expand_assignment_with_none_rewrite(parent_path, key, expr),
-        StyleValueExpr::StyleObject(entries) => expand_object_literal(
-            key,
-            parent_path,
-            entries.iter().map(StyleOrObjectEntry::Style),
-        ),
-    }
-}
-
 fn expand_object_entry_assignment(
     entry: &ObjectEntry,
     parent_path: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let key = &entry.key;
     match &entry.value {
+        // Error hoisted to element-block top by `collect_prop_missing_errors`.
+        // Emit a field access at the key span so rust-analyzer resolves the
+        // partial ident as a field of the enclosing struct (completions:
+        // `w` -> `width`).
+        ObjectValueExpr::Missing => quote_spanned! {key.span()=>
+            let _ = &#parent_path.#key;
+        },
         ObjectValueExpr::Expr(expr) => expand_assignment_with_none_rewrite(parent_path, key, expr),
-        ObjectValueExpr::StyleObject(entries) => expand_object_literal(
-            key,
-            parent_path,
-            entries.iter().map(StyleOrObjectEntry::Style),
-        ),
-        ObjectValueExpr::Object(entries) => expand_object_literal(
-            key,
-            parent_path,
-            entries.iter().map(StyleOrObjectEntry::Object),
-        ),
+        ObjectValueExpr::Object(entries) => expand_object_literal(key, parent_path, entries),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MultipleNodes, PropValueExpr, StyleValueExpr, expand_node};
+    use super::{MultipleNodes, ObjectValueExpr, PropValueExpr, expand_node};
     use quote::ToTokens;
 
     #[test]
@@ -1401,12 +1233,12 @@ mod tests {
             .iter()
             .find(|prop| prop.key == "style")
             .expect("missing style prop");
-        let PropValueExpr::StyleObject(entries) = &style_prop.value else {
-            panic!("expected style object");
+        let PropValueExpr::Object(entries) = &style_prop.value else {
+            panic!("expected object");
         };
         let entry = entries.last().expect("missing recovered style entry");
         assert_eq!(entry.key.to_string(), "backg");
-        assert!(matches!(entry.value, StyleValueExpr::Missing));
+        assert!(matches!(entry.value, ObjectValueExpr::Missing));
     }
 
     #[test]
@@ -1425,12 +1257,12 @@ mod tests {
             .iter()
             .find(|prop| prop.key == "style")
             .expect("missing style prop");
-        let PropValueExpr::StyleObject(entries) = &style_prop.value else {
-            panic!("expected style object");
+        let PropValueExpr::Object(entries) = &style_prop.value else {
+            panic!("expected object");
         };
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].key.to_string(), "backg");
-        assert!(matches!(entries[0].value, StyleValueExpr::Missing));
+        assert!(matches!(entries[0].value, ObjectValueExpr::Missing));
         assert_eq!(entries[1].key.to_string(), "color");
     }
 
@@ -1486,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn text_style_expansion_uses_text_style_schema() {
+    fn style_object_prop_expands_via_default_inner_option() {
         let parsed = syn::parse_str::<MultipleNodes>(
             r##"<Text style={{ color: Color::hex("#fff") }}>{"A"}</Text>"##,
         )
@@ -1494,26 +1326,28 @@ mod tests {
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
         assert!(expanded.contains("Text"));
-        assert!(expanded.contains("__rsx_style_schema_style"));
+        assert!(expanded.contains("__rsx_default_inner_option"));
     }
 
     #[test]
-    fn object_prop_expansion_uses_object_schema_hooks() {
+    fn nested_object_prop_expands_via_default_inner_option() {
         let parsed = syn::parse_str::<MultipleNodes>(
             r##"<Window window_slots={{ root_style: { background: Color::hex("#fff") } }} />"##,
         )
         .expect("rsx should parse nested object prop");
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
-        assert!(expanded.contains("__rsx_object_schema_window_slots"));
-        assert!(expanded.contains("__rsx_object_schema_root_style"));
+        // Both outer `window_slots` and inner `root_style` expand through
+        // the shared `__rsx_default_inner_option` helper; the helper is
+        // called once per nesting level.
+        assert_eq!(expanded.matches("__rsx_default_inner_option").count(), 2);
     }
 
     #[test]
-    fn rsx_expansion_uses_create_tag_element_path() {
+    fn rsx_expansion_uses_create_element_path() {
         let parsed = syn::parse_str::<MultipleNodes>(r#"<Element />"#).expect("rsx should parse");
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
-        assert!(expanded.contains("create_tag_element_with_key"));
+        assert!(expanded.contains("__rsx_create_element"));
     }
 }
