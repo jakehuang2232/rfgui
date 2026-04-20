@@ -1279,7 +1279,10 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
         0
     }
 
-    fn promotion_clip_intersection_signature(&self) -> u64 {
+    fn promotion_clip_intersection_signature(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> u64 {
         0
     }
 
@@ -1994,14 +1997,10 @@ impl ElementTrait for Element {
         hasher.finish()
     }
 
-    fn promotion_clip_intersection_signature(&self) -> u64 {
-        // Children-dependent portion is omitted during migration because
-        // this method cannot take the arena without rewiring every caller
-        // in promotion_builder. The signature remains stable for single
-        // elements; container-level recomputation falls back to the
-        // subtree-level checks elsewhere.
-        let arena = crate::view::node_arena::NodeArena::new();
-        let arena = &arena;
+    fn promotion_clip_intersection_signature(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.absolute_clip_scissor_rect()
             .is_some()

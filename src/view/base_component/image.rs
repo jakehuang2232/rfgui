@@ -201,8 +201,11 @@ impl ElementTrait for Image {
         self.element.promotion_self_signature()
     }
 
-    fn promotion_clip_intersection_signature(&self) -> u64 {
-        self.element.promotion_clip_intersection_signature()
+    fn promotion_clip_intersection_signature(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> u64 {
+        self.element.promotion_clip_intersection_signature(arena)
     }
 
     fn promotion_composite_bounds(&self) -> super::PromotionCompositeBounds {

@@ -152,7 +152,7 @@ pub(crate) fn get_debug_promotion_signatures_by_id(
     if root.stable_id() == stable_id {
         return Some((
             root.promotion_self_signature(),
-            root.promotion_clip_intersection_signature(),
+            root.promotion_clip_intersection_signature(arena),
         ));
     }
     for child_key in root.children() {
