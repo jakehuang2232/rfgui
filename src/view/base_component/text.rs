@@ -1207,6 +1207,10 @@ impl ElementTrait for Text {
         }
     }
 
+    fn has_active_animator(&self) -> bool {
+        self.element.has_active_animator()
+    }
+
     fn promotion_self_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.should_render.hash(&mut hasher);

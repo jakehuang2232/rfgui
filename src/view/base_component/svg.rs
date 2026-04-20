@@ -264,6 +264,10 @@ impl ElementTrait for Svg {
         self.element.promotion_node_info()
     }
 
+    fn has_active_animator(&self) -> bool {
+        self.element.has_active_animator()
+    }
+
     fn promotion_self_signature(&self) -> u64 {
         self.element.promotion_self_signature()
     }

@@ -335,11 +335,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 #ifdef PASS_FILL_ONLY
     // Fill only: cov_inner area with fill_color.
     let cov = cov_inner_of(p);
-#ifdef OPAQUE
     if cov <= 1e-5 {
         discard;
     }
-#endif
     return premul(fill_at(p)) * cov;
 
 #else
@@ -348,11 +346,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let cov_outer = cov_outer_of(p);
     let cov_inner = cov_inner_of(p);
     let border_mask = clamp(cov_outer - cov_inner, 0.0, 1.0);
-#ifdef OPAQUE
     if border_mask <= 1e-5 {
         discard;
     }
-#endif
 #ifdef BORDER_NONE
     return vec4<f32>(0.0);
 #else
@@ -375,11 +371,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let border_mask = clamp(cov_outer - cov_inner, 0.0, 1.0);
     let fill_mask = cov_inner;
     let shape_mask = max(border_mask, fill_mask);
-#ifdef OPAQUE
+    // Discard fragments outside the shape so the stencil Increment/Decrement
+    // passes (which share this shader) only touch stencil inside the rrect.
     if shape_mask <= 1e-5 {
         discard;
     }
-#endif
 
     var out = vec4<f32>(0.0);
 #ifndef BORDER_NONE
