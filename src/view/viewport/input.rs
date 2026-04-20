@@ -60,6 +60,7 @@ pub(super) struct InputState {
     pub pending_click: Option<PendingClick>,
     pub pressed_pointer_buttons: FxHashSet<PointerButton>,
     pub pressed_keys: FxHashSet<String>,
+    pub modifiers: crate::platform::Modifiers,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -3,8 +3,9 @@
 //! Event payloads and handler prop types used by the retained UI runtime.
 
 use crate::Cursor;
-use crate::platform::input::PointerType;
+use crate::platform::input::{Key, Modifiers, PointerType};
 use crate::view::base_component::TextAreaRenderString;
+use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -20,13 +21,13 @@ pub enum PointerButton {
     Other(u16),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct KeyModifiers {
-    pub alt: bool,
-    pub ctrl: bool,
-    pub shift: bool,
-    pub meta: bool,
-}
+/// Deprecated alias kept for source-level compatibility. Prefer
+/// [`crate::platform::input::Modifiers`] (re-exported as [`Modifiers`] here).
+///
+/// Old field-style access (`.shift`, `.ctrl`, …) no longer compiles; use the
+/// accessor methods (`.shift()`, `.ctrl()`, …) on `Modifiers`.
+#[allow(dead_code)]
+pub type KeyModifiers = Modifiers;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PointerButtons {
@@ -288,10 +289,25 @@ pub struct PointerEventData {
 
 #[derive(Debug, Clone)]
 pub struct KeyEventData {
-    pub key: String,
-    pub code: String,
+    /// Physical key identifier (layout-independent).
+    pub key: Key,
+    /// Layout-applied text output. `None` for non-character keys.
+    pub characters: Option<SmolStr>,
+    pub modifiers: Modifiers,
     pub repeat: bool,
-    pub modifiers: KeyModifiers,
+    /// True while an IME composition is active. Handlers typically early-return
+    /// so the IME can consume the key (e.g. Enter commits, not newline).
+    pub is_composing: bool,
+    pub timestamp: crate::time::Instant,
+}
+
+impl KeyEventData {
+    /// Convenience for shortcut matching: physical key equality plus exact
+    /// (non-lock) modifier set, and not during IME composition.
+    #[inline]
+    pub fn shortcut(&self, key: Key, mods: Modifiers) -> bool {
+        self.key == key && self.modifiers.exactly(mods) && !self.is_composing
+    }
 }
 
 #[derive(Debug, Clone)]

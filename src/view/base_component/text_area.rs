@@ -2169,13 +2169,13 @@ impl TextArea {
         event: &crate::ui::KeyDownEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) -> bool {
-        let key = event.key.key.as_str();
-        let code = event.key.code.as_str();
+        use crate::platform::input::Key;
+        let key = event.key.key;
         let modifiers = event.key.modifiers;
-        let shift = modifiers.shift;
-        let shortcut = modifiers.ctrl || modifiers.meta;
+        let shift = modifiers.shift();
+        let shortcut = modifiers.ctrl() || modifiers.meta();
 
-        if key_matches(key, code, "ArrowLeft") {
+        if key == Key::ArrowLeft {
             if !shift {
                 if let Some((start, _)) = self.selection_range_chars() {
                     self.cursor_char = start;
@@ -2190,7 +2190,7 @@ impl TextArea {
             }
             return moved;
         }
-        if key_matches(key, code, "ArrowRight") {
+        if key == Key::ArrowRight {
             if !shift {
                 if let Some((_, end)) = self.selection_range_chars() {
                     self.cursor_char = end;
@@ -2205,7 +2205,7 @@ impl TextArea {
             }
             return moved;
         }
-        if key_matches(key, code, "ArrowUp") {
+        if key == Key::ArrowUp {
             let previous = self.cursor_char;
             let moved = self.move_cursor_vertical(Motion::Up);
             if moved {
@@ -2213,7 +2213,7 @@ impl TextArea {
             }
             return moved;
         }
-        if key_matches(key, code, "ArrowDown") {
+        if key == Key::ArrowDown {
             let previous = self.cursor_char;
             let moved = self.move_cursor_vertical(Motion::Down);
             if moved {
@@ -2222,7 +2222,7 @@ impl TextArea {
             return moved;
         }
         self.clear_vertical_goal();
-        if key_matches(key, code, "Home") {
+        if key == Key::Home {
             if self.cursor_char == 0 {
                 return false;
             }
@@ -2231,7 +2231,7 @@ impl TextArea {
             self.update_shift_selection_after_move(previous, shift);
             return true;
         }
-        if key_matches(key, code, "End") {
+        if key == Key::End {
             let end = self.content.chars().count();
             if self.cursor_char == end {
                 return false;
@@ -2241,7 +2241,7 @@ impl TextArea {
             self.update_shift_selection_after_move(previous, shift);
             return true;
         }
-        if shortcut && key.eq_ignore_ascii_case("a") {
+        if shortcut && key == Key::KeyA {
             let end = self.content.chars().count();
             self.selection_anchor_char = Some(0);
             self.selection_focus_char = Some(end);
@@ -2250,14 +2250,14 @@ impl TextArea {
             self.clear_vertical_goal();
             return true;
         }
-        if shortcut && key.eq_ignore_ascii_case("c") {
+        if shortcut && key == Key::KeyC {
             if let Some(selected) = self.selected_text() {
                 control.set_clipboard_text(selected);
                 return true;
             }
             return false;
         }
-        if shortcut && key.eq_ignore_ascii_case("x") {
+        if shortcut && key == Key::KeyX {
             if self.read_only {
                 return false;
             }
@@ -2267,7 +2267,7 @@ impl TextArea {
             }
             return false;
         }
-        if shortcut && key.eq_ignore_ascii_case("v") {
+        if shortcut && key == Key::KeyV {
             if self.read_only {
                 return false;
             }
@@ -2281,23 +2281,23 @@ impl TextArea {
             return false;
         }
 
-        if key_matches(key, code, "Backspace") {
+        if key == Key::Backspace {
             return self.delete_backspace();
         }
-        if key_matches(key, code, "Delete") {
+        if key == Key::Delete {
             return self.delete_forward();
         }
-        if key_matches(key, code, "Enter") {
+        if key == Key::Enter || key == Key::NumberPadEnter {
             if self.multiline {
                 return self.insert_text("\n");
             }
             return false;
         }
-        if key_matches(key, code, "Tab") {
+        if key == Key::Tab {
             return self.insert_text("    ");
         }
 
-        if shortcut || modifiers.alt {
+        if shortcut || modifiers.alt() {
             return false;
         }
 
@@ -2385,12 +2385,6 @@ impl TextArea {
         self.vertical_cursor_x_opt = Some(desired_x.round() as i32);
         true
     }
-}
-
-fn key_matches(key: &str, code: &str, token: &str) -> bool {
-    key.eq_ignore_ascii_case(token)
-        || key == format!("Named({token})")
-        || code == format!("Code({token})")
 }
 
 fn normalize_multiline(content: String, multiline: bool) -> String {
@@ -2719,7 +2713,7 @@ impl EventTarget for TextArea {
         {
             self.set_cursor_from_local_position(event.pointer.local_x, event.pointer.local_y);
         }
-        if event.pointer.modifiers.shift {
+        if event.pointer.modifiers.shift() {
             let anchor = self.selection_anchor_char.unwrap_or(previous);
             self.selection_anchor_char = Some(anchor);
             self.selection_focus_char = Some(self.cursor_char);
