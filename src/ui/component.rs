@@ -490,6 +490,22 @@ pub trait RsxTag: 'static {
     ) -> RsxNode;
 }
 
+/// Build a tag's props inside an isolated stack frame, then hand off to
+/// `create_element`. Keeps large `Props` structs (e.g. `ElementPropSchema`)
+/// out of the caller's frame — important on wasm where an unoptimized dev
+/// build does not reuse stack slots across sibling RSX blocks and can blow
+/// the 1 MB shadow stack on scenes with hundreds of elements.
+#[inline(never)]
+pub fn __rsx_create_element<T: RsxTag, F: FnOnce(&mut T::Props)>(
+    setup: F,
+    children: Vec<RsxNode>,
+    key: Option<RsxKey>,
+) -> RsxNode {
+    let mut init = T::Props::default();
+    setup(&mut init);
+    create_element::<T>(init, children, key)
+}
+
 #[inline(never)]
 pub fn create_element<T: RsxTag>(
     init: T::Props,

@@ -355,6 +355,13 @@ impl TransitionRuntime {
 struct GpuContext {
     surface: Option<wgpu::Surface<'static>>,
     surface_config: wgpu::SurfaceConfiguration,
+    /// Format pipelines writing to the surface compile against and that the
+    /// per-frame surface view is created with. Equals `surface_config.format`
+    /// when the adapter advertises an sRGB format directly (native path); on
+    /// WebGPU the canvas storage is a non-sRGB format so this points at the
+    /// sRGB view variant (e.g. `Bgra8UnormSrgb`) listed in `view_formats`,
+    /// giving the GPU linear→sRGB encoding on store.
+    surface_target_format: wgpu::TextureFormat,
     device: Option<wgpu::Device>,
     instance: Option<Instance>,
     window: Option<Window>,
@@ -471,6 +478,7 @@ impl Viewport {
                     alpha_mode: wgpu::CompositeAlphaMode::Auto,
                     view_formats: vec![],
                 },
+                surface_target_format: wgpu::TextureFormat::Bgra8Unorm,
                 device: None,
                 instance: None,
                 window: None,
@@ -592,8 +600,19 @@ impl Viewport {
         self.gpu.queue.as_ref()
     }
 
+    /// Format pipelines writing to the surface compile against. Equals the
+    /// sRGB variant when the compositor wants linear→sRGB encoding, even if
+    /// the underlying canvas storage (`surface_config.format`) is non-sRGB.
     pub fn surface_format(&self) -> wgpu::TextureFormat {
-        self.gpu.surface_config.format
+        self.gpu.surface_target_format
+    }
+
+    /// Format for intermediate/offscreen render targets. Stays non-sRGB so
+    /// the pipeline performs blending in a single color space; the final
+    /// linear→sRGB conversion only happens when writing the surface via
+    /// `present_surface_pass`.
+    pub fn offscreen_format(&self) -> wgpu::TextureFormat {
+        self.gpu.surface_target_format.remove_srgb_suffix()
     }
 
     pub fn surface_size(&self) -> (u32, u32) {

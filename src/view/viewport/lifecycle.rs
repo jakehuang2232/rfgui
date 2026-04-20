@@ -215,9 +215,30 @@ impl Viewport {
                 eprintln!("[warn] surface reported no supported formats");
                 return;
             };
-            self.gpu.surface_config.format = format;
+            // On adapters that only expose a non-sRGB canvas format (notably
+            // WebGPU on the browser), we keep the non-sRGB format for storage
+            // but add the sRGB variant to `view_formats` so the per-frame
+            // surface view can perform linear→sRGB encoding on store. Pipelines
+            // that write to the surface compile against `surface_target_format`,
+            // which equals the sRGB variant when we want that encoding.
+            let wants_srgb = matches!(
+                self.gpu.surface_format_preference,
+                SurfaceFormatPreference::PreferSrgb
+            );
+            let (storage_format, target_format) = if wants_srgb && !format.is_srgb() {
+                let srgb = format.add_srgb_suffix();
+                (format, srgb)
+            } else {
+                (format, format)
+            };
+            self.gpu.surface_config.format = storage_format;
+            self.gpu.surface_target_format = target_format;
             self.gpu.surface_config.alpha_mode = Self::alpha_mode_from_capabilities(&caps.alpha_modes);
-            self.gpu.surface_config.view_formats = vec![self.gpu.surface_config.format];
+            self.gpu.surface_config.view_formats = if storage_format == target_format {
+                vec![storage_format]
+            } else {
+                vec![storage_format, target_format]
+            };
             if let Some((width, height)) = self.pending_size.take() {
                 self.gpu.surface_config.width = width;
                 self.gpu.surface_config.height = height;

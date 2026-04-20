@@ -243,12 +243,6 @@ impl PresentSurfaceResources {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-fn present_surface_shader_source() -> &'static str {
-    include_str!("../../shader/present_surface_web.wgsl")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn present_surface_shader_source() -> &'static str {
     include_str!("../../shader/present_surface.wgsl")
 }

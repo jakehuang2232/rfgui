@@ -342,7 +342,7 @@ impl Viewport {
         let mut ctx = crate::view::base_component::UiBuildContext::new(
             self.gpu.surface_config.width,
             self.gpu.surface_config.height,
-            self.gpu.surface_config.format,
+            self.offscreen_format(),
             self.scale_factor,
         );
         self.apply_promotion_runtime(&mut ctx);
@@ -937,7 +937,10 @@ impl Viewport {
         let create_view_started_at = Instant::now();
         let surface_view = render_texture
             .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+            .create_view(&wgpu::TextureViewDescriptor {
+                format: Some(self.gpu.surface_target_format),
+                ..Default::default()
+            });
         let (view, resolve_view) = (surface_view, None);
         let create_view_ms = create_view_started_at.elapsed().as_secs_f64() * 1000.0;
 
