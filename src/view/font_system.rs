@@ -63,13 +63,6 @@ pub(crate) fn with_shared_font_system<R>(f: impl FnOnce(&mut FontSystem) -> R) -
     })
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reset_shared_font_system() {
-    SHARED_FONT_SYSTEM.with(|slot| {
-        slot.replace(create_font_system());
-    });
-}
-
 pub fn register_font_bytes(bytes: &[u8]) -> bool {
     let font = Arc::new(bytes.to_vec());
     let inserted = {

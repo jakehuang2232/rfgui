@@ -1180,6 +1180,10 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
         PromotionNodeInfo::default()
     }
 
+    fn has_active_animator(&self) -> bool {
+        false
+    }
+
     fn promotion_self_signature(&self) -> u64 {
         0
     }
@@ -1672,6 +1676,10 @@ impl ElementTrait for Element {
 
     fn set_parent_id(&mut self, parent_id: Option<u64>) {
         self.core.parent_id = parent_id;
+    }
+
+    fn has_active_animator(&self) -> bool {
+        self.last_started_animator.is_some()
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {

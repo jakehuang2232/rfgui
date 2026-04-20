@@ -217,6 +217,18 @@ impl Element {
         {
             return false;
         }
+        // Force clip: (has children AND has border_radius) OR any child has active animator.
+        // Covers glyph/AA bleed past rounded inner rrect, and keeps moving children inside.
+        if inner_radii.has_any_rounding() {
+            return true;
+        }
+        if self
+            .children
+            .iter()
+            .any(|child| child.has_active_animator())
+        {
+            return true;
+        }
         let (max_scroll_x, max_scroll_y) = self.max_scroll();
         if max_scroll_x > 0.0 || max_scroll_y > 0.0 {
             return true;

@@ -11,18 +11,15 @@ pub use theme::*;
 #[cfg(test)]
 mod tests {
     use crate::{
-        Accordion, Button, ButtonHoverStyleSlot, ButtonStyleSlot, ButtonVariant, Checkbox,
-        CloseIcon, NumberField, Select, Switch, Window,
+        Accordion, Button, ButtonVariant, Checkbox, CloseIcon, NumberField, Select, Switch,
+        Window,
     };
     use rfgui::ui::{
         EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
         RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, global_state,
         rsx, take_state_dirty,
     };
-    use rfgui::view::{Element, ElementPropSchema, Image, Text, TextArea, TextPropSchema};
-    use rfgui::{
-        Border, BorderRadius, Color, Length, Padding, ParsedValue, PropertyId, StyleColor,
-    };
+    use rfgui::view::{Element, Image, Text, TextArea};
 
     fn select_label(item: &String, _: usize) -> String {
         item.clone()
@@ -306,110 +303,23 @@ mod tests {
         assert!(handled);
     }
 
-    #[test]
-    fn button_label_preserves_whitespace() {
-        let tree = rsx! {
-            <Button
-                label="Click Me"
-                variant={Some(ButtonVariant::Contained)}
-            />
-        };
-        let RsxNode::Element(root) = tree else {
-            panic!("button should render element root");
-        };
-        let Some(RsxNode::Element(text_node)) = root.children.first() else {
-            panic!("button should have text child");
-        };
-        let Some(RsxNode::Text(content)) = text_node.children.first() else {
-            panic!("text should carry string child");
-        };
-        assert_eq!(content.content, "Click Me");
+    fn find_first_text(node: &RsxNode) -> Option<&str> {
+        match node {
+            RsxNode::Text(t) => Some(t.content.as_str()),
+            RsxNode::Element(el) => el.children.iter().find_map(find_first_text),
+            RsxNode::Fragment(f) => f.children.iter().find_map(find_first_text),
+        }
     }
 
     #[test]
-    fn button_style_slot_overrides_base_and_hover_styles() {
+    fn button_label_preserves_whitespace() {
         let tree = rsx! {
-            <Button
-                label="Styled"
-                style={Some(ButtonStyleSlot {
-                    color: Some(Color::rgb(1, 2, 3)),
-                    background: Some(Color::rgb(4, 5, 6)),
-                    padding: Some(
-                        Padding::uniform(Length::Zero).xy(Length::px(12.0), Length::px(8.0))
-                    ),
-                    border: Some(Border::uniform(Length::px(2.0), &Color::rgb(7, 8, 9))),
-                    border_radius: Some(BorderRadius::uniform(Length::px(10.0))),
-                    hover: Some(ButtonHoverStyleSlot {
-                        color: Some(Color::rgb(10, 11, 12)),
-                        background: Some(Color::rgb(13, 14, 15)),
-                        border: Some(Border::uniform(Length::px(3.0), &Color::rgb(16, 17, 18))),
-                    }),
-                })}
-            />
+            <Button variant={Some(ButtonVariant::Contained)}>
+                "Click Me"
+            </Button>
         };
-
-        let RsxNode::Element(root) = &tree else {
-            panic!("button should render element root");
-        };
-        let root_style = find_style(root);
-        assert_eq!(
-            root_style.get(PropertyId::BackgroundColor),
-            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(4, 5, 6))))
-        );
-        assert_eq!(
-            root_style.get(PropertyId::PaddingTop),
-            Some(&ParsedValue::Length(Length::px(8.0)))
-        );
-        assert_eq!(
-            root_style.get(PropertyId::PaddingRight),
-            Some(&ParsedValue::Length(Length::px(12.0)))
-        );
-        assert_eq!(
-            root_style.get(PropertyId::BorderTopWidth),
-            Some(&ParsedValue::Length(Length::px(2.0)))
-        );
-        assert_eq!(
-            root_style.get(PropertyId::BorderTopColor),
-            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(7, 8, 9))))
-        );
-        assert_eq!(
-            root_style.get(PropertyId::BorderTopLeftRadius),
-            Some(&ParsedValue::Length(Length::px(10.0)))
-        );
-
-        let root_hover = root_style.hover().expect("button root hover style");
-        assert_eq!(
-            root_hover.get(PropertyId::BackgroundColor),
-            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(
-                13, 14, 15
-            ))))
-        );
-        assert_eq!(
-            root_hover.get(PropertyId::BorderTopWidth),
-            Some(&ParsedValue::Length(Length::px(3.0)))
-        );
-        assert_eq!(
-            root_hover.get(PropertyId::BorderTopColor),
-            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(
-                16, 17, 18
-            ))))
-        );
-
-        let Some(RsxNode::Element(text)) = root.children.first() else {
-            panic!("button should have text child");
-        };
-        let text_style = find_style(text);
-        assert_eq!(
-            text_style.get(PropertyId::Color),
-            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(1, 2, 3))))
-        );
-        let text_hover = text_style.hover().expect("button text hover style");
-        assert_eq!(
-            text_hover.get(PropertyId::Color),
-            Some(&ParsedValue::Color(StyleColor::Srgb(Color::rgb(
-                10, 11, 12
-            ))))
-        );
+        let text = find_first_text(&tree).expect("button should carry text child");
+        assert_eq!(text, "Click Me");
     }
 
     fn collect_text_nodes(node: &RsxNode, out: &mut Vec<String>) {
@@ -452,27 +362,6 @@ mod tests {
                 .find_map(|child| find_first_element_by_tag(child, tag)),
             RsxNode::Text(_) => None,
         }
-    }
-
-    fn find_style(node: &RsxElementNode) -> rfgui::Style {
-        node.props
-            .iter()
-            .find_map(|(key, value)| match (key, value) {
-                (&"style", PropValue::Shared(shared)) => shared
-                    .value()
-                    .downcast::<rfgui::view::ElementStylePropSchema>()
-                    .ok()
-                    .map(|style| style.to_style())
-                    .or_else(|| {
-                        shared
-                            .value()
-                            .downcast::<rfgui::view::TextStylePropSchema>()
-                            .ok()
-                            .map(|style| style.to_style())
-                    }),
-                _ => None,
-            })
-            .expect("missing style prop")
     }
 
     #[test]
@@ -737,9 +626,7 @@ mod tests {
                 title="Panel"
                 width=420.0
             >
-                <Button
-                    label="Inside"
-                />
+                <Button>"Inside"</Button>
             </Window>
         };
         let RsxNode::Element(root) = tree else {
@@ -778,7 +665,7 @@ mod tests {
                     },
                 }}
             >
-                <Button label="Inside" />
+                <Button>"Inside"</Button>
             </Window>
         };
 
