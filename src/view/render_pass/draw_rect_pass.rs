@@ -2,8 +2,8 @@ use rustc_hash::FxHashSet;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{
-    CacheStats, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    PrepareContext, ResourceCache, register_cache_stats,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext,
 };
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
@@ -11,7 +11,6 @@ use crate::view::render_pass::render_target::{
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::num::NonZeroU64;
-use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1497,16 +1496,9 @@ fn pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
     [nx * 2.0 - 1.0, 1.0 - ny * 2.0]
 }
 
-fn with_draw_rect_resources_cache<R>(
-    f: impl FnOnce(&mut ResourceCache<DrawRectResources>) -> R,
-) -> R {
-    static STATS: CacheStats = CacheStats::new("draw_rect_pipeline");
-    static CACHE: OnceLock<Mutex<ResourceCache<DrawRectResources>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        register_cache_stats(&STATS);
-        Mutex::new(ResourceCache::with_stats(&STATS))
-    });
-    f(&mut cache.lock().unwrap())
+crate::static_resource_cache! {
+    fn with_draw_rect_resources_cache -> ResourceCache<DrawRectResources>
+        = stats("draw_rect_pipeline")
 }
 
 pub fn begin_draw_rect_resources_frame() {

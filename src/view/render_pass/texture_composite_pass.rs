@@ -2,7 +2,7 @@ use crate::view::ImageSampling;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
-    BufferDesc, BufferResource, CacheStats, PrepareContext, ResourceCache, register_cache_stats,
+    BufferDesc, BufferResource, PrepareContext,
 };
 use crate::view::frame_graph::{
     BufferReadUsage, FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
@@ -15,7 +15,6 @@ use crate::view::render_pass::render_target::{
     resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
 use std::sync::Arc;
 
 const TEXTURE_COMPOSITE_RESOURCES: u64 = 205;
@@ -1148,16 +1147,9 @@ fn resolve_uv_bounds(
     ]
 }
 
-fn with_texture_composite_resources_cache<R>(
-    f: impl FnOnce(&mut ResourceCache<TextureCompositeResources>) -> R,
-) -> R {
-    static STATS: CacheStats = CacheStats::new("texture_composite_pipeline");
-    static CACHE: OnceLock<Mutex<ResourceCache<TextureCompositeResources>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        register_cache_stats(&STATS);
-        Mutex::new(ResourceCache::with_stats(&STATS))
-    });
-    f(&mut cache.lock().unwrap())
+crate::static_resource_cache! {
+    fn with_texture_composite_resources_cache -> ResourceCache<TextureCompositeResources>
+        = stats("texture_composite_pipeline")
 }
 
 pub(crate) fn clear_texture_composite_resources_cache() {

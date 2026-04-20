@@ -369,14 +369,8 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
     }
 }
 
-fn with_blur_resources_cache<R>(f: impl FnOnce(&mut ResourceCache<BlurResources>) -> R) -> R {
-    static STATS: CacheStats = CacheStats::new("blur_pipeline");
-    static CACHE: OnceLock<Mutex<ResourceCache<BlurResources>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        register_cache_stats(&STATS);
-        Mutex::new(ResourceCache::with_stats(&STATS))
-    });
-    f(&mut cache.lock().unwrap())
+crate::static_resource_cache! {
+    fn with_blur_resources_cache -> ResourceCache<BlurResources> = stats("blur_pipeline")
 }
 
 pub fn clear_blur_resources_cache() {

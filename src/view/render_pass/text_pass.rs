@@ -13,6 +13,7 @@ use crate::view::text_layout::build_text_buffer;
 use cosmic_text::{
     Align, Buffer, CacheKey, Color as CosmicColor, FontSystem, SwashCache, SwashContent, SwashImage,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Mutex, OnceLock};
 use std::collections::{VecDeque};
 use std::num::NonZeroU64;
@@ -1843,9 +1844,22 @@ struct TextGlobalCache {
     resources: Option<TextResources>,
 }
 
-fn text_global_cache() -> &'static Mutex<TextGlobalCache> {
-    static CACHE: OnceLock<Mutex<TextGlobalCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(TextGlobalCache { resources: None }))
+fn with_text_global_cache<R>(f: impl FnOnce(&mut TextGlobalCache) -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static CACHE: OnceLock<Mutex<TextGlobalCache>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(TextGlobalCache { resources: None }));
+        f(&mut cache.lock().unwrap())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use std::cell::RefCell;
+        thread_local! {
+            static CACHE: RefCell<TextGlobalCache> =
+                const { RefCell::new(TextGlobalCache { resources: None }) };
+        }
+        CACHE.with(|c| f(&mut c.borrow_mut()))
+    }
 }
 
 fn build_text_debug_overlay(
@@ -2045,30 +2059,32 @@ fn with_text_resources<R>(
     format: wgpu::TextureFormat,
     f: impl FnOnce(&mut TextResources) -> R,
 ) -> R {
-    let mut guard = text_global_cache().lock().unwrap();
-    let rebuild = guard
-        .resources
-        .as_ref()
-        .map(|r| r.format != format)
-        .unwrap_or(true);
+    with_text_global_cache(|guard| {
+        let rebuild = guard
+            .resources
+            .as_ref()
+            .map(|r| r.format != format)
+            .unwrap_or(true);
 
-    if rebuild {
-        guard.resources = Some(TextResources::new(device, queue, format));
-    }
+        if rebuild {
+            guard.resources = Some(TextResources::new(device, queue, format));
+        }
 
-    let resources = guard.resources.as_mut().expect("text resources must exist");
-    f(resources)
+        let resources = guard.resources.as_mut().expect("text resources must exist");
+        f(resources)
+    })
 }
 
 fn with_text_resources_for_render(format: wgpu::TextureFormat, f: impl FnOnce(&mut TextResources)) {
-    let mut guard = text_global_cache().lock().unwrap();
-    let Some(resources) = guard.resources.as_mut() else {
-        return;
-    };
-    if resources.format != format {
-        return;
-    }
-    f(resources);
+    with_text_global_cache(|guard| {
+        let Some(resources) = guard.resources.as_mut() else {
+            return;
+        };
+        if resources.format != format {
+            return;
+        }
+        f(resources);
+    });
 }
 
 fn text_depth_stencil_state() -> wgpu::DepthStencilState {
@@ -2211,14 +2227,16 @@ pub fn prewarm_text_pipeline(
 }
 
 pub fn clear_text_resources_cache() {
-    text_global_cache().lock().unwrap().resources = None;
+    with_text_global_cache(|c| c.resources = None);
 }
 
 pub fn begin_text_resources_frame() {
-    if let Some(resources) = text_global_cache().lock().unwrap().resources.as_mut() {
-        resources.mask_atlas.begin_frame();
-        resources.color_atlas.begin_frame();
-    }
+    with_text_global_cache(|c| {
+        if let Some(resources) = c.resources.as_mut() {
+            resources.mask_atlas.begin_frame();
+            resources.color_atlas.begin_frame();
+        }
+    });
 }
 
 #[cfg(test)]
