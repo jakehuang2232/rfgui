@@ -3,8 +3,10 @@ impl EventTarget for Element {
         &mut self,
         event: &mut PointerDownEvent,
         control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
     ) {
-        if self.handle_scrollbar_pointer_down(event, control) {
+        if self.handle_scrollbar_pointer_down(event, control, self_key) {
             event.meta.keep_focus();
             event.meta.stop_propagation();
             return;
@@ -16,8 +18,14 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_pointer_up(&mut self, event: &mut PointerUpEvent, control: &mut ViewportControl<'_>) {
-        if self.handle_scrollbar_pointer_up(event, control) {
+    fn dispatch_pointer_up(
+        &mut self,
+        event: &mut PointerUpEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
+    ) {
+        if self.handle_scrollbar_pointer_up(event, control, self_key) {
             event.meta.stop_propagation();
             return;
         }
@@ -32,6 +40,8 @@ impl EventTarget for Element {
         &mut self,
         event: &mut PointerMoveEvent,
         control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
     ) {
         if self.handle_scrollbar_pointer_move(event, control) {
             event.meta.stop_propagation();
@@ -44,7 +54,13 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_click(&mut self, event: &mut ClickEvent, control: &mut ViewportControl<'_>) {
+    fn dispatch_click(
+        &mut self,
+        event: &mut ClickEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
         if self.is_scrollbar_hit(event.pointer.local_x, event.pointer.local_y) {
             event.meta.stop_propagation();
             return;
@@ -56,7 +72,13 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_key_down(&mut self, event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_key_down(
+        &mut self,
+        event: &mut KeyDownEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.key_down {
                 handler(event, _control);
@@ -64,7 +86,13 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_key_up(&mut self, event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_key_up(
+        &mut self,
+        event: &mut KeyUpEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.key_up {
                 handler(event, _control);
@@ -72,7 +100,13 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_focus(&mut self, event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_focus(
+        &mut self,
+        event: &mut FocusEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.focus {
                 handler(event, _control);
@@ -80,7 +114,13 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_blur(&mut self, event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_blur(
+        &mut self,
+        event: &mut BlurEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.blur {
                 handler(event, _control);
@@ -104,7 +144,12 @@ impl EventTarget for Element {
         true
     }
 
-    fn dispatch_pointer_enter(&mut self, event: &mut PointerEnterEvent) {
+    fn dispatch_pointer_enter(
+        &mut self,
+        event: &mut PointerEnterEvent,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_enter {
                 handler(event);
@@ -112,7 +157,12 @@ impl EventTarget for Element {
         }
     }
 
-    fn dispatch_pointer_leave(&mut self, event: &mut PointerLeaveEvent) {
+    fn dispatch_pointer_leave(
+        &mut self,
+        event: &mut PointerLeaveEvent,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_leave {
                 handler(event);

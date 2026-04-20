@@ -1315,7 +1315,7 @@ mod tests {
         ctx.set_state(next_state);
 
         let deferred = ctx.take_deferred_node_ids();
-        let child_id = arena.get(child_k).unwrap().element.id();
+        let child_id = arena.get(child_k).unwrap().element.stable_id();
         assert!(deferred.contains(&child_id));
     }
 
@@ -3052,7 +3052,7 @@ mod tests {
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
         let child_key_k = commit_child(&mut arena, parent_key, Box::new(child));
-        let child_id = arena.get(child_key_k).unwrap().element.id();
+        let child_id = arena.get(child_key_k).unwrap().element.stable_id();
 
         measure_and_place(
             &mut arena,
@@ -3120,7 +3120,7 @@ mod tests {
         parent.apply_style(parent_style);
         let _ = parent.set_hovered(true);
         parent.set_scrollbar_shadow_blur_radius(0.0);
-        let parent_id = parent.id();
+        let parent_id = parent.stable_id();
 
         let child = Element::new(0.0, 0.0, 120.0, 360.0);
 
@@ -3576,7 +3576,7 @@ mod tests {
         let root_key = commit_element(&mut arena, Box::new(root));
 
         let mut container = Element::new(0.0, 0.0, 120.0, 120.0);
-        let container_id = container.id();
+        let container_id = container.stable_id();
         let mut container_style = Style::new();
         container_style.insert(
             PropertyId::BackgroundColor,
@@ -3596,7 +3596,7 @@ mod tests {
             ParsedValue::color_like(Color::hex("#ff0000")),
         );
         promoted_child.apply_style(promoted_child_style);
-        let promoted_child_id = promoted_child.id();
+        let promoted_child_id = promoted_child.stable_id();
         let _ = commit_child(&mut arena, container_key, Box::new(promoted_child));
 
         measure_and_place(
@@ -4255,7 +4255,7 @@ mod tests {
                 .bottom_left(Length::percent(90.0)),
         );
         el.apply_style(style);
-        let node_id = el.id();
+        let node_id = el.stable_id();
         let key = commit_element(&mut arena, Box::new(el));
 
         assert!(set_style_field_by_id(
@@ -4451,7 +4451,7 @@ mod tests {
     fn transform_style_sample_updates_element_transform_matrix() {
         let mut arena = new_test_arena();
         let el = Element::new(0.0, 0.0, 200.0, 150.0);
-        let node_id = el.id();
+        let node_id = el.stable_id();
         let transform = Transform::new([Translate::xy(Length::px(12.0), Length::px(18.0))]);
         let key = commit_element(&mut arena, Box::new(el));
 
@@ -4526,7 +4526,7 @@ mod tests {
     fn box_shadow_style_sample_updates_element_shadows() {
         let mut arena = new_test_arena();
         let el = Element::new(0.0, 0.0, 200.0, 150.0);
-        let node_id = el.id();
+        let node_id = el.stable_id();
         let shadows = vec![
             BoxShadow::new()
                 .color(Color::hex("#223344"))
@@ -4554,7 +4554,7 @@ mod tests {
     fn transform_origin_style_sample_updates_element_transform_matrix() {
         let mut arena = new_test_arena();
         let el = Element::new(0.0, 0.0, 200.0, 150.0);
-        let node_id = el.id();
+        let node_id = el.stable_id();
         let key = commit_element(&mut arena, Box::new(el));
 
         assert!(set_style_field_by_id(
@@ -4598,7 +4598,7 @@ mod tests {
         let _ = el.set_hovered(true);
         assert_eq!(el.transform, from);
 
-        let node_id = el.id();
+        let node_id = el.stable_id();
         let key = commit_element(&mut arena, Box::new(el));
 
         assert!(set_style_field_by_id(

@@ -1106,36 +1106,96 @@ pub trait EventTarget {
         &mut self,
         _event: &mut PointerDownEvent,
         _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
-    fn dispatch_pointer_up(&mut self, _event: &mut PointerUpEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_pointer_up(
+        &mut self,
+        _event: &mut PointerUpEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
     }
     fn dispatch_pointer_move(
         &mut self,
         _event: &mut PointerMoveEvent,
         _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
-    fn dispatch_pointer_enter(&mut self, _event: &mut PointerEnterEvent) {}
-    fn dispatch_pointer_leave(&mut self, _event: &mut PointerLeaveEvent) {}
-    fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
-    fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_pointer_enter(
+        &mut self,
+        _event: &mut PointerEnterEvent,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
     }
-    fn dispatch_key_up(&mut self, _event: &mut KeyUpEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_pointer_leave(
+        &mut self,
+        _event: &mut PointerLeaveEvent,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_click(
+        &mut self,
+        _event: &mut ClickEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_key_down(
+        &mut self,
+        _event: &mut KeyDownEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_key_up(
+        &mut self,
+        _event: &mut KeyUpEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
     fn dispatch_text_input(
         &mut self,
         _event: &mut crate::ui::TextInputEvent,
         _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
     fn dispatch_ime_preedit(
         &mut self,
         _event: &mut crate::ui::ImePreeditEvent,
         _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
-    fn dispatch_focus(&mut self, _event: &mut FocusEvent, _control: &mut ViewportControl<'_>) {}
-    fn dispatch_blur(&mut self, _event: &mut BlurEvent, _control: &mut ViewportControl<'_>) {}
+    fn dispatch_focus(
+        &mut self,
+        _event: &mut FocusEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_blur(
+        &mut self,
+        _event: &mut BlurEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
     fn cancel_pointer_interaction(&mut self) -> bool {
         false
     }
@@ -1185,7 +1245,7 @@ pub trait Renderable {
 }
 
 pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
-    fn id(&self) -> u64;
+    fn stable_id(&self) -> u64;
     fn box_model_snapshot(&self) -> BoxModelSnapshot;
 
     fn as_any(&self) -> &dyn std::any::Any;
@@ -1751,7 +1811,7 @@ impl ElementStyleSnapshot {
 }
 
 impl ElementTrait for Element {
-    fn id(&self) -> u64 {
+    fn stable_id(&self) -> u64 {
         self.core.id
     }
 

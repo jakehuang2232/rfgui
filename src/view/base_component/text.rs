@@ -1107,13 +1107,13 @@ fn measure_text_size(
 }
 
 impl ElementTrait for Text {
-    fn id(&self) -> u64 {
-        self.element.id()
+    fn stable_id(&self) -> u64 {
+        self.element.stable_id()
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         BoxModelSnapshot {
-            node_id: self.element.id(),
+            node_id: self.element.stable_id(),
             parent_id: self.element.parent_id(),
             x: self.layout_position.x,
             y: self.layout_position.y,
@@ -1575,7 +1575,7 @@ impl Renderable for Text {
             return ctx.into_state();
         }
 
-        let opacity = if ctx.is_node_promoted(self.id()) {
+        let opacity = if ctx.is_node_promoted(self.stable_id()) {
             1.0
         } else {
             self.opacity.clamp(0.0, 1.0)

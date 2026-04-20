@@ -58,7 +58,7 @@ impl crate::view::base_component::Renderable for Placeholder {
     }
 }
 impl ElementTrait for Placeholder {
-    fn id(&self) -> u64 {
+    fn stable_id(&self) -> u64 {
         0
     }
     fn box_model_snapshot(&self) -> crate::view::base_component::BoxModelSnapshot {

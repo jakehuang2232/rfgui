@@ -403,7 +403,7 @@ impl Viewport {
         for &root_key in &root_keys_for_build {
             // Peek at root id and promotion status without holding the
             // element out (avoid aliasing arena).
-            let Some(root_id) = arena.get(root_key).map(|n| n.element.id()) else {
+            let Some(root_id) = arena.get(root_key).map(|n| n.element.stable_id()) else {
                 continue;
             };
             if ctx.is_node_promoted(root_id) {

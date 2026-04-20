@@ -17,7 +17,7 @@ impl Viewport {
     pub(super) fn apply_hover_target(
         arena: &mut crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
-        target: Option<u64>,
+        target: Option<crate::view::node_arena::NodeKey>,
     ) -> bool {
         let mut changed = false;
         for &root_key in root_keys {
@@ -31,8 +31,8 @@ impl Viewport {
     pub(super) fn sync_hover_target(
         arena: &mut crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
-        hovered_node_id: &mut Option<u64>,
-        next_target: Option<u64>,
+        hovered_node_id: &mut Option<crate::view::node_arena::NodeKey>,
+        next_target: Option<crate::view::node_arena::NodeKey>,
     ) -> (bool, bool) {
         let transition_dispatched = crate::view::base_component::dispatch_hover_transition(
             arena,
@@ -48,8 +48,8 @@ impl Viewport {
     pub(super) fn sync_hover_visual_only(
         arena: &mut crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
-        hovered_node_id: &mut Option<u64>,
-        next_target: Option<u64>,
+        hovered_node_id: &mut Option<crate::view::node_arena::NodeKey>,
+        next_target: Option<crate::view::node_arena::NodeKey>,
     ) -> bool {
         *hovered_node_id = next_target;
         Self::apply_hover_target(arena, root_keys, next_target)
@@ -67,7 +67,7 @@ impl Viewport {
         ) {
             let offset = node.get_scroll_offset();
             if offset != (0.0, 0.0) {
-                map.insert(node.id(), offset);
+                map.insert(node.stable_id(), offset);
             }
             for child_key in node.children() {
                 if let Some(child_node) = arena.get(*child_key) {
@@ -92,7 +92,7 @@ impl Viewport {
             arena: &crate::view::node_arena::NodeArena,
             map: &FxHashMap<u64, (f32, f32)>,
         ) {
-            if let Some(offset) = map.get(&node.id()) {
+            if let Some(offset) = map.get(&node.stable_id()) {
                 node.set_scroll_offset(*offset);
             }
             let child_keys: Vec<crate::view::node_arena::NodeKey> = node.children().to_vec();
@@ -120,7 +120,7 @@ impl Viewport {
             map: &mut FxHashMap<u64, Box<dyn Any>>,
         ) {
             if let Some(snapshot) = node.snapshot_state() {
-                map.insert(node.id(), snapshot);
+                map.insert(node.stable_id(), snapshot);
             }
             for child_key in node.children() {
                 if let Some(child_node) = arena.get(*child_key) {
@@ -145,7 +145,7 @@ impl Viewport {
             arena: &crate::view::node_arena::NodeArena,
             map: &FxHashMap<u64, Box<dyn Any>>,
         ) {
-            if let Some(snapshot) = map.get(&node.id()) {
+            if let Some(snapshot) = map.get(&node.stable_id()) {
                 let _ = node.restore_state(snapshot.as_ref());
             }
             let child_keys: Vec<crate::view::node_arena::NodeKey> = node.children().to_vec();
@@ -311,7 +311,7 @@ impl Viewport {
         // helper only resolves the direct root; full-tree search via the
         // arena is handled by the dispatch/events stack and is out of
         // scope for this refactor step.
-        if root.id() == node_id {
+        if root.stable_id() == node_id {
             return root
                 .as_any_mut()
                 .downcast_mut::<crate::view::base_component::Element>();

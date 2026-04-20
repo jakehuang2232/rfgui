@@ -600,6 +600,8 @@ impl EventTarget for ParticleCanvas {
         &mut self,
         event: &mut PointerMoveEvent,
         _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::rfgui::view::node_arena::NodeArena,
+        _self_key: crate::rfgui::view::node_arena::NodeKey,
     ) {
         let w = self.layout_w;
         let h = self.layout_h;
@@ -619,6 +621,8 @@ impl EventTarget for ParticleCanvas {
         &mut self,
         event: &mut PointerDownEvent,
         _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::rfgui::view::node_arena::NodeArena,
+        _self_key: crate::rfgui::view::node_arena::NodeKey,
     ) {
         if event.pointer.button == Some(PointerButton::Left) {
             PARTICLE_SYSTEM.with(|sys| sys.borrow_mut().set_mass_boost(true));
@@ -629,6 +633,8 @@ impl EventTarget for ParticleCanvas {
         &mut self,
         event: &mut PointerUpEvent,
         _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::rfgui::view::node_arena::NodeArena,
+        _self_key: crate::rfgui::view::node_arena::NodeKey,
     ) {
         if event.pointer.button == Some(PointerButton::Left) {
             PARTICLE_SYSTEM.with(|sys| sys.borrow_mut().set_mass_boost(false));
@@ -746,7 +752,7 @@ impl Renderable for ParticleCanvas {
 }
 
 impl ElementTrait for ParticleCanvas {
-    fn id(&self) -> u64 { self.id }
+    fn stable_id(&self) -> u64 { self.id }
     fn parent_id(&self) -> Option<u64> { self.parent_id }
     fn set_parent_id(&mut self, id: Option<u64>) { self.parent_id = id; }
 

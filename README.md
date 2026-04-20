@@ -1,10 +1,10 @@
 # 🧩 RFGUI
 
-<div align="center">
+<div style="text-align: center;">
     <h3>
         <a href="https://jakehuang2232.github.io/rfgui/">Demo</a>
     </h3>
-    <abbr>(Web version is a little glitchy, use desktop for best experience)</abbr>
+    <abbr>(Since WASM cannot release allocated memory back to OS, it is not recommended to use the web version of RFGUI)</abbr>
 </div>
 
 ![example](https://github.com/user-attachments/assets/5274eb04-0329-46c2-9e14-424fd0dd3791)

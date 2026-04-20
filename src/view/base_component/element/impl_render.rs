@@ -56,11 +56,11 @@ impl Element {
         ctx.set_current_render_transform(accumulated_render_transform);
         trace_promoted_build(
             "base",
-            self.id(),
+            self.stable_id(),
             self.box_model_snapshot().parent_id,
             format!(
                 "promoted={} force_opaque={} children={} target={:?}",
-                ctx.is_node_promoted(self.id()),
+                ctx.is_node_promoted(self.stable_id()),
                 force_self_opaque,
                 self.children.len(),
                 ctx.current_target().and_then(|target| target.handle())
@@ -118,7 +118,7 @@ impl Element {
                 let next_ctx = arena
                     .with_element_taken(child_key, |child, arena| {
                         let ctx_local = ctx_in;
-                        if ctx_local.is_node_promoted(child.id()) {
+                        if ctx_local.is_node_promoted(child.stable_id()) {
                             return ctx_local;
                         }
                         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
@@ -157,10 +157,10 @@ impl Element {
                             .downcast_ref::<Element>()
                             .is_some_and(Element::should_append_to_root_viewport_render)
                         {
-                            ctx_local.append_to_defer(child.id());
+                            ctx_local.append_to_defer(child.stable_id());
                             return ctx_local;
                         }
-                        if ctx_local.is_node_promoted(child.id()) {
+                        if ctx_local.is_node_promoted(child.stable_id()) {
                             return ctx_local;
                         }
                         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
@@ -1320,7 +1320,7 @@ impl Element {
         layer_ctx.set_current_render_transform(ctx.current_render_transform());
         let layer_target = layer_ctx.allocate_persistent_target_with_key(
             graph,
-            crate::view::base_component::transformed_layer_stable_key(self.id()),
+            crate::view::base_component::transformed_layer_stable_key(self.stable_id()),
             source_bounds,
         );
         layer_ctx.set_current_target(layer_target);
@@ -1403,11 +1403,11 @@ impl Element {
     ) -> BuildState {
         trace_promoted_build(
             "compose-descendants",
-            self.id(),
+            self.stable_id(),
             self.box_model_snapshot().parent_id,
             format!(
                 "promoted={} children={} target={:?}",
-                ctx.is_node_promoted(self.id()),
+                ctx.is_node_promoted(self.stable_id()),
                 self.children.len(),
                 ctx.current_target().and_then(|target| target.handle())
             ),
@@ -1466,7 +1466,7 @@ impl Element {
                     }
                     let child_id = arena
                         .get(child_key)
-                        .map(|n| n.element.id())
+                        .map(|n| n.element.stable_id())
                         .unwrap_or(0);
                     if ctx.is_node_promoted(child_id) {
                         Self::build_promoted_child(
@@ -1509,7 +1509,7 @@ impl Element {
                         .get(child_key)
                         .map(|n| {
                             (
-                                n.element.id(),
+                                n.element.stable_id(),
                                 n.element
                                     .as_any()
                                     .downcast_ref::<Element>()
@@ -1640,7 +1640,7 @@ impl Element {
         );
         let mask_target = mask_ctx.allocate_persistent_target_with_key(
             graph,
-            crate::view::base_component::promoted_clip_mask_stable_key(self.id()),
+            crate::view::base_component::promoted_clip_mask_stable_key(self.stable_id()),
             self.promotion_composite_bounds(),
         );
         mask_ctx.set_current_target(mask_target);
@@ -1748,7 +1748,7 @@ impl Element {
             {
                 continue;
             }
-            if ctx.is_node_promoted(child.id()) {
+            if ctx.is_node_promoted(child.stable_id()) {
                 return true;
             }
             if let Some(element) = child.as_any().downcast_ref::<Element>() {
@@ -1771,7 +1771,7 @@ impl Element {
     ) -> BuildState {
         trace_promoted_build(
             "promoted-layer",
-            self.id(),
+            self.stable_id(),
             self.box_model_snapshot().parent_id,
             format!(
                 "context={context:?} requested={requested_update_kind:?} can_reuse_base={} target={:?}",
@@ -1804,7 +1804,7 @@ impl Element {
         let probe_ctx = UiBuildContext::from_parts(viewport.clone(), base_state.clone());
         let has_composited_descendants = self.has_composited_promoted_descendants(arena, &probe_ctx);
         let requested_composition_update_kind = probe_ctx
-            .promoted_composition_update_kind(self.id())
+            .promoted_composition_update_kind(self.stable_id())
             .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
         let can_reuse_final = can_reuse_base
             && matches!(
@@ -1813,7 +1813,7 @@ impl Element {
             );
         crate::view::viewport::record_debug_reuse_path(
             crate::view::viewport::DebugReusePathRecord {
-                node_id: self.id(),
+                node_id: self.stable_id(),
                 context,
                 requested: requested_update_kind,
                 can_reuse: if has_composited_descendants {
@@ -1865,7 +1865,7 @@ impl Element {
         let mut compose_ctx = UiBuildContext::from_parts(viewport, base_state);
         let final_target = compose_ctx.allocate_persistent_target_with_key(
             graph,
-            crate::view::base_component::promoted_final_layer_stable_key(self.id()),
+            crate::view::base_component::promoted_final_layer_stable_key(self.stable_id()),
             self.promotion_composite_bounds(),
         );
         if can_reuse_final {
@@ -1927,7 +1927,7 @@ impl Element {
         child: &mut Box<dyn ElementTrait>,
         mask_target: Option<RenderTargetOut>,
     ) {
-        let child_id = child.id();
+        let child_id = child.stable_id();
         trace_promoted_build(
             "promoted-child",
             child_id,
@@ -2038,7 +2038,7 @@ impl Element {
         );
         let layer_target = child_ctx.allocate_promoted_layer_target(
             graph,
-            child.id(),
+            child.stable_id(),
             child.promotion_composite_bounds(),
         );
         child_ctx.set_current_target(layer_target);
@@ -2054,7 +2054,7 @@ impl Element {
         } else if can_reuse {
             crate::view::viewport::record_debug_reuse_path(
                 crate::view::viewport::DebugReusePathRecord {
-                    node_id: child.id(),
+                    node_id: child.stable_id(),
                     context: crate::view::viewport::DebugReusePathContext::Child,
                     requested: update_kind,
                     can_reuse,
@@ -2067,7 +2067,7 @@ impl Element {
         } else {
             crate::view::viewport::record_debug_reuse_path(
                 crate::view::viewport::DebugReusePathRecord {
-                    node_id: child.id(),
+                    node_id: child.stable_id(),
                     context: crate::view::viewport::DebugReusePathContext::Child,
                     requested: update_kind,
                     can_reuse,

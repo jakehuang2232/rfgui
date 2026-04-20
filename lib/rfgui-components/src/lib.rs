@@ -124,7 +124,7 @@ mod tests {
         let mut viewport = rfgui::view::Viewport::new();
         let mut control = rfgui::view::ViewportControl::new(&mut viewport);
         let mut click = rfgui::ui::ClickEvent {
-            meta: EventMeta::new(NodeId(0)),
+            meta: EventMeta::new(NodeId::default()),
             pointer: PointerEventData {
                 viewport_x: 8.0,
                 viewport_y: 8.0,
@@ -344,7 +344,7 @@ mod tests {
 
         let mut control = rfgui::view::ViewportControl::new(viewport);
         let mut click = rfgui::ui::ClickEvent {
-            meta: EventMeta::new(NodeId(0)),
+            meta: EventMeta::new(NodeId::default()),
             pointer: PointerEventData {
                 viewport_x: x,
                 viewport_y: y,
@@ -484,7 +484,7 @@ mod tests {
                 let (id, snapshot, children) = {
                     let Some(node) = arena.get(key) else { continue };
                     let snap = node.element.snapshot_state();
-                    let id = node.element.id();
+                    let id = node.element.stable_id();
                     let kids = node.children.clone();
                     (id, snap, kids)
                 };
@@ -503,7 +503,7 @@ mod tests {
             for &key in keys {
                 let children = {
                     arena.with_element_taken(key, |el, _| {
-                        if let Some(snapshot) = snapshots.get(&el.id()) {
+                        if let Some(snapshot) = snapshots.get(&el.stable_id()) {
                             let _ = el.restore_state(snapshot.as_ref());
                         }
                     });
@@ -707,7 +707,7 @@ mod tests {
         };
 
         let mut event = TextChangeEvent {
-            meta: EventMeta::new(NodeId(0)),
+            meta: EventMeta::new(NodeId::default()),
             value: "12.5".to_string(),
         };
         handler.call(&mut event);
