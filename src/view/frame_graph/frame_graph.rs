@@ -4708,6 +4708,59 @@ impl<T> Default for ResourceCache<T> {
     }
 }
 
+/// Declares a process-wide `ResourceCache<T>` accessor fn.
+///
+/// Native: `static OnceLock<Mutex<...>>`, shared across threads.
+/// wasm32: `thread_local! RefCell<Option<...>>`, because wgpu resource types
+/// wrap `Rc<RefCell<..>>` on the Web backend and are therefore `!Send`/`!Sync`.
+#[macro_export]
+macro_rules! static_resource_cache {
+    (
+        fn $fn_name:ident -> ResourceCache<$cache_ty:ty> = stats($stats_name:literal)
+    ) => {
+        fn $fn_name<__R>(
+            f: impl FnOnce(&mut $crate::view::frame_graph::ResourceCache<$cache_ty>) -> __R,
+        ) -> __R {
+            static STATS: $crate::view::frame_graph::CacheStats =
+                $crate::view::frame_graph::CacheStats::new($stats_name);
+
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                static CACHE: ::std::sync::OnceLock<
+                    ::std::sync::Mutex<$crate::view::frame_graph::ResourceCache<$cache_ty>>,
+                > = ::std::sync::OnceLock::new();
+                let cache = CACHE.get_or_init(|| {
+                    $crate::view::frame_graph::register_cache_stats(&STATS);
+                    ::std::sync::Mutex::new(
+                        $crate::view::frame_graph::ResourceCache::with_stats(&STATS),
+                    )
+                });
+                f(&mut cache.lock().unwrap())
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                ::std::thread_local! {
+                    static CACHE: ::std::cell::RefCell<
+                        ::std::option::Option<
+                            $crate::view::frame_graph::ResourceCache<$cache_ty>,
+                        >,
+                    > = const { ::std::cell::RefCell::new(None) };
+                }
+                CACHE.with(|c| {
+                    let mut borrowed = c.borrow_mut();
+                    if borrowed.is_none() {
+                        $crate::view::frame_graph::register_cache_stats(&STATS);
+                        *borrowed = Some(
+                            $crate::view::frame_graph::ResourceCache::with_stats(&STATS),
+                        );
+                    }
+                    f(borrowed.as_mut().unwrap())
+                })
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

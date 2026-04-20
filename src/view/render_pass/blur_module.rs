@@ -3,8 +3,8 @@ use crate::view::frame_graph::{
     BufferDesc, BufferReadUsage, BufferResource, FrameGraph, FrameResourceContext,
 };
 use crate::view::frame_graph::{
-    CacheStats, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    PrepareContext, ResourceCache, TextureDesc, register_cache_stats,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext, TextureDesc,
 };
 use crate::view::render_pass::ClearPass;
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
@@ -15,7 +15,6 @@ use crate::view::render_pass::render_target::{
     render_target_view,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
 const BLUR_RESOURCES: u64 = 202;
@@ -501,14 +500,8 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
     }
 }
 
-fn with_blur_resources_cache<R>(f: impl FnOnce(&mut ResourceCache<BlurResources>) -> R) -> R {
-    static STATS: CacheStats = CacheStats::new("blur_module_pipeline");
-    static CACHE: OnceLock<Mutex<ResourceCache<BlurResources>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        register_cache_stats(&STATS);
-        Mutex::new(ResourceCache::with_stats(&STATS))
-    });
-    f(&mut cache.lock().unwrap())
+crate::static_resource_cache! {
+    fn with_blur_resources_cache -> ResourceCache<BlurResources> = stats("blur_module_pipeline")
 }
 
 pub fn clear_blur_resources_cache() {

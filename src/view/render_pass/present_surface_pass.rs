@@ -1,4 +1,3 @@
-use crate::view::frame_graph::{CacheStats, ResourceCache, register_cache_stats};
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
@@ -8,7 +7,6 @@ use crate::view::frame_graph::{
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::{render_target_ref, render_target_view};
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
 
 const PRESENT_SURFACE_RESOURCES: u64 = 401;
 
@@ -255,16 +253,9 @@ fn present_surface_shader_source() -> &'static str {
     include_str!("../../shader/present_surface.wgsl")
 }
 
-fn with_present_surface_resources_cache<R>(
-    f: impl FnOnce(&mut ResourceCache<PresentSurfaceResources>) -> R,
-) -> R {
-    static STATS: CacheStats = CacheStats::new("present_surface_pipeline");
-    static CACHE: OnceLock<Mutex<ResourceCache<PresentSurfaceResources>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        register_cache_stats(&STATS);
-        Mutex::new(ResourceCache::with_stats(&STATS))
-    });
-    f(&mut cache.lock().unwrap())
+crate::static_resource_cache! {
+    fn with_present_surface_resources_cache -> ResourceCache<PresentSurfaceResources>
+        = stats("present_surface_pipeline")
 }
 
 pub fn clear_present_surface_resources_cache() {

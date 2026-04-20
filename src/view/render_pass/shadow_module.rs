@@ -1,4 +1,3 @@
-use crate::view::frame_graph::{CacheStats, ResourceCache, register_cache_stats};
 use crate::view::frame_graph::{
     FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, TextureDesc,
 };
@@ -14,7 +13,6 @@ use crate::view::render_pass::texture_composite_pass::{
     TextureCompositePass, TextureCompositeSourceIn,
 };
 use crate::view::render_pass::{ClearPass, GraphicsPass};
-use std::sync::{Mutex, OnceLock};
 
 const SHADOW_RESOURCES: u64 = 203;
 const SHADOW_INTERMEDIATE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -465,14 +463,8 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
     true
 }
 
-fn with_shadow_resources_cache<R>(f: impl FnOnce(&mut ResourceCache<ShadowResources>) -> R) -> R {
-    static STATS: CacheStats = CacheStats::new("shadow_pipeline");
-    static CACHE: OnceLock<Mutex<ResourceCache<ShadowResources>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        register_cache_stats(&STATS);
-        Mutex::new(ResourceCache::with_stats(&STATS))
-    });
-    f(&mut cache.lock().unwrap())
+crate::static_resource_cache! {
+    fn with_shadow_resources_cache -> ResourceCache<ShadowResources> = stats("shadow_pipeline")
 }
 
 pub fn clear_shadow_resources_cache() {

@@ -471,6 +471,7 @@ fn ButtonView(
                     .justify_content(JustifyContent::Center)
                     .align(Align::Center),
                 gap: icon_gap,
+                color: resolved_text_color,
                 padding: root_padding,
                 border_radius: root_border_radius,
                 border: border,
@@ -490,12 +491,7 @@ fn ButtonView(
             on_click={if !disabled && !repeat_enabled { on_click } else { None }}
         >
             {start_icon}
-            <Text
-                font_size={spec.font_size}
-                style={{
-                    color: resolved_text_color,
-                }}
-            >
+            <Text font_size={spec.font_size}>
                 {children}
             </Text>
             {end_icon}
