@@ -1,3 +1,8 @@
+---
+name: m05-components
+description: rfgui component and RSX authoring rules — typed-only RSX, #[props] macro conventions, required vs optional props, style={{ }} usage, typed event handlers. Use whenever the user writes or modifies a component, defines props, uses the rsx! macro, asks about #[component] / RsxComponent / RsxTag, or wonders why dynamic tags or string-based styles are rejected.
+---
+
 # Components / RSX
 
 ## Core
