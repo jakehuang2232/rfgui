@@ -1119,12 +1119,9 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
             #(#diagnostics)*
             let _ = ::core::marker::PhantomData::<#close_tag>;
             #children_schema_check
-            ::rfgui::ui::create_element::<#tag>(
-                {
-                    let mut __init: <#tag as ::rfgui::ui::RsxTag>::Props =
-                        ::core::default::Default::default();
+            ::rfgui::ui::__rsx_create_element::<#tag, _>(
+                |__init: &mut <#tag as ::rfgui::ui::RsxTag>::Props| {
                     #(#prop_assignments)*
-                    __init
                 },
                 #children_value,
                 #component_key,

@@ -235,7 +235,7 @@ impl GraphicsPass for CompositeLayerPass {
             Some(device) => device.clone(),
             None => return,
         };
-        let format = ctx.viewport().surface_format();
+        let format = ctx.viewport().offscreen_format();
         let sample_count = self
             .output
             .render_target

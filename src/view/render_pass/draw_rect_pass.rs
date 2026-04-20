@@ -439,7 +439,7 @@ impl DrawRectPass {
             self.prepared_dynamic_offset = 0;
             return;
         };
-        let format = ctx.viewport.surface_format();
+        let format = ctx.viewport.offscreen_format();
         let sample_count = self
             .output
             .render_target
@@ -887,7 +887,7 @@ fn encode_draw_rect_into_existing_pass(
         Some(device) => device.clone(),
         None => return,
     };
-    let format = ctx.viewport().surface_format();
+    let format = ctx.viewport().offscreen_format();
     let sample_count = draw
         .color_target
         .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))

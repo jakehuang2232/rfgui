@@ -319,7 +319,7 @@ impl GraphicsPass for TextureCompositePass {
             Some(device) => device.clone(),
             None => return,
         };
-        let format = ctx.viewport().surface_format();
+        let format = ctx.viewport().offscreen_format();
         let sample_count = self
             .output
             .render_target
@@ -551,7 +551,7 @@ pub(crate) fn composite_immediate(
     let Some(device) = ctx.viewport.device().cloned() else {
         return;
     };
-    let format = ctx.viewport.surface_format();
+    let format = ctx.viewport.offscreen_format();
     let sample_count = if offscreen_msaa_view.is_some() {
         ctx.viewport.msaa_sample_count()
     } else {

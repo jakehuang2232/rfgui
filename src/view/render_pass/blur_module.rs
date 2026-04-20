@@ -184,8 +184,8 @@ impl GraphicsPass for BlurStagePass {
         };
         let format = match self.output.render_target.handle() {
             Some(handle) => render_target_format(ctx.frame_resources(), handle)
-                .unwrap_or(ctx.viewport().surface_format()),
-            None => ctx.viewport().surface_format(),
+                .unwrap_or(ctx.viewport().offscreen_format()),
+            None => ctx.viewport().offscreen_format(),
         };
         with_blur_resources_cache(|cache| {
             let resources =

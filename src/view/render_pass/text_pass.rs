@@ -301,7 +301,7 @@ impl GraphicsPass for TextPass {
         };
         let (screen_w, screen_h) = target_size;
         let scale = viewport.scale_factor();
-        let format = viewport.surface_format();
+        let format = viewport.offscreen_format();
         with_text_resources(&device, &queue, format, |resources| {
             let renderer_key = TextRendererKey {
                 sample_count: output_sample_count,
@@ -580,7 +580,7 @@ impl GraphicsPass for TextPass {
             Some(device) => device,
             None => return,
         };
-        let format = ctx.viewport().surface_format();
+        let format = ctx.viewport().offscreen_format();
         with_text_resources_for_render(format, |resources| {
             let fallback_surface_size = ctx.viewport().surface_size();
             let target_meta = resolve_texture_ref(
