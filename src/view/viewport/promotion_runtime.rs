@@ -3,11 +3,12 @@
 use super::*;
 
 impl Viewport {
-    pub(super) fn update_promotion_state(&mut self, roots: &[Box<dyn crate::view::base_component::ElementTrait>]) {
+    pub(super) fn update_promotion_state(&mut self) {
         let active_animator_hints = self.transitions.animation_plugin.active_promotion_hints();
         let active_channels = active_channels_by_node(&self.transitions.transition_claims);
         let candidates = collect_promotion_candidates(
-            roots,
+            &self.scene.node_arena,
+            &self.scene.ui_root_keys,
             &active_animator_hints,
             &active_channels,
             (self.logical_width, self.logical_height),
@@ -28,14 +29,18 @@ impl Viewport {
         }
         let (mut updates, next_base_signatures, next_composition_signatures) =
             collect_promoted_layer_updates(
-                roots,
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
                 &self.compositor.promotion_state.promoted_node_ids,
                 &self.compositor.promoted_base_signatures,
                 &self.compositor.promoted_composition_signatures,
             );
         if self.debug_options.trace_reuse_path {
-            let subtree_signatures =
-                collect_debug_subtree_signatures(roots, &self.compositor.promotion_state.promoted_node_ids);
+            let subtree_signatures = collect_debug_subtree_signatures(
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+                &self.compositor.promotion_state.promoted_node_ids,
+            );
             let previous_subtree_signatures = &self.compositor.debug_previous_subtree_signatures;
             let mut sampled_roots = take_debug_style_sample_records()
                 .into_iter()
@@ -45,11 +50,18 @@ impl Viewport {
             sampled_roots.dedup();
             for (target, root_id) in sampled_roots {
                 if let Some(update) = updates.iter().find(|update| update.node_id == root_id) {
-                    let ancestry = roots
+                    let ancestry = self
+                        .scene
+                        .ui_root_keys
                         .iter()
                         .rev()
-                        .find_map(|root| {
-                            crate::view::base_component::get_node_ancestry_ids(root.as_ref(), target)
+                        .find_map(|&rk| {
+                            let root_node = self.scene.node_arena.get(rk)?;
+                            crate::view::base_component::get_node_ancestry_ids(
+                                root_node.element.as_ref(),
+                                target,
+                                &self.scene.node_arena,
+                            )
                         })
                         .unwrap_or_default();
                     let walk_desc = ancestry

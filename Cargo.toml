@@ -27,6 +27,7 @@ naga_oil = { version = "0.22", default-features = false }
 naga = "29.0.1"
 smol_str = "0.3"
 bitflags = "2"
+slotmap = "1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.6.1"

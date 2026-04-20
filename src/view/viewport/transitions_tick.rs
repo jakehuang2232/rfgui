@@ -101,11 +101,11 @@ impl Viewport {
         false
     }
 
-    pub(super) fn cancel_disallowed_transition_tracks(
-        &mut self,
-        roots: &[Box<dyn crate::view::base_component::ElementTrait>],
-    ) -> bool {
-        let allowlist = crate::view::base_component::collect_transition_track_allowlist(roots);
+    pub(super) fn cancel_disallowed_transition_tracks(&mut self) -> bool {
+        let allowlist = crate::view::base_component::collect_transition_track_allowlist(
+            &self.scene.node_arena,
+            &self.scene.ui_root_keys,
+        );
         let active_keys = self.transitions.transition_claims.keys().copied().collect::<Vec<_>>();
         let mut canceled = false;
         for key in active_keys {
@@ -172,7 +172,7 @@ impl Viewport {
 
     fn trace_style_sample_apply(
         &self,
-        roots: &[Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &crate::view::node_arena::NodeArena,
         target: u64,
         field: StyleField,
         value: StyleValue,
@@ -182,28 +182,51 @@ impl Viewport {
         if !self.debug_options.trace_reuse_path {
             return;
         }
-        let promoted_root = roots.iter().find_map(|root| {
-            let root_id = root.id();
+        let root_keys = &self.scene.ui_root_keys;
+        let promoted_root = root_keys.iter().find_map(|&rk| {
+            let root_node = arena.get(rk)?;
+            let root_id = root_node.element.id();
             if !self.compositor.promotion_state.promoted_node_ids.contains(&root_id) {
                 return None;
             }
             if root_id == target
-                || crate::view::base_component::subtree_contains_node(root.as_ref(), root_id, target)
+                || self.scene.ui_root_keys.iter().any(|&inner_rk| {
+                    crate::view::base_component::subtree_contains_node(
+                        arena,
+                        inner_rk,
+                        root_id,
+                        target,
+                    )
+                })
             {
                 Some(root_id)
             } else {
                 None
             }
         });
-        let state = roots.iter().rev().find_map(|root| {
-            crate::view::base_component::get_debug_element_render_state_by_id(root.as_ref(), target)
+        let state = root_keys.iter().rev().find_map(|&rk| {
+            let root_node = arena.get(rk)?;
+            crate::view::base_component::get_debug_element_render_state_by_id(
+                root_node.element.as_ref(),
+                target,
+                arena,
+            )
         });
-        let ancestry = roots
-            .iter()
-            .rev()
-            .find_map(|root| crate::view::base_component::get_node_ancestry_ids(root.as_ref(), target));
-        let after_signatures = roots.iter().rev().find_map(|root| {
-            crate::view::base_component::get_debug_promotion_signatures_by_id(root.as_ref(), target)
+        let ancestry = root_keys.iter().rev().find_map(|&rk| {
+            let root_node = arena.get(rk)?;
+            crate::view::base_component::get_node_ancestry_ids(
+                root_node.element.as_ref(),
+                target,
+                arena,
+            )
+        });
+        let after_signatures = root_keys.iter().rev().find_map(|&rk| {
+            let root_node = arena.get(rk)?;
+            crate::view::base_component::get_debug_promotion_signatures_by_id(
+                root_node.element.as_ref(),
+                target,
+                arena,
+            )
         });
         let state_desc = match state {
             Some(state) => format!(
@@ -309,20 +332,23 @@ impl Viewport {
     }
 
     fn apply_scroll_sample(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &mut crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         target: TrackTarget,
         axis: ScrollAxis,
         value: f32,
     ) -> bool {
-        for root in roots.iter_mut().rev() {
+        for &root_key in root_keys.iter().rev() {
             if let Some((x, y)) =
-                crate::view::base_component::get_scroll_offset_by_id(root.as_ref(), target)
+                crate::view::base_component::get_scroll_offset_by_id(arena, root_key, target)
             {
                 let next = match axis {
                     ScrollAxis::X => (value, y),
                     ScrollAxis::Y => (x, value),
                 };
-                return crate::view::base_component::set_scroll_offset_by_id(root.as_mut(), target, next);
+                return crate::view::base_component::set_scroll_offset_by_id(
+                    arena, root_key, target, next,
+                );
             }
         }
         false
@@ -343,14 +369,16 @@ impl Viewport {
 
     pub(super) fn run_pre_layout_transitions(
         &mut self,
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
         dt: f32,
         now_seconds: f64,
     ) -> bool {
+        let mut arena = std::mem::take(&mut self.scene.node_arena);
+        let root_keys = self.scene.ui_root_keys.clone();
         let mut layout_requests = Vec::new();
-        for root in roots.iter_mut() {
+        for &root_key in &root_keys {
             crate::view::base_component::take_layout_transition_requests(
-                root.as_mut(),
+                &mut arena,
+                root_key,
                 &mut layout_requests,
             );
         }
@@ -387,9 +415,10 @@ impl Viewport {
         let mut changed = false;
         let layout_samples = self.transitions.layout_transition_plugin.take_samples();
         for sample in layout_samples {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_layout_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value.clone(),
@@ -399,6 +428,7 @@ impl Viewport {
                 }
             }
         }
+        self.scene.node_arena = arena;
         if layout_result.keep_running {
             self.request_redraw();
         }
@@ -407,34 +437,43 @@ impl Viewport {
 
     pub(super) fn run_post_layout_transitions(
         &mut self,
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
         dt: f32,
         now_seconds: f64,
     ) -> PostLayoutTransitionResult {
-        let live_node_ids = crate::view::base_component::collect_node_id_allowlist(roots);
+        let mut arena = std::mem::take(&mut self.scene.node_arena);
+        let root_keys = self.scene.ui_root_keys.clone();
+        let live_node_ids =
+            crate::view::base_component::collect_node_id_allowlist(&arena, &root_keys);
         self.transitions.animation_plugin.prune_targets(&live_node_ids);
         let mut animation_requests = Vec::new();
-        for root in roots.iter_mut() {
-            crate::view::base_component::take_animation_requests(root.as_mut(), &mut animation_requests);
+        for &root_key in &root_keys {
+            crate::view::base_component::take_animation_requests(
+                &mut arena,
+                root_key,
+                &mut animation_requests,
+            );
         }
         let mut style_requests = Vec::new();
-        for root in roots.iter_mut() {
+        for &root_key in &root_keys {
             crate::view::base_component::take_style_transition_requests(
-                root.as_mut(),
+                &mut arena,
+                root_key,
                 &mut style_requests,
             );
         }
         let mut layout_requests = Vec::new();
-        for root in roots.iter_mut() {
+        for &root_key in &root_keys {
             crate::view::base_component::take_layout_transition_requests(
-                root.as_mut(),
+                &mut arena,
+                root_key,
                 &mut layout_requests,
             );
         }
         let mut visual_requests = Vec::new();
-        for root in roots.iter_mut() {
+        for &root_key in &root_keys {
             crate::view::base_component::take_visual_transition_requests(
-                root.as_mut(),
+                &mut arena,
+                root_key,
                 &mut visual_requests,
             );
         }
@@ -560,20 +599,23 @@ impl Viewport {
         let mut relayout_required = false;
         for sample in samples {
             redraw_changed |=
-                Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
+                Self::apply_scroll_sample(&mut arena, &root_keys, sample.target, sample.axis, sample.value);
         }
         let style_samples = self.transitions.style_transition_plugin.take_samples();
         for sample in style_samples {
-            let before_signatures = roots.iter().rev().find_map(|root| {
+            let before_signatures = root_keys.iter().rev().find_map(|&rk| {
+                let root_node = arena.get(rk)?;
                 crate::view::base_component::get_debug_promotion_signatures_by_id(
-                    root.as_ref(),
+                    root_node.element.as_ref(),
                     sample.target,
+                    &arena,
                 )
             });
             let mut applied = false;
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_style_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value.clone(),
@@ -587,7 +629,7 @@ impl Viewport {
                 }
             }
             self.trace_style_sample_apply(
-                roots,
+                &arena,
                 sample.target,
                 sample.field,
                 sample.value,
@@ -597,9 +639,10 @@ impl Viewport {
         }
         let animation_style_samples = self.transitions.animation_plugin.take_style_samples();
         for sample in animation_style_samples {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_style_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value.clone(),
@@ -614,9 +657,10 @@ impl Viewport {
         }
         let visual_samples = self.transitions.visual_transition_plugin.take_samples();
         for sample in visual_samples {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_visual_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value.clone(),
@@ -628,9 +672,10 @@ impl Viewport {
         }
         let layout_samples = self.transitions.layout_transition_plugin.take_samples();
         for sample in layout_samples {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_layout_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value,
@@ -643,9 +688,10 @@ impl Viewport {
         }
         let animation_layout_samples = self.transitions.animation_plugin.take_layout_samples();
         for sample in animation_layout_samples {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_layout_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value,
@@ -656,6 +702,7 @@ impl Viewport {
                 }
             }
         }
+        self.scene.node_arena = arena;
         if scroll_result.keep_running
             || style_result.keep_running
             || animation_result.keep_running
@@ -676,11 +723,11 @@ impl Viewport {
         }
     }
 
-    pub(super) fn sync_inflight_transition_state(
-        &mut self,
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
-    ) -> bool {
-        let live_node_ids = crate::view::base_component::collect_node_id_allowlist(roots);
+    pub(super) fn sync_inflight_transition_state(&mut self) -> bool {
+        let mut arena = std::mem::take(&mut self.scene.node_arena);
+        let root_keys = self.scene.ui_root_keys.clone();
+        let live_node_ids =
+            crate::view::base_component::collect_node_id_allowlist(&arena, &root_keys);
         self.transitions.animation_plugin.prune_targets(&live_node_ids);
         let now = Instant::now();
         let epoch = self.transitions.transition_epoch.get_or_insert(now);
@@ -721,19 +768,28 @@ impl Viewport {
 
         let mut changed = false;
         for sample in self.transitions.scroll_transition_plugin.take_samples() {
-            changed |= Self::apply_scroll_sample(roots, sample.target, sample.axis, sample.value);
+            changed |= Self::apply_scroll_sample(
+                &mut arena,
+                &root_keys,
+                sample.target,
+                sample.axis,
+                sample.value,
+            );
         }
         for sample in self.transitions.style_transition_plugin.take_samples() {
-            let before_signatures = roots.iter().rev().find_map(|root| {
+            let before_signatures = root_keys.iter().rev().find_map(|&rk| {
+                let root_node = arena.get(rk)?;
                 crate::view::base_component::get_debug_promotion_signatures_by_id(
-                    root.as_ref(),
+                    root_node.element.as_ref(),
                     sample.target,
+                    &arena,
                 )
             });
             let mut applied = false;
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_style_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value.clone(),
@@ -744,7 +800,7 @@ impl Viewport {
                 }
             }
             self.trace_style_sample_apply(
-                roots,
+                &arena,
                 sample.target,
                 sample.field,
                 sample.value,
@@ -753,9 +809,10 @@ impl Viewport {
             );
         }
         for sample in self.transitions.animation_plugin.take_style_samples() {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_style_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value.clone(),
@@ -766,9 +823,10 @@ impl Viewport {
             }
         }
         for sample in self.transitions.visual_transition_plugin.take_samples() {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_visual_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value,
@@ -779,9 +837,10 @@ impl Viewport {
             }
         }
         for sample in self.transitions.layout_transition_plugin.take_samples() {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_layout_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value,
@@ -792,9 +851,10 @@ impl Viewport {
             }
         }
         for sample in self.transitions.animation_plugin.take_layout_samples() {
-            for root in roots.iter_mut().rev() {
+            for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::set_layout_field_by_id(
-                    root.as_mut(),
+                    &mut arena,
+                    root_key,
                     sample.target,
                     sample.field,
                     sample.value,
@@ -804,6 +864,7 @@ impl Viewport {
                 }
             }
         }
+        self.scene.node_arena = arena;
 
         changed
             || scroll_result.keep_running

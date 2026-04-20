@@ -3,22 +3,34 @@ use super::*;
 impl Viewport {
     /// Run a single layout pass: measure → place → collect_box_models.
     /// Returns profiling data for the pass.
-    fn run_layout_pass(
-        &mut self,
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
-    ) -> LayoutPassResult {
+    fn run_layout_pass(&mut self) -> LayoutPassResult {
         self.compositor.frame_box_models.clear();
         crate::view::base_component::reset_text_measure_profile();
 
+        // Take the arena out of the scene so we can pass it by &mut into
+        // layout without aliasing the viewport; restore at the end.
+        let mut arena = std::mem::take(&mut self.scene.node_arena);
+        let root_keys = self.scene.ui_root_keys.clone();
+
         let measure_started_at = Instant::now();
-        for root in roots.iter_mut() {
-            root.measure(crate::view::base_component::LayoutConstraints {
-                max_width: self.logical_width,
-                max_height: self.logical_height,
-                viewport_width: self.logical_width,
-                viewport_height: self.logical_height,
-                percent_base_width: Some(self.logical_width),
-                percent_base_height: Some(self.logical_height),
+        let constraints = crate::view::base_component::LayoutConstraints {
+            max_width: self.logical_width,
+            max_height: self.logical_height,
+            viewport_width: self.logical_width,
+            viewport_height: self.logical_height,
+            percent_base_width: Some(self.logical_width),
+            percent_base_height: Some(self.logical_height),
+        };
+        // Refresh the per-node subtree-dirty cache once at the top of the
+        // measure pass so every Element::measure / place can read
+        // subtree_dirty_flags via an O(1) cache lookup instead of walking
+        // its entire subtree (an O(N²) trap pre-cache).
+        for &root_key in &root_keys {
+            arena.refresh_subtree_dirty_cache(root_key);
+        }
+        for &root_key in &root_keys {
+            arena.with_element_taken(root_key, |root, arena| {
+                root.measure(constraints, arena);
             });
         }
         let measure_ms = measure_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -26,25 +38,34 @@ impl Viewport {
 
         let place_started_at = Instant::now();
         crate::view::base_component::reset_layout_place_profile();
-        for root in roots.iter_mut() {
-            root.place(crate::view::base_component::LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: self.logical_width,
-                available_height: self.logical_height,
-                viewport_width: self.logical_width,
-                viewport_height: self.logical_height,
-                percent_base_width: Some(self.logical_width),
-                percent_base_height: Some(self.logical_height),
+        let placement = crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: self.logical_width,
+            available_height: self.logical_height,
+            viewport_width: self.logical_width,
+            viewport_height: self.logical_height,
+            percent_base_width: Some(self.logical_width),
+            percent_base_height: Some(self.logical_height),
+        };
+        // Measure mutated per-node dirty bits, so refresh the cache again
+        // before place so `Element::place` can read it in O(1).
+        for &root_key in &root_keys {
+            arena.refresh_subtree_dirty_cache(root_key);
+        }
+        for &root_key in &root_keys {
+            arena.with_element_taken(root_key, |root, arena| {
+                root.place(placement, arena);
             });
         }
         let place_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;
         let place_profile = crate::view::base_component::take_layout_place_profile();
 
+        self.scene.node_arena = arena;
         let collect_started_at = Instant::now();
-        self.refresh_frame_box_models(roots);
+        self.refresh_frame_box_models();
         let collect_box_models_ms = collect_started_at.elapsed().as_secs_f64() * 1000.0;
 
         LayoutPassResult {
@@ -58,7 +79,6 @@ impl Viewport {
 
     fn push_debug_reuse_overlay_geometry(
         &mut self,
-        roots: &[Box<dyn crate::view::base_component::ElementTrait>],
         reuse_records: &[DebugReusePathRecord],
     ) {
         if !self.debug_options.trace_reuse_path {
@@ -67,10 +87,11 @@ impl Viewport {
         let scale = self.scale_factor.max(0.0001);
         let screen_w = self.gpu.surface_config.width.max(1) as f32;
         let screen_h = self.gpu.surface_config.height.max(1) as f32;
+        let arena = &self.scene.node_arena;
         let mut snapshots_by_id: FxHashMap<u64, crate::view::base_component::BoxModelSnapshot> =
             FxHashMap::default();
-        for root in roots.iter() {
-            for snapshot in crate::view::base_component::collect_box_models(root.as_ref()) {
+        for &root_key in &self.scene.ui_root_keys {
+            for snapshot in crate::view::base_component::collect_box_models(root_key, arena) {
                 snapshots_by_id.insert(snapshot.node_id, snapshot);
             }
         }
@@ -272,12 +293,7 @@ impl Viewport {
         )
     }
 
-    fn render_render_tree(
-        &mut self,
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
-        dt: f32,
-        now_seconds: f64,
-    ) -> bool {
+    fn render_render_tree(&mut self, dt: f32, now_seconds: f64) -> bool {
         let frame_start = Instant::now();
         set_debug_trace_enabled(self.debug_options.trace_reuse_path);
         trace_promoted_build_frame_marker();
@@ -303,7 +319,7 @@ impl Viewport {
             self.debug_options.trace_render_time,
         );
         let layout_started_at = Instant::now();
-        let layout_result = self.run_layout_pass(roots);
+        let layout_result = self.run_layout_pass();
         timings.layout_measure_ms = layout_result.measure_ms;
         timings.layout_place_ms = layout_result.place_ms;
         timings.layout_collect_box_models_ms = layout_result.collect_box_models_ms;
@@ -314,14 +330,14 @@ impl Viewport {
         // After layout is resolved for this frame, immediately run visual/style/scroll transitions
         // so their updated endpoints are visible in the same frame.
         let post_layout_transition_started_at = Instant::now();
-        let post_layout_transition = self.run_post_layout_transitions(roots, dt, now_seconds);
+        let post_layout_transition = self.run_post_layout_transitions(dt, now_seconds);
         timings.post_layout_transition_ms =
             post_layout_transition_started_at.elapsed().as_secs_f64() * 1000.0;
 
         // --- Relayout after transition (if needed) ---
         let relayout_started_at = Instant::now();
         if post_layout_transition.relayout_required {
-            let relayout_result = self.run_layout_pass(roots);
+            let relayout_result = self.run_layout_pass();
             timings.relayout_measure_ms = relayout_result.measure_ms;
             timings.relayout_place_ms = relayout_result.place_ms;
             timings.relayout_collect_box_models_ms = relayout_result.collect_box_models_ms;
@@ -331,7 +347,7 @@ impl Viewport {
 
         // --- Promotion ---
         let update_promotion_started_at = Instant::now();
-        self.update_promotion_state(roots);
+        self.update_promotion_state();
         timings.update_promotion_ms =
             update_promotion_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -378,44 +394,82 @@ impl Viewport {
         }
         graph.add_graphics_pass(clear_pass);
         ctx.set_current_target(output);
-        for root in roots.iter_mut() {
-            if ctx.is_node_promoted(root.id()) {
-                let root_id = root.id();
+        // Take the arena out of the scene for the duration of the build
+        // walk so the build chain can thread `&mut NodeArena` through
+        // without fighting the outer `&mut self` borrow. Put it back
+        // before returning (any early-return below restores it first).
+        let mut arena = std::mem::take(&mut self.scene.node_arena);
+        let root_keys_for_build = self.scene.ui_root_keys.clone();
+        for &root_key in &root_keys_for_build {
+            // Peek at root id and promotion status without holding the
+            // element out (avoid aliasing arena).
+            let Some(root_id) = arena.get(root_key).map(|n| n.element.id()) else {
+                continue;
+            };
+            if ctx.is_node_promoted(root_id) {
                 let requested_update = ctx
                     .promoted_update_kind(root_id)
                     .unwrap_or(PromotedLayerUpdateKind::Reraster);
-                if let Some(element) = root
-                    .as_any_mut()
-                    .downcast_mut::<crate::view::base_component::Element>()
-                {
-                    if let Some(reason) = element.inline_promotion_rendering_reason() {
-                        if reason != "child-scissor-clip-inline"
-                            && reason != "child-stencil-clip-inline"
-                        {
-                            record_debug_reuse_path(DebugReusePathRecord {
-                                node_id: root_id,
-                                context: DebugReusePathContext::Root,
-                                requested: requested_update,
-                                can_reuse: false,
-                                actual: PromotedLayerUpdateKind::Reraster,
-                                reason: Some(reason),
-                                clip_rect: element.absolute_clip_scissor_rect(),
-                            });
-                            let next_state = element.build(
-                                &mut graph,
-                                crate::view::base_component::UiBuildContext::from_parts(
-                                    ctx.viewport(),
-                                    ctx.state_clone(),
-                                ),
-                            );
-                            ctx.set_state(next_state);
-                            continue;
-                        }
+                // Try inline promotion rendering reason on Element first.
+                let (inline_reason, inline_clip_rect): (Option<&'static str>, _) = {
+                    let node = arena.get(root_key).unwrap();
+                    if let Some(el) = node
+                        .element
+                        .as_any()
+                        .downcast_ref::<crate::view::base_component::Element>()
+                    {
+                        (
+                            el.inline_promotion_rendering_reason(&arena),
+                            el.absolute_clip_scissor_rect(),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                };
+                if let Some(reason) = inline_reason {
+                    if reason != "child-scissor-clip-inline"
+                        && reason != "child-stencil-clip-inline"
+                    {
+                        record_debug_reuse_path(DebugReusePathRecord {
+                            node_id: root_id,
+                            context: DebugReusePathContext::Root,
+                            requested: requested_update,
+                            can_reuse: false,
+                            actual: PromotedLayerUpdateKind::Reraster,
+                            reason: Some(reason),
+                            clip_rect: inline_clip_rect,
+                        });
+                        let child_ctx = crate::view::base_component::UiBuildContext::from_parts(
+                            ctx.viewport(),
+                            ctx.state_clone(),
+                        );
+                        let next_state = arena
+                            .with_element_taken(root_key, |root, arena| {
+                                if let Some(element) = root
+                                    .as_any_mut()
+                                    .downcast_mut::<crate::view::base_component::Element>()
+                                {
+                                    element.build(&mut graph, arena, child_ctx)
+                                } else {
+                                    root.build(&mut graph, arena, child_ctx)
+                                }
+                            })
+                            .unwrap();
+                        ctx.set_state(next_state);
+                        continue;
                     }
                 }
                 let update_kind = requested_update;
-                let can_reuse_subtree =
-                    crate::view::base_component::can_reuse_promoted_subtree(root.as_ref(), &ctx);
+                let (can_reuse_subtree, composite_bounds) = {
+                    let node = arena.get(root_key).unwrap();
+                    let element = node.element.as_ref();
+                    (
+                        crate::view::base_component::can_reuse_promoted_subtree(
+                            element, &ctx, &arena,
+                        ),
+                        element.promotion_composite_bounds(),
+                    )
+                };
                 let can_reuse = matches!(
                     update_kind,
                     crate::view::promotion::PromotedLayerUpdateKind::Reuse
@@ -429,68 +483,91 @@ impl Viewport {
                 let layer_target = root_ctx.allocate_promoted_layer_target(
                     &mut graph,
                     root_id,
-                    root.promotion_composite_bounds(),
+                    composite_bounds,
                 );
                 root_ctx.set_current_target(layer_target);
-                let next_state = if let Some(element) =
-                    root.as_any_mut()
-                        .downcast_mut::<crate::view::base_component::Element>()
-                {
-                    element.build_promoted_layer(
-                        &mut graph,
-                        root_ctx,
-                        update_kind,
-                        can_reuse,
-                        DebugReusePathContext::Root,
-                    )
-                } else if can_reuse {
-                    record_debug_reuse_path(DebugReusePathRecord {
-                        node_id: root.id(),
-                        context: DebugReusePathContext::Root,
-                        requested: update_kind,
-                        can_reuse,
-                        actual: PromotedLayerUpdateKind::Reuse,
-                        reason: None,
-                        clip_rect: None,
-                    });
-                    root_ctx.into_state()
-                } else {
-                    record_debug_reuse_path(DebugReusePathRecord {
-                        node_id: root.id(),
-                        context: DebugReusePathContext::Root,
-                        requested: update_kind,
-                        can_reuse,
-                        actual: PromotedLayerUpdateKind::Reraster,
-                        reason: if matches!(update_kind, PromotedLayerUpdateKind::Reuse) {
-                            Some("reuse-blocked")
+                let next_state = arena
+                    .with_element_taken(root_key, |root, arena| {
+                        if let Some(element) = root
+                            .as_any_mut()
+                            .downcast_mut::<crate::view::base_component::Element>()
+                        {
+                            element.build_promoted_layer(
+                                &mut graph,
+                                arena,
+                                root_ctx,
+                                update_kind,
+                                can_reuse,
+                                DebugReusePathContext::Root,
+                            )
+                        } else if can_reuse {
+                            record_debug_reuse_path(DebugReusePathRecord {
+                                node_id: root_id,
+                                context: DebugReusePathContext::Root,
+                                requested: update_kind,
+                                can_reuse,
+                                actual: PromotedLayerUpdateKind::Reuse,
+                                reason: None,
+                                clip_rect: None,
+                            });
+                            root_ctx.into_state()
                         } else {
-                            None
-                        },
-                        clip_rect: None,
-                    });
-                    graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-                        crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-                        crate::view::render_pass::clear_pass::ClearInput {
-                            pass_context: root_ctx.graphics_pass_context(),
-                            clear_depth_stencil: true,
-                        },
-                        crate::view::render_pass::clear_pass::ClearOutput {
-                            render_target: layer_target,
-                        },
-                    ));
-                    root.build(&mut graph, root_ctx)
-                };
+                            record_debug_reuse_path(DebugReusePathRecord {
+                                node_id: root_id,
+                                context: DebugReusePathContext::Root,
+                                requested: update_kind,
+                                can_reuse,
+                                actual: PromotedLayerUpdateKind::Reraster,
+                                reason: if matches!(
+                                    update_kind,
+                                    PromotedLayerUpdateKind::Reuse
+                                ) {
+                                    Some("reuse-blocked")
+                                } else {
+                                    None
+                                },
+                                clip_rect: None,
+                            });
+                            graph.add_graphics_pass(
+                                crate::view::frame_graph::ClearPass::new(
+                                    crate::view::render_pass::clear_pass::ClearParams::new(
+                                        [0.0, 0.0, 0.0, 0.0],
+                                    ),
+                                    crate::view::render_pass::clear_pass::ClearInput {
+                                        pass_context: root_ctx.graphics_pass_context(),
+                                        clear_depth_stencil: true,
+                                    },
+                                    crate::view::render_pass::clear_pass::ClearOutput {
+                                        render_target: layer_target,
+                                    },
+                                ),
+                            );
+                            root.build(&mut graph, arena, root_ctx)
+                        }
+                    })
+                    .unwrap();
                 ctx.merge_child_state_side_effects(&next_state);
                 let layer_target = next_state.current_target().unwrap_or(layer_target);
-                self.composite_promoted_root(&mut graph, &mut ctx, root.as_ref(), layer_target);
+                // Composite the promoted root back into the parent target.
+                {
+                    let node = arena.get(root_key).unwrap();
+                    self.composite_promoted_root(
+                        &mut graph,
+                        &mut ctx,
+                        node.element.as_ref(),
+                        layer_target,
+                    );
+                }
             } else {
-                let next_state = root.build(
-                    &mut graph,
-                    crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    ),
+                let child_ctx = crate::view::base_component::UiBuildContext::from_parts(
+                    ctx.viewport(),
+                    ctx.state_clone(),
                 );
+                let next_state = arena
+                    .with_element_taken(root_key, |root, arena| {
+                        root.build(&mut graph, arena, child_ctx)
+                    })
+                    .unwrap();
                 ctx.set_state(next_state);
             }
         }
@@ -499,13 +576,19 @@ impl Viewport {
         while deferred_index < deferred_node_ids.len() {
             let node_id = deferred_node_ids[deferred_index];
             deferred_index += 1;
-            for root in roots.iter_mut() {
-                if crate::view::base_component::build_node_by_id(
-                    root.as_mut(),
-                    node_id,
-                    &mut graph,
-                    &mut ctx,
-                ) {
+            for &root_key in &root_keys_for_build {
+                let handled = arena
+                    .with_element_taken(root_key, |root, arena| {
+                        crate::view::base_component::build_node_by_id(
+                            root.as_mut(),
+                            node_id,
+                            &mut graph,
+                            arena,
+                            &mut ctx,
+                        )
+                    })
+                    .unwrap_or(false);
+                if handled {
                     break;
                 }
             }
@@ -514,8 +597,10 @@ impl Viewport {
                 deferred_node_ids.extend(newly_deferred);
             }
         }
+        // Build walk is done — give the arena back to the scene.
+        self.scene.node_arena = arena;
         let reuse_records = take_debug_reuse_path();
-        self.push_debug_reuse_overlay_geometry(roots, &reuse_records);
+        self.push_debug_reuse_overlay_geometry(&reuse_records);
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
             let present_pass = crate::view::render_pass::present_surface_pass::PresentSurfacePass::new(
@@ -632,13 +717,24 @@ impl Viewport {
         if needs_rebuild {
             // Clear and save current scroll states
             self.scene.scroll_offsets.clear();
-            Self::save_scroll_states(&self.scene.ui_roots, &mut self.scene.scroll_offsets);
+            Self::save_scroll_states(
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+                &mut self.scene.scroll_offsets,
+            );
             self.scene.element_snapshots.clear();
-            Self::save_element_snapshots(&self.scene.ui_roots, &mut self.scene.element_snapshots);
+            Self::save_element_snapshots(
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+                &mut self.scene.element_snapshots,
+            );
             let layout_snapshots =
-                crate::view::base_component::collect_layout_transition_snapshots(&self.scene.ui_roots);
-            let (converted_roots, conversion_errors) =
-                crate::view::renderer_adapter::rsx_to_elements_lossy_with_context(
+                crate::view::base_component::collect_layout_transition_snapshots(
+                    &self.scene.node_arena,
+                    &self.scene.ui_root_keys,
+                );
+            let (converted_descriptors, conversion_errors) =
+                crate::view::renderer_adapter::rsx_to_descriptors_with_context(
                     root,
                     &self.style,
                     self.logical_width,
@@ -651,60 +747,101 @@ impl Viewport {
                     conversion_errors.join("\n")
                 );
             }
-            if converted_roots.is_empty() {
+            if converted_descriptors.is_empty() {
                 eprintln!("[render_rsx] no valid root nodes converted; keep previous render tree");
                 self.scene.last_rsx_root = Some(root.clone());
                 return Ok(());
             }
-            self.scene.ui_roots = converted_roots;
+            // Approach-C: drop the previous arena subtree and commit the
+            // freshly-built descriptor trees as new arena roots. `ui_roots`
+            // (the legacy boxed mirror) stays empty — arena is the source
+            // of truth; the still-legacy render/layout boxed traversal below
+            // ignores it and walks the arena via root keys instead.
+            for old_key in std::mem::take(&mut self.scene.ui_root_keys) {
+                self.scene.node_arena.remove_subtree(old_key);
+            }
+            let mut new_root_keys = Vec::with_capacity(converted_descriptors.len());
+            for desc in converted_descriptors {
+                let key = crate::view::renderer_adapter::commit_descriptor_tree(
+                    &mut self.scene.node_arena,
+                    None,
+                    desc,
+                );
+                new_root_keys.push(key);
+            }
+            self.scene.ui_root_keys = new_root_keys.clone();
+            self.scene.node_arena.set_roots(new_root_keys);
             self.scene.last_rsx_root = Some(root.clone());
 
             // Restore scroll states into new elements
-            Self::restore_scroll_states(&mut self.scene.ui_roots, &self.scene.scroll_offsets);
-            Self::restore_element_snapshots(&mut self.scene.ui_roots, &self.scene.element_snapshots);
-            crate::view::base_component::seed_layout_transition_snapshots(
-                &mut self.scene.ui_roots,
-                &layout_snapshots,
+            Self::restore_scroll_states(
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+                &self.scene.scroll_offsets,
             );
-            let mut rebuilt_roots = std::mem::take(&mut self.scene.ui_roots);
+            Self::restore_element_snapshots(
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+                &self.scene.element_snapshots,
+            );
+            {
+                let mut arena = std::mem::take(&mut self.scene.node_arena);
+                let root_keys = self.scene.ui_root_keys.clone();
+                crate::view::base_component::seed_layout_transition_snapshots(
+                    &mut arena,
+                    &root_keys,
+                    &layout_snapshots,
+                );
+                self.scene.node_arena = arena;
+            }
             // Drop tracks for channels the rebuilt tree no longer declares
             // before applying in-flight samples — otherwise a removed
             // transition would re-stamp the stale interpolated value over
             // the freshly synced target.
-            let _ = self.cancel_disallowed_transition_tracks(&rebuilt_roots);
-            let has_inflight_transition =
-                self.sync_inflight_transition_state(&mut rebuilt_roots);
-            self.scene.ui_roots = rebuilt_roots;
+            let _ = self.cancel_disallowed_transition_tracks();
+            let has_inflight_transition = self.sync_inflight_transition_state();
             if has_inflight_transition {
                 self.request_redraw();
             }
         }
         self.sync_focus_dispatch();
-        let mut roots = std::mem::take(&mut self.scene.ui_roots);
-        let canceled_tracks = self.cancel_disallowed_transition_tracks(&roots);
-        let reconciled_transition_state = crate::view::base_component::reconcile_transition_runtime_state(
-            &mut roots,
-            &active_channels_by_node(&self.transitions.transition_claims),
-        );
+        let canceled_tracks = self.cancel_disallowed_transition_tracks();
+        let reconciled_transition_state = {
+            let mut arena = std::mem::take(&mut self.scene.node_arena);
+            let root_keys = self.scene.ui_root_keys.clone();
+            let result = crate::view::base_component::reconcile_transition_runtime_state(
+                &mut arena,
+                &root_keys,
+                &active_channels_by_node(&self.transitions.transition_claims),
+            );
+            self.scene.node_arena = arena;
+            result
+        };
         let (dt, now_seconds) = self.transition_timing();
         let transition_changed_before_render = canceled_tracks
             || reconciled_transition_state
-            || self.run_pre_layout_transitions(&mut roots, dt, now_seconds);
+            || self.run_pre_layout_transitions(dt, now_seconds);
         let mut transition_changed_after_layout = false;
-        if !roots.is_empty() {
-            transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);
+        if !self.scene.ui_root_keys.is_empty() {
+            transition_changed_after_layout = self.render_render_tree(dt, now_seconds);
         }
         let next_hover_target = self.pointer_position_viewport().and_then(|(x, y)| {
-            roots
-                .iter()
-                .rev()
-                .find_map(|root| crate::view::base_component::hit_test(root.as_ref(), x, y))
+            self.scene.ui_root_keys.iter().rev().find_map(|&root_key| {
+                crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+            })
         });
-        let hover_changed = Self::sync_hover_visual_only(
-            &mut roots,
-            &mut self.input_state.hovered_node_id,
-            next_hover_target,
-        );
+        let hover_changed = {
+            let mut arena = std::mem::take(&mut self.scene.node_arena);
+            let root_keys = self.scene.ui_root_keys.clone();
+            let result = Self::sync_hover_visual_only(
+                &mut arena,
+                &root_keys,
+                &mut self.input_state.hovered_node_id,
+                next_hover_target,
+            );
+            self.scene.node_arena = arena;
+            result
+        };
         if resource_dirty
             || hover_changed
             || transition_changed_before_render
@@ -712,13 +849,11 @@ impl Viewport {
         {
             self.request_redraw();
         }
-        if roots
-            .iter()
-            .any(|root| crate::view::base_component::has_animation_frame_request(root.as_ref()))
-        {
+        if self.scene.ui_root_keys.iter().any(|&root_key| {
+            crate::view::base_component::has_animation_frame_request(&self.scene.node_arena, root_key)
+        }) {
             self.request_redraw();
         }
-        self.scene.ui_roots = roots;
         if std::mem::take(&mut self.frame.frame_presented) {
             self.notify_cursor_handler();
         }

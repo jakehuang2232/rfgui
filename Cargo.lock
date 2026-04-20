@@ -2500,6 +2500,7 @@ dependencies = [
  "resvg",
  "rfgui-rsx",
  "rustc-hash 2.1.2",
+ "slotmap",
  "smol_str 0.3.6",
  "wasm-bindgen",
  "wasm-bindgen-futures",

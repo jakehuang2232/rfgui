@@ -1024,15 +1024,28 @@ impl FlexProps {
 }
 
 pub trait Layoutable {
-    fn measure(&mut self, constraints: LayoutConstraints);
-    fn place(&mut self, placement: LayoutPlacement);
+    fn measure(
+        &mut self,
+        constraints: LayoutConstraints,
+        arena: &mut crate::view::node_arena::NodeArena,
+    );
+    fn place(
+        &mut self,
+        placement: LayoutPlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    );
     fn measured_size(&self) -> (f32, f32);
     fn set_layout_width(&mut self, width: f32);
     fn set_layout_height(&mut self, height: f32);
     fn flex_props(&self) -> FlexProps {
         FlexProps::default()
     }
-    fn cross_alignment_size(&self, is_row: bool, stretched_cross: Option<f32>) -> f32 {
+    fn cross_alignment_size(
+        &self,
+        is_row: bool,
+        stretched_cross: Option<f32>,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> f32 {
         let (measured_w, measured_h) = self.measured_size();
         stretched_cross.unwrap_or(if is_row { measured_h } else { measured_w })
     }
@@ -1040,34 +1053,51 @@ pub trait Layoutable {
         (0.0, 0.0)
     }
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
-    fn measure_inline(&mut self, context: InlineMeasureContext) {
-        self.measure(LayoutConstraints {
-            max_width: context.first_available_width.max(0.0),
-            max_height: 1_000_000.0,
-            viewport_width: context.viewport_width,
-            viewport_height: context.viewport_height,
-            percent_base_width: context.percent_base_width,
-            percent_base_height: context.percent_base_height,
-        });
+    fn measure_inline(
+        &mut self,
+        context: InlineMeasureContext,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.measure(
+            LayoutConstraints {
+                max_width: context.first_available_width.max(0.0),
+                max_height: 1_000_000.0,
+                viewport_width: context.viewport_width,
+                viewport_height: context.viewport_height,
+                percent_base_width: context.percent_base_width,
+                percent_base_height: context.percent_base_height,
+            },
+            arena,
+        );
     }
-    fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
+    fn get_inline_nodes_size(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> Vec<InlineNodeSize> {
         let (width, height) = self.measured_size();
         vec![InlineNodeSize { width, height }]
     }
-    fn place_inline(&mut self, placement: InlinePlacement) {
+    fn place_inline(
+        &mut self,
+        placement: InlinePlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         self.set_layout_offset(placement.offset_x, placement.offset_y);
-        self.place(LayoutPlacement {
-            parent_x: placement.parent_x,
-            parent_y: placement.parent_y,
-            visual_offset_x: placement.visual_offset_x,
-            visual_offset_y: placement.visual_offset_y,
-            available_width: placement.available_width,
-            available_height: placement.available_height,
-            viewport_width: placement.viewport_width,
-            viewport_height: placement.viewport_height,
-            percent_base_width: placement.percent_base_width,
-            percent_base_height: placement.percent_base_height,
-        });
+        self.place(
+            LayoutPlacement {
+                parent_x: placement.parent_x,
+                parent_y: placement.parent_y,
+                visual_offset_x: placement.visual_offset_x,
+                visual_offset_y: placement.visual_offset_y,
+                available_width: placement.available_width,
+                available_height: placement.available_height,
+                viewport_width: placement.viewport_width,
+                viewport_height: placement.viewport_height,
+                percent_base_width: placement.percent_base_width,
+                percent_base_height: placement.percent_base_height,
+            },
+            arena,
+        );
     }
 }
 
@@ -1146,16 +1176,17 @@ pub trait EventTarget {
 }
 
 pub trait Renderable {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> BuildState;
+    fn build(
+        &mut self,
+        graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        ctx: UiBuildContext,
+    ) -> BuildState;
 }
 
 pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
     fn id(&self) -> u64;
-    fn parent_id(&self) -> Option<u64>;
-    fn set_parent_id(&mut self, parent_id: Option<u64>);
     fn box_model_snapshot(&self) -> BoxModelSnapshot;
-    fn children(&self) -> Option<&[Box<dyn ElementTrait>]>;
-    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]>;
 
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
@@ -1208,6 +1239,34 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
     }
 
     fn clear_local_dirty_flags(&mut self, _flags: DirtyFlags) {}
+
+    /// Child node keys. Default returns empty — leaf elements (Text,
+    /// Image, Svg) don't need to override. Containers override to expose
+    /// their arena-backed child list so sibling walkers can traverse.
+    ///
+    /// Note: historical dispatch/hit-test code used an `Option<Vec<Box<dyn
+    /// ElementTrait>>>` shape. During the Approach-C migration those
+    /// walkers are being rewritten against the arena, so this method
+    /// returns the slot-key slice directly.
+    fn children(&self) -> &[crate::view::node_arena::NodeKey] {
+        &[]
+    }
+
+    /// Mutable child-key list. Default returns `None` — leaf elements
+    /// don't have child lists. Containers override with `Some(&mut vec)`.
+    fn children_mut(&mut self) -> Option<&mut Vec<crate::view::node_arena::NodeKey>> {
+        None
+    }
+
+    /// Legacy u64 parent id. Retained for renderer_adapter compatibility
+    /// during Approach-C migration.
+    fn parent_id(&self) -> Option<u64> {
+        None
+    }
+
+    /// Set the legacy u64 parent id. Default is a no-op for leaf elements
+    /// that have no parent tracking.
+    fn set_parent_id(&mut self, _parent_id: Option<u64>) {}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1407,10 +1466,28 @@ pub struct Element {
     absolute_clip_rect: Option<Rect>,
     anchor_parent_clip_rect: Option<Rect>,
     hit_test_clip_rect: Option<Rect>,
-    children: Vec<Box<dyn ElementTrait>>,
+    children: Vec<crate::view::node_arena::NodeKey>,
 }
 
 impl Element {
+    /// Parent id (legacy u64). Migration to `NodeKey`-based arena parent is
+    /// tracked by Node.parent in the arena — this method stays for
+    /// internal Element code that has not yet been ported.
+    pub fn parent_id(&self) -> Option<u64> {
+        self.core.parent_id
+    }
+
+    /// Sets legacy parent id. Kept for renderer_adapter compatibility
+    /// during Approach-C migration; final state lives on `Node.parent`.
+    pub fn set_parent_id(&mut self, parent_id: Option<u64>) {
+        self.core.parent_id = parent_id;
+    }
+
+    /// Replace the child list wholesale.
+    pub fn set_children(&mut self, children: Vec<crate::view::node_arena::NodeKey>) {
+        self.children = children;
+    }
+
     fn is_fragmentable_inline_element(&self) -> bool {
         self.computed_style.layout == Layout::Inline
             && self.computed_style.width == SizeValue::Auto
@@ -1569,13 +1646,21 @@ impl Element {
         }
     }
 
-    fn transform_subtree_raster_bounds(&self) -> PromotionCompositeBounds {
+    fn transform_subtree_raster_bounds(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> PromotionCompositeBounds {
         let mut bounds = self.untransformed_paint_bounds();
-        for child in &self.children {
-            let child_bounds = if let Some(element) = child.as_any().downcast_ref::<Element>() {
-                element.transform_subtree_raster_bounds()
+        for child_key in &self.children {
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            let child_bounds = if let Some(element) =
+                child_node.element.as_any().downcast_ref::<Element>()
+            {
+                element.transform_subtree_raster_bounds(arena)
             } else {
-                child.promotion_composite_bounds()
+                child_node.element.promotion_composite_bounds()
             };
             bounds = Self::union_promotion_bounds(bounds, child_bounds);
         }
@@ -1670,6 +1755,14 @@ impl ElementTrait for Element {
         self.core.id
     }
 
+    fn children(&self) -> &[crate::view::node_arena::NodeKey] {
+        &self.children
+    }
+
+    fn children_mut(&mut self) -> Option<&mut Vec<crate::view::node_arena::NodeKey>> {
+        Some(&mut self.children)
+    }
+
     fn parent_id(&self) -> Option<u64> {
         self.core.parent_id
     }
@@ -1693,14 +1786,6 @@ impl ElementTrait for Element {
             border_radius: self.border_radius,
             should_render: self.core.should_render,
         }
-    }
-
-    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> {
-        Some(&self.children)
-    }
-
-    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> {
-        Some(&mut self.children)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1850,6 +1935,13 @@ impl ElementTrait for Element {
     }
 
     fn promotion_clip_intersection_signature(&self) -> u64 {
+        // Children-dependent portion is omitted during migration because
+        // this method cannot take the arena without rewiring every caller
+        // in promotion_builder. The signature remains stable for single
+        // elements; container-level recomputation falls back to the
+        // subtree-level checks elsewhere.
+        let arena = crate::view::node_arena::NodeArena::new();
+        let arena = &arena;
         let mut hasher = DefaultHasher::new();
         self.absolute_clip_scissor_rect()
             .is_some()
@@ -1876,7 +1968,7 @@ impl ElementTrait for Element {
         }
         if !self.children.is_empty() && self.has_inner_render_area() {
             let overflow_child_indices: Vec<bool> = (0..self.children.len())
-                .map(|idx| self.child_renders_outside_inner_clip(idx))
+                .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
                 .collect();
             let outer_radii = normalize_corner_radii(
                 self.border_radii,
@@ -1885,7 +1977,7 @@ impl ElementTrait for Element {
             );
             let inner_radii = self.inner_clip_radii(outer_radii);
             let should_clip_children =
-                self.should_clip_children(&overflow_child_indices, inner_radii);
+                self.should_clip_children(&overflow_child_indices, inner_radii, arena);
             should_clip_children.hash(&mut hasher);
             if should_clip_children {
                 let inner = self.inner_clip_rect();

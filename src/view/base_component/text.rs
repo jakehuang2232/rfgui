@@ -1111,14 +1111,6 @@ impl ElementTrait for Text {
         self.element.id()
     }
 
-    fn parent_id(&self) -> Option<u64> {
-        self.element.parent_id()
-    }
-
-    fn set_parent_id(&mut self, parent_id: Option<u64>) {
-        self.element.set_parent_id(parent_id);
-    }
-
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         BoxModelSnapshot {
             node_id: self.element.id(),
@@ -1130,14 +1122,6 @@ impl ElementTrait for Text {
             border_radius: 0.0,
             should_render: self.should_render,
         }
-    }
-
-    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> {
-        None
-    }
-
-    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> {
-        None
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1295,7 +1279,11 @@ impl Layoutable for Text {
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::RUNTIME);
     }
 
-    fn measure_inline(&mut self, context: InlineMeasureContext) {
+    fn measure_inline(
+        &mut self,
+        context: InlineMeasureContext,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         if !self.dirty_flags.intersects(super::DirtyFlags::LAYOUT)
             && self.last_inline_measure_context == Some(context)
         {
@@ -1358,7 +1346,10 @@ impl Layoutable for Text {
         }
     }
 
-    fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
+    fn get_inline_nodes_size(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> Vec<InlineNodeSize> {
         self.inline_plan
             .as_ref()
             .map(|plan| plan.runs.as_slice())
@@ -1371,7 +1362,11 @@ impl Layoutable for Text {
             .collect()
     }
 
-    fn place_inline(&mut self, placement: InlinePlacement) {
+    fn place_inline(
+        &mut self,
+        placement: InlinePlacement,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         let Some(plan) = self.inline_plan.as_mut() else {
             return;
         };
@@ -1424,7 +1419,11 @@ impl Layoutable for Text {
         );
     }
 
-    fn measure(&mut self, constraints: crate::view::base_component::LayoutConstraints) {
+    fn measure(
+        &mut self,
+        constraints: crate::view::base_component::LayoutConstraints,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         self.inline_plan = None;
         self.last_inline_measure_context = None;
         self.layout_override_width = None;
@@ -1514,7 +1513,11 @@ impl Layoutable for Text {
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
     }
 
-    fn place(&mut self, placement: crate::view::base_component::LayoutPlacement) {
+    fn place(
+        &mut self,
+        placement: crate::view::base_component::LayoutPlacement,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         if !self.dirty_flags.intersects(
             super::DirtyFlags::PLACE
                 .union(super::DirtyFlags::BOX_MODEL)
@@ -1562,7 +1565,12 @@ impl Layoutable for Text {
 }
 
 impl Renderable for Text {
-    fn build(&mut self, graph: &mut FrameGraph, mut ctx: UiBuildContext) -> BuildState {
+    fn build(
+        &mut self,
+        graph: &mut FrameGraph,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        mut ctx: UiBuildContext,
+    ) -> BuildState {
         if !self.should_render || self.content.is_empty() {
             return ctx.into_state();
         }
@@ -1662,11 +1670,17 @@ mod tests {
     use crate::view::base_component::{
         DirtyFlags, InlineMeasureContext, LayoutConstraints, LayoutPlacement,
     };
+    use crate::view::node_arena::NodeArena;
     use crate::{Length, TextWrap};
     use cosmic_text::Align;
 
+    fn arena() -> NodeArena {
+        NodeArena::new()
+    }
+
     #[test]
     fn layout_clamps_to_parent_available_area() {
+        let mut a = arena();
         let mut text = Text::new(0.0, 0.0, 10_000.0, 10_000.0, "demo");
         text.set_position(8.0, 4.0);
         text.measure(LayoutConstraints {
@@ -1676,7 +1690,7 @@ mod tests {
             percent_base_width: Some(240.0),
             percent_base_height: Some(140.0),
             viewport_height: 140.0,
-        });
+        }, &mut a);
         text.place(LayoutPlacement {
             parent_x: 40.0,
             parent_y: 40.0,
@@ -1688,7 +1702,7 @@ mod tests {
             percent_base_width: Some(240.0),
             percent_base_height: Some(140.0),
             viewport_height: 140.0,
-        });
+        }, &mut a);
 
         let snapshot = text.box_model_snapshot();
         assert_eq!(snapshot.x, 48.0);
@@ -1699,6 +1713,7 @@ mod tests {
 
     #[test]
     fn text_wraps_when_parent_width_is_constrained() {
+        let mut a = arena();
         let mut text = Text::from_content("123456789012345678901234567890");
         text.set_width(60.0);
         text.set_auto_height(true);
@@ -1709,7 +1724,7 @@ mod tests {
             percent_base_width: Some(60.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1721,7 +1736,7 @@ mod tests {
             percent_base_width: Some(60.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         let snapshot = text.box_model_snapshot();
         assert_eq!(snapshot.width, 60.0);
@@ -1730,6 +1745,7 @@ mod tests {
 
     #[test]
     fn text_wrap_can_be_disabled_via_text_wrap_style() {
+        let mut a = arena();
         let mut text = Text::from_content("123456789012345678901234567890");
         text.set_width(60.0);
         text.set_auto_height(true);
@@ -1741,7 +1757,7 @@ mod tests {
             percent_base_width: Some(60.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1753,7 +1769,7 @@ mod tests {
             percent_base_width: Some(60.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         let snapshot = text.box_model_snapshot();
         assert_eq!(snapshot.width, 60.0);
@@ -1762,6 +1778,7 @@ mod tests {
 
     #[test]
     fn percent_width_uses_layout_override_without_mutating_measured_width() {
+        let mut a = arena();
         let mut text = Text::from_content("123");
         text.element.set_width(10.0);
         text.set_width(10.0);
@@ -1781,7 +1798,7 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut a);
         assert_eq!(text.measured_size().0, 10.0);
 
         text.set_layout_width(80.0);
@@ -1796,7 +1813,7 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut a);
         assert_eq!(text.box_model_snapshot().width, 80.0);
 
         text.measure(LayoutConstraints {
@@ -1806,12 +1823,13 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut a);
         assert_eq!(text.measured_size().0, 10.0);
     }
 
     #[test]
     fn auto_width_for_cjk_text_is_not_underestimated() {
+        let mut a = arena();
         let mut text = Text::from_content("This is a Chinese text segment");
         text.measure(LayoutConstraints {
             max_width: 300.0,
@@ -1820,7 +1838,7 @@ mod tests {
             percent_base_width: Some(300.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1832,13 +1850,14 @@ mod tests {
             percent_base_width: Some(300.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
         let snapshot = text.box_model_snapshot();
         assert!(snapshot.width >= 80.0);
     }
 
     #[test]
     fn auto_width_with_space_includes_following_word() {
+        let mut a = arena();
         let mut single = Text::from_content("Click");
         single.measure(LayoutConstraints {
             max_width: 400.0,
@@ -1847,7 +1866,7 @@ mod tests {
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
         single.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1859,7 +1878,7 @@ mod tests {
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         let mut spaced = Text::from_content("Click Me");
         spaced.measure(LayoutConstraints {
@@ -1869,7 +1888,7 @@ mod tests {
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
         spaced.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1881,7 +1900,7 @@ mod tests {
             percent_base_width: Some(400.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         let a = single.box_model_snapshot().width;
         let b = spaced.box_model_snapshot().width;
@@ -1893,6 +1912,7 @@ mod tests {
 
     #[test]
     fn text_does_not_wrap_when_parent_width_is_unresolved() {
+        let mut a = arena();
         let mut text = Text::from_content("Click Me Click Me");
         text.set_auto_width(true);
         text.set_auto_height(true);
@@ -1903,7 +1923,7 @@ mod tests {
             percent_base_width: None,
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1915,7 +1935,7 @@ mod tests {
             percent_base_width: None,
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         let snapshot = text.box_model_snapshot();
         assert!(snapshot.width > 60.0);
@@ -1924,6 +1944,7 @@ mod tests {
 
     #[test]
     fn text_reflows_when_parent_width_changes() {
+        let mut a = arena();
         let mut text =
             Text::from_content("This is a long sentence that should wrap to multiple lines.");
         text.set_auto_width(true);
@@ -1936,7 +1957,7 @@ mod tests {
             percent_base_width: Some(220.0),
             percent_base_height: Some(300.0),
             viewport_height: 300.0,
-        });
+        }, &mut a);
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1948,7 +1969,7 @@ mod tests {
             percent_base_width: Some(220.0),
             percent_base_height: Some(300.0),
             viewport_height: 300.0,
-        });
+        }, &mut a);
         let h_wide = text.box_model_snapshot().height;
 
         text.measure(LayoutConstraints {
@@ -1958,7 +1979,7 @@ mod tests {
             percent_base_width: Some(90.0),
             percent_base_height: Some(300.0),
             viewport_height: 300.0,
-        });
+        }, &mut a);
         text.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1970,7 +1991,7 @@ mod tests {
             percent_base_width: Some(90.0),
             percent_base_height: Some(300.0),
             viewport_height: 300.0,
-        });
+        }, &mut a);
         let h_narrow = text.box_model_snapshot().height;
 
         assert!(
@@ -1981,6 +2002,7 @@ mod tests {
 
     #[test]
     fn inline_measure_clears_layout_dirty() {
+        let mut a = arena();
         let mut text = Text::from_content("inline text");
         text.measure_inline(InlineMeasureContext {
             first_available_width: 200.0,
@@ -1989,13 +2011,14 @@ mod tests {
             viewport_height: 120.0,
             percent_base_width: Some(200.0),
             percent_base_height: Some(120.0),
-        });
+        }, &mut a);
 
         assert!(!text.local_dirty_flags().intersects(DirtyFlags::LAYOUT));
     }
 
     #[test]
     fn auto_measured_text_size_preserves_fractional_precision() {
+        let mut a = arena();
         let mut text = Text::from_content("rounded measurement");
         text.measure(LayoutConstraints {
             max_width: 300.0,
@@ -2004,7 +2027,7 @@ mod tests {
             percent_base_width: Some(300.0),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         let (width, height) = text.measured_size();
         assert!(width.fract() > 0.0 || height.fract() > 0.0);
@@ -2012,6 +2035,7 @@ mod tests {
 
     #[test]
     fn auto_width_uses_precise_text_width_before_final_pixel_rounding() {
+        let mut a = arena();
         let content = "Option 4";
         let (precise_width, precise_height) =
             measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
@@ -2025,7 +2049,7 @@ mod tests {
             percent_base_width: Some(precise_width.ceil()),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         let (measured_width, measured_height) = text.measured_size();
         assert!(
@@ -2040,6 +2064,7 @@ mod tests {
 
     #[test]
     fn inline_measure_does_not_split_word_when_available_width_matches_precise_measurement() {
+        let mut a = arena();
         let content = "Reset";
         let (precise_width, _) =
             measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
@@ -2051,9 +2076,9 @@ mod tests {
             viewport_height: 200.0,
             percent_base_width: Some(precise_width),
             percent_base_height: Some(200.0),
-        });
+        }, &mut a);
 
-        let nodes = text.get_inline_nodes_size();
+        let nodes = text.get_inline_nodes_size(&a);
         assert_eq!(
             nodes.len(),
             1,
@@ -2063,6 +2088,7 @@ mod tests {
 
     #[test]
     fn inline_wrap_uses_one_fragment_per_wrapped_line() {
+        let mut a = arena();
         let content = "alpha beta gamma delta";
         let available_width = 64.0;
         let mut text = Text::from_content(content);
@@ -2073,9 +2099,9 @@ mod tests {
             viewport_height: 200.0,
             percent_base_width: Some(available_width),
             percent_base_height: Some(200.0),
-        });
+        }, &mut a);
 
-        let nodes = text.get_inline_nodes_size();
+        let nodes = text.get_inline_nodes_size(&a);
         assert!(
             nodes.len() > 1,
             "expected wrapped text to produce multiple line fragments"
@@ -2089,6 +2115,7 @@ mod tests {
 
     #[test]
     fn inline_wrap_uses_first_available_width_for_first_fragment() {
+        let mut a = arena();
         let content = "alpha beta gamma";
         let mut text = Text::from_content(content);
         text.measure_inline(InlineMeasureContext {
@@ -2098,9 +2125,9 @@ mod tests {
             viewport_height: 120.0,
             percent_base_width: Some(160.0),
             percent_base_height: Some(120.0),
-        });
+        }, &mut a);
 
-        let nodes = text.get_inline_nodes_size();
+        let nodes = text.get_inline_nodes_size(&a);
         assert!(
             nodes.len() >= 2,
             "expected first-line constraint to force wrapping"
@@ -2110,6 +2137,7 @@ mod tests {
 
     #[test]
     fn auto_height_uses_precise_auto_width_to_avoid_spurious_wrap_height() {
+        let mut a = arena();
         let content = "Start";
         let (precise_width, precise_height) =
             measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
@@ -2121,13 +2149,14 @@ mod tests {
             percent_base_width: Some(precise_width.ceil()),
             percent_base_height: Some(200.0),
             viewport_height: 200.0,
-        });
+        }, &mut a);
 
         assert!((text.measured_size().1 - precise_height).abs() < 0.01);
     }
 
     #[test]
     fn placed_text_box_preserves_fractional_layout_coordinates() {
+        let mut a = arena();
         let mut text = Text::new(1.4, 2.6, 10.4, 20.6, "demo");
         text.place(LayoutPlacement {
             parent_x: 3.2,
@@ -2140,7 +2169,7 @@ mod tests {
             percent_base_width: Some(100.0),
             percent_base_height: Some(100.0),
             viewport_height: 100.0,
-        });
+        }, &mut a);
 
         let snapshot = text.box_model_snapshot();
         assert!((snapshot.x - 4.9).abs() < 0.01);

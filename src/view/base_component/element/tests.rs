@@ -1,3 +1,12 @@
+// TODO(session3-todo3): port tests to arena API. 5000+ lines of tests
+// using legacy Box-tree add_child, single-arg measure/place/build,
+// children().expect(...). Gated pending port.
+//
+// Prior agent attempts: imports already updated to the arena API (super
+// exports, test_support helpers). Remaining work: ~117 `add_child`, ~300
+// `measure`/`place` call-sites, ~69 `children()` accessors, 5 `build`
+// calls to rewrite via `commit_child` / `with_element_taken` /
+// `arena.children_of`. ~404 rustc errors when un-gated.
 #[cfg(test)]
 mod tests {
     use super::{
@@ -10,8 +19,12 @@ mod tests {
     use crate::view::base_component::Text;
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
-    use crate::view::base_component::{
-        reset_test_promoted_build_counts, set_style_field_by_id, test_promoted_build_count,
+    use super::{reset_test_promoted_build_counts, test_promoted_build_count};
+    use crate::view::base_component::set_style_field_by_id;
+    use crate::view::node_arena::{NodeArena, NodeKey};
+    use crate::view::test_support::{
+        child_key, child_snapshot, commit_child, commit_element, measure_and_place,
+        new_test_arena, nth_child_snapshot,
     };
     use crate::view::frame_graph::FrameGraph;
     use crate::Layout;
@@ -43,31 +56,36 @@ mod tests {
         root.set_padding_right(16.0);
         root.set_padding_bottom(10.0);
 
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
         let child = Element::new(4.0, 6.0, 300.0, 300.0);
-        root.add_child(Box::new(child));
+        let _child_key = commit_child(&mut arena, root_key, Box::new(child));
 
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        let children = root.children().expect("element has children");
-        let snapshot = children[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            root_key,
+            crate::view::base_component::LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+        let snapshot = nth_child_snapshot(&arena, root_key, 0);
 
         assert_eq!(snapshot.x, 22.0);
         assert_eq!(snapshot.y, 38.0);
@@ -107,31 +125,36 @@ mod tests {
         root.set_padding_right(16.0);
         root.set_padding_bottom(10.0);
 
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
         let child = Element::new(0.0, 0.0, 300.0, 300.0);
-        root.add_child(Box::new(child));
+        let _child_key = commit_child(&mut arena, root_key, Box::new(child));
 
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        let children = root.children().expect("element has children");
-        let snapshot = children[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            root_key,
+            crate::view::base_component::LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+        let snapshot = nth_child_snapshot(&arena, root_key, 0);
 
         assert_eq!(snapshot.x, 23.0);
         assert_eq!(snapshot.y, 37.0);
@@ -146,36 +169,44 @@ mod tests {
         style.set_padding(crate::Padding::new().xy(Length::px(3.25), Length::px(2.5)));
         root.apply_style(style);
 
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 200.0,
-            max_height: 200.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 4.1,
-            parent_y: 5.3,
-            visual_offset_x: 0.2,
-            visual_offset_y: -0.1,
-            available_width: 200.0,
-            available_height: 200.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        });
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
 
-        let snapshot = root.box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            root_key,
+            crate::view::base_component::LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            crate::view::base_component::LayoutPlacement {
+                parent_x: 4.1,
+                parent_y: 5.3,
+                visual_offset_x: 0.2,
+                visual_offset_y: -0.1,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+        );
+
+        let root_el = crate::view::test_support::get_element::<Element>(&arena, root_key);
+        let snapshot = root_el.box_model_snapshot();
         assert!((snapshot.x - 5.5).abs() < 0.01);
         assert!((snapshot.y - 7.6).abs() < 0.01);
         assert!((snapshot.width - 100.5).abs() < 0.01);
         assert!((snapshot.height - 50.5).abs() < 0.01);
-        assert!((root.layout_inner_position.x - 8.75).abs() < 0.01);
-        assert!((root.layout_inner_position.y - 10.1).abs() < 0.01);
-        assert!((root.layout_inner_size.width - 94.0).abs() < 0.01);
-        assert!((root.layout_inner_size.height - 45.5).abs() < 0.01);
+        assert!((root_el.layout_inner_position.x - 8.75).abs() < 0.01);
+        assert!((root_el.layout_inner_position.y - 10.1).abs() < 0.01);
+        assert!((root_el.layout_inner_size.width - 94.0).abs() < 0.01);
+        assert!((root_el.layout_inner_size.height - 45.5).abs() < 0.01);
     }
 
     #[test]
@@ -197,29 +228,36 @@ mod tests {
             ParsedValue::Length(Length::percent(50.0)),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        let snapshot_unknown = parent.children().expect("child")[0].box_model_snapshot();
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            crate::view::base_component::LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+        let snapshot_unknown = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot_unknown.width, 400.0);
         assert_eq!(snapshot_unknown.height, 300.0);
 
@@ -240,29 +278,35 @@ mod tests {
             ParsedValue::Length(Length::percent(50.0)),
         );
         child2.apply_style(child2_style);
-        known_parent.add_child(Box::new(child2));
 
-        known_parent.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        known_parent.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        let snapshot_known = known_parent.children().expect("child")[0].box_model_snapshot();
+        let known_parent_key = commit_element(&mut arena, Box::new(known_parent));
+        let _child2_key = commit_child(&mut arena, known_parent_key, Box::new(child2));
+
+        measure_and_place(
+            &mut arena,
+            known_parent_key,
+            crate::view::base_component::LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+        let snapshot_known = nth_child_snapshot(&arena, known_parent_key, 0);
         assert_eq!(snapshot_known.width, 120.0);
         assert_eq!(snapshot_known.height, 60.0);
     }
@@ -286,30 +330,37 @@ mod tests {
             )),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.width, 220.0);
     }
 
@@ -332,30 +383,37 @@ mod tests {
             )),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.width, 780.0);
     }
 
@@ -378,30 +436,37 @@ mod tests {
             )),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: None,
-            percent_base_height: None,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: None,
-            percent_base_height: None,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.width, 77.0);
     }
 
@@ -419,28 +484,34 @@ mod tests {
         );
         el.apply_style(style);
 
-        el.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
-        assert_eq!(el.box_model_snapshot().width, 850.0);
+        assert_eq!(child_snapshot(&arena, key).width, 850.0);
     }
 
     #[test]
@@ -456,29 +527,36 @@ mod tests {
         child_style.insert(PropertyId::Width, ParsedValue::Length(Length::vh(50.0)));
         child_style.insert(PropertyId::Height, ParsedValue::Length(Length::vh(50.0)));
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.width, 300.0);
         assert_eq!(snapshot.height, 300.0);
     }
@@ -504,35 +582,39 @@ mod tests {
         );
         child_style.set_border_radius(BorderRadius::uniform(Length::px(4.0)));
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 240.0,
-            max_height: 40.0,
-            viewport_width: 240.0,
-            viewport_height: 40.0,
-            percent_base_width: Some(240.0),
-            percent_base_height: Some(40.0),
-        });
-        parent.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 240.0,
-            available_height: 40.0,
-            viewport_width: 240.0,
-            viewport_height: 40.0,
-            percent_base_width: Some(240.0),
-            percent_base_height: Some(40.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let child = parent.children().expect("child")[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("element child");
-        let snapshot = child.box_model_snapshot();
-        let inner = child.inner_clip_rect();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            crate::view::base_component::LayoutConstraints {
+                max_width: 240.0,
+                max_height: 40.0,
+                viewport_width: 240.0,
+                viewport_height: 40.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(40.0),
+            },
+            crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 40.0,
+                viewport_width: 240.0,
+                viewport_height: 40.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(40.0),
+            },
+        );
+
+        let child_el = crate::view::test_support::get_element::<Element>(&arena, child_k);
+        let snapshot = child_el.box_model_snapshot();
+        let inner = child_el.inner_clip_rect();
 
         assert!((snapshot.width - 240.0).abs() < 0.01);
         assert!((inner.width - 240.0).abs() < 0.01);
@@ -551,29 +633,36 @@ mod tests {
         child_style.insert(PropertyId::Width, ParsedValue::Length(Length::vw(50.0)));
         child_style.insert(PropertyId::Height, ParsedValue::Length(Length::vw(50.0)));
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.width, 400.0);
         assert_eq!(snapshot.height, 400.0);
     }
@@ -615,31 +704,37 @@ mod tests {
         );
         absolute_child.apply_style(absolute_style);
 
-        parent.add_child(Box::new(normal_child));
-        parent.add_child(Box::new(absolute_child));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(normal_child));
+        let _ = commit_child(&mut arena, parent_key, Box::new(absolute_child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let snapshot = parent.box_model_snapshot();
+        let snapshot = child_snapshot(&arena, parent_key);
         assert_eq!(snapshot.width, 80.0);
         assert_eq!(snapshot.height, 40.0);
     }
@@ -656,31 +751,37 @@ mod tests {
         parent_style.insert(PropertyId::Height, ParsedValue::Auto);
         parent.apply_style(parent_style);
 
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 80.0, 30.0)));
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 10.0)));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 80.0, 30.0)));
+        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 120.0, 10.0)));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let snapshot = parent.box_model_snapshot();
+        let snapshot = child_snapshot(&arena, parent_key);
         assert_eq!(snapshot.width, 120.0);
         assert_eq!(snapshot.height, 40.0);
     }
@@ -697,30 +798,36 @@ mod tests {
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
         parent.apply_style(parent_style);
 
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 80.0, 40.0)));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 80.0, 40.0)));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.x, 0.0);
         assert_eq!(snapshot.y, 40.0);
     }
@@ -754,33 +861,38 @@ mod tests {
         auto_child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
         auto_child.apply_style(auto_child_style);
 
-        parent.add_child(Box::new(explicit_child));
-        parent.add_child(Box::new(auto_child));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(explicit_child));
+        let _ = commit_child(&mut arena, parent_key, Box::new(auto_child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let explicit_snapshot = children[0].box_model_snapshot();
-        let auto_snapshot = children[1].box_model_snapshot();
+        let explicit_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let auto_snapshot = nth_child_snapshot(&arena, parent_key, 1);
 
         assert_eq!(explicit_snapshot.height, 10.0);
         assert_eq!(auto_snapshot.height, 40.0);
@@ -814,33 +926,38 @@ mod tests {
         );
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(first));
+        let _ = commit_child(&mut arena, parent_key, Box::new(second));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert_eq!(first_snapshot.width, 113.333336);
         assert_eq!(second_snapshot.width, 186.66667);
         assert_eq!(first_snapshot.y, 50.0);
@@ -875,33 +992,38 @@ mod tests {
         );
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(first));
+        let _ = commit_child(&mut arena, parent_key, Box::new(second));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
 
         assert!((first_snapshot.width - 75.0).abs() < 0.01);
         assert!((second_snapshot.width - 75.0).abs() < 0.01);
@@ -910,7 +1032,7 @@ mod tests {
 
     #[test]
     fn absolute_defaults_to_parent_anchor_and_zero_insets() {
-        let mut parent = Element::new(40.0, 60.0, 200.0, 120.0);
+        let parent = Element::new(40.0, 60.0, 200.0, 120.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
         child_style.insert(
@@ -918,38 +1040,44 @@ mod tests {
             ParsedValue::Position(Position::absolute()),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has child");
-        let snapshot = children[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.x, 40.0);
         assert_eq!(snapshot.y, 60.0);
     }
 
     #[test]
     fn absolute_stretch_with_left_right_top_bottom() {
-        let mut parent = Element::new(10.0, 20.0, 200.0, 120.0);
+        let parent = Element::new(10.0, 20.0, 200.0, 120.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
         child_style.insert(
@@ -963,31 +1091,37 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has child");
-        let snapshot = children[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.x, 20.0);
         assert_eq!(snapshot.y, 25.0);
         assert_eq!(snapshot.width, 170.0);
@@ -996,7 +1130,7 @@ mod tests {
 
     #[test]
     fn absolute_negative_insets_are_preserved() {
-        let mut parent = Element::new(10.0, 20.0, 200.0, 120.0);
+        let parent = Element::new(10.0, 20.0, 200.0, 120.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
         child_style.insert(
@@ -1010,31 +1144,37 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has child");
-        let snapshot = children[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.x, 0.0);
         assert_eq!(snapshot.y, 15.0);
         assert_eq!(snapshot.width, 190.0);
@@ -1056,34 +1196,40 @@ mod tests {
         );
         el.apply_style(style);
 
-        el.measure(LayoutConstraints {
-            max_width: 400.0,
-            max_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 400.0,
-            available_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
-        let snapshot = el.box_model_snapshot();
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 400.0,
+                max_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 400.0,
+                available_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+        );
+        let snapshot = child_snapshot(&arena, key);
         assert_eq!(snapshot.x, 350.0);
         assert_eq!(snapshot.y, 270.0);
     }
 
     #[test]
     fn absolute_clip_viewport_allows_render_outside_parent_bounds() {
-        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
         child_style.insert(
@@ -1100,34 +1246,37 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 400.0,
-            max_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 400.0,
-            available_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has child");
-        let rendered = children[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("downcast child")
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 400.0,
+                max_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 400.0,
+                available_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+        );
+
+        let rendered = crate::view::test_support::get_element::<Element>(&arena, child_k)
             .core
             .should_render;
         assert!(rendered);
@@ -1148,27 +1297,31 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
         parent.core.should_render = false;
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
-        let next_state = parent.build(
-            &mut graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
+        let ctx_for_build =
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("parent build returns state");
         ctx.set_state(next_state);
 
         let deferred = ctx.take_deferred_node_ids();
-        let child_id = parent.children().expect("has child")[0].id();
+        let child_id = arena.get(child_k).unwrap().element.id();
         assert!(deferred.contains(&child_id));
     }
 
     #[test]
     fn absolute_clip_anchor_parent_falls_back_to_parent_without_anchor() {
-        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
         child_style.insert(
@@ -1181,34 +1334,37 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 400.0,
-            max_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 400.0,
-            available_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has child");
-        let rendered = children[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("downcast child")
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 400.0,
+                max_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 400.0,
+                available_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+        );
+
+        let rendered = crate::view::test_support::get_element::<Element>(&arena, child_k)
             .core
             .should_render;
         assert!(!rendered);
@@ -1216,7 +1372,7 @@ mod tests {
 
     #[test]
     fn absolute_clip_anchor_parent_uses_anchor_parent_bounds() {
-        let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
+        let parent = Element::new(0.0, 0.0, 500.0, 200.0);
         let mut anchor = Element::new(300.0, 20.0, 40.0, 40.0);
         anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
 
@@ -1237,35 +1393,38 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(anchor));
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 600.0,
-            max_height: 300.0,
-            viewport_width: 600.0,
-            percent_base_width: Some(600.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 600.0,
-            available_height: 300.0,
-            viewport_width: 600.0,
-            percent_base_width: Some(600.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _anchor_k = commit_child(&mut arena, parent_key, Box::new(anchor));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has children");
-        let rendered = children[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("downcast child")
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 600.0,
+                max_height: 300.0,
+                viewport_width: 600.0,
+                percent_base_width: Some(600.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 600.0,
+                available_height: 300.0,
+                viewport_width: 600.0,
+                percent_base_width: Some(600.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+        );
+
+        let rendered = crate::view::test_support::get_element::<Element>(&arena, child_k)
             .core
             .should_render;
         assert!(rendered);
@@ -1273,7 +1432,7 @@ mod tests {
 
     #[test]
     fn absolute_clip_anchor_parent_scissor_uses_anchor_parent_bounds() {
-        let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
+        let parent = Element::new(0.0, 0.0, 500.0, 200.0);
         let mut anchor = Element::new(300.0, 20.0, 40.0, 40.0);
         anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
 
@@ -1290,41 +1449,44 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(anchor));
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 600.0,
-            max_height: 300.0,
-            viewport_width: 600.0,
-            percent_base_width: Some(600.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 600.0,
-            available_height: 300.0,
-            viewport_width: 600.0,
-            percent_base_width: Some(600.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _anchor_k = commit_child(&mut arena, parent_key, Box::new(anchor));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has children");
-        let child = children[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("downcast child");
-        assert_eq!(child.absolute_clip_scissor_rect(), Some([0, 0, 500, 200]));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 600.0,
+                max_height: 300.0,
+                viewport_width: 600.0,
+                percent_base_width: Some(600.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 600.0,
+                available_height: 300.0,
+                viewport_width: 600.0,
+                percent_base_width: Some(600.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+        );
+
+        let child_el = crate::view::test_support::get_element::<Element>(&arena, child_k);
+        assert_eq!(child_el.absolute_clip_scissor_rect(), Some([0, 0, 500, 200]));
     }
 
     #[test]
     fn absolute_clip_anchor_parent_scissor_falls_back_to_parent_without_anchor() {
-        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        let parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
         child_style.insert(
@@ -1337,35 +1499,38 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 400.0,
-            max_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 400.0,
-            available_height: 300.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let children = parent.children().expect("has child");
-        let child = children[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("downcast child");
-        assert_eq!(child.absolute_clip_scissor_rect(), Some([0, 0, 100, 80]));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 400.0,
+                max_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 400.0,
+                available_height: 300.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+        );
+
+        let child_el = crate::view::test_support::get_element::<Element>(&arena, child_k);
+        assert_eq!(child_el.absolute_clip_scissor_rect(), Some([0, 0, 100, 80]));
     }
 
     #[test]
@@ -1381,15 +1546,18 @@ mod tests {
         );
         el.apply_style(style);
 
-        el.measure(LayoutConstraints {
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+
+        let c = LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
             viewport_width: 800.0,
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
             viewport_height: 600.0,
-        });
-        el.place(LayoutPlacement {
+        };
+        let p = LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
             visual_offset_x: 0.0,
@@ -1400,35 +1568,20 @@ mod tests {
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
             viewport_height: 600.0,
-        });
-        let _ = el.take_visual_transition_requests();
+        };
+
+        measure_and_place(&mut arena, key, c, p);
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_visual_transition_requests();
 
         let mut next_style = Style::new();
         next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
         next_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(90.0)));
-        el.apply_style(next_style);
-        el.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        crate::view::test_support::get_element_mut::<Element>(&arena, key).apply_style(next_style);
+        measure_and_place(&mut arena, key, c, p);
 
-        let reqs = el.take_layout_transition_requests();
+        let reqs = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
         assert!(reqs.iter().any(|r| r.field == LayoutField::Width));
         assert!(reqs.iter().any(|r| r.field == LayoutField::Height));
     }
@@ -1445,6 +1598,9 @@ mod tests {
             ))),
         );
         el.apply_style(style);
+
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
 
         let constraints = LayoutConstraints {
             max_width: 800.0,
@@ -1467,18 +1623,20 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        el.measure(constraints);
-        el.place(placement_at_100);
-        let _ = el.take_visual_transition_requests();
+        measure_and_place(&mut arena, key, constraints, placement_at_100);
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_visual_transition_requests();
 
         // Simulate an in-flight visual offset frame: target rel-x=50, offset=30 => abs x = 180.
-        el.set_layout_transition_x(30.0);
-        el.place(placement_at_100);
-        let _ = el.take_layout_transition_requests();
+        crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .set_layout_transition_x(30.0);
+        arena.with_element_taken(key, |el, a| el.place(placement_at_100, a));
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
         // A reflow shifts parent origin and updates target x.
-        el.set_position(120.0, 0.0);
-        el.place(LayoutPlacement {
+        crate::view::test_support::get_element_mut::<Element>(&arena, key).set_position(120.0, 0.0);
+        let reflow_placement = LayoutPlacement {
             parent_x: 130.0,
             parent_y: 0.0,
             visual_offset_x: 0.0,
@@ -1489,9 +1647,11 @@ mod tests {
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
             viewport_height: 600.0,
-        });
+        };
+        arena.with_element_taken(key, |el, a| el.place(reflow_placement, a));
 
-        let reqs = el.take_visual_transition_requests();
+        let reqs = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_visual_transition_requests();
         let x_req = reqs
             .iter()
             .find(|r| r.field == VisualField::X)
@@ -1517,6 +1677,9 @@ mod tests {
         );
         el.apply_style(style);
 
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+
         let constraints = LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
@@ -1538,25 +1701,32 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        el.measure(constraints);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
-        let _ = el.take_visual_transition_requests();
+        measure_and_place(&mut arena, key, constraints, placement);
+        {
+            let mut el_mut = crate::view::test_support::get_element_mut::<Element>(&arena, key);
+            let _ = el_mut.take_layout_transition_requests();
+            let _ = el_mut.take_visual_transition_requests();
+        }
 
-        el.set_position(120.0, 0.0);
-        let mut next_style = Style::new();
-        next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
-        el.apply_style(next_style);
-        el.measure(constraints);
-        el.place(placement);
+        {
+            let mut el_mut = crate::view::test_support::get_element_mut::<Element>(&arena, key);
+            el_mut.set_position(120.0, 0.0);
+            let mut next_style = Style::new();
+            next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
+            el_mut.apply_style(next_style);
+        }
+        measure_and_place(&mut arena, key, constraints, placement);
 
-        let snapshot = el.box_model_snapshot();
-        let layout_reqs = el.take_layout_transition_requests();
-        let visual_reqs = el.take_visual_transition_requests();
+        let el_ref = crate::view::test_support::get_element::<Element>(&arena, key);
+        let snapshot = el_ref.box_model_snapshot();
         assert!((snapshot.x - 150.0).abs() < 0.01);
         assert!((snapshot.width - 100.0).abs() < 0.01);
-        assert!((el.layout_transition_visual_offset_x + 70.0).abs() < 0.01);
-        assert_eq!(el.layout_transition_override_width, Some(100.0));
+        assert!((el_ref.layout_transition_visual_offset_x + 70.0).abs() < 0.01);
+        assert_eq!(el_ref.layout_transition_override_width, Some(100.0));
+        drop(el_ref);
+        let mut el_mut = crate::view::test_support::get_element_mut::<Element>(&arena, key);
+        let layout_reqs = el_mut.take_layout_transition_requests();
+        let visual_reqs = el_mut.take_visual_transition_requests();
         assert!(visual_reqs.iter().any(|req| req.field == VisualField::X));
         assert!(layout_reqs.iter().any(|req| req.field == LayoutField::Width));
     }
@@ -1574,6 +1744,9 @@ mod tests {
         );
         el.apply_style(style);
 
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+
         let constraints = LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
@@ -1595,21 +1768,25 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        el.measure(constraints);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
+        measure_and_place(&mut arena, key, constraints, placement);
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
         // Simulate in-flight width frame.
-        el.set_layout_transition_width(140.0);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
+        crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .set_layout_transition_width(140.0);
+        arena.with_element_taken(key, |el, a| el.place(placement, a));
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
         // Reflow updates target width while parent origin also changes.
-        let mut next_style = Style::new();
-        next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
-        el.apply_style(next_style);
-        el.measure(constraints);
-        el.place(LayoutPlacement {
+        {
+            let mut next_style = Style::new();
+            next_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+            crate::view::test_support::get_element_mut::<Element>(&arena, key)
+                .apply_style(next_style);
+        }
+        let reflow_placement = LayoutPlacement {
             parent_x: 130.0,
             parent_y: 0.0,
             visual_offset_x: 0.0,
@@ -1620,9 +1797,11 @@ mod tests {
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
             viewport_height: 600.0,
-        });
+        };
+        measure_and_place(&mut arena, key, constraints, reflow_placement);
 
-        let reqs = el.take_layout_transition_requests();
+        let reqs = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
         let w_req = reqs
             .iter()
             .find(|r| r.field == LayoutField::Width)
@@ -1644,6 +1823,9 @@ mod tests {
         );
         el.apply_style(style);
 
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+
         let constraints = LayoutConstraints {
             max_width: 800.0,
             max_height: 600.0,
@@ -1665,21 +1847,25 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        el.measure(constraints);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
+        measure_and_place(&mut arena, key, constraints, placement);
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
         // Simulate in-flight height frame.
-        el.set_layout_transition_height(70.0);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
+        crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .set_layout_transition_height(70.0);
+        arena.with_element_taken(key, |el, a| el.place(placement, a));
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
         // Reflow updates target height while parent origin also changes.
-        let mut next_style = Style::new();
-        next_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(160.0)));
-        el.apply_style(next_style);
-        el.measure(constraints);
-        el.place(LayoutPlacement {
+        {
+            let mut next_style = Style::new();
+            next_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(160.0)));
+            crate::view::test_support::get_element_mut::<Element>(&arena, key)
+                .apply_style(next_style);
+        }
+        let reflow_placement = LayoutPlacement {
             parent_x: 130.0,
             parent_y: 0.0,
             visual_offset_x: 0.0,
@@ -1690,9 +1876,11 @@ mod tests {
             percent_base_width: Some(800.0),
             percent_base_height: Some(600.0),
             viewport_height: 600.0,
-        });
+        };
+        measure_and_place(&mut arena, key, constraints, reflow_placement);
 
-        let reqs = el.take_layout_transition_requests();
+        let reqs = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
         let h_req = reqs
             .iter()
             .find(|r| r.field == LayoutField::Height)
@@ -1713,6 +1901,9 @@ mod tests {
             ))),
         );
         el.apply_style(style);
+
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
 
         let constraints = LayoutConstraints {
             max_width: 800.0,
@@ -1735,28 +1926,36 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        el.measure(constraints);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
+        measure_and_place(&mut arena, key, constraints, placement);
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
-        let mut expanded_style = Style::new();
-        expanded_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(160.0)));
-        el.apply_style(expanded_style);
-        el.measure(constraints);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
+        {
+            let mut expanded_style = Style::new();
+            expanded_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(160.0)));
+            crate::view::test_support::get_element_mut::<Element>(&arena, key)
+                .apply_style(expanded_style);
+        }
+        measure_and_place(&mut arena, key, constraints, placement);
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
-        el.set_layout_transition_height(70.0);
-        el.place(placement);
-        let _ = el.take_layout_transition_requests();
+        crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .set_layout_transition_height(70.0);
+        arena.with_element_taken(key, |el, a| el.place(placement, a));
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
 
-        let mut collapsed_style = Style::new();
-        collapsed_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        el.apply_style(collapsed_style);
-        el.measure(constraints);
-        el.place(placement);
+        {
+            let mut collapsed_style = Style::new();
+            collapsed_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+            crate::view::test_support::get_element_mut::<Element>(&arena, key)
+                .apply_style(collapsed_style);
+        }
+        measure_and_place(&mut arena, key, constraints, placement);
 
-        let reqs = el.take_layout_transition_requests();
+        let reqs = crate::view::test_support::get_element_mut::<Element>(&arena, key)
+            .take_layout_transition_requests();
         let h_req = reqs
             .iter()
             .find(|r| r.field == LayoutField::Height)
@@ -1822,37 +2021,52 @@ mod tests {
         old.layout_transition_visual_offset_x = -20.0;
         old.layout_transition_target_x = Some(70.0);
 
-        let layout_snapshots =
-            crate::view::base_component::collect_layout_transition_snapshots(&[Box::new(old)]);
+        let mut arena_old = new_test_arena();
+        let old_key = commit_element(&mut arena_old, Box::new(old));
+        let layout_snapshots = crate::view::base_component::collect_layout_transition_snapshots(
+            &arena_old,
+            &[old_key],
+        );
 
         let mut rebuilt = Element::new_with_id(42, 50.0, 0.0, 100.0, 40.0);
         rebuilt.has_layout_snapshot = true;
         rebuilt.layout_transition_visual_offset_x = -20.0;
         rebuilt.layout_transition_target_x = Some(70.0);
-        let mut roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(rebuilt)];
-        crate::view::base_component::seed_layout_transition_snapshots(&mut roots, &layout_snapshots);
+        let mut arena = new_test_arena();
+        let rebuilt_key = commit_element(&mut arena, Box::new(rebuilt));
+        crate::view::base_component::seed_layout_transition_snapshots(
+            &mut arena,
+            &[rebuilt_key],
+            &layout_snapshots,
+        );
 
-        let rebuilt = roots[0]
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("downcast rebuilt element");
-        assert_eq!(rebuilt.core.layout_position.x, 150.0);
-        assert_eq!(rebuilt.layout_flow_position.x, 170.0);
+        {
+            let rebuilt_ref =
+                crate::view::test_support::get_element::<Element>(&arena, rebuilt_key);
+            assert_eq!(rebuilt_ref.core.layout_position.x, 150.0);
+            assert_eq!(rebuilt_ref.layout_flow_position.x, 170.0);
+        }
 
-        rebuilt.place(LayoutPlacement {
-            parent_x: 100.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
+        arena.with_element_taken(rebuilt_key, |el, a| {
+            el.place(
+                LayoutPlacement {
+                    parent_x: 100.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 800.0,
+                    available_height: 600.0,
+                    viewport_width: 800.0,
+                    percent_base_width: Some(800.0),
+                    percent_base_height: Some(600.0),
+                    viewport_height: 600.0,
+                },
+                a,
+            );
         });
 
-        assert!((rebuilt.core.layout_position.x - 150.0).abs() < 0.01);
+        let rebuilt_ref = crate::view::test_support::get_element::<Element>(&arena, rebuilt_key);
+        assert!((rebuilt_ref.core.layout_position.x - 150.0).abs() < 0.01);
     }
 
     #[test]
@@ -1879,33 +2093,38 @@ mod tests {
         second_style.set_flex(crate::flex().grow(1.0).basis(Length::px(50.0)));
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _first_k = commit_child(&mut arena, parent_key, Box::new(first));
+        let _second_k = commit_child(&mut arena, parent_key, Box::new(second));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert_eq!(first_snapshot.width, 100.0);
         assert_eq!(second_snapshot.width, 100.0);
     }
@@ -1935,30 +2154,37 @@ mod tests {
             ParsedValue::Length(Length::percent(50.0)),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert_eq!(snapshot.width, 100.0);
         assert_eq!(snapshot.height, 50.0);
     }
@@ -1981,7 +2207,6 @@ mod tests {
         first_style.insert(PropertyId::Height, ParsedValue::Auto);
         first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
         first.apply_style(first_style);
-        first.add_child(Box::new(Element::new(0.0, 0.0, 20.0, 20.0)));
 
         let mut second = Element::new(0.0, 0.0, 120.0, 20.0);
         let mut second_style = Style::new();
@@ -1990,8 +2215,11 @@ mod tests {
         second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let first_key = commit_child(&mut arena, parent_key, Box::new(first));
+        let _first_leaf = commit_child(&mut arena, first_key, Box::new(Element::new(0.0, 0.0, 20.0, 20.0)));
+        let _second_key = commit_child(&mut arena, parent_key, Box::new(second));
 
         let constraints = LayoutConstraints {
             max_width: 800.0,
@@ -2014,20 +2242,17 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        parent.measure(constraints);
-        parent.place(placement);
-        let children = parent.children().expect("children after first layout");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        measure_and_place(&mut arena, parent_key, constraints, placement);
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((first_snapshot.width - 20.0).abs() < 0.01);
         assert!((second_snapshot.width - 80.0).abs() < 0.01);
 
-        parent.mark_layout_dirty();
-        parent.measure(constraints);
-        parent.place(placement);
-        let children = parent.children().expect("children after second layout");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        crate::view::test_support::get_element_mut::<Element>(&arena, parent_key)
+            .mark_layout_dirty();
+        measure_and_place(&mut arena, parent_key, constraints, placement);
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((first_snapshot.width - 20.0).abs() < 0.01);
         assert!((second_snapshot.width - 80.0).abs() < 0.01);
     }
@@ -2055,32 +2280,37 @@ mod tests {
         second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().grow(1.0)));
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(first));
+        let _ = commit_child(&mut arena, parent_key, Box::new(second));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((first_snapshot.width - 30.0).abs() < 0.01);
         assert!((second_snapshot.width - 70.0).abs() < 0.01);
     }
@@ -2108,32 +2338,37 @@ mod tests {
         second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(first));
+        let _ = commit_child(&mut arena, parent_key, Box::new(second));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((first_snapshot.width - 50.0).abs() < 0.01);
         assert!((second_snapshot.width - 30.0).abs() < 0.01);
     }
@@ -2156,7 +2391,6 @@ mod tests {
         first_style.insert(PropertyId::Height, ParsedValue::Auto);
         first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
         first.apply_style(first_style);
-        first.add_child(Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
 
         let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut second_style = Style::new();
@@ -2165,32 +2399,38 @@ mod tests {
         second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let first_key = commit_child(&mut arena, parent_key, Box::new(first));
+        let _ = commit_child(&mut arena, first_key, Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
+        let _ = commit_child(&mut arena, parent_key, Box::new(second));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((first_snapshot.width - 60.0).abs() < 0.01);
         assert!((second_snapshot.width - 20.0).abs() < 0.01);
     }
@@ -2220,7 +2460,6 @@ mod tests {
             ParsedValue::Flex(crate::flex().shrink(1.0)),
         );
         first.apply_style(first_style);
-        first.add_child(Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
 
         let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut second_style = Style::new();
@@ -2232,32 +2471,38 @@ mod tests {
         );
         second.apply_style(second_style);
 
-        parent.add_child(Box::new(first));
-        parent.add_child(Box::new(second));
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let first_key = commit_child(&mut arena, parent_key, Box::new(first));
+        let _ = commit_child(&mut arena, first_key, Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
+        let _ = commit_child(&mut arena, parent_key, Box::new(second));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first_snapshot = children[0].box_model_snapshot();
-        let second_snapshot = children[1].box_model_snapshot();
+        let first_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let second_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((first_snapshot.width - 0.0).abs() < 0.01);
         assert!((second_snapshot.width - 60.0).abs() < 0.01);
     }
@@ -2292,8 +2537,10 @@ mod tests {
         thumb_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
         thumb.apply_style(thumb_style);
 
-        parent.add_child(Box::new(spacer));
-        parent.add_child(Box::new(thumb));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let spacer_key = commit_child(&mut arena, parent_key, Box::new(spacer));
+        let _ = commit_child(&mut arena, parent_key, Box::new(thumb));
 
         let constraints = LayoutConstraints {
             max_width: 800.0,
@@ -2316,46 +2563,30 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        parent.measure(constraints);
-        parent.place(placement);
-        let _ = parent.take_layout_transition_requests();
+        measure_and_place(&mut arena, parent_key, constraints, placement);
+        let _ = crate::view::test_support::get_element_mut::<Element>(&arena, parent_key)
+            .take_layout_transition_requests();
 
         let mut next_spacer_style = Style::new();
         next_spacer_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
-        parent
-            .children_mut()
-            .expect("children")[0]
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("spacer")
+        crate::view::test_support::get_element_mut::<Element>(&arena, spacer_key)
             .apply_style(next_spacer_style);
 
-        parent.mark_layout_dirty();
-        parent.measure(constraints);
-        parent.place(placement);
+        crate::view::test_support::get_element_mut::<Element>(&arena, parent_key)
+            .mark_layout_dirty();
+        measure_and_place(&mut arena, parent_key, constraints, placement);
 
-        let reqs = parent
-            .children_mut()
-            .expect("children")[0]
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("spacer")
+        let reqs = crate::view::test_support::get_element_mut::<Element>(&arena, spacer_key)
             .take_layout_transition_requests();
         assert!(reqs.iter().any(|req| req.field == LayoutField::Width));
 
-        parent
-            .children_mut()
-            .expect("children")[0]
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("spacer")
+        crate::view::test_support::get_element_mut::<Element>(&arena, spacer_key)
             .set_layout_transition_width(10.0);
-        parent.mark_layout_dirty();
-        parent.measure(constraints);
-        parent.place(placement);
+        crate::view::test_support::get_element_mut::<Element>(&arena, parent_key)
+            .mark_layout_dirty();
+        measure_and_place(&mut arena, parent_key, constraints, placement);
 
-        let children = parent.children().expect("children");
-        let thumb_snapshot = children[1].box_model_snapshot();
+        let thumb_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((thumb_snapshot.x - 10.0).abs() < 0.01);
     }
 
@@ -2413,35 +2644,41 @@ mod tests {
         style.insert(PropertyId::MaxHeight, ParsedValue::Length(Length::px(60.0)));
         el.apply_style(style);
 
-        el.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
-        let snapshot = el.box_model_snapshot();
+        let snapshot = child_snapshot(&arena, key);
         assert_eq!(snapshot.width, 180.0);
         assert_eq!(snapshot.height, 40.0);
     }
 
     #[test]
     fn percent_min_and_max_size_resolve_against_parent_inner_size() {
-        let mut parent = Element::new(0.0, 0.0, 300.0, 200.0);
+        let parent = Element::new(0.0, 0.0, 300.0, 200.0);
         let mut child = Element::new(0.0, 0.0, 500.0, 10.0);
         let mut child_style = Style::new();
         child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(500.0)));
@@ -2463,32 +2700,39 @@ mod tests {
             ParsedValue::Length(Length::percent(45.0)),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let child_snapshot = parent.children().expect("child")[0].box_model_snapshot();
-        assert_eq!(child_snapshot.width, 180.0);
-        assert_eq!(child_snapshot.height, 80.0);
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
+
+        let snap = nth_child_snapshot(&arena, parent_key, 0);
+        assert_eq!(snap.width, 180.0);
+        assert_eq!(snap.height, 80.0);
     }
 
     #[test]
@@ -2520,32 +2764,39 @@ mod tests {
             ParsedValue::Length(Length::percent(10.0)),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let child_snapshot = parent.children().expect("child")[0].box_model_snapshot();
-        assert_eq!(child_snapshot.width, 480.0);
-        assert_eq!(child_snapshot.height, 420.0);
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
+
+        let snap = nth_child_snapshot(&arena, parent_key, 0);
+        assert_eq!(snap.width, 480.0);
+        assert_eq!(snap.height, 420.0);
     }
 
     #[test]
@@ -2560,28 +2811,34 @@ mod tests {
         style.insert(PropertyId::MaxHeight, ParsedValue::Length(Length::px(40.0)));
         el.apply_style(style);
 
-        el.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(el));
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
-        let snapshot = el.box_model_snapshot();
+        let snapshot = child_snapshot(&arena, key);
         assert_eq!(snapshot.width, 120.0);
         assert_eq!(snapshot.height, 50.0);
     }
@@ -2615,126 +2872,155 @@ mod tests {
 
     #[test]
     fn child_clip_scope_is_skipped_when_children_are_fully_inside_inner_rect() {
-        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let parent = Element::new(0.0, 0.0, 120.0, 120.0);
         let child = Element::new(20.0, 20.0, 40.0, 40.0);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 200.0,
-            available_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let inner_radii = parent.inner_clip_radii(normalize_corner_radii(
-            parent.border_radii,
-            parent.core.layout_size.width.max(0.0),
-            parent.core.layout_size.height.max(0.0),
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+        );
+
+        let child_count = arena.children_of(parent_key).len();
+        let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+        let inner_radii = parent_ref.inner_clip_radii(normalize_corner_radii(
+            parent_ref.border_radii,
+            parent_ref.core.layout_size.width.max(0.0),
+            parent_ref.core.layout_size.height.max(0.0),
         ));
-        let overflow_child_indices: Vec<bool> = (0..parent.children.len())
-            .map(|idx| parent.child_renders_outside_inner_clip(idx))
+        let overflow_child_indices: Vec<bool> = (0..child_count)
+            .map(|idx| parent_ref.child_renders_outside_inner_clip(idx, &arena))
             .collect();
-        assert!(!parent.should_clip_children(&overflow_child_indices, inner_radii));
+        assert!(!parent_ref.should_clip_children(&overflow_child_indices, inner_radii, &arena));
     }
 
     #[test]
     fn child_clip_scope_is_required_when_child_overflows_inner_rect() {
-        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let parent = Element::new(0.0, 0.0, 100.0, 100.0);
         let mut child = Element::new(0.0, 0.0, 140.0, 40.0);
         let mut style = Style::new();
         style.insert(PropertyId::Width, ParsedValue::Length(Length::px(140.0)));
         child.apply_style(style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 200.0,
-            available_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
 
-        let inner_radii = parent.inner_clip_radii(normalize_corner_radii(
-            parent.border_radii,
-            parent.core.layout_size.width.max(0.0),
-            parent.core.layout_size.height.max(0.0),
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+        );
+
+        let child_count = arena.children_of(parent_key).len();
+        let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+        let inner_radii = parent_ref.inner_clip_radii(normalize_corner_radii(
+            parent_ref.border_radii,
+            parent_ref.core.layout_size.width.max(0.0),
+            parent_ref.core.layout_size.height.max(0.0),
         ));
-        let overflow_child_indices: Vec<bool> = (0..parent.children.len())
-            .map(|idx| parent.child_renders_outside_inner_clip(idx))
+        let overflow_child_indices: Vec<bool> = (0..child_count)
+            .map(|idx| parent_ref.child_renders_outside_inner_clip(idx, &arena))
             .collect();
-        assert!(parent.should_clip_children(&overflow_child_indices, inner_radii));
+        assert!(parent_ref.should_clip_children(&overflow_child_indices, inner_radii, &arena));
     }
 
     #[test]
     fn child_clip_scope_uses_stencil_without_rounding() {
-        let mut parent = Element::new(0.0, 0.0, 100.0, 100.0);
+        let parent = Element::new(0.0, 0.0, 100.0, 100.0);
         let mut child = Element::new(0.0, 0.0, 140.0, 40.0);
         let mut style = Style::new();
         style.insert(PropertyId::Width, ParsedValue::Length(Length::px(140.0)));
         child.apply_style(style);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 200.0,
-            available_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
 
-        let inner_radii = parent.inner_clip_radii(normalize_corner_radii(
-            parent.border_radii,
-            parent.core.layout_size.width.max(0.0),
-            parent.core.layout_size.height.max(0.0),
-        ));
+        let inner_radii = {
+            let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_ref.inner_clip_radii(normalize_corner_radii(
+                parent_ref.border_radii,
+                parent_ref.core.layout_size.width.max(0.0),
+                parent_ref.core.layout_size.height.max(0.0),
+            ))
+        };
         assert!(!inner_radii.has_any_rounding());
 
-        let scope = parent.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
+        let mut parent_mut = crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+        let scope = parent_mut.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
         assert!(scope.is_some());
         assert!(scope.as_ref().is_some_and(|scope| scope.child_clip_id != 0));
     }
@@ -2762,29 +3048,36 @@ mod tests {
             ParsedValue::color_like(Color::hex("#ff0000")),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
-        let child_id = parent.children().expect("has child")[0].id();
 
-        parent.measure(LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_key_k = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_id = arena.get(child_key_k).unwrap().element.id();
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -2796,10 +3089,10 @@ mod tests {
             Arc::new(FxHashMap::default()),
         );
 
-        let next_state = parent.build(
-            &mut graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("parent build returns state");
         ctx.set_state(next_state);
 
         let pass_names = graph
@@ -2827,31 +3120,38 @@ mod tests {
         parent.apply_style(parent_style);
         let _ = parent.set_hovered(true);
         parent.set_scrollbar_shadow_blur_radius(0.0);
-
-        let child = Element::new(0.0, 0.0, 120.0, 360.0);
-        parent.add_child(Box::new(child));
         let parent_id = parent.id();
 
-        parent.measure(LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
+        let child = Element::new(0.0, 0.0, 120.0, 360.0);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -2863,6 +3163,8 @@ mod tests {
             Arc::new(FxHashMap::default()),
         );
 
+        let promotion_bounds = crate::view::test_support::get_element::<Element>(&arena, parent_key)
+            .promotion_composite_bounds();
         let mut layer_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
             super::BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
@@ -2870,16 +3172,24 @@ mod tests {
         let layer_target = layer_ctx.allocate_promoted_layer_target(
             &mut graph,
             parent_id,
-            parent.promotion_composite_bounds(),
+            promotion_bounds,
         );
         layer_ctx.set_current_target(layer_target);
-        let next_state = parent.build_promoted_layer(
-            &mut graph,
-            layer_ctx,
-            crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-            false,
-            crate::view::viewport::DebugReusePathContext::Root,
-        );
+        let next_state = arena
+            .with_element_taken(parent_key, |el, a| {
+                el.as_any_mut()
+                    .downcast_mut::<Element>()
+                    .unwrap()
+                    .build_promoted_layer(
+                        &mut graph,
+                        a,
+                        layer_ctx,
+                        crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                        false,
+                        crate::view::viewport::DebugReusePathContext::Root,
+                    )
+            })
+            .expect("build_promoted_layer returns state");
         ctx.set_state(next_state);
 
         let pass_names = graph
@@ -2906,38 +3216,45 @@ mod tests {
         );
         parent.apply_style(parent_style);
         let child = Element::new(0.0, 0.0, 120.0, 360.0);
-        parent.add_child(Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
 
-        let next_state = parent.build(
-            &mut graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("parent build returns state");
 
         assert_eq!(
             next_state.scissor_rect, None,
@@ -2979,33 +3296,41 @@ mod tests {
         );
         row_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(100.0)));
         row_child.apply_style(row_style);
-        row_child.add_child(Box::new(Element::new(0.0, 0.0, 40.0, 24.0)));
-        parent.add_child(Box::new(row_child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let row_key = commit_child(&mut arena, parent_key, Box::new(row_child));
+        let _ = commit_child(&mut arena, row_key, Box::new(Element::new(0.0, 0.0, 40.0, 24.0)));
 
-        let row_snapshot = parent.children().expect("child")[0].box_model_snapshot();
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
+
+        let row_snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert!((row_snapshot.height - 24.0).abs() < 0.01);
-        assert!((parent.content_size.height - 24.0).abs() < 0.01);
+        let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+        assert!((parent_ref.content_size.height - 24.0).abs() < 0.01);
     }
 
     #[test]
@@ -3042,20 +3367,22 @@ mod tests {
                 ParsedValue::Transition(Transition::new(TransitionProperty::Height, 180).into()),
             );
             stretched.apply_style(stretched_style);
-            stretched.add_child(Box::new(Element::new(0.0, 0.0, 120.0, 40.0)));
 
-            parent.add_child(Box::new(tall));
-            parent.add_child(Box::new(stretched));
+            let mut arena = new_test_arena();
+            let parent_key = commit_element(&mut arena, Box::new(parent));
+            let _ = commit_child(&mut arena, parent_key, Box::new(tall));
+            let stretched_key = commit_child(&mut arena, parent_key, Box::new(stretched));
+            let _ = commit_child(&mut arena, stretched_key, Box::new(Element::new(0.0, 0.0, 120.0, 40.0)));
 
-            parent.measure(LayoutConstraints {
+            let constraints = LayoutConstraints {
                 max_width: 320.0,
                 max_height: 140.0,
                 viewport_width: 320.0,
                 viewport_height: 140.0,
                 percent_base_width: Some(320.0),
                 percent_base_height: Some(140.0),
-            });
-            parent.place(LayoutPlacement {
+            };
+            let placement = LayoutPlacement {
                 parent_x: 0.0,
                 parent_y: 0.0,
                 visual_offset_x: 0.0,
@@ -3066,11 +3393,9 @@ mod tests {
                 viewport_height: 140.0,
                 percent_base_width: Some(320.0),
                 percent_base_height: Some(140.0),
-            });
-            let _ = parent.children[1]
-                .as_any_mut()
-                .downcast_mut::<Element>()
-                .expect("stretched child element")
+            };
+            measure_and_place(&mut arena, parent_key, constraints, placement);
+            let _ = crate::view::test_support::get_element_mut::<Element>(&arena, stretched_key)
                 .take_layout_transition_requests();
 
             let mut next_parent_style = Style::new();
@@ -3087,32 +3412,20 @@ mod tests {
             );
             next_parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(320.0)));
             next_parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(140.0)));
-            parent.apply_style(next_parent_style);
-            parent.measure(LayoutConstraints {
-                max_width: 320.0,
-                max_height: 140.0,
-                viewport_width: 320.0,
-                viewport_height: 140.0,
-                percent_base_width: Some(320.0),
-                percent_base_height: Some(140.0),
-            });
-            assert_eq!(parent.computed_style.layout_axis_cross_size(), CrossSize::Stretch);
-            assert!(parent.children[1].flex_props().allows_cross_stretch(true));
-            parent.place(LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 320.0,
-                available_height: 140.0,
-                viewport_width: 320.0,
-                viewport_height: 140.0,
-                percent_base_width: Some(320.0),
-                percent_base_height: Some(140.0),
-            });
+            crate::view::test_support::get_element_mut::<Element>(&arena, parent_key)
+                .apply_style(next_parent_style);
+            arena.with_element_taken(parent_key, |el, a| el.measure(constraints, a));
+            {
+                let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+                assert_eq!(parent_ref.computed_style.layout_axis_cross_size(), CrossSize::Stretch);
+            }
+            {
+                let stretched_ref = crate::view::test_support::get_element::<Element>(&arena, stretched_key);
+                assert!(stretched_ref.flex_props().allows_cross_stretch(true));
+            }
+            arena.with_element_taken(parent_key, |el, a| el.place(placement, a));
 
-            let children = parent.children().expect("children");
-            let stretched_snapshot = children[1].box_model_snapshot();
+            let stretched_snapshot = child_snapshot(&arena, stretched_key);
             let expected_animated_y = match align {
                 Align::Start => 0.0,
                 Align::Center => 50.0,
@@ -3131,47 +3444,20 @@ mod tests {
                 stretched_snapshot.height
             );
 
-            let stretched = parent.children[1]
-                .as_any_mut()
-                .downcast_mut::<Element>()
-                .expect("stretched child element");
-            stretched.set_layout_transition_height(100.0);
+            crate::view::test_support::get_element_mut::<Element>(&arena, stretched_key)
+                .set_layout_transition_height(100.0);
 
-            parent.place(LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 320.0,
-                available_height: 140.0,
-                viewport_width: 320.0,
-                viewport_height: 140.0,
-                percent_base_width: Some(320.0),
-                percent_base_height: Some(140.0),
-            });
+            arena.with_element_taken(parent_key, |el, a| el.place(placement, a));
 
-            let stretched = parent.children[1]
-                .as_any_mut()
-                .downcast_mut::<Element>()
-                .expect("stretched child element");
-            stretched.layout_transition_override_height = None;
-            stretched.layout_transition_target_height = None;
+            {
+                let mut stretched_mut = crate::view::test_support::get_element_mut::<Element>(&arena, stretched_key);
+                stretched_mut.layout_transition_override_height = None;
+                stretched_mut.layout_transition_target_height = None;
+            }
 
-            parent.place(LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 320.0,
-                available_height: 140.0,
-                viewport_width: 320.0,
-                viewport_height: 140.0,
-                percent_base_width: Some(320.0),
-                percent_base_height: Some(140.0),
-            });
+            arena.with_element_taken(parent_key, |el, a| el.place(placement, a));
 
-            let children = parent.children().expect("children");
-            let stretched_snapshot = children[1].box_model_snapshot();
+            let stretched_snapshot = child_snapshot(&arena, stretched_key);
             let expected_final_y = match align {
                 Align::Start => 0.0,
                 Align::Center => 20.0,
@@ -3279,6 +3565,7 @@ mod tests {
 
     #[test]
     fn non_promoted_container_with_promoted_child_is_not_built_twice_during_compose() {
+        let mut arena = new_test_arena();
         let mut root = Element::new(0.0, 0.0, 200.0, 200.0);
         let mut root_style = Style::new();
         root_style.insert(
@@ -3286,6 +3573,8 @@ mod tests {
             ParsedValue::color_like(Color::hex("#202020")),
         );
         root.apply_style(root_style);
+        let root_key = commit_element(&mut arena, Box::new(root));
+
         let mut container = Element::new(0.0, 0.0, 120.0, 120.0);
         let container_id = container.id();
         let mut container_style = Style::new();
@@ -3298,6 +3587,7 @@ mod tests {
             ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
         );
         container.apply_style(container_style);
+        let container_key = commit_child(&mut arena, root_key, Box::new(container));
 
         let mut promoted_child = Element::new(0.0, 0.0, 120.0, 240.0);
         let mut promoted_child_style = Style::new();
@@ -3307,29 +3597,32 @@ mod tests {
         );
         promoted_child.apply_style(promoted_child_style);
         let promoted_child_id = promoted_child.id();
-        container.add_child(Box::new(promoted_child));
-        root.add_child(Box::new(container));
+        let _ = commit_child(&mut arena, container_key, Box::new(promoted_child));
 
-        root.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
-        root.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 200.0,
-            available_height: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(200.0),
-        });
+        measure_and_place(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -3342,10 +3635,10 @@ mod tests {
         );
         reset_test_promoted_build_counts();
 
-        let next_state = root.build(
-            &mut graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(root_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("root build returns state");
         ctx.set_state(next_state);
 
         assert_eq!(
@@ -3357,6 +3650,7 @@ mod tests {
 
     #[test]
     fn zero_opacity_sets_should_paint_false_but_keeps_render() {
+        let mut arena = new_test_arena();
         let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
         let mut style = Style::new();
         style.insert(
@@ -3365,34 +3659,41 @@ mod tests {
         );
         style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.0)));
         el.apply_style(style);
+        let key = commit_element(&mut arena, Box::new(el));
 
-        el.measure(LayoutConstraints {
-            max_width: 100.0,
-            max_height: 40.0,
-            viewport_width: 100.0,
-            viewport_height: 40.0,
-            percent_base_width: Some(100.0),
-            percent_base_height: Some(40.0),
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 100.0,
-            available_height: 40.0,
-            viewport_width: 100.0,
-            viewport_height: 40.0,
-            percent_base_width: Some(100.0),
-            percent_base_height: Some(40.0),
-        });
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 40.0,
+                viewport_width: 100.0,
+                viewport_height: 40.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(40.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 40.0,
+                viewport_width: 100.0,
+                viewport_height: 40.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(40.0),
+            },
+        );
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert!(el.core.should_render);
         assert!(!el.core.should_paint);
     }
 
     #[test]
     fn transformed_bounds_are_used_for_clip_culling() {
+        let mut arena = new_test_arena();
         let mut el = Element::new(120.0, 0.0, 40.0, 40.0);
         let mut style = Style::new();
         style.insert(PropertyId::Width, ParsedValue::Length(Length::px(40.0)));
@@ -3400,28 +3701,34 @@ mod tests {
         style.set_transform(Transform::new([Translate::x(Length::px(-80.0))]));
         style.set_transform_origin(TransformOrigin::center());
         el.apply_style(style);
+        let key = commit_element(&mut arena, Box::new(el));
 
-        el.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 100.0,
-            viewport_width: 200.0,
-            viewport_height: 100.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(100.0),
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 100.0,
-            available_height: 100.0,
-            viewport_width: 200.0,
-            viewport_height: 100.0,
-            percent_base_width: Some(100.0),
-            percent_base_height: Some(100.0),
-        });
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 100.0,
+                viewport_width: 200.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(100.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 200.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+        );
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         let transformed = el.transformed_frame_bounding_rect(super::LayoutFrame {
             x: el.core.layout_position.x,
             y: el.core.layout_position.y,
@@ -3438,6 +3745,7 @@ mod tests {
 
     #[test]
     fn promotion_composite_bounds_follow_transformed_bounding_box() {
+        let mut arena = new_test_arena();
         let mut el = Element::new(40.0, 20.0, 30.0, 20.0);
         let mut style = Style::new();
         style.insert(PropertyId::Width, ParsedValue::Length(Length::px(30.0)));
@@ -3445,28 +3753,34 @@ mod tests {
         style.set_transform(Transform::new([Rotate::z(Angle::deg(90.0))]));
         style.set_transform_origin(TransformOrigin::center());
         el.apply_style(style);
+        let key = commit_element(&mut arena, Box::new(el));
 
-        el.measure(LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         let bounds = el.promotion_composite_bounds();
         assert!((bounds.x - 45.0).abs() < 0.01);
         assert!((bounds.y - 15.0).abs() < 0.01);
@@ -3476,7 +3790,10 @@ mod tests {
 
     #[test]
     fn transparent_borderless_shadowless_element_does_not_paint_even_with_child() {
-        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut arena = new_test_arena();
+        let parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
         let mut child = Element::new(0.0, 0.0, 60.0, 40.0);
         let mut child_style = Style::new();
         child_style.insert(
@@ -3484,35 +3801,41 @@ mod tests {
             ParsedValue::color_like(Color::hex("#ff0000")),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
+        let parent = crate::view::test_support::get_element::<Element>(&arena, parent_key);
         assert!(parent.core.should_render);
         assert!(!parent.core.should_paint);
     }
 
     #[test]
     fn zero_inner_area_sets_should_paint_false() {
+        let mut arena = new_test_arena();
         let mut el = Element::new(0.0, 0.0, 20.0, 20.0);
         let mut style = Style::new();
         style.insert(
@@ -3524,28 +3847,34 @@ mod tests {
         style.insert(PropertyId::PaddingTop, ParsedValue::Length(Length::px(10.0)));
         style.insert(PropertyId::PaddingBottom, ParsedValue::Length(Length::px(10.0)));
         el.apply_style(style);
+        let key = commit_element(&mut arena, Box::new(el));
 
-        el.measure(LayoutConstraints {
-            max_width: 20.0,
-            max_height: 20.0,
-            viewport_width: 20.0,
-            viewport_height: 20.0,
-            percent_base_width: Some(20.0),
-            percent_base_height: Some(20.0),
-        });
-        el.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 20.0,
-            available_height: 20.0,
-            viewport_width: 20.0,
-            viewport_height: 20.0,
-            percent_base_width: Some(20.0),
-            percent_base_height: Some(20.0),
-        });
+        measure_and_place(
+            &mut arena,
+            key,
+            LayoutConstraints {
+                max_width: 20.0,
+                max_height: 20.0,
+                viewport_width: 20.0,
+                viewport_height: 20.0,
+                percent_base_width: Some(20.0),
+                percent_base_height: Some(20.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 20.0,
+                available_height: 20.0,
+                viewport_width: 20.0,
+                viewport_height: 20.0,
+                percent_base_width: Some(20.0),
+                percent_base_height: Some(20.0),
+            },
+        );
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert_eq!(el.layout_inner_size.width, 0.0);
         assert_eq!(el.layout_inner_size.height, 0.0);
         assert!(el.core.should_render);
@@ -3575,6 +3904,7 @@ mod tests {
 
     #[test]
     fn child_hit_test_clip_uses_parent_transition_inner_size() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
@@ -3597,34 +3927,36 @@ mod tests {
         parent.set_padding_bottom(13.0);
         parent.layout_transition_override_width = Some(320.0);
         parent.layout_transition_override_height = Some(180.0);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 40.0, 40.0)));
 
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 40.0, 40.0)));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-
-        let child = parent.children().expect("child")[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("element child");
+        let child_key = child_key(&arena, parent_key, 0);
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
         let clip = child.hit_test_clip_rect.expect("hit-test clip");
 
         assert_eq!(clip.x, 15.0);
@@ -3635,6 +3967,7 @@ mod tests {
 
     #[test]
     fn absolute_parent_clip_uses_parent_transition_inner_size() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
@@ -3657,6 +3990,7 @@ mod tests {
         parent.set_padding_bottom(13.0);
         parent.layout_transition_override_width = Some(320.0);
         parent.layout_transition_override_height = Some(180.0);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut child = Element::new(0.0, 0.0, 80.0, 40.0);
         let mut child_style = Style::new();
@@ -3665,33 +3999,35 @@ mod tests {
             ParsedValue::Position(Position::absolute().clip(ClipMode::Parent)),
         );
         child.apply_style(child_style);
-        parent.add_child(Box::new(child));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
-        let child = parent.children().expect("child")[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("element child");
+        let ck = child_key(&arena, parent_key, 0);
+        let child = crate::view::test_support::get_element::<Element>(&arena, ck);
         let clip = child.absolute_clip_rect.expect("absolute clip");
 
         assert_eq!(clip.x, 15.0);
@@ -3702,6 +4038,7 @@ mod tests {
 
     #[test]
     fn anchor_parent_clip_uses_transitioning_parent_inner_size() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
@@ -3724,9 +4061,11 @@ mod tests {
         parent.set_padding_bottom(13.0);
         parent.layout_transition_override_width = Some(320.0);
         parent.layout_transition_override_height = Some(180.0);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut anchor = Element::new(30.0, 20.0, 40.0, 20.0);
         anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
+        let _ = commit_child(&mut arena, parent_key, Box::new(anchor));
 
         let mut child = Element::new(0.0, 0.0, 80.0, 40.0);
         let mut child_style = Style::new();
@@ -3741,35 +4080,35 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
 
-        parent.add_child(Box::new(anchor));
-        parent.add_child(Box::new(child));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
-        parent.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-
-        let child = parent.children().expect("children")[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("element child");
+        let ck = child_key(&arena, parent_key, 1);
+        let child = crate::view::test_support::get_element::<Element>(&arena, ck);
         let clip = child.absolute_clip_rect.expect("absolute clip");
 
         assert_eq!(clip.x, 15.0);
@@ -3780,11 +4119,13 @@ mod tests {
 
     #[test]
     fn anchored_absolute_child_uses_anchor_visual_position_during_transition() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(500.0)));
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(200.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut anchor = Element::new(300.0, 20.0, 40.0, 20.0);
         let mut anchor_style = Style::new();
@@ -3804,6 +4145,7 @@ mod tests {
         );
         anchor.apply_style(anchor_style);
         anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
+        let anchor_key = commit_child(&mut arena, parent_key, Box::new(anchor));
 
         let mut child = Element::new(0.0, 0.0, 80.0, 40.0);
         let mut child_style = Style::new();
@@ -3818,9 +4160,7 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-
-        parent.add_child(Box::new(anchor));
-        parent.add_child(Box::new(child));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
         let constraints = LayoutConstraints {
             max_width: 800.0,
@@ -3843,48 +4183,42 @@ mod tests {
             percent_base_height: Some(600.0),
         };
 
-        parent.measure(constraints);
-        parent.place(placement);
-        let _ = parent.take_layout_transition_requests();
-        let _ = parent.take_visual_transition_requests();
+        measure_and_place(&mut arena, parent_key, constraints, placement);
+        arena.with_element_taken(parent_key, |el, _a| {
+            let p = el.as_any_mut().downcast_mut::<Element>().unwrap();
+            let _ = p.take_layout_transition_requests();
+            let _ = p.take_visual_transition_requests();
+        });
 
-        let anchor = parent.children_mut().expect("children")[0]
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("anchor");
-        let mut next_anchor_style = Style::new();
-        next_anchor_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                Position::absolute()
-                    .left(Length::px(340.0))
-                    .top(Length::px(20.0)),
-            ),
-        );
-        next_anchor_style.insert(
-            PropertyId::Transition,
-            ParsedValue::Transition(
-                Transitions::single(Transition::new(TransitionProperty::Position, 200)),
-            ),
-        );
-        anchor.apply_style(next_anchor_style);
-        anchor.layout_transition_visual_offset_x = -40.0;
-        anchor.layout_transition_target_x = Some(340.0);
+        arena.with_element_taken(anchor_key, |el, _a| {
+            let anchor = el.as_any_mut().downcast_mut::<Element>().unwrap();
+            let mut next_anchor_style = Style::new();
+            next_anchor_style.insert(
+                PropertyId::Position,
+                ParsedValue::Position(
+                    Position::absolute()
+                        .left(Length::px(340.0))
+                        .top(Length::px(20.0)),
+                ),
+            );
+            next_anchor_style.insert(
+                PropertyId::Transition,
+                ParsedValue::Transition(
+                    Transitions::single(Transition::new(TransitionProperty::Position, 200)),
+                ),
+            );
+            anchor.apply_style(next_anchor_style);
+            anchor.layout_transition_visual_offset_x = -40.0;
+            anchor.layout_transition_target_x = Some(340.0);
+        });
 
-        parent.mark_layout_dirty();
-        parent.measure(constraints);
-        parent.place(placement);
+        arena.with_element_taken(parent_key, |el, _a| {
+            el.as_any_mut().downcast_mut::<Element>().unwrap().mark_layout_dirty();
+        });
+        measure_and_place(&mut arena, parent_key, constraints, placement);
 
-        let children = parent.children().expect("children");
-        let anchor = children[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("anchor");
-        let child = children[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("child");
-
+        let anchor = crate::view::test_support::get_element::<Element>(&arena, anchor_key);
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_k);
         assert!(
             (anchor.core.layout_position.x - 300.0).abs() < 0.01,
             "anchor_x={}, child_x={}",
@@ -3912,6 +4246,7 @@ mod tests {
 
     #[test]
     fn border_radius_style_sample_preserves_resolved_corner_ratios() {
+        let mut arena = new_test_arena();
         let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
         let mut style = Style::new();
         style.set_border_radius(
@@ -3921,14 +4256,17 @@ mod tests {
         );
         el.apply_style(style);
         let node_id = el.id();
+        let key = commit_element(&mut arena, Box::new(el));
 
         assert!(set_style_field_by_id(
-            &mut el,
+            &mut arena,
+            key,
             node_id,
             crate::transition::StyleField::BorderRadius,
             crate::transition::StyleValue::Scalar(50.0),
         ));
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert!((el.border_radii.top_left - 3.7037036).abs() < 0.001);
         assert!((el.border_radii.top_right - 11.851851).abs() < 0.001);
         assert!((el.border_radii.bottom_right - 3.7037036).abs() < 0.001);
@@ -4070,37 +4408,40 @@ mod tests {
         rebuilt.apply_style(style);
         assert!(rebuilt.restore_state(snapshot.as_ref()));
 
-        let mut roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(rebuilt)];
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(rebuilt));
         assert!(crate::view::base_component::reconcile_transition_runtime_state(
-            &mut roots,
+            &mut arena,
+            &[root_key],
             &FxHashMap::default(),
         ));
-        let rebuilt = roots[0]
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("rebuilt element");
 
-        rebuilt.measure(LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
-        rebuilt.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-        });
+        measure_and_place(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
+        let rebuilt = crate::view::test_support::get_element::<Element>(&arena, root_key);
         assert_eq!(rebuilt.box_model_snapshot().width, 180.0);
         assert_eq!(rebuilt.layout_transition_override_width, None);
         assert_eq!(rebuilt.layout_transition_target_width, None);
@@ -4108,17 +4449,21 @@ mod tests {
 
     #[test]
     fn transform_style_sample_updates_element_transform_matrix() {
-        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut arena = new_test_arena();
+        let el = Element::new(0.0, 0.0, 200.0, 150.0);
         let node_id = el.id();
         let transform = Transform::new([Translate::xy(Length::px(12.0), Length::px(18.0))]);
+        let key = commit_element(&mut arena, Box::new(el));
 
         assert!(set_style_field_by_id(
-            &mut el,
+            &mut arena,
+            key,
             node_id,
             crate::transition::StyleField::Transform,
             crate::transition::StyleValue::Transform(transform.clone()),
         ));
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert_eq!(el.transform, transform);
         assert!(el.resolved_transform.is_some());
     }
@@ -4179,7 +4524,8 @@ mod tests {
 
     #[test]
     fn box_shadow_style_sample_updates_element_shadows() {
-        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut arena = new_test_arena();
+        let el = Element::new(0.0, 0.0, 200.0, 150.0);
         let node_id = el.id();
         let shadows = vec![
             BoxShadow::new()
@@ -4190,24 +4536,30 @@ mod tests {
                 .spread(4.0)
                 .inset(true),
         ];
+        let key = commit_element(&mut arena, Box::new(el));
 
         assert!(set_style_field_by_id(
-            &mut el,
+            &mut arena,
+            key,
             node_id,
             crate::transition::StyleField::BoxShadow,
             crate::transition::StyleValue::BoxShadow(shadows.clone()),
         ));
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert_eq!(el.box_shadows, shadows);
     }
 
     #[test]
     fn transform_origin_style_sample_updates_element_transform_matrix() {
-        let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
+        let mut arena = new_test_arena();
+        let el = Element::new(0.0, 0.0, 200.0, 150.0);
         let node_id = el.id();
+        let key = commit_element(&mut arena, Box::new(el));
 
         assert!(set_style_field_by_id(
-            &mut el,
+            &mut arena,
+            key,
             node_id,
             crate::transition::StyleField::TransformOrigin,
             crate::transition::StyleValue::TransformOriginProgress {
@@ -4217,6 +4569,7 @@ mod tests {
             },
         ));
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert!(el.resolved_transform.is_none());
         assert!((el.transform_origin.x().resolve_without_percent_base(0.0, 0.0) - 55.0).abs() < 0.0001);
         assert!((el.transform_origin.y().resolve_without_percent_base(0.0, 0.0) - 47.5).abs() < 0.0001);
@@ -4224,6 +4577,7 @@ mod tests {
 
     #[test]
     fn transform_transition_baseline_preserves_start_then_progress_updates_live_transform() {
+        let mut arena = new_test_arena();
         let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
         let from = Transform::new([Translate::x(Length::px(0.0))]);
         let to = Transform::new([Translate::x(Length::px(40.0))]);
@@ -4245,8 +4599,11 @@ mod tests {
         assert_eq!(el.transform, from);
 
         let node_id = el.id();
+        let key = commit_element(&mut arena, Box::new(el));
+
         assert!(set_style_field_by_id(
-            &mut el,
+            &mut arena,
+            key,
             node_id,
             crate::transition::StyleField::Transform,
             crate::transition::StyleValue::TransformProgress {
@@ -4256,47 +4613,53 @@ mod tests {
             },
         ));
 
+        let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert_ne!(el.transform, from);
         assert_ne!(el.transform, to);
     }
 
     #[test]
     fn inline_layout_wraps_children_into_multiple_line_boxes() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 100.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 60.0, 10.0)));
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 40.0, 15.0)));
+        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 60.0, 10.0)));
+        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
+        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 40.0, 15.0)));
 
-        parent.measure(LayoutConstraints {
-            max_width: 100.0,
-            max_height: 200.0,
-            viewport_width: 100.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(100.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 100.0,
-            available_height: 200.0,
-            viewport_width: 100.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(100.0),
-            percent_base_height: Some(200.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 200.0,
+                viewport_width: 100.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 200.0,
+                viewport_width: 100.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let first = children[0].box_model_snapshot();
-        let second = children[1].box_model_snapshot();
-        let third = children[2].box_model_snapshot();
+        let first = nth_child_snapshot(&arena, parent_key, 0);
+        let second = nth_child_snapshot(&arena, parent_key, 1);
+        let third = nth_child_snapshot(&arena, parent_key, 2);
 
         assert_eq!(first.x, 0.0);
         assert_eq!(first.y, 0.0);
@@ -4304,49 +4667,53 @@ mod tests {
         assert_eq!(second.y, 10.0);
         assert_eq!(third.x, 50.0);
         assert_eq!(third.y, 10.0);
-        assert!((parent.box_model_snapshot().height - 30.0).abs() < 0.01);
-        assert!((parent.content_size.height - 30.0).abs() < 0.01);
+        let parent_el = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+        assert!((parent_el.box_model_snapshot().height - 30.0).abs() < 0.01);
+        assert!((parent_el.content_size.height - 30.0).abs() < 0.01);
     }
 
     #[test]
     fn inline_layout_keeps_trailing_text_on_same_line_after_inline_element() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
-        parent.add_child(Box::new(Text::from_content("lead")));
-        parent.add_child(Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
-        parent.add_child(Box::new(Text::from_content(" trailing text continues after the badge.")));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content("lead")));
+        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content(" trailing text continues after the badge.")));
 
-        parent.measure(LayoutConstraints {
-            max_width: 220.0,
-            max_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 220.0,
-            available_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
-        let children = parent.children().expect("children");
-        let badge = children[1].box_model_snapshot();
-        let trailing = children[2]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("text child");
+        let badge = nth_child_snapshot(&arena, parent_key, 1);
+        let trailing_key = child_key(&arena, parent_key, 2);
+        let trailing = crate::view::test_support::get_element::<Text>(&arena, trailing_key);
         let trailing_snapshot = trailing.box_model_snapshot();
         let trailing_fragments = trailing.inline_fragment_positions();
         let first_fragment = trailing_fragments.first().expect("first inline fragment");
@@ -4359,41 +4726,45 @@ mod tests {
 
     #[test]
     fn inline_text_ignores_explicit_size_and_still_fragments() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 160.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut text = Text::from_content("fragmented text should wrap across multiple inline lines");
         text.set_size(300.0, 300.0);
-        parent.add_child(Box::new(text));
+        commit_child(&mut arena, parent_key, Box::new(text));
 
-        parent.measure(LayoutConstraints {
-            max_width: 160.0,
-            max_height: 240.0,
-            viewport_width: 160.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(240.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 160.0,
-            available_height: 240.0,
-            viewport_width: 160.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(240.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 160.0,
+                max_height: 240.0,
+                viewport_width: 160.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 160.0,
+                available_height: 240.0,
+                viewport_width: 160.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(240.0),
+            },
+        );
 
-        let text = parent.children().expect("children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("text child");
+        let text_key = child_key(&arena, parent_key, 0);
+        let text = crate::view::test_support::get_element::<Text>(&arena, text_key);
         let fragments = text.inline_fragment_positions();
         let snapshot = text.box_model_snapshot();
 
@@ -4404,42 +4775,46 @@ mod tests {
 
     #[test]
     fn inline_gap_does_not_apply_between_text_fragments_of_same_text_node() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 120.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
         parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(24.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut text = Text::from_content("alpha beta gamma");
         text.set_size(300.0, 80.0);
-        parent.add_child(Box::new(text));
+        commit_child(&mut arena, parent_key, Box::new(text));
 
-        parent.measure(LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
-        let text = parent.children().expect("children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("text child");
+        let text_key = child_key(&arena, parent_key, 0);
+        let text = crate::view::test_support::get_element::<Text>(&arena, text_key);
         let fragments = text.inline_fragment_positions();
         assert!(fragments.len() >= 2);
         assert!(fragments[1].1.x < 120.0);
@@ -4447,39 +4822,43 @@ mod tests {
 
     #[test]
     fn inline_cjk_text_fragments_follow_wrapped_lines() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
-        parent.add_child(Box::new(Text::from_content("最後接一段中文，確認混排時也能一起換行。")));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content("最後接一段中文，確認混排時也能一起換行。")));
 
-        parent.measure(LayoutConstraints {
-            max_width: 220.0,
-            max_height: 120.0,
-            viewport_width: 220.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 220.0,
-            available_height: 120.0,
-            viewport_width: 220.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(120.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 120.0,
+                viewport_width: 220.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 120.0,
+                viewport_width: 220.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
-        let text = parent.children().expect("children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("text child");
+        let text_key = child_key(&arena, parent_key, 0);
+        let text = crate::view::test_support::get_element::<Text>(&arena, text_key);
         let fragments = text.inline_fragment_positions();
 
         assert!(fragments.len() > 1);
@@ -4489,11 +4868,13 @@ mod tests {
 
     #[test]
     fn inline_auto_sized_element_expands_into_child_fragments() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -4501,55 +4882,56 @@ mod tests {
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content("nested")));
-        wrapper.add_child(Box::new(Element::new(0.0, 0.0, 44.0, 20.0)));
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("nested")));
+        commit_child(&mut arena, wrapper_key, Box::new(Element::new(0.0, 0.0, 44.0, 20.0)));
 
-        parent.add_child(Box::new(wrapper));
-        parent.add_child(Box::new(Text::from_content("tail")));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content("tail")));
 
-        parent.measure(LayoutConstraints {
-            max_width: 220.0,
-            max_height: 120.0,
-            viewport_width: 220.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 220.0,
-            available_height: 120.0,
-            viewport_width: 220.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(120.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 120.0,
+                viewport_width: 220.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 120.0,
+                viewport_width: 220.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
-        let wrapper = parent.children().expect("children")[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("wrapper element");
-        let tail = parent.children().expect("children")[1]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("tail text");
-        let wrapper_children = wrapper.children().expect("wrapper children");
+        let wrapper_snap = child_snapshot(&arena, wrapper_key);
+        let tail_key = child_key(&arena, parent_key, 1);
+        let tail_snap = child_snapshot(&arena, tail_key);
+        let second_wrapper_child_snap = nth_child_snapshot(&arena, wrapper_key, 1);
 
-        assert!(wrapper.box_model_snapshot().width > 44.0);
-        assert_eq!(wrapper_children[1].box_model_snapshot().y, 0.0);
-        assert!(tail.box_model_snapshot().x >= wrapper.box_model_snapshot().x + 44.0);
+        assert!(wrapper_snap.width > 44.0);
+        assert_eq!(second_wrapper_child_snap.y, 0.0);
+        assert!(tail_snap.x >= wrapper_snap.x + 44.0);
     }
 
     #[test]
     fn inline_fragmentable_element_builds_multiple_draw_rect_passes() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 160.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -4562,40 +4944,44 @@ mod tests {
         );
         wrapper_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content(
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
             "inline wrapper background should wrap across lines",
         )));
-        parent.add_child(Box::new(wrapper));
 
-        parent.measure(LayoutConstraints {
-            max_width: 160.0,
-            max_height: 160.0,
-            viewport_width: 160.0,
-            viewport_height: 160.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(160.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 160.0,
-            available_height: 160.0,
-            viewport_width: 160.0,
-            viewport_height: 160.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(160.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 160.0,
+                max_height: 160.0,
+                viewport_width: 160.0,
+                viewport_height: 160.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(160.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 160.0,
+                available_height: 160.0,
+                viewport_width: 160.0,
+                viewport_height: 160.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(160.0),
+            },
+        );
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(160, 160, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
-        let next_state = parent.build(
-            &mut graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("build result");
         ctx.set_state(next_state);
 
         let pass_names = graph
@@ -4618,13 +5004,15 @@ mod tests {
 
     #[test]
     fn inline_fragmentable_element_keeps_all_nested_text_fragments() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
         parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
         parent.apply_style(parent_style);
-        parent.add_child(Box::new(Text::from_content("Inline text starts here,")));
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content("Inline text starts here,")));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -4637,54 +5025,54 @@ mod tests {
         );
         wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content(
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
             "badge test test test test test test test",
         )));
-        parent.add_child(Box::new(wrapper));
-        parent.add_child(Box::new(Text::from_content(
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content(
             "then more text continues after the badge,",
         )));
 
-        parent.measure(LayoutConstraints {
-            max_width: 220.0,
-            max_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 220.0,
-            available_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
-        let wrapper = parent.children().expect("children")[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("wrapper");
-        let nested_text = wrapper.children().expect("wrapper children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("nested text");
+        let nested_text_key = child_key(&arena, wrapper_key, 0);
+        let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
         let fragments = nested_text.inline_fragment_positions();
         assert!(fragments.len() >= 2, "fragments={fragments:?}");
     }
 
     #[test]
     fn inline_fragmentable_element_uses_slice_padding_across_fragments() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 160.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -4693,44 +5081,46 @@ mod tests {
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content(
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
             "badge test test test test",
         )));
-        parent.add_child(Box::new(wrapper));
 
-        parent.measure(LayoutConstraints {
-            max_width: 160.0,
-            max_height: 160.0,
-            viewport_width: 160.0,
-            viewport_height: 160.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(160.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 160.0,
-            available_height: 160.0,
-            viewport_width: 160.0,
-            viewport_height: 160.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(160.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 160.0,
+                max_height: 160.0,
+                viewport_width: 160.0,
+                viewport_height: 160.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(160.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 160.0,
+                available_height: 160.0,
+                viewport_width: 160.0,
+                viewport_height: 160.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(160.0),
+            },
+        );
 
-        let wrapper = parent.children().expect("children")[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("wrapper");
-        let nested_text = wrapper.children().expect("wrapper children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("nested text");
-        assert!(wrapper.inline_paint_fragments.len() >= 2);
-        let first = wrapper.inline_paint_fragments[0];
-        let last = *wrapper.inline_paint_fragments.last().expect("last fragment");
-        let fragments = nested_text.inline_fragment_positions();
+        let nested_text_key = child_key(&arena, wrapper_key, 0);
+        let (first, last, fragments) = {
+            let wrapper_el = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
+            assert!(wrapper_el.inline_paint_fragments.len() >= 2);
+            let first = wrapper_el.inline_paint_fragments[0];
+            let last = *wrapper_el.inline_paint_fragments.last().expect("last fragment");
+            let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+            let fragments = nested_text.inline_fragment_positions();
+            (first, last, fragments)
+        };
         assert!(fragments.len() >= 2, "fragments={fragments:?}");
 
         let first_line_y = fragments[0].1.y;
@@ -4754,7 +5144,7 @@ mod tests {
                     viewport_height: 80.0,
                     percent_base_width: Some(200.0),
                     percent_base_height: Some(80.0),
-                });
+                }, &mut arena);
                 let (width, _) = text.measured_size();
                 position.x + width
             })
@@ -4764,18 +5154,20 @@ mod tests {
 
     #[test]
     fn inline_fragmentable_wrapper_respects_remaining_width_on_first_line() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut badge = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut badge_style = Style::new();
         badge_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(140.0)));
         badge_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
         badge.apply_style(badge_style);
-        parent.add_child(Box::new(badge));
+        commit_child(&mut arena, parent_key, Box::new(badge));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -4783,38 +5175,36 @@ mod tests {
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content("alpha beta gamma delta")));
-        parent.add_child(Box::new(wrapper));
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("alpha beta gamma delta")));
 
-        parent.measure(LayoutConstraints {
-            max_width: 220.0,
-            max_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 220.0,
-            available_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
-        let wrapper = parent.children().expect("children")[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("wrapper");
-        let text = wrapper.children().expect("wrapper children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("text child");
+        let text_key = child_key(&arena, wrapper_key, 0);
+        let text = crate::view::test_support::get_element::<Text>(&arena, text_key);
         let fragments = text.inline_fragment_positions();
         let first_fragment = fragments.first().expect("first fragment");
 
@@ -4824,18 +5214,20 @@ mod tests {
 
     #[test]
     fn inline_fragmentable_wrapper_padding_reduces_first_line_content_width() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut leading = Element::new(0.0, 0.0, 180.0, 20.0);
         let mut leading_style = Style::new();
         leading_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
         leading_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
         leading.apply_style(leading_style);
-        parent.add_child(Box::new(leading));
+        commit_child(&mut arena, parent_key, Box::new(leading));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -4844,40 +5236,38 @@ mod tests {
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content(
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
             "Permission is hereby granted, free of charge, to any person obtaining a copy",
         )));
-        parent.add_child(Box::new(wrapper));
 
-        parent.measure(LayoutConstraints {
-            max_width: 220.0,
-            max_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 220.0,
-            available_height: 200.0,
-            viewport_width: 220.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(200.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 200.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
-        let wrapper = parent.children().expect("children")[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("wrapper");
-        let text = wrapper.children().expect("wrapper children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("text child");
+        let text_key = child_key(&arena, wrapper_key, 0);
+        let text = crate::view::test_support::get_element::<Text>(&arena, text_key);
         let fragments = text.inline_fragment_positions();
         let first_fragment = fragments.first().expect("first fragment");
 
@@ -4887,12 +5277,14 @@ mod tests {
 
     #[test]
     fn inline_fragmentable_element_vertical_padding_does_not_shift_inline_content_y() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 280.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(280.0)));
         parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
         parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -4904,50 +5296,55 @@ mod tests {
             Length::px(12.0),
         ));
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content("badge")));
-        parent.add_child(Box::new(wrapper));
-        parent.add_child(Box::new(Text::from_content("trailing")));
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("badge")));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content("trailing")));
 
-        parent.measure(LayoutConstraints {
-            max_width: 280.0,
-            max_height: 120.0,
-            viewport_width: 280.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(280.0),
-            percent_base_height: Some(120.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 280.0,
-            available_height: 120.0,
-            viewport_width: 280.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(280.0),
-            percent_base_height: Some(120.0),
-        });
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 280.0,
+                max_height: 120.0,
+                viewport_width: 280.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(280.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 280.0,
+                available_height: 120.0,
+                viewport_width: 280.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(280.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
-        let wrapper = parent.children().expect("children")[0]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("wrapper");
-        let nested_text = wrapper.children().expect("wrapper children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("nested text");
-        let trailing = parent.children().expect("children")[1]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("trailing text");
+        let nested_text_key = child_key(&arena, wrapper_key, 0);
+        let trailing_key = child_key(&arena, parent_key, 1);
 
-        let badge_y = nested_text.inline_fragment_positions()[0].1.y;
-        let trailing_y = trailing.inline_fragment_positions()[0].1.y;
-        let paint_top = wrapper.inline_paint_fragments[0].y;
-        let inline_node_height = wrapper.get_inline_nodes_size()[0].height;
-        let (_, text_height) = nested_text.measured_size();
-        let paint_height = wrapper.inline_paint_fragments[0].height;
+        let (badge_y, text_height) = {
+            let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+            let by = nested_text.inline_fragment_positions()[0].1.y;
+            let (_, th) = nested_text.measured_size();
+            (by, th)
+        };
+        let trailing_y = {
+            let trailing = crate::view::test_support::get_element::<Text>(&arena, trailing_key);
+            trailing.inline_fragment_positions()[0].1.y
+        };
+        let (paint_top, paint_height) = {
+            let wrapper_el = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
+            (wrapper_el.inline_paint_fragments[0].y, wrapper_el.inline_paint_fragments[0].height)
+        };
+        let inline_node_height = arena
+            .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a)[0].height)
+            .expect("inline node size");
         assert!((badge_y - trailing_y).abs() < 0.5);
         assert!((badge_y - paint_top - 12.0).abs() < 0.5);
         assert!((inline_node_height - text_height).abs() < 0.5);
@@ -4958,57 +5355,59 @@ mod tests {
     fn inline_fragmentable_element_positions_all_nested_text_fragments_across_widths() {
         for width in 140..=240 {
             let width = width as f32;
+            let mut arena = new_test_arena();
             let mut parent = Element::new(0.0, 0.0, width, 0.0);
             let mut parent_style = Style::new();
             parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
             parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
             parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
             parent.apply_style(parent_style);
-            parent.add_child(Box::new(Text::from_content("Inline text starts here,")));
+            let parent_key = commit_element(&mut arena, Box::new(parent));
+            commit_child(&mut arena, parent_key, Box::new(Text::from_content("Inline text starts here,")));
 
             let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
             let mut wrapper_style = Style::new();
             wrapper_style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(Color::hex("#93c5fd")));
             wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
             wrapper.apply_style(wrapper_style);
-            wrapper.add_child(Box::new(Text::from_content(
+            let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+            commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
                 "badge test test test test test test test",
             )));
-            parent.add_child(Box::new(wrapper));
-            parent.add_child(Box::new(Text::from_content(
+            commit_child(&mut arena, parent_key, Box::new(Text::from_content(
                 "then more text continues after the badge,",
             )));
 
-            parent.measure(LayoutConstraints {
-                max_width: width,
-                max_height: 240.0,
-                viewport_width: width,
-                viewport_height: 240.0,
-                percent_base_width: Some(width),
-                percent_base_height: Some(240.0),
-            });
-            parent.place(LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: width,
-                available_height: 240.0,
-                viewport_width: width,
-                viewport_height: 240.0,
-                percent_base_width: Some(width),
-                percent_base_height: Some(240.0),
-            });
+            measure_and_place(
+                &mut arena,
+                parent_key,
+                LayoutConstraints {
+                    max_width: width,
+                    max_height: 240.0,
+                    viewport_width: width,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(width),
+                    percent_base_height: Some(240.0),
+                },
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: width,
+                    available_height: 240.0,
+                    viewport_width: width,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(width),
+                    percent_base_height: Some(240.0),
+                },
+            );
 
-            let wrapper = parent.children().expect("children")[1]
-                .as_any()
-                .downcast_ref::<Element>()
-                .expect("wrapper");
-            let nested_text = wrapper.children().expect("wrapper children")[0]
-                .as_any()
-                .downcast_ref::<Text>()
-                .expect("nested text");
-            let expected = nested_text.get_inline_nodes_size().len();
+            let nested_text_key = child_key(&arena, wrapper_key, 0);
+            let expected = arena
+                .with_element_taken(nested_text_key, |el, a| el.get_inline_nodes_size(a).len())
+                .expect("inline nodes size");
+            let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
             let actual = nested_text.inline_fragment_positions().len();
             assert_eq!(actual, expected, "width={width}, actual={actual}, expected={expected}, fragments={:?}", nested_text.inline_fragment_positions());
         }
@@ -5016,13 +5415,15 @@ mod tests {
 
     #[test]
     fn inline_fragmentable_element_places_all_nested_inline_children_across_wrapped_lines() {
+        let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 180.0, 0.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
         parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
         parent.apply_style(parent_style);
-        parent.add_child(Box::new(Text::from_content("lead-in text")));
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content("lead-in text")));
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -5031,53 +5432,57 @@ mod tests {
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper_style.set_padding(crate::Padding::uniform(Length::px(6.0)));
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content("first child text that wraps")));
-        wrapper.add_child(Box::new(Text::from_content("second child text also wraps")));
-        parent.add_child(Box::new(wrapper));
-        parent.add_child(Box::new(Text::from_content("tail")));
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("first child text that wraps")));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("second child text also wraps")));
+        commit_child(&mut arena, parent_key, Box::new(Text::from_content("tail")));
 
-        parent.measure(LayoutConstraints {
-            max_width: 180.0,
-            max_height: 240.0,
-            viewport_width: 180.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(180.0),
-            percent_base_height: Some(240.0),
-        });
-        parent.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 180.0,
-            available_height: 240.0,
-            viewport_width: 180.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(180.0),
-            percent_base_height: Some(240.0),
-        });
-
-        let wrapper = parent.children().expect("children")[1]
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("wrapper");
-        assert!(
-            wrapper.inline_paint_fragments.len() >= 2,
-            "paint_fragments={:?}",
-            wrapper.inline_paint_fragments
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 180.0,
+                max_height: 240.0,
+                viewport_width: 180.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(180.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 180.0,
+                available_height: 240.0,
+                viewport_width: 180.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(180.0),
+                percent_base_height: Some(240.0),
+            },
         );
 
-        let first = wrapper.children().expect("wrapper children")[0]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("first text");
-        let second = wrapper.children().expect("wrapper children")[1]
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("second text");
+        {
+            let wrapper_el = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
+            assert!(
+                wrapper_el.inline_paint_fragments.len() >= 2,
+                "paint_fragments={:?}",
+                wrapper_el.inline_paint_fragments
+            );
+        }
 
-        let first_expected = first.get_inline_nodes_size().len();
-        let second_expected = second.get_inline_nodes_size().len();
+        let first_key = child_key(&arena, wrapper_key, 0);
+        let second_key = child_key(&arena, wrapper_key, 1);
+
+        let first_expected = arena
+            .with_element_taken(first_key, |el, a| el.get_inline_nodes_size(a).len())
+            .expect("first inline nodes size");
+        let second_expected = arena
+            .with_element_taken(second_key, |el, a| el.get_inline_nodes_size(a).len())
+            .expect("second inline nodes size");
+
+        let first = crate::view::test_support::get_element::<Text>(&arena, first_key);
+        let second = crate::view::test_support::get_element::<Text>(&arena, second_key);
         let first_actual = first.inline_fragment_positions().len();
         let second_actual = second.inline_fragment_positions().len();
 
@@ -5106,6 +5511,7 @@ mod tests {
             percent_base_height: Some(120.0),
         };
 
+        let mut arena = new_test_arena();
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
         wrapper_style.insert(
@@ -5115,53 +5521,69 @@ mod tests {
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
+        let wrapper_key = commit_element(&mut arena, Box::new(wrapper));
 
-        wrapper.add_child(Box::new(Text::from_content("a")));
-        wrapper.measure(constraints);
-        let (before_width, _) = wrapper.measured_size();
+        let child_key_val = commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("a")));
+        arena.with_element_taken(wrapper_key, |el, a| el.measure(constraints, a));
+        let before_width = {
+            let w = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
+            w.measured_size().0
+        };
 
-        let child = wrapper.children_mut().expect("children")[0]
-            .as_any_mut()
-            .downcast_mut::<Text>()
-            .expect("text child");
-        child.set_text("a much longer child");
+        {
+            let mut child = crate::view::test_support::get_element_mut::<Text>(&arena, child_key_val);
+            child.set_text("a much longer child");
+        }
 
-        wrapper.measure(constraints);
-        let (after_width, _) = wrapper.measured_size();
+        arena.with_element_taken(wrapper_key, |el, a| el.measure(constraints, a));
+        let after_width = {
+            let w = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
+            w.measured_size().0
+        };
         assert!(after_width > before_width + 1.0);
     }
 
     #[test]
     fn fragmentable_inline_element_remeasures_when_first_available_width_changes() {
+        let mut arena = new_test_arena();
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
         wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
-        wrapper.add_child(Box::new(Text::from_content(
+        let wrapper_key = commit_element(&mut arena, Box::new(wrapper));
+        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
             "Permission is hereby granted, free of charge, to any person obtaining a copy",
         )));
 
-        wrapper.measure_inline(super::InlineMeasureContext {
-            first_available_width: 200.0,
-            full_available_width: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(120.0),
+        arena.with_element_taken(wrapper_key, |el, a| {
+            el.measure_inline(super::InlineMeasureContext {
+                first_available_width: 200.0,
+                full_available_width: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(120.0),
+            }, a);
         });
-        let wide_nodes = wrapper.get_inline_nodes_size();
+        let wide_nodes = arena
+            .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a))
+            .expect("wide inline nodes");
 
-        wrapper.measure_inline(super::InlineMeasureContext {
-            first_available_width: 40.0,
-            full_available_width: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(120.0),
+        arena.with_element_taken(wrapper_key, |el, a| {
+            el.measure_inline(super::InlineMeasureContext {
+                first_available_width: 40.0,
+                full_available_width: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(120.0),
+            }, a);
         });
-        let narrow_first_line_nodes = wrapper.get_inline_nodes_size();
+        let narrow_first_line_nodes = arena
+            .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a))
+            .expect("narrow inline nodes");
 
         assert_ne!(
             wide_nodes,
@@ -5174,13 +5596,15 @@ mod tests {
     fn inline_fragmentable_element_does_not_overlap_trailing_text_across_widths() {
         for width in 140..=240 {
             let width = width as f32;
+            let mut arena = new_test_arena();
             let mut parent = Element::new(0.0, 0.0, width, 0.0);
             let mut parent_style = Style::new();
             parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
             parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
             parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
             parent.apply_style(parent_style);
-            parent.add_child(Box::new(Text::from_content("Inline text starts here,")));
+            let parent_key = commit_element(&mut arena, Box::new(parent));
+            commit_child(&mut arena, parent_key, Box::new(Text::from_content("Inline text starts here,")));
 
             let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
             let mut wrapper_style = Style::new();
@@ -5188,50 +5612,50 @@ mod tests {
             wrapper_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#ffffff")));
             wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
             wrapper.apply_style(wrapper_style);
-            wrapper.add_child(Box::new(Text::from_content(
+            let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+            commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
                 "badge test test test test test test test",
             )));
-            parent.add_child(Box::new(wrapper));
-            parent.add_child(Box::new(Text::from_content(
+            commit_child(&mut arena, parent_key, Box::new(Text::from_content(
                 "then more text continues after the badge,",
             )));
 
-            parent.measure(LayoutConstraints {
-                max_width: width,
-                max_height: 240.0,
-                viewport_width: width,
-                viewport_height: 240.0,
-                percent_base_width: Some(width),
-                percent_base_height: Some(240.0),
-            });
-            parent.place(LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: width,
-                available_height: 240.0,
-                viewport_width: width,
-                viewport_height: 240.0,
-                percent_base_width: Some(width),
-                percent_base_height: Some(240.0),
-            });
+            measure_and_place(
+                &mut arena,
+                parent_key,
+                LayoutConstraints {
+                    max_width: width,
+                    max_height: 240.0,
+                    viewport_width: width,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(width),
+                    percent_base_height: Some(240.0),
+                },
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: width,
+                    available_height: 240.0,
+                    viewport_width: width,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(width),
+                    percent_base_height: Some(240.0),
+                },
+            );
 
-            let wrapper = parent.children().expect("children")[1]
-                .as_any()
-                .downcast_ref::<Element>()
-                .expect("wrapper");
-            let nested_text = wrapper.children().expect("wrapper children")[0]
-                .as_any()
-                .downcast_ref::<Text>()
-                .expect("nested text");
-            let trailing = parent.children().expect("children")[2]
-                .as_any()
-                .downcast_ref::<Text>()
-                .expect("trailing text");
+            let nested_text_key = child_key(&arena, wrapper_key, 0);
+            let trailing_key = child_key(&arena, parent_key, 2);
 
-            let nested_fragments = nested_text.inline_fragment_positions();
-            let trailing_fragments = trailing.inline_fragment_positions();
+            let nested_fragments = {
+                let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+                nested_text.inline_fragment_positions()
+            };
+            let trailing_fragments = {
+                let trailing = crate::view::test_support::get_element::<Text>(&arena, trailing_key);
+                trailing.inline_fragment_positions()
+            };
             for (_, trailing_position) in &trailing_fragments {
                 let same_line_right = nested_fragments
                     .iter()
@@ -5245,7 +5669,7 @@ mod tests {
                             viewport_height: 80.0,
                             percent_base_width: Some(200.0),
                             percent_base_height: Some(80.0),
-                        });
+                        }, &mut arena);
                         let (fragment_width, _) = text.measured_size();
                         nested_position.x + fragment_width
                     })

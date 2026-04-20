@@ -208,6 +208,7 @@ impl Element {
         &self,
         overflow_child_indices: &[bool],
         inner_radii: CornerRadii,
+        arena: &crate::view::node_arena::NodeArena,
     ) -> bool {
         if self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1 {
             return false;
@@ -222,11 +223,12 @@ impl Element {
         if inner_radii.has_any_rounding() {
             return true;
         }
-        if self
-            .children
-            .iter()
-            .any(|child| child.has_active_animator())
-        {
+        if self.children.iter().any(|child_key| {
+            arena
+                .get(*child_key)
+                .map(|n| n.element.has_active_animator())
+                .unwrap_or(false)
+        }) {
             return true;
         }
         let (max_scroll_x, max_scroll_y) = self.max_scroll();
@@ -234,18 +236,22 @@ impl Element {
             return true;
         }
         let inner = self.inner_clip_rect();
-        for (idx, child) in self.children.iter().enumerate() {
+        for (idx, child_key) in self.children.iter().enumerate() {
             if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                 continue;
             }
-            if child
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            if child_node
+                .element
                 .as_any()
                 .downcast_ref::<Element>()
                 .is_some_and(Element::should_append_to_root_viewport_render)
             {
                 continue;
             }
-            let snapshot = child.box_model_snapshot();
+            let snapshot = child_node.element.box_model_snapshot();
             if !snapshot.should_render {
                 continue;
             }

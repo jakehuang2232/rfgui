@@ -71,7 +71,7 @@ impl RsxComponent<SliderProps> for Slider {
             Some(on_pointer_down(move |event| {
                 let next = value_from_drag_position(
                     event.pointer.local_x,
-                    event.pointer.current_target_width,
+                    event.meta.current_target().bounds.width,
                     HORIZONTAL_PADDING,
                     min,
                     max,
@@ -96,7 +96,7 @@ impl RsxComponent<SliderProps> for Slider {
 
                 let next = value_from_drag_position(
                     event.pointer.local_x,
-                    event.pointer.current_target_width,
+                    event.meta.current_target().bounds.width,
                     HORIZONTAL_PADDING,
                     min,
                     max,

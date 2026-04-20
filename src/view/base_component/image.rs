@@ -13,6 +13,7 @@ use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
     Layoutable, Renderable, UiBuildContext,
 };
+use crate::view::node_arena::{NodeArena, NodeKey};
 
 const PLACEHOLDER_SIZE: f32 = 120.0;
 
@@ -28,8 +29,11 @@ pub struct Image {
     fit: ImageFit,
     sampling: ImageSampling,
     source_handle: ImageHandle,
-    loading_slot: Vec<Box<dyn ElementTrait>>,
-    error_slot: Vec<Box<dyn ElementTrait>>,
+    /// Pending loading-slot wrapper keys (detached from `Element.children`
+    /// until `sync_active_slot` promotes them). Live in the same arena as
+    /// the owning Image but not traversed while inactive.
+    loading_slot: Vec<NodeKey>,
+    error_slot: Vec<NodeKey>,
     active_slot: ActiveSlot,
 }
 
@@ -63,11 +67,14 @@ impl Image {
         self.element.apply_style(style);
     }
 
-    pub fn set_loading_slot(&mut self, slot: Vec<Box<dyn ElementTrait>>) {
+    /// Register a pre-committed loading-slot wrapper. Caller is responsible
+    /// for inserting the wrapper (and its subtree) into the arena with
+    /// parent set to this Image's own `NodeKey` before calling.
+    pub fn set_loading_slot(&mut self, slot: Vec<NodeKey>) {
         self.loading_slot = slot;
     }
 
-    pub fn set_error_slot(&mut self, slot: Vec<Box<dyn ElementTrait>>) {
+    pub fn set_error_slot(&mut self, slot: Vec<NodeKey>) {
         self.error_slot = slot;
     }
 
@@ -75,7 +82,7 @@ impl Image {
         snapshot_image(self.source_handle.key()).unwrap_or(ImageSnapshot::Loading)
     }
 
-    fn sync_active_slot(&mut self, next_slot: ActiveSlot) {
+    fn sync_active_slot(&mut self, arena: &mut NodeArena, next_slot: ActiveSlot) {
         if self.active_slot == next_slot {
             return;
         }
@@ -84,7 +91,7 @@ impl Image {
             ActiveSlot::Loading => std::mem::take(&mut self.loading_slot),
             ActiveSlot::Error => std::mem::take(&mut self.error_slot),
         };
-        let previous_children = self.element.replace_children(next_children);
+        let previous_children = self.element.replace_children(arena, next_children);
         match self.active_slot {
             ActiveSlot::None => {}
             ActiveSlot::Loading => self.loading_slot = previous_children,
@@ -154,24 +161,8 @@ impl ElementTrait for Image {
         self.element.id()
     }
 
-    fn parent_id(&self) -> Option<u64> {
-        self.element.parent_id()
-    }
-
-    fn set_parent_id(&mut self, parent_id: Option<u64>) {
-        self.element.set_parent_id(parent_id);
-    }
-
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         self.element.box_model_snapshot()
-    }
-
-    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> {
-        self.element.children()
-    }
-
-    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> {
-        self.element.children_mut()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -232,15 +223,23 @@ impl EventTarget for Image {
 }
 
 impl Layoutable for Image {
-    fn measure(&mut self, constraints: LayoutConstraints) {
+    fn measure(
+        &mut self,
+        constraints: LayoutConstraints,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         let snapshot = self.snapshot();
-        self.sync_active_slot(Self::resolve_slot(&snapshot));
-        self.element.measure(constraints);
+        self.sync_active_slot(arena, Self::resolve_slot(&snapshot));
+        self.element.measure(constraints, arena);
         self.apply_intrinsic_measurement(constraints, Self::intrinsic_size(&snapshot));
     }
 
-    fn place(&mut self, placement: LayoutPlacement) {
-        self.element.place(placement);
+    fn place(
+        &mut self,
+        placement: LayoutPlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.element.place(placement, arena);
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -272,12 +271,17 @@ impl Layoutable for Image {
 }
 
 impl Renderable for Image {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> super::BuildState {
+    fn build(
+        &mut self,
+        graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        ctx: UiBuildContext,
+    ) -> super::BuildState {
         let snapshot = self.snapshot();
-        self.sync_active_slot(Self::resolve_slot(&snapshot));
+        self.sync_active_slot(arena, Self::resolve_slot(&snapshot));
 
         let viewport = ctx.viewport();
-        let base_state = self.element.build_base_only(graph, ctx);
+        let base_state = self.element.build_base_only(graph, arena, ctx);
         let mut ctx = UiBuildContext::from_parts(viewport, base_state);
         let ImageSnapshot::Ready(image) = snapshot else {
             return ctx.into_state();
@@ -408,6 +412,7 @@ mod tests {
     use crate::view::base_component::{
         Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable,
     };
+    use crate::view::test_support::{commit_child, commit_element, new_test_arena};
     use crate::{Length, ParsedValue, PropertyId, Style};
 
     fn rgba_source(width: u32, height: u32) -> ImageSource {
@@ -422,14 +427,18 @@ mod tests {
     fn auto_size_uses_intrinsic_dimensions_when_loaded() {
         let mut image = Image::new_with_id(1, rgba_source(80, 40));
         image.apply_style(Style::new());
-        image.measure(LayoutConstraints {
-            max_width: 500.0,
-            max_height: 500.0,
-            viewport_width: 500.0,
-            viewport_height: 500.0,
-            percent_base_width: None,
-            percent_base_height: None,
-        });
+        let mut arena = new_test_arena();
+        image.measure(
+            LayoutConstraints {
+                max_width: 500.0,
+                max_height: 500.0,
+                viewport_width: 500.0,
+                viewport_height: 500.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            &mut arena,
+        );
         assert_eq!(image.measured_size(), (80.0, 40.0));
     }
 
@@ -463,8 +472,10 @@ mod tests {
         );
         sibling.apply_style(sibling_style);
 
-        parent.add_child(Box::new(image));
-        parent.add_child(Box::new(sibling));
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let image_key = commit_child(&mut arena, parent_key, Box::new(image));
+        let sibling_key = commit_child(&mut arena, parent_key, Box::new(sibling));
 
         let constraints = LayoutConstraints {
             max_width: 800.0,
@@ -487,20 +498,25 @@ mod tests {
             viewport_height: 600.0,
         };
 
-        parent.measure(constraints);
-        parent.place(placement);
-        let children = parent.children().expect("children after first layout");
-        let image_snapshot = children[0].box_model_snapshot();
-        let sibling_snapshot = children[1].box_model_snapshot();
+        arena.with_element_taken(parent_key, |el, arena_ref| {
+            el.measure(constraints, arena_ref);
+            el.place(placement, arena_ref);
+        });
+
+        let image_snapshot = arena.get(image_key).unwrap().element.box_model_snapshot();
+        let sibling_snapshot = arena.get(sibling_key).unwrap().element.box_model_snapshot();
         assert_eq!(image_snapshot.width, 14.285714);
         assert_eq!(sibling_snapshot.width, 85.71429);
 
-        parent.mark_layout_dirty();
-        parent.measure(constraints);
-        parent.place(placement);
-        let children = parent.children().expect("children after second layout");
-        let image_snapshot = children[0].box_model_snapshot();
-        let sibling_snapshot = children[1].box_model_snapshot();
+        arena.with_element_taken(parent_key, |el, arena_ref| {
+            if let Some(e) = el.as_any_mut().downcast_mut::<Element>() {
+                e.mark_layout_dirty();
+            }
+            el.measure(constraints, arena_ref);
+            el.place(placement, arena_ref);
+        });
+        let image_snapshot = arena.get(image_key).unwrap().element.box_model_snapshot();
+        let sibling_snapshot = arena.get(sibling_key).unwrap().element.box_model_snapshot();
         assert_eq!(image_snapshot.width, 14.285714);
         assert_eq!(sibling_snapshot.width, 85.71429);
     }

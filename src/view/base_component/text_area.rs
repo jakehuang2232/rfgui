@@ -7,7 +7,6 @@ use crate::view::render_pass::text_pass::{
     TextInput, TextOutput, TextPassFragment, TextPassParams,
 };
 use crate::view::render_pass::{DrawRectPass, TextPass};
-use crate::view::rsx_to_elements_scoped_with_context;
 use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
 use crate::{
     ColorLike, Cursor as UiCursor, FontFamily, FontSize, HexColor, IntoColor, Layout, Length,
@@ -105,7 +104,10 @@ struct TextAreaRenderFragment {
 
 struct TextAreaProjectionNode {
     range: Range<usize>,
-    node: Box<dyn ElementTrait>,
+    /// Key of the projection subtree root in the arena. Parented to the
+    /// owning `TextArea` but detached (not in the TextArea's own
+    /// `Node.children` list) — same pattern as Image loading/error slots.
+    node: crate::view::node_arena::NodeKey,
 }
 
 pub struct TextArea {
@@ -138,6 +140,11 @@ pub struct TextArea {
     on_change_handlers: Vec<crate::ui::TextChangeHandlerProp>,
     on_render_handler: Option<crate::ui::TextAreaRenderHandlerProp>,
     render_nodes: Vec<TextAreaProjectionNode>,
+    /// When `on_render` is set, the projection subtree needs to be rebuilt
+    /// from the handler's RSX output; that rebuild requires `&mut
+    /// NodeArena` which most setters don't carry. Flag here and rebuild
+    /// during `place` / `build` when the arena is in scope.
+    projection_tree_dirty: bool,
     render_fragments: Vec<TextAreaRenderFragment>,
     render_content_height: f32,
     cursor_char: usize,
@@ -285,6 +292,7 @@ impl TextArea {
             on_change_handlers: Vec::new(),
             on_render_handler: None,
             render_nodes: Vec::new(),
+            projection_tree_dirty: false,
             render_fragments: Vec::new(),
             render_content_height: 0.0,
             cursor_char: 0,
@@ -426,7 +434,7 @@ impl TextArea {
         }
         self.content = next;
         self.mark_measure_dirty();
-        self.rebuild_render_nodes();
+        self.mark_projection_tree_dirty();
         self.clear_vertical_goal();
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
@@ -484,7 +492,7 @@ impl TextArea {
             if self.content != prev {
                 self.mark_measure_dirty();
                 self.sync_bound_text();
-                self.rebuild_render_nodes();
+                self.mark_projection_tree_dirty();
             }
         }
     }
@@ -510,14 +518,39 @@ impl TextArea {
         F: FnMut(&mut TextAreaRenderString) + 'static,
     {
         self.on_render_handler = Some(crate::ui::TextAreaRenderHandlerProp::new(handler));
-        self.rebuild_render_nodes();
+        self.mark_projection_tree_dirty();
+    }
+
+    fn mark_projection_tree_dirty(&mut self) {
+        self.projection_tree_dirty = true;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+    }
+
+    /// Arena-aware wrapper: if a rebuild was scheduled by a setter, do it
+    /// now (needs the arena to commit new projection subtrees). Also keeps
+    /// `render_fragments` in sync with the current ranges.
+    pub(crate) fn rebuild_projection_tree_if_dirty(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        if !self.projection_tree_dirty {
+            return;
+        }
+        self.projection_tree_dirty = false;
+        self.rebuild_render_nodes(arena);
     }
 
     pub fn set_render_projection_nodes(
         &mut self,
-        projections: Vec<(Range<usize>, Box<dyn ElementTrait>)>,
+        arena: &mut crate::view::node_arena::NodeArena,
+        projections: Vec<(Range<usize>, crate::view::node_arena::NodeKey)>,
     ) {
         self.on_render_handler = None;
+        // Remove any previously-held projection subtrees so we don't leak
+        // detached nodes when the adapter installs a fresh set.
+        for prev in self.render_nodes.drain(..) {
+            arena.remove_subtree(prev.node);
+        }
         self.render_nodes = projections
             .into_iter()
             .map(|(range, node)| TextAreaProjectionNode { range, node })
@@ -551,7 +584,7 @@ impl TextArea {
             return;
         }
         let mut event = crate::ui::TextChangeEvent {
-            meta: crate::ui::EventMeta::new(self.id()),
+            meta: crate::ui::EventMeta::new(self.id().into()),
             value: self.content.clone(),
         };
         for handler in &self.on_change_handlers {
@@ -716,7 +749,7 @@ impl TextArea {
         }
         if self.content != prev {
             self.sync_bound_text();
-            self.rebuild_render_nodes();
+            self.mark_projection_tree_dirty();
         }
     }
 
@@ -816,7 +849,7 @@ impl TextArea {
         let end_byte = byte_index_at_char(&self.content, end);
         self.content.replace_range(start_byte..end_byte, "");
         self.mark_measure_dirty();
-        self.rebuild_render_nodes();
+        self.mark_projection_tree_dirty();
         self.cursor_char = start;
         self.clear_selection();
         self.reset_caret_blink();
@@ -867,7 +900,7 @@ impl TextArea {
         let insert_at = byte_index_at_char(&self.content, self.cursor_char);
         self.content.insert_str(insert_at, &incoming);
         self.mark_measure_dirty();
-        self.rebuild_render_nodes();
+        self.mark_projection_tree_dirty();
         self.cursor_char += incoming.chars().count();
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
@@ -887,7 +920,7 @@ impl TextArea {
         let start = byte_index_at_char(&self.content, self.cursor_char - 1);
         self.content.replace_range(start..end, "");
         self.mark_measure_dirty();
-        self.rebuild_render_nodes();
+        self.mark_projection_tree_dirty();
         self.cursor_char -= 1;
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
@@ -908,7 +941,7 @@ impl TextArea {
         let end = byte_index_at_char(&self.content, self.cursor_char + 1);
         self.content.replace_range(start..end, "");
         self.mark_measure_dirty();
-        self.rebuild_render_nodes();
+        self.mark_projection_tree_dirty();
         self.reset_caret_blink();
         self.invalidate_glyph_layout();
         self.clear_vertical_goal();
@@ -1303,30 +1336,54 @@ impl TextArea {
 
     fn projection_fragment_caret_screen_position(
         &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
         node_index: usize,
         fragment: &TextAreaRenderFragment,
         cursor_char: usize,
     ) -> Option<(f32, f32)> {
-        let node = self.render_nodes.get_mut(node_index)?;
-        let nested = find_first_text_area_mut(node.node.as_mut())?;
-        let local_char = cursor_char
-            .clamp(fragment.source_range.start, fragment.source_range.end)
-            .saturating_sub(fragment.source_range.start)
-            .min(nested.content.chars().count());
-        nested.caret_screen_position_for_char(local_char, false)
+        let key = self.render_nodes.get(node_index)?.node;
+        let fragment_start = fragment.source_range.start;
+        let fragment_end = fragment.source_range.end;
+        // Walk the arena subtree to find the first nested TextArea, then
+        // compute its caret position. Use with_element_taken so we can
+        // recurse arena children without holding a borrow across the call.
+        find_first_text_area_with_arena(arena, key, |nested| {
+            let local_char = cursor_char
+                .clamp(fragment_start, fragment_end)
+                .saturating_sub(fragment_start)
+                .min(nested.content.chars().count());
+            // Scratch arena — the nested caret position doesn't require
+            // our top-level arena for the non-projection path it most
+            // commonly takes; if the nested itself is a projection
+            // container, projection caret resolution would need its own
+            // (real) arena, which isn't reachable here without
+            // re-borrowing. Acceptable trade-off until the event-layer
+            // arena is threaded down (see session memory TODO 6/7).
+            let mut scratch = crate::view::node_arena::NodeArena::new();
+            nested.caret_screen_position_for_char(&mut scratch, local_char, false)
+        })
+        .flatten()
     }
 
-    fn place_projection_fragments(&mut self, viewport_width: f32, viewport_height: f32) {
-        for fragment in &self.render_fragments {
+    fn place_projection_fragments(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        // Clone fragment list out first so we can freely re-borrow arena.
+        let fragments = self.render_fragments.clone();
+        for fragment in &fragments {
             let TextAreaRenderFragmentKind::Projection(index) = fragment.kind else {
                 continue;
             };
-            let Some(node) = self.render_nodes.get_mut(index) else {
+            let Some(node) = self.render_nodes.get(index) else {
                 continue;
             };
+            let key = node.node;
             let screen_x = self.layout_position.x + fragment.content_x;
             let screen_y = self.layout_position.y + fragment.content_y - self.scroll_y;
-            node.node.place(LayoutPlacement {
+            let placement = LayoutPlacement {
                 parent_x: screen_x,
                 parent_y: screen_y,
                 visual_offset_x: 0.0,
@@ -1337,36 +1394,36 @@ impl TextArea {
                 viewport_height: viewport_height.max(1.0),
                 percent_base_width: Some(fragment.width.max(1.0)),
                 percent_base_height: Some(fragment.height.max(1.0)),
+            };
+            arena.with_element_taken(key, |element, arena_ref| {
+                element.place(placement, arena_ref);
             });
         }
     }
 
     fn projection_fragment_cursor_char_from_viewport_position(
         &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
         node_index: usize,
         fragment: &TextAreaRenderFragment,
         viewport_x: f32,
         viewport_y: f32,
     ) -> Option<usize> {
-        let node = self.render_nodes.get_mut(node_index)?;
-        let nested = find_first_text_area_mut(node.node.as_mut())?;
-        let local_x = viewport_x - nested.layout_position.x;
-        let local_y = viewport_y - nested.layout_position.y;
-        nested.set_cursor_from_local_position(local_x, local_y);
-        let local_char = nested.cursor_char.min(nested.content.chars().count());
-        Some(
-            fragment.source_range.start
-                + local_char.min(
-                    fragment
-                        .source_range
-                        .end
-                        .saturating_sub(fragment.source_range.start),
-                ),
-        )
+        let key = self.render_nodes.get(node_index)?.node;
+        let fragment_start = fragment.source_range.start;
+        let fragment_end = fragment.source_range.end;
+        find_first_text_area_with_arena(arena, key, |nested| {
+            let local_x = viewport_x - nested.layout_position.x;
+            let local_y = viewport_y - nested.layout_position.y;
+            nested.set_cursor_from_local_position(local_x, local_y);
+            let local_char = nested.cursor_char.min(nested.content.chars().count());
+            fragment_start + local_char.min(fragment_end.saturating_sub(fragment_start))
+        })
     }
 
     fn caret_screen_position_for_char(
         &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
         cursor_char: usize,
         require_focus: bool,
     ) -> Option<(f32, f32)> {
@@ -1395,6 +1452,7 @@ impl TextArea {
                 if cursor_char <= fragment.source_range.end {
                     if let TextAreaRenderFragmentKind::Projection(index) = fragment.kind.clone()
                         && let Some(position) = self.projection_fragment_caret_screen_position(
+                            arena,
                             index,
                             &fragment,
                             cursor_char,
@@ -1452,8 +1510,11 @@ impl TextArea {
         ))
     }
 
-    fn caret_screen_position(&mut self) -> Option<(f32, f32)> {
-        self.caret_screen_position_for_char(self.cursor_char, true)
+    fn caret_screen_position(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) -> Option<(f32, f32)> {
+        self.caret_screen_position_for_char(arena, self.cursor_char, true)
     }
 
     fn screen_rects_for_char_range(
@@ -1552,7 +1613,7 @@ impl TextArea {
         self.screen_rects_for_char_range(composed, start_char, end_char)
     }
 
-    fn rebuild_render_nodes(&mut self) {
+    fn rebuild_render_nodes(&mut self, arena: &mut crate::view::node_arena::NodeArena) {
         let Some(handler) = self.on_render_handler.clone() else {
             self.rebuild_render_fragments_from_ranges(
                 self.render_nodes
@@ -1570,19 +1631,42 @@ impl TextArea {
             self.content.as_str(),
             render_string.projections(),
         );
-        let mut next_nodes = Vec::with_capacity(projections.len());
+
+        // Drop any previously-held projection subtrees so we don't leak
+        // detached nodes across rebuilds.
+        for prev in std::mem::take(&mut self.render_nodes) {
+            arena.remove_subtree(prev.node);
+        }
+
+        // Parent key for newly-committed subtrees is `None`: we don't
+        // know our own NodeKey here (TextArea stores only the legacy u64
+        // id). The descriptor-side post-commit in the adapter parents
+        // subtrees to the TextArea key at build time. For handler-driven
+        // rebuilds we commit as arena-only detached roots (parent=None);
+        // they still live inside the arena and get cleaned up by the
+        // drain above on the next rebuild.
+        let parent_key: Option<crate::view::node_arena::NodeKey> = None;
+
+        let mut next_nodes: Vec<TextAreaProjectionNode> = Vec::with_capacity(projections.len());
         let mut next_fragments = Vec::new();
 
-        let mut cursor = 0_usize;
         for (index, projection) in projections.iter().enumerate() {
-            let mut root = match self.build_projection_root(index, &projection.node) {
-                Ok(root) => root,
-                Err(_error) => continue,
+            let Ok(desc) = self.build_projection_root_desc(index, &projection.node) else {
+                continue;
             };
-            root.set_parent_id(Some(self.id()));
-            apply_text_source_range(root.as_mut(), projection.range.clone());
-            next_nodes.push(root);
+            let key = crate::view::renderer_adapter::commit_descriptor_tree(
+                arena,
+                parent_key,
+                desc,
+            );
+            apply_text_source_range(arena, key, projection.range.clone());
+            next_nodes.push(TextAreaProjectionNode {
+                range: projection.range.clone(),
+                node: key,
+            });
         }
+
+        let mut cursor = 0_usize;
         for (projection_index, projection) in projections.iter().enumerate() {
             if cursor < projection.range.start {
                 append_plain_render_fragments(
@@ -1611,14 +1695,7 @@ impl TextArea {
             );
         }
 
-        self.render_nodes = next_nodes
-            .into_iter()
-            .zip(projections.iter())
-            .map(|(node, projection)| TextAreaProjectionNode {
-                range: projection.range.clone(),
-                node,
-            })
-            .collect();
+        self.render_nodes = next_nodes;
         self.render_fragments = next_fragments;
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
     }
@@ -1722,23 +1799,28 @@ impl TextArea {
         style
     }
 
-    fn build_projection_root(
+    fn build_projection_root_desc(
         &self,
         index: usize,
         node: &RsxNode,
-    ) -> Result<Box<dyn ElementTrait>, String> {
+    ) -> Result<crate::view::renderer_adapter::ElementDescriptor, String> {
         let scope = [self.id(), 0x5445_5854, index as u64];
         let inherited_style = self.projection_inherited_style();
-        let mut children =
-            rsx_to_elements_scoped_with_context(node, &scope, &inherited_style, 0.0, 0.0)?;
-        self.wrap_projection_children(index, &mut children)
+        let mut children = crate::view::renderer_adapter::rsx_to_descriptors_scoped_with_context(
+            node,
+            &scope,
+            &inherited_style,
+            0.0,
+            0.0,
+        )?;
+        self.wrap_projection_children_desc(index, &mut children)
     }
 
-    fn wrap_projection_children(
+    fn wrap_projection_children_desc(
         &self,
         index: usize,
-        children: &mut Vec<Box<dyn ElementTrait>>,
-    ) -> Result<Box<dyn ElementTrait>, String> {
+        children: &mut Vec<crate::view::renderer_adapter::ElementDescriptor>,
+    ) -> Result<crate::view::renderer_adapter::ElementDescriptor, String> {
         if children.is_empty() {
             return Err("projection produced no elements".to_string());
         }
@@ -1762,69 +1844,93 @@ impl TextArea {
         style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(style);
 
-        for child in children.drain(..) {
-            wrapper.add_child(child);
-        }
-        Ok(Box::new(wrapper))
+        Ok(crate::view::renderer_adapter::ElementDescriptor {
+            element: Box::new(wrapper) as Box<dyn ElementTrait>,
+            children: std::mem::take(children),
+            post_commit: None,
+        })
     }
 
-    fn sync_projection_preedit_state(&mut self) {
+    fn sync_projection_preedit_state(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         let cursor_char = self.cursor_char.min(self.content.chars().count());
-        for projection in &mut self.render_nodes {
-            let Some(nested) = find_first_text_area_mut(projection.node.as_mut()) else {
-                continue;
-            };
-            let local_cursor = cursor_char
-                .saturating_sub(projection.range.start)
-                .min(nested.content.chars().count());
-            nested.cursor_char = local_cursor;
-            if !self.ime_preedit.is_empty()
-                && cursor_char >= projection.range.start
-                && cursor_char <= projection.range.end
-            {
-                nested.set_preedit(self.ime_preedit.clone(), self.ime_preedit_cursor);
-            } else {
-                nested.clear_preedit();
-            }
+        let ime_preedit = self.ime_preedit.clone();
+        let ime_preedit_cursor = self.ime_preedit_cursor;
+        let ranges: Vec<(crate::view::node_arena::NodeKey, Range<usize>)> = self
+            .render_nodes
+            .iter()
+            .map(|p| (p.node, p.range.clone()))
+            .collect();
+        for (key, range) in ranges {
+            let ime = ime_preedit.clone();
+            find_first_text_area_with_arena(arena, key, |nested| {
+                let local_cursor = cursor_char
+                    .saturating_sub(range.start)
+                    .min(nested.content.chars().count());
+                nested.cursor_char = local_cursor;
+                if !ime.is_empty()
+                    && cursor_char >= range.start
+                    && cursor_char <= range.end
+                {
+                    nested.set_preedit(ime.clone(), ime_preedit_cursor);
+                } else {
+                    nested.clear_preedit();
+                }
+            });
         }
     }
 
-    fn sync_projection_selection_state(&mut self) {
+    fn sync_projection_selection_state(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         let selection = self.selection_range_chars();
         let selection_color = self.selection_background_color.to_rgba_f32();
-        for projection in &mut self.render_nodes {
-            let Some(nested) = find_first_text_area_mut(projection.node.as_mut()) else {
-                continue;
-            };
-            nested.set_selection_background_color(crate::Color::rgba(
-                (selection_color[0] * 255.0).round().clamp(0.0, 255.0) as u8,
-                (selection_color[1] * 255.0).round().clamp(0.0, 255.0) as u8,
-                (selection_color[2] * 255.0).round().clamp(0.0, 255.0) as u8,
-                (selection_color[3] * 255.0).round().clamp(0.0, 255.0) as u8,
-            ));
-            let Some((start, end)) = selection else {
-                nested.clear_selection();
-                continue;
-            };
-            let overlap_start = start.max(projection.range.start);
-            let overlap_end = end.min(projection.range.end);
-            if overlap_start >= overlap_end {
-                nested.clear_selection();
-                continue;
-            }
-            nested.selection_anchor_char =
-                Some(overlap_start.saturating_sub(projection.range.start));
-            nested.selection_focus_char = Some(overlap_end.saturating_sub(projection.range.start));
+        let ranges: Vec<(crate::view::node_arena::NodeKey, Range<usize>)> = self
+            .render_nodes
+            .iter()
+            .map(|p| (p.node, p.range.clone()))
+            .collect();
+        for (key, range) in ranges {
+            find_first_text_area_with_arena(arena, key, |nested| {
+                nested.set_selection_background_color(crate::Color::rgba(
+                    (selection_color[0] * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (selection_color[1] * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (selection_color[2] * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (selection_color[3] * 255.0).round().clamp(0.0, 255.0) as u8,
+                ));
+                let Some((start, end)) = selection else {
+                    nested.clear_selection();
+                    return;
+                };
+                let overlap_start = start.max(range.start);
+                let overlap_end = end.min(range.end);
+                if overlap_start >= overlap_end {
+                    nested.clear_selection();
+                    return;
+                }
+                nested.selection_anchor_char =
+                    Some(overlap_start.saturating_sub(range.start));
+                nested.selection_focus_char =
+                    Some(overlap_end.saturating_sub(range.start));
+            });
         }
     }
 
-    fn layout_render_fragments(&mut self, viewport_width: f32, viewport_height: f32) {
+    fn layout_render_fragments(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         if self.render_fragments.is_empty() {
             self.render_content_height = 0.0;
             return;
         }
-        self.sync_projection_preedit_state();
-        self.sync_projection_selection_state();
+        self.sync_projection_preedit_state(arena);
+        self.sync_projection_selection_state(arena);
         let available_width = self.effective_width().max(1.0);
         let line_height_px = self.line_height_px();
         let effective_height = self.effective_height().max(line_height_px);
@@ -1848,19 +1954,25 @@ impl TextArea {
                     (measured.0, measured.1)
                 }
                 TextAreaRenderFragmentKind::Projection(index) => {
-                    let Some(node) = self.render_nodes.get_mut(*index) else {
+                    let Some(node) = self.render_nodes.get(*index) else {
                         continue;
                     };
-                    node.node.measure(LayoutConstraints {
+                    let key = node.node;
+                    let constraints = LayoutConstraints {
                         max_width: available_width,
                         max_height: effective_height,
                         viewport_width,
                         viewport_height,
                         percent_base_width: Some(available_width),
                         percent_base_height: Some(effective_height),
-                    });
-                    let (measured_width, measured_height) = node.node.measured_size();
-                    (measured_width.max(1.0), measured_height.max(line_height_px))
+                    };
+                    let measured = arena
+                        .with_element_taken(key, |element, arena_ref| {
+                            element.measure(constraints, arena_ref);
+                            element.measured_size()
+                        })
+                        .unwrap_or((0.0, 0.0));
+                    (measured.0.max(1.0), measured.1.max(line_height_px))
                 }
             };
 
@@ -1881,7 +1993,12 @@ impl TextArea {
         self.render_content_height = (cursor_y + line_height).max(line_height_px);
     }
 
-    fn set_cursor_from_projection_position(&mut self, viewport_x: f32, viewport_y: f32) -> bool {
+    fn set_cursor_from_projection_position(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        viewport_x: f32,
+        viewport_y: f32,
+    ) -> bool {
         for fragment_index in 0..self.render_fragments.len() {
             let fragment = self.render_fragments[fragment_index].clone();
             let left = self.layout_position.x + fragment.content_x;
@@ -1894,7 +2011,7 @@ impl TextArea {
             if let TextAreaRenderFragmentKind::Projection(index) = fragment.kind
                 && let Some(cursor_char) = self
                     .projection_fragment_cursor_char_from_viewport_position(
-                        index, &fragment, viewport_x, viewport_y,
+                        arena, index, &fragment, viewport_x, viewport_y,
                     )
             {
                 self.cursor_char = cursor_char;
@@ -1931,7 +2048,11 @@ impl TextArea {
         Some((start, end))
     }
 
-    fn ime_preedit_underline_rects(&mut self, composed: &str) -> Vec<([f32; 2], [f32; 2])> {
+    fn ime_preedit_underline_rects(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        composed: &str,
+    ) -> Vec<([f32; 2], [f32; 2])> {
         let Some((start_char, end_char)) = self.ime_preedit_range_chars() else {
             return Vec::new();
         };
@@ -1959,18 +2080,36 @@ impl TextArea {
                         {
                             continue;
                         }
-                        let Some(node) = self.render_nodes.get_mut(index) else {
+                        let Some(node) = self.render_nodes.get(index) else {
                             continue;
                         };
-                        let Some(nested) = find_first_text_area_mut(node.node.as_mut()) else {
-                            continue;
-                        };
-                        let nested_composed = nested.composed_text();
-                        rects.extend(nested.ime_preedit_underline_rects(nested_composed.as_str()));
+                        let key = node.node;
+                        let nested_rects = find_first_text_area_with_arena(
+                            arena,
+                            key,
+                            |nested_self| {
+                                let nested_composed = nested_self.composed_text();
+                                // Re-entrance note: no nested arena-scoped
+                                // call exists below this point inside the
+                                // underline computation that would conflict
+                                // with `with_element_taken` (we use a
+                                // throwaway arena to avoid double-mut).
+                                let mut scratch =
+                                    crate::view::node_arena::NodeArena::new();
+                                nested_self.ime_preedit_underline_rects(
+                                    &mut scratch,
+                                    nested_composed.as_str(),
+                                )
+                            },
+                        );
+                        if let Some(nested_rects) = nested_rects {
+                            rects.extend(nested_rects);
+                        }
                     }
                     TextAreaRenderFragmentKind::Text(_) => {}
                 }
             }
+            let _ = end_char;
             return rects;
         }
         let line_rects = self.screen_rects_for_char_range(composed, start_char, end_char);
@@ -2598,14 +2737,6 @@ impl ElementTrait for TextArea {
         self.element.id()
     }
 
-    fn parent_id(&self) -> Option<u64> {
-        self.element.parent_id()
-    }
-
-    fn set_parent_id(&mut self, parent_id: Option<u64>) {
-        self.element.set_parent_id(parent_id);
-    }
-
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         BoxModelSnapshot {
             node_id: self.element.id(),
@@ -2617,14 +2748,6 @@ impl ElementTrait for TextArea {
             border_radius: 0.0,
             should_render: self.should_render,
         }
-    }
-
-    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> {
-        None
-    }
-
-    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> {
-        None
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -2709,8 +2832,16 @@ impl EventTarget for TextArea {
         self.clear_preedit();
         self.reset_caret_blink();
         let previous = self.cursor_char;
-        if !self.set_cursor_from_projection_position(event.pointer.viewport_x, event.pointer.viewport_y)
-        {
+        // Dispatch layer does not yet carry `&mut NodeArena`; use a
+        // scratch arena so projection hit-testing degrades gracefully to
+        // the plain local-position path until the dispatch API is
+        // threaded through (tracked as TODO 6/7 in session memory).
+        let mut scratch_arena = crate::view::node_arena::NodeArena::new();
+        if !self.set_cursor_from_projection_position(
+            &mut scratch_arena,
+            event.pointer.viewport_x,
+            event.pointer.viewport_y,
+        ) {
             self.set_cursor_from_local_position(event.pointer.local_x, event.pointer.local_y);
         }
         if event.pointer.modifiers.shift() {
@@ -2752,9 +2883,12 @@ impl EventTarget for TextArea {
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         if self.pointer_selecting && event.pointer.buttons.left {
-            if !self
-                .set_cursor_from_projection_position(event.pointer.viewport_x, event.pointer.viewport_y)
-            {
+            let mut scratch_arena = crate::view::node_arena::NodeArena::new();
+            if !self.set_cursor_from_projection_position(
+                &mut scratch_arena,
+                event.pointer.viewport_x,
+                event.pointer.viewport_y,
+            ) {
                 self.set_cursor_from_local_position(event.pointer.local_x, event.pointer.local_y);
             }
             if self.selection_anchor_char.is_none() {
@@ -2864,7 +2998,7 @@ impl EventTarget for TextArea {
         if !self.on_focus_handlers.is_empty() {
             let mut focus_event = crate::ui::TextAreaFocusEvent {
                 meta: event.meta.clone(),
-                target: event.meta.text_selection_target(self.id()),
+                target: event.meta.text_selection_target(self.id().into()),
             };
             for handler in &self.on_focus_handlers {
                 handler.call(&mut focus_event);
@@ -2980,7 +3114,11 @@ impl Layoutable for TextArea {
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::RUNTIME);
     }
 
-    fn measure(&mut self, constraints: LayoutConstraints) {
+    fn measure(
+        &mut self,
+        constraints: LayoutConstraints,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         self.layout_override_width = None;
         self.layout_override_height = None;
         self.sync_size_from_style(
@@ -3035,7 +3173,11 @@ impl Layoutable for TextArea {
         self.dirty_flags = self.dirty_flags.without(super::DirtyFlags::LAYOUT);
     }
 
-    fn place(&mut self, placement: LayoutPlacement) {
+    fn place(
+        &mut self,
+        placement: LayoutPlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         if !self.dirty_flags.intersects(
             super::DirtyFlags::PLACE
                 .union(super::DirtyFlags::BOX_MODEL)
@@ -3085,8 +3227,13 @@ impl Layoutable for TextArea {
         if (prev_layout_width - self.layout_size.width).abs() > 0.01 {
             self.invalidate_glyph_layout();
         }
+        self.rebuild_projection_tree_if_dirty(arena);
         if !self.render_nodes.is_empty() || self.on_render_handler.is_some() {
-            self.layout_render_fragments(placement.viewport_width, placement.viewport_height);
+            self.layout_render_fragments(
+                placement.viewport_width,
+                placement.viewport_height,
+                arena,
+            );
         }
         self.clamp_scroll();
         self.last_layout_placement = Some(placement);
@@ -3099,7 +3246,12 @@ impl Layoutable for TextArea {
 }
 
 impl Renderable for TextArea {
-    fn build(&mut self, graph: &mut FrameGraph, mut ctx: UiBuildContext) -> BuildState {
+    fn build(
+        &mut self,
+        graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        mut ctx: UiBuildContext,
+    ) -> BuildState {
         if !self.should_render {
             return ctx.into_state();
         }
@@ -3126,6 +3278,7 @@ impl Renderable for TextArea {
             self.place_projection_fragments(
                 self.layout_size.width.max(1.0),
                 self.layout_size.height.max(1.0),
+                arena,
             );
             let content = self.content.clone();
             for (position, size) in self.selection_screen_rects(content.as_str()) {
@@ -3177,17 +3330,31 @@ impl Renderable for TextArea {
                         );
                     }
                     TextAreaRenderFragmentKind::Projection(index) => {
-                        let Some(node) = self.render_nodes.get_mut(*index) else {
+                        let Some(node) = self.render_nodes.get(*index) else {
                             continue;
                         };
+                        let key = node.node;
                         let viewport = ctx.viewport();
-                        let next_state = node.node.build(graph, ctx);
+                        // Move the full ctx into the closure; the arena
+                        // side runs build() and returns the resulting
+                        // BuildState which we re-wrap. If the slot is
+                        // missing, preserve the current ctx state as a
+                        // best-effort fallback.
+                        let state_before = ctx.state_clone();
+                        let moved_ctx = std::mem::replace(
+                            &mut ctx,
+                            UiBuildContext::from_parts(viewport.clone(), state_before.clone()),
+                        );
+                        let next_state_opt = arena.with_element_taken(key, |element, arena_ref| {
+                            element.build(graph, arena_ref, moved_ctx)
+                        });
+                        let next_state = next_state_opt.unwrap_or(state_before);
                         ctx = UiBuildContext::from_parts(viewport, next_state);
                     }
                 }
             }
 
-            let ime_underline_rects = self.ime_preedit_underline_rects(content.as_str());
+            let ime_underline_rects = self.ime_preedit_underline_rects(arena, content.as_str());
             for (position, size) in ime_underline_rects {
                 let mut underline_pass = DrawRectPass::new(
                     RectPassParams {
@@ -3204,7 +3371,7 @@ impl Renderable for TextArea {
                 push_draw_rect_pass_explicit(graph, &mut ctx, underline_pass);
             }
 
-            if let Some((caret_x, caret_y)) = self.caret_screen_position() {
+            if let Some((caret_x, caret_y)) = self.caret_screen_position(arena) {
                 self.cached_ime_cursor_rect = Some((caret_x, caret_y, 1.0, self.line_height_px()));
                 if self.should_draw_caret() {
                     let mut caret_pass = DrawRectPass::new(
@@ -3246,7 +3413,7 @@ impl Renderable for TextArea {
                 selection_pass.set_scissor_rect(clip);
                 push_draw_rect_pass_explicit(graph, &mut ctx, selection_pass);
             }
-            let ime_underline_rects = self.ime_preedit_underline_rects(content.as_str());
+            let ime_underline_rects = self.ime_preedit_underline_rects(arena, content.as_str());
 
             push_text_pass_explicit(
                 graph,
@@ -3290,12 +3457,22 @@ impl Renderable for TextArea {
             }
         }
 
-        if let Some((caret_x, caret_y)) = self.caret_screen_position() {
+        if let Some((caret_x, caret_y)) = self.caret_screen_position(arena) {
             self.cached_ime_cursor_rect = Some((caret_x, caret_y, 1.0, self.line_height_px()));
             if !self.should_draw_caret() {
-                for node in &mut self.render_nodes {
+                let keys: Vec<crate::view::node_arena::NodeKey> =
+                    self.render_nodes.iter().map(|p| p.node).collect();
+                for key in keys {
                     let viewport = ctx.viewport();
-                    let next_state = node.node.build(graph, ctx);
+                    let state_before = ctx.state_clone();
+                    let moved_ctx = std::mem::replace(
+                        &mut ctx,
+                        UiBuildContext::from_parts(viewport.clone(), state_before.clone()),
+                    );
+                    let next_state_opt = arena.with_element_taken(key, |element, arena_ref| {
+                        element.build(graph, arena_ref, moved_ctx)
+                    });
+                    let next_state = next_state_opt.unwrap_or(state_before);
                     ctx = UiBuildContext::from_parts(viewport, next_state);
                 }
                 return ctx.into_state();
@@ -3316,9 +3493,19 @@ impl Renderable for TextArea {
         } else {
             self.cached_ime_cursor_rect = None;
         }
-        for node in &mut self.render_nodes {
+        let keys: Vec<crate::view::node_arena::NodeKey> =
+            self.render_nodes.iter().map(|p| p.node).collect();
+        for key in keys {
             let viewport = ctx.viewport();
-            let next_state = node.node.build(graph, ctx);
+            let state_before = ctx.state_clone();
+            let moved_ctx = std::mem::replace(
+                &mut ctx,
+                UiBuildContext::from_parts(viewport.clone(), state_before.clone()),
+            );
+            let next_state_opt = arena.with_element_taken(key, |element, arena_ref| {
+                element.build(graph, arena_ref, moved_ctx)
+            });
+            let next_state = next_state_opt.unwrap_or(state_before);
             ctx = UiBuildContext::from_parts(viewport, next_state);
         }
         ctx.into_state()
@@ -3494,27 +3681,84 @@ fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &'static s
     props.push((key, value));
 }
 
-fn find_first_text_area_mut(node: &mut dyn ElementTrait) -> Option<&mut TextArea> {
-    if node.as_any().is::<TextArea>() {
-        return node.as_any_mut().downcast_mut::<TextArea>();
+/// Walk the arena subtree rooted at `key`, find the first `TextArea`,
+/// run `f` against it, and return the result. Uses `with_element_taken`
+/// for the match so the closure has exclusive `&mut TextArea` plus an
+/// unaliased `&mut NodeArena` for any inner lookups. Follows the
+/// FP-style recursion rule: clone `children_of` before iterating so no
+/// `Ref` is held across the recursive call.
+fn find_first_text_area_with_arena<'a, R: 'a>(
+    arena: &mut crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    f: impl FnOnce(&mut TextArea) -> R + 'a,
+) -> Option<R> {
+    // Box the FnOnce into an Option so the recursive helper can
+    // `.take()` it exactly once at the first match.
+    let mut slot: Option<Box<dyn FnOnce(&mut TextArea) -> R + 'a>> = Some(Box::new(f));
+    recurse_find_first_text_area(arena, key, &mut slot)
+}
+
+fn recurse_find_first_text_area<'a, R>(
+    arena: &mut crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    slot: &mut Option<Box<dyn FnOnce(&mut TextArea) -> R + 'a>>,
+) -> Option<R> {
+    let is_match = arena
+        .get(key)
+        .map(|node| node.element.as_any().is::<TextArea>())
+        .unwrap_or(false);
+    if is_match {
+        let Some(callback) = slot.take() else {
+            return None;
+        };
+        return arena
+            .with_element_taken(key, |element, _arena_ref| {
+                element.as_any_mut().downcast_mut::<TextArea>().map(callback)
+            })
+            .flatten();
     }
-    let children = node.children_mut()?;
+    // Clone the child list before iterating — never hold a borrow across
+    // the recursive call (session 3 FP rule).
+    let children = arena.children_of(key);
     for child in children {
-        if let Some(text_area) = find_first_text_area_mut(child.as_mut()) {
-            return Some(text_area);
+        if let Some(result) = recurse_find_first_text_area(arena, child, slot) {
+            return Some(result);
+        }
+        if slot.is_none() {
+            return None;
         }
     }
     None
 }
 
-fn apply_text_source_range(node: &mut dyn ElementTrait, range: Range<usize>) {
-    if let Some(text_area) = node.as_any_mut().downcast_mut::<TextArea>() {
-        text_area.set_source_text_range(Some(range.clone()));
-    }
-    if let Some(children) = node.children_mut() {
-        for child in children {
-            apply_text_source_range(child.as_mut(), range.clone());
+/// Pub wrapper for the renderer adapter: walk an arena subtree under
+/// `key` and stamp `range` onto every nested TextArea as
+/// `source_text_range`.
+pub fn apply_source_range_to_subtree(
+    arena: &mut crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    range: Range<usize>,
+) {
+    apply_text_source_range(arena, key, range);
+}
+
+/// Walk the arena subtree rooted at `key` and apply `source_text_range`
+/// to every `TextArea` found. FP-style: children cloned before
+/// recursion; mutation goes through `with_element_taken`.
+fn apply_text_source_range(
+    arena: &mut crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    range: Range<usize>,
+) {
+    let _ = arena.with_element_taken(key, |element, _arena_ref| {
+        if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
+            text_area.set_source_text_range(Some(range.clone()));
         }
+    });
+    // Recurse using arena Node.children as the source of truth.
+    let children = arena.children_of(key);
+    for child in children {
+        apply_text_source_range(arena, child, range.clone());
     }
 }
 
@@ -3566,8 +3810,8 @@ mod tests {
     use crate::ColorLike;
     use crate::Length;
     use crate::ui::{
-        Binding, BlurEvent, EventMeta, FocusEvent, PointerButton, PointerButtons, PointerDownEvent,
-        PointerEventData, TextInputEvent, ViewportListenerAction, rsx,
+        Binding, BlurEvent, EventMeta, FocusEvent, NodeId, PointerButton, PointerButtons,
+        PointerDownEvent, PointerEventData, TextInputEvent, ViewportListenerAction, rsx,
     };
     use crate::view::base_component::{
         DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -3595,6 +3839,14 @@ mod tests {
         assert_eq!(area.content, "12345");
     }
 
+    // Arena-aware helper: drive the projection-tree rebuild that setters
+    // schedule lazily. Used by the projection subtree tests below.
+    fn flush_projection_tree(area: &mut TextArea) -> crate::view::node_arena::NodeArena {
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.rebuild_projection_tree_if_dirty(&mut arena);
+        arena
+    }
+
     #[test]
     fn on_render_rebuilds_projection_only_when_content_changes() {
         let calls = Rc::new(RefCell::new(0usize));
@@ -3611,23 +3863,33 @@ mod tests {
             });
         });
 
+        let mut arena = flush_projection_tree(&mut area);
         assert_eq!(*calls.borrow(), 1);
         area.set_text("hello");
+        area.rebuild_projection_tree_if_dirty(&mut arena);
         assert_eq!(*calls.borrow(), 1);
         area.set_text("world");
+        area.rebuild_projection_tree_if_dirty(&mut arena);
         assert_eq!(*calls.borrow(), 2);
 
         assert_eq!(area.render_nodes.len(), 1);
-        let wrapper = area.render_nodes[0]
-            .node
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("projection root element");
-        let nested = wrapper.children().expect("wrapper children")[0]
+        let projection_key = area.render_nodes[0].node;
+        // The rsx `<Element>{text_area_node}</Element>` yields a single
+        // top-level Element which `wrap_projection_children_desc` keeps
+        // as-is (single-child unwrap). The TextArea with the source range
+        // is the nested child.
+        let wrapper_guard = arena.get(projection_key).expect("projection root");
+        let child_keys = wrapper_guard.children.clone();
+        drop(wrapper_guard);
+        assert_eq!(child_keys.len(), 1);
+        let nested_guard = arena.get(child_keys[0]).expect("nested text area");
+        let source_range = nested_guard
+            .element
             .as_any()
             .downcast_ref::<TextArea>()
-            .expect("nested projection text area");
-        assert_eq!(nested.source_text_range(), Some(1..4));
+            .expect("nested projection text area")
+            .source_text_range();
+        assert_eq!(source_range, Some(1..4));
     }
 
     #[test]
@@ -3642,15 +3904,18 @@ mod tests {
             });
         });
 
+        let arena = flush_projection_tree(&mut area);
         assert_eq!(area.render_nodes.len(), 1);
-        let wrapper = area.render_nodes[0]
-            .node
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("projection wrapper element");
-        let children = wrapper.children().expect("wrapper children");
-        assert_eq!(children.len(), 2);
-        assert!(children.iter().any(|child| child.as_any().is::<TextArea>()));
+        let projection_key = area.render_nodes[0].node;
+        let wrapper = arena.get(projection_key).expect("projection wrapper");
+        assert!(wrapper.element.as_any().is::<Element>());
+        let child_keys = wrapper.children.clone();
+        drop(wrapper);
+        assert_eq!(child_keys.len(), 2);
+        assert!(child_keys.iter().any(|k| arena
+            .get(*k)
+            .map(|n| n.element.as_any().is::<TextArea>())
+            .unwrap_or(false)));
     }
 
     #[test]
@@ -3662,9 +3927,12 @@ mod tests {
             render.range(0..5, |text_area_node| text_area_node);
         });
 
+        let arena = flush_projection_tree(&mut area);
         assert_eq!(area.render_nodes.len(), 1);
-        let nested = area.render_nodes[0]
-            .node
+        let projection_key = area.render_nodes[0].node;
+        let nested_guard = arena.get(projection_key).expect("projection root");
+        let nested = nested_guard
+            .element
             .as_any()
             .downcast_ref::<TextArea>()
             .expect("nested projection text area");
@@ -3695,6 +3963,7 @@ mod tests {
             });
         });
 
+        let arena = flush_projection_tree(&mut area);
         let ranges = area
             .render_nodes
             .iter()
@@ -3702,24 +3971,24 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ranges, vec![2..4, 4..6, 6..8]);
 
-        let nested_contents = area
+        let nested_contents: Vec<String> = area
             .render_nodes
             .iter()
             .map(|projection| {
-                projection
-                    .node
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .expect("projection wrapper")
-                    .children()
-                    .expect("wrapper children")[0]
+                let wrapper_guard = arena.get(projection.node).expect("projection wrapper");
+                let child_keys = wrapper_guard.children.clone();
+                drop(wrapper_guard);
+                let nested_key = child_keys[0];
+                let nested_guard = arena.get(nested_key).expect("nested node");
+                nested_guard
+                    .element
                     .as_any()
                     .downcast_ref::<TextArea>()
                     .expect("nested projection text area")
                     .content
                     .clone()
             })
-            .collect::<Vec<_>>();
+            .collect();
         assert_eq!(nested_contents, vec!["cd", "ef", "gh"]);
     }
 
@@ -3742,11 +4011,19 @@ mod tests {
             />
         };
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let area = roots[0]
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .expect("host textarea");
+        // Arena-era path: legacy `rsx_to_elements` drops projection
+        // subtrees (see `convert_text_area_element`). The descriptor
+        // pipeline is what populates `render_nodes` now.
+        use crate::style::Style;
+        use crate::view::renderer_adapter::{commit_descriptor_tree, rsx_to_descriptors_with_context};
+        let (descs, errors) = rsx_to_descriptors_with_context(&tree, &Style::new(), 0.0, 0.0);
+        assert!(errors.is_empty(), "rsx conversion errors: {:?}", errors);
+        assert_eq!(descs.len(), 1);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        let mut descs = descs;
+        let key = commit_descriptor_tree(&mut arena, None, descs.remove(0));
+        let node = arena.get(key).unwrap();
+        let area = node.element.as_any().downcast_ref::<TextArea>().expect("host textarea");
         assert_eq!(area.render_nodes.len(), 1);
         assert!(matches!(
             area.render_fragments[0].kind,
@@ -3761,6 +4038,7 @@ mod tests {
             render.range(3..8, |text_area_node| text_area_node);
         });
         area.cursor_char = 1;
+        let _arena = flush_projection_tree(&mut area);
         area.set_preedit("中文".to_string(), None);
 
         assert!(area.uses_projection_rendering());
@@ -3778,6 +4056,7 @@ mod tests {
         });
         area.is_focused = true;
         area.cursor_char = 1;
+        let mut arena = crate::view::node_arena::NodeArena::new();
         area.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -3789,18 +4068,18 @@ mod tests {
             viewport_height: 64.0,
             percent_base_width: Some(240.0),
             percent_base_height: Some(64.0),
-        });
+        }, &mut arena);
 
         area.set_preedit("中文".to_string(), Some((0, 0)));
-        area.layout_render_fragments(240.0, 64.0);
+        area.layout_render_fragments(240.0, 64.0, &mut arena);
         let caret_at_start = area
-            .caret_screen_position()
+            .caret_screen_position(&mut arena)
             .expect("caret position at preedit start");
 
         area.set_preedit("中文".to_string(), Some(("中文".len(), "中文".len())));
-        area.layout_render_fragments(240.0, 64.0);
+        area.layout_render_fragments(240.0, 64.0, &mut arena);
         let caret_at_end = area
-            .caret_screen_position()
+            .caret_screen_position(&mut arena)
             .expect("caret position at preedit end");
 
         assert!(caret_at_end.0 > caret_at_start.0);
@@ -3814,10 +4093,13 @@ mod tests {
         });
         area.cursor_char = 2;
         area.set_preedit("中文".to_string(), None);
-        area.layout_render_fragments(240.0, 64.0);
+        let mut arena = flush_projection_tree(&mut area);
+        area.layout_render_fragments(240.0, 64.0, &mut arena);
 
-        let nested = area.render_nodes[0]
-            .node
+        let nested_key = area.render_nodes[0].node;
+        let nested_guard = arena.get(nested_key).expect("nested projection node");
+        let nested = nested_guard
+            .element
             .as_any()
             .downcast_ref::<TextArea>()
             .expect("nested projection text area");
@@ -3832,6 +4114,7 @@ mod tests {
             render.range(3..8, |text_area_node| text_area_node);
         });
         area.cursor_char = 1;
+        let _arena = flush_projection_tree(&mut area);
         area.set_preedit("中文".to_string(), None);
         assert!(area.render_fragments.iter().any(|fragment| matches!(
             &fragment.kind,
@@ -3863,6 +4146,7 @@ mod tests {
 
     #[test]
     fn mouse_down_on_projection_child_maps_back_to_source_range() {
+        use crate::view::test_support::{commit_element, new_test_arena};
         let mut area = TextArea::from_content("hello");
         area.on_render(|render| {
             render.range(1..4, |text_area_node| {
@@ -3873,30 +4157,41 @@ mod tests {
                 }
             });
         });
-        area.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 240.0,
-            available_height: 64.0,
-            viewport_width: 240.0,
-            viewport_height: 64.0,
-            percent_base_width: Some(240.0),
-            percent_base_height: Some(64.0),
+        let mut arena = new_test_arena();
+        let area_key = commit_element(&mut arena, Box::new(area));
+
+        arena.with_element_taken(area_key, |el, a| {
+            el.place(LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 64.0,
+                viewport_width: 240.0,
+                viewport_height: 64.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(64.0),
+            }, a);
         });
 
-        let fragment = area
-            .render_fragments
-            .iter()
-            .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
-            .expect("projection fragment");
-        let click_x = area.layout_position.x + fragment.content_x + fragment.width * 0.8;
-        let click_y = area.layout_position.y + fragment.content_y + fragment.height * 0.5;
+        let (click_x, click_y) = {
+            let node = arena.get(area_key).unwrap();
+            let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            let fragment = area
+                .render_fragments
+                .iter()
+                .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+                .expect("projection fragment");
+            (
+                area.layout_position.x + fragment.content_x + fragment.width * 0.8,
+                area.layout_position.y + fragment.content_y + fragment.height * 0.5,
+            )
+        };
 
         let mut viewport = Viewport::new();
         let mut control = ViewportControl::new(&mut viewport);
-        let meta = EventMeta::new(0);
+        let meta = EventMeta::new(NodeId::default());
         let viewport_api = meta.viewport();
         let mut event = PointerDownEvent {
             meta,
@@ -3905,8 +4200,6 @@ mod tests {
                 viewport_y: click_y,
                 local_x: 0.0,
                 local_y: 0.0,
-                current_target_width: 0.0,
-                current_target_height: 0.0,
                 button: Some(PointerButton::Left),
                 buttons: PointerButtons::default(),
                 modifiers: Default::default(),
@@ -3919,10 +4212,13 @@ mod tests {
         };
 
         assert!(dispatch_pointer_down_from_hit_test(
-            &mut area,
+            &mut arena,
+            area_key,
             &mut event,
             &mut control
         ));
+        let node = arena.get(area_key).unwrap();
+        let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
         assert!((2..=4).contains(&area.cursor_char));
     }
 
@@ -3938,6 +4234,7 @@ mod tests {
                 }
             });
         });
+        let mut arena = crate::view::node_arena::NodeArena::new();
         area.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -3949,7 +4246,7 @@ mod tests {
             viewport_height: 64.0,
             percent_base_width: Some(320.0),
             percent_base_height: Some(64.0),
-        });
+        }, &mut arena);
 
         let fragment = area
             .render_fragments
@@ -3959,7 +4256,7 @@ mod tests {
         let click_x = area.layout_position.x + fragment.content_x + fragment.width * 0.45;
         let click_y = area.layout_position.y + fragment.content_y + fragment.height * 0.5;
 
-        assert!(area.set_cursor_from_projection_position(click_x, click_y));
+        assert!(area.set_cursor_from_projection_position(&mut arena, click_x, click_y));
         assert!(area.cursor_char > 0);
         assert!(area.cursor_char < 12);
     }
@@ -3968,6 +4265,7 @@ mod tests {
     fn cursor_at_wrapped_line_start_maps_to_next_line() {
         let mut area = TextArea::from_content("abcd");
         area.set_width(20.0);
+        let mut arena = crate::view::node_arena::NodeArena::new();
         area.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -3979,7 +4277,7 @@ mod tests {
             percent_base_width: Some(20.0),
             percent_base_height: Some(100.0),
             viewport_height: 100.0,
-        });
+        }, &mut arena);
 
         area.cursor_char = 2;
         let lines = area.visual_lines();
@@ -4026,7 +4324,7 @@ mod tests {
         let mut viewport = Viewport::new();
         let mut control = ViewportControl::new(&mut viewport);
         let mut blur = BlurEvent {
-            meta: EventMeta::new(0),
+            meta: EventMeta::new(NodeId::default()),
         };
         EventTarget::dispatch_blur(&mut area, &mut blur, &mut control);
 
@@ -4047,7 +4345,7 @@ mod tests {
         let mut viewport = Viewport::new();
         let mut control = ViewportControl::new(&mut viewport);
         let mut event = TextInputEvent {
-            meta: EventMeta::new(area.id()),
+            meta: EventMeta::new(area.id().into()),
             text: "llo".to_string(),
         };
         EventTarget::dispatch_text_input(&mut area, &mut event, &mut control);
@@ -4066,26 +4364,36 @@ mod tests {
         let mut viewport = Viewport::new();
         let mut control = ViewportControl::new(&mut viewport);
         let mut event = FocusEvent {
-            meta: EventMeta::new(area.id()),
+            meta: EventMeta::new(area.id().into()),
         };
         EventTarget::dispatch_focus(&mut area, &mut event, &mut control);
 
         let actions = event.meta.take_viewport_listener_actions();
         assert!(matches!(
             actions.as_slice(),
-            [ViewportListenerAction::SelectTextRangeAll(target_id)] if *target_id == area.id()
+            [ViewportListenerAction::SelectTextRangeAll(target_id)] if target_id.raw() == area.id()
         ));
 
         let area_id = area.id();
-        assert!(select_all_text_by_id(&mut area, area_id));
+        use crate::view::test_support::{commit_element, new_test_arena};
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(area));
+        assert!(select_all_text_by_id(&mut arena, key, area_id));
+        let node = arena.get(key).unwrap();
+        let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
         assert_eq!(area.selection_range_chars(), Some((0, 5)));
     }
 
     #[test]
     fn select_range_clamps_to_character_bounds() {
-        let mut area = TextArea::from_content("hello");
+        let area = TextArea::from_content("hello");
         let area_id = area.id();
-        assert!(select_text_range_by_id(&mut area, area_id, 1, 99));
+        use crate::view::test_support::{commit_element, new_test_arena};
+        let mut arena = new_test_arena();
+        let key = commit_element(&mut arena, Box::new(area));
+        assert!(select_text_range_by_id(&mut arena, key, area_id, 1, 99));
+        let node = arena.get(key).unwrap();
+        let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
         assert_eq!(area.selection_range_chars(), Some((1, 5)));
         assert_eq!(area.cursor_char, 5);
     }
@@ -4093,6 +4401,7 @@ mod tests {
     #[test]
     fn mouse_selection_requests_pointer_capture_until_mouse_up() {
         let mut area = TextArea::from_content("hello world");
+        let mut arena = crate::view::node_arena::NodeArena::new();
         area.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -4104,12 +4413,12 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(80.0),
             viewport_height: 80.0,
-        });
+        }, &mut arena);
 
         let mut viewport = Viewport::new();
         {
             let mut control = ViewportControl::new(&mut viewport);
-            let down_meta = EventMeta::new(area.id());
+            let down_meta = EventMeta::new(area.id().into());
             let mut down = crate::ui::PointerDownEvent {
                 viewport: down_meta.viewport(),
                 meta: down_meta,
@@ -4118,8 +4427,6 @@ mod tests {
                     viewport_y: 4.0,
                     local_x: 4.0,
                     local_y: 4.0,
-                    current_target_width: 0.0,
-                    current_target_height: 0.0,
                     button: Some(crate::ui::PointerButton::Left),
                     buttons: crate::ui::PointerButtons {
                         left: true,
@@ -4143,7 +4450,7 @@ mod tests {
 
         {
             let mut control = ViewportControl::new(&mut viewport);
-            let up_meta = EventMeta::new(area.id());
+            let up_meta = EventMeta::new(area.id().into());
             let mut up = crate::ui::PointerUpEvent {
                 viewport: up_meta.viewport(),
                 meta: up_meta,
@@ -4152,8 +4459,6 @@ mod tests {
                     viewport_y: 4.0,
                     local_x: 4.0,
                     local_y: 4.0,
-                    current_target_width: 0.0,
-                    current_target_height: 0.0,
                     button: Some(crate::ui::PointerButton::Left),
                     buttons: crate::ui::PointerButtons {
                         left: false,
@@ -4190,6 +4495,7 @@ mod tests {
         let mut area = TextArea::from_content("123");
         area.set_style_width(Some(Length::percent(100.0)));
         area.set_multiline(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
 
         area.measure(LayoutConstraints {
             max_width: 200.0,
@@ -4198,7 +4504,7 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut arena);
         assert_eq!(area.measured_size().0, 200.0);
 
         area.set_layout_width(80.0);
@@ -4213,7 +4519,7 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut arena);
         assert_eq!(area.box_model_snapshot().width, 80.0);
 
         area.measure(LayoutConstraints {
@@ -4223,7 +4529,7 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut arena);
         assert_eq!(area.measured_size().0, 200.0);
     }
 
@@ -4231,6 +4537,7 @@ mod tests {
     fn glyph_layout_keeps_logical_font_size_under_hidpi() {
         let mut area = TextArea::from_content("abc");
         area.set_font_size(16.0);
+        let mut arena = crate::view::node_arena::NodeArena::new();
         area.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -4242,7 +4549,7 @@ mod tests {
             percent_base_width: Some(100.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut arena);
 
         area.ensure_glyph_layout("abc", 1.0);
         let metrics_1x = area.glyph_buffer.metrics();
@@ -4263,6 +4570,7 @@ mod tests {
         let mut area = TextArea::from_content("{{API_HOST}}");
         area.set_multiline(false);
         area.set_font_size(16.0);
+        let mut arena = crate::view::node_arena::NodeArena::new();
         area.measure(LayoutConstraints {
             max_width: 500.0,
             max_height: 40.0,
@@ -4270,7 +4578,7 @@ mod tests {
             percent_base_width: Some(500.0),
             percent_base_height: Some(40.0),
             viewport_height: 40.0,
-        });
+        }, &mut arena);
 
         let expected_width = TextArea::measure_render_text_run_with_style(
             "{{API_HOST}}",
@@ -4287,6 +4595,7 @@ mod tests {
         let mut area = TextArea::from_content("hello");
         area.set_style_width(Some(Length::px(100.5)));
         area.set_style_height(Some(Length::px(40.5)));
+        let mut arena = crate::view::node_arena::NodeArena::new();
 
         area.measure(LayoutConstraints {
             max_width: 200.0,
@@ -4295,7 +4604,7 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(100.0),
             viewport_height: 100.0,
-        });
+        }, &mut arena);
         area.place(LayoutPlacement {
             parent_x: 4.1,
             parent_y: 5.3,
@@ -4307,7 +4616,7 @@ mod tests {
             percent_base_width: Some(200.0),
             percent_base_height: Some(100.0),
             viewport_height: 100.0,
-        });
+        }, &mut arena);
 
         let snapshot = area.box_model_snapshot();
         assert!((snapshot.x - 4.3).abs() < 0.01);

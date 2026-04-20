@@ -528,7 +528,7 @@ impl ParticleCanvas {
 }
 
 impl Layoutable for ParticleCanvas {
-    fn measure(&mut self, constraints: LayoutConstraints) {
+    fn measure(&mut self, constraints: LayoutConstraints, _arena: &mut rfgui::view::NodeArena) {
         // width:100%, height:100% — use percent base (parent content size).
         if let Some(w) = constraints.percent_base_width {
             self.target_w = w;
@@ -538,7 +538,7 @@ impl Layoutable for ParticleCanvas {
         }
     }
 
-    fn place(&mut self, placement: LayoutPlacement) {
+    fn place(&mut self, placement: LayoutPlacement, _arena: &mut rfgui::view::NodeArena) {
         self.layout_x = placement.parent_x;
         self.layout_y = placement.parent_y;
         self.layout_w = self.target_w;
@@ -565,7 +565,7 @@ impl Layoutable for ParticleCanvas {
             ..Default::default()
         }
     }
-    fn cross_alignment_size(&self, is_row: bool, _: Option<f32>) -> f32 {
+    fn cross_alignment_size(&self, is_row: bool, _: Option<f32>, _arena: &rfgui::view::NodeArena) -> f32 {
         if is_row { self.target_h } else { self.target_w }
     }
     fn inline_relative_position(&self) -> (f32, f32) { (self.offset_x, self.offset_y) }
@@ -573,17 +573,17 @@ impl Layoutable for ParticleCanvas {
         self.offset_x = x;
         self.offset_y = y;
     }
-    fn measure_inline(&mut self, ctx: InlineMeasureContext) {
+    fn measure_inline(&mut self, ctx: InlineMeasureContext, arena: &mut rfgui::view::NodeArena) {
         self.measure(LayoutConstraints {
             max_width: ctx.first_available_width, max_height: 1_000_000.0,
             viewport_width: ctx.viewport_width, viewport_height: ctx.viewport_height,
             percent_base_width: ctx.percent_base_width, percent_base_height: ctx.percent_base_height,
-        });
+        }, arena);
     }
-    fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
+    fn get_inline_nodes_size(&self, _arena: &rfgui::view::NodeArena) -> Vec<InlineNodeSize> {
         vec![InlineNodeSize { width: self.target_w, height: self.target_h }]
     }
-    fn place_inline(&mut self, p: InlinePlacement) {
+    fn place_inline(&mut self, p: InlinePlacement, arena: &mut rfgui::view::NodeArena) {
         self.set_layout_offset(p.offset_x, p.offset_y);
         self.place(LayoutPlacement {
             parent_x: p.parent_x, parent_y: p.parent_y,
@@ -591,7 +591,7 @@ impl Layoutable for ParticleCanvas {
             available_width: p.available_width, available_height: p.available_height,
             viewport_width: p.viewport_width, viewport_height: p.viewport_height,
             percent_base_width: p.percent_base_width, percent_base_height: p.percent_base_height,
-        });
+        }, arena);
     }
 }
 
@@ -648,7 +648,7 @@ impl EventTarget for ParticleCanvas {
 }
 
 impl Renderable for ParticleCanvas {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> BuildState {
+    fn build(&mut self, graph: &mut FrameGraph, _arena: &mut rfgui::view::NodeArena, ctx: UiBuildContext) -> BuildState {
         if !self.should_render {
             return ctx.into_state();
         }
@@ -759,8 +759,6 @@ impl ElementTrait for ParticleCanvas {
         }
     }
 
-    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> { None }
-    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> { None }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
