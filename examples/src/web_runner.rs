@@ -38,7 +38,7 @@ use web_sys::{HtmlCanvasElement, window};
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{
-    ElementState, Ime, KeyEvent, PointerButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
+    ElementState, Ime, KeyEvent, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey, PhysicalKey};

@@ -31,10 +31,6 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
     return out;
 }
 
-fn gamma_encode_srgb(linear: vec3<f32>) -> vec3<f32> {
-    return pow(clamp(linear, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
-}
-
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = params.uv_offset + in.uv * params.uv_scale;
@@ -43,5 +39,5 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
     let straight_rgb = c.rgb / c.a;
-    return vec4<f32>(gamma_encode_srgb(straight_rgb), c.a);
+    return vec4<f32>(straight_rgb, c.a);
 }
