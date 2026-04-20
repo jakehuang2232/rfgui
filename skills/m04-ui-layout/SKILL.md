@@ -1,3 +1,8 @@
+---
+name: m04-ui-layout
+description: rfgui layout and scroll model reference. Use whenever the user works with flow/wrap layout, container sizing, scroll containers, ScrollDirection, scrollbars, scroll_offset, or asks why x/y absolute positioning is not available, or how scroll hit-testing and bubbling work in this engine.
+---
+
 # Layout System
 
 ## Principles
