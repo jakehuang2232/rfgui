@@ -1,5 +1,8 @@
 impl Element {
-    pub(crate) fn inline_promotion_rendering_reason(&self) -> Option<&'static str> {
+    pub(crate) fn inline_promotion_rendering_reason(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> Option<&'static str> {
         if self.children.is_empty()
             || self.layout_inner_size.width <= 0.0
             || self.layout_inner_size.height <= 0.0
@@ -7,7 +10,7 @@ impl Element {
             return None;
         }
         let overflow_child_indices: Vec<bool> = (0..self.children.len())
-            .map(|idx| self.child_renders_outside_inner_clip(idx))
+            .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
             .collect();
         let outer_radii = normalize_corner_radii(
             self.border_radii,
@@ -15,7 +18,7 @@ impl Element {
             self.core.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
-        if self.should_clip_children(&overflow_child_indices, inner_radii) {
+        if self.should_clip_children(&overflow_child_indices, inner_radii, arena) {
             Some(if inner_radii.has_any_rounding() {
                 "child-stencil-clip-inline"
             } else {
@@ -29,15 +32,17 @@ impl Element {
     fn build_base_descendants_only(
         &mut self,
         graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
         ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
-        self.build_base_descendants_only_inner(graph, ctx, force_self_opaque, true)
+        self.build_base_descendants_only_inner(graph, arena, ctx, force_self_opaque, true)
     }
 
     fn build_base_descendants_only_inner(
         &mut self,
         graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
         allow_transform: bool,
@@ -63,13 +68,13 @@ impl Element {
         );
         if !self.core.should_render {
             if self.has_absolute_descendant_for_hit_test {
-                self.collect_root_viewport_deferred_descendants(&mut ctx);
+                self.collect_root_viewport_deferred_descendants(arena, &mut ctx);
             }
             return ctx.into_state();
         }
 
         if allow_transform && self.resolved_transform.is_some() {
-            return self.build_transformed_subtree(graph, ctx, force_self_opaque);
+            return self.build_transformed_subtree(graph, arena, ctx, force_self_opaque);
         }
 
         let previous_scissor_rect = self
@@ -85,37 +90,50 @@ impl Element {
         self.border_radius = outer_radii.max();
         let pipeline_state = self.build_render_pipeline(
             graph,
+            arena,
             UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
             force_self_opaque,
         );
         ctx.set_state(pipeline_state);
 
         let overflow_child_indices: Vec<bool> = (0..self.children.len())
-            .map(|idx| self.child_renders_outside_inner_clip(idx))
+            .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
             .collect();
 
-        let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii) {
+        let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii, arena) {
             self.begin_child_clip_scope(graph, &mut ctx, inner_radii)
         } else {
             None
         };
 
+        let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
         if self.has_inner_render_area() {
-            for (idx, child) in self.children.iter_mut().enumerate() {
+            for (idx, child_key) in child_keys.iter().copied().enumerate() {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
-                if ctx.is_node_promoted(child.id()) {
-                    continue;
-                }
-                if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                    let viewport = ctx.viewport();
-                    let next_state = element.build_base_descendants_only(graph, ctx, false);
-                    ctx = UiBuildContext::from_parts(viewport, next_state);
-                } else {
-                    let viewport = ctx.viewport();
-                    let next_state = child.build(graph, ctx);
-                    ctx = UiBuildContext::from_parts(viewport, next_state);
+                let viewport = ctx.viewport();
+                let taken_state = ctx.state_clone();
+                let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
+                let next_ctx = arena
+                    .with_element_taken(child_key, |child, arena| {
+                        let ctx_local = ctx_in;
+                        if ctx_local.is_node_promoted(child.id()) {
+                            return ctx_local;
+                        }
+                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                            let vp = ctx_local.viewport();
+                            let next_state = element
+                                .build_base_descendants_only(graph, arena, ctx_local, false);
+                            UiBuildContext::from_parts(vp, next_state)
+                        } else {
+                            let vp = ctx_local.viewport();
+                            let next_state = child.build(graph, arena, ctx_local);
+                            UiBuildContext::from_parts(vp, next_state)
+                        }
+                    });
+                if let Some(c) = next_ctx {
+                    ctx = c;
                 }
             }
         }
@@ -125,27 +143,39 @@ impl Element {
                 if !is_overflow {
                     continue;
                 }
-                if let Some(child) = self.children.get_mut(idx) {
-                    if child
-                        .as_any()
-                        .downcast_ref::<Element>()
-                        .is_some_and(Element::should_append_to_root_viewport_render)
-                    {
-                        ctx.append_to_defer(child.id());
-                        continue;
-                    }
-                    if ctx.is_node_promoted(child.id()) {
-                        continue;
-                    }
-                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                        let viewport = ctx.viewport();
-                        let next_state = element.build_base_descendants_only(graph, ctx, false);
-                        ctx = UiBuildContext::from_parts(viewport, next_state);
-                    } else {
-                        let viewport = ctx.viewport();
-                        let next_state = child.build(graph, ctx);
-                        ctx = UiBuildContext::from_parts(viewport, next_state);
-                    }
+                let Some(child_key) = child_keys.get(idx).copied() else {
+                    continue;
+                };
+                let viewport = ctx.viewport();
+                let taken_state = ctx.state_clone();
+                let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
+                let next_ctx = arena
+                    .with_element_taken(child_key, |child, arena| {
+                        let mut ctx_local = ctx_in;
+                        if child
+                            .as_any()
+                            .downcast_ref::<Element>()
+                            .is_some_and(Element::should_append_to_root_viewport_render)
+                        {
+                            ctx_local.append_to_defer(child.id());
+                            return ctx_local;
+                        }
+                        if ctx_local.is_node_promoted(child.id()) {
+                            return ctx_local;
+                        }
+                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                            let vp = ctx_local.viewport();
+                            let next_state = element
+                                .build_base_descendants_only(graph, arena, ctx_local, false);
+                            UiBuildContext::from_parts(vp, next_state)
+                        } else {
+                            let vp = ctx_local.viewport();
+                            let next_state = child.build(graph, arena, ctx_local);
+                            UiBuildContext::from_parts(vp, next_state)
+                        }
+                    });
+                if let Some(c) = next_ctx {
+                    ctx = c;
                 }
             }
         }
@@ -157,7 +187,11 @@ impl Element {
         ctx.into_state()
     }
 
-    fn measure_flex_children(&mut self, proposal: LayoutProposal) {
+    fn measure_flex_children(
+        &mut self,
+        proposal: LayoutProposal,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         let bw_l = resolve_px_or_zero(
             self.computed_style.border_widths.left,
             proposal.percent_base_width,
@@ -262,7 +296,8 @@ impl Element {
                     .max(0.0)
                     .min(inner_w)
             });
-        for child in &mut self.children {
+        let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
+        for child_key in child_keys {
             if matches!(self.computed_style.layout, Layout::Inline) {
                 let first_available_width = if let Some(width) = pending_first_available_width.take() {
                     width
@@ -271,16 +306,22 @@ impl Element {
                 } else {
                     (inner_w - current_line_width - inline_gap).max(0.0)
                 };
-                child.measure_inline(InlineMeasureContext {
-                    first_available_width,
-                    full_available_width: inner_w,
-                    viewport_width: proposal.viewport_width,
-                    viewport_height: proposal.viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
-                });
-
-                let node_sizes = child.get_inline_nodes_size();
+                let node_sizes = arena
+                    .with_element_taken(child_key, |child, arena| {
+                        child.measure_inline(
+                            InlineMeasureContext {
+                                first_available_width,
+                                full_available_width: inner_w,
+                                viewport_width: proposal.viewport_width,
+                                viewport_height: proposal.viewport_height,
+                                percent_base_width: child_percent_base_width,
+                                percent_base_height: child_percent_base_height,
+                            },
+                            arena,
+                        );
+                        child.get_inline_nodes_size(arena)
+                    })
+                    .unwrap_or_default();
                 if node_sizes.is_empty() {
                     continue;
                 }
@@ -302,13 +343,18 @@ impl Element {
                     line_has_content = true;
                 }
             } else {
-                child.measure(LayoutConstraints {
-                    max_width: child_available_width,
-                    max_height: child_available_height,
-                    viewport_width: proposal.viewport_width,
-                    viewport_height: proposal.viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
+                arena.with_element_taken(child_key, |child, arena| {
+                    child.measure(
+                        LayoutConstraints {
+                            max_width: child_available_width,
+                            max_height: child_available_height,
+                            viewport_width: proposal.viewport_width,
+                            viewport_height: proposal.viewport_height,
+                            percent_base_width: child_percent_base_width,
+                            percent_base_height: child_percent_base_height,
+                        },
+                        arena,
+                    );
                 });
             }
         }
@@ -321,6 +367,7 @@ impl Element {
             proposal.viewport_height,
             child_percent_base_width,
             child_percent_base_height,
+            arena,
         );
         let is_row = matches!(
             self.computed_style.layout_axis_direction(),
@@ -411,14 +458,19 @@ impl Element {
         main_limit: f32,
         viewport_width: f32,
         viewport_height: f32,
+        arena: &crate::view::node_arena::NodeArena,
     ) -> Vec<FlexItemPlan> {
         let mut items = Vec::new();
-        for (idx, child) in self.children.iter().enumerate() {
-            if self.child_is_absolute(idx) {
+        for (idx, child_key) in self.children.iter().enumerate() {
+            if self.child_is_absolute(idx, arena) {
                 continue;
             }
-            let props = child.flex_props();
-            let (measured_w, measured_h) = child.measured_size();
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            let props = child_node.element.flex_props();
+            let (measured_w, measured_h) = child_node.element.measured_size();
+            drop(child_node);
             let measured_main = if is_row { measured_w } else { measured_h };
             let flex_base_main = Self::resolve_flex_base_main_size(
                 &props,
@@ -540,6 +592,7 @@ impl Element {
         viewport_height: f32,
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
+        arena: &mut crate::view::node_arena::NodeArena,
     ) -> FlexLayoutInfo {
         let is_row = matches!(
             self.computed_style.layout_axis_direction(),
@@ -563,6 +616,7 @@ impl Element {
                 main_limit,
                 viewport_width,
                 viewport_height,
+                arena,
             );
             let line = items.iter().map(|item| item.index).collect::<Vec<_>>();
             self.distribute_flex_line(&mut items, gap, main_limit);
@@ -571,25 +625,32 @@ impl Element {
             let mut final_main_sum = 0.0_f32;
 
             for item in &mut items {
-                let child = &mut self.children[item.index];
-                child.measure(LayoutConstraints {
-                    max_width: if is_row {
-                        item.used_main
-                    } else {
-                        child_available_width
-                    },
-                    max_height: if is_row {
-                        child_available_height
-                    } else {
-                        item.used_main
-                    },
-                    viewport_width,
-                    viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
-                });
-
-                let (measured_w, measured_h) = child.measured_size();
+                let child_key = self.children[item.index];
+                let measured = arena
+                    .with_element_taken(child_key, |child, arena| {
+                        child.measure(
+                            LayoutConstraints {
+                                max_width: if is_row {
+                                    item.used_main
+                                } else {
+                                    child_available_width
+                                },
+                                max_height: if is_row {
+                                    child_available_height
+                                } else {
+                                    item.used_main
+                                },
+                                viewport_width,
+                                viewport_height,
+                                percent_base_width: child_percent_base_width,
+                                percent_base_height: child_percent_base_height,
+                            },
+                            arena,
+                        );
+                        child.measured_size()
+                    })
+                    .unwrap_or((0.0, 0.0));
+                let (measured_w, measured_h) = measured;
                 item.cross = if is_row { measured_h } else { measured_w };
                 child_sizes[item.index] = (item.used_main, item.cross);
                 final_main_sum += item.used_main;
@@ -635,15 +696,24 @@ impl Element {
         }
 
         let mut inline_nodes: Vec<FlexLineItem> = Vec::new();
-        for (child_index, child) in self.children.iter().enumerate() {
-            if self.child_is_absolute(child_index) {
+        for (child_index, child_key) in self.children.iter().enumerate() {
+            if self.child_is_absolute(child_index, arena) {
                 continue;
             }
-            let node_sizes = if matches!(self.computed_style.layout, Layout::Inline) {
-                child.get_inline_nodes_size()
-            } else {
-                let (w, h) = child.measured_size();
-                vec![InlineNodeSize { width: w, height: h }]
+            let node_sizes = {
+                let Some(child_node) = arena.get(*child_key) else {
+                    continue;
+                };
+                if matches!(self.computed_style.layout, Layout::Inline) {
+                    // get_inline_nodes_size only reads the arena; the Ref on
+                    // child_node is live while we pass `arena` down. That is
+                    // fine — the arena re-borrow is shared.
+                    let sizes = child_node.element.get_inline_nodes_size(arena);
+                    sizes
+                } else {
+                    let (w, h) = child_node.element.measured_size();
+                    vec![InlineNodeSize { width: w, height: h }]
+                }
             };
             if node_sizes.is_empty() {
                 inline_nodes.push(FlexLineItem {
@@ -743,6 +813,7 @@ impl Element {
     fn build_render_pipeline(
         &mut self,
         graph: &mut FrameGraph,
+        _arena: &mut crate::view::node_arena::NodeArena,
         mut ctx: UiBuildContext,
         force_opaque: bool,
     ) -> BuildState {
@@ -1237,10 +1308,11 @@ impl Element {
     fn build_transformed_subtree(
         &mut self,
         graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
-        let source_bounds = self.transform_subtree_raster_bounds();
+        let source_bounds = self.transform_subtree_raster_bounds(arena);
         let mut layer_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
             BuildState::for_layer_subtree_with_ancestor_clip(AncestorClipContext::default()),
@@ -1263,7 +1335,7 @@ impl Element {
             },
         ));
         let layer_state =
-            self.build_base_descendants_only_inner(graph, layer_ctx, force_self_opaque, false);
+            self.build_base_descendants_only_inner(graph, arena, layer_ctx, force_self_opaque, false);
         ctx.state.merge_child_side_effects(&layer_state);
 
         let parent_target = ctx.current_target().unwrap_or_else(|| {
@@ -1317,14 +1389,16 @@ impl Element {
     pub(crate) fn build_base_only(
         &mut self,
         graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
         ctx: UiBuildContext,
     ) -> BuildState {
-        self.build_base_descendants_only(graph, ctx, false)
+        self.build_base_descendants_only(graph, arena, ctx, false)
     }
 
     pub(crate) fn compose_promoted_descendants_only(
         &mut self,
         graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
         mut ctx: UiBuildContext,
     ) -> BuildState {
         trace_promoted_build(
@@ -1338,12 +1412,18 @@ impl Element {
                 ctx.current_target().and_then(|target| target.handle())
             ),
         );
-        let has_deferred_descendants = self.children.iter().any(|child| {
-            child.as_any()
-                .downcast_ref::<Element>()
-                .is_some_and(Element::should_append_to_root_viewport_render)
+        let has_deferred_descendants = self.children.iter().any(|child_key| {
+            arena
+                .get(*child_key)
+                .map(|node| {
+                    node.element
+                        .as_any()
+                        .downcast_ref::<Element>()
+                        .is_some_and(Element::should_append_to_root_viewport_render)
+                })
+                .unwrap_or(false)
         });
-        let has_promoted_descendants = self.has_composited_promoted_descendants(&ctx);
+        let has_promoted_descendants = self.has_composited_promoted_descendants(arena, &ctx);
 
         let previous_scissor_rect = self
             .absolute_clip_scissor_rect()
@@ -1351,7 +1431,7 @@ impl Element {
 
         if has_promoted_descendants || has_deferred_descendants {
             let overflow_child_indices: Vec<bool> = (0..self.children.len())
-                .map(|idx| self.child_renders_outside_inner_clip(idx))
+                .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
                 .collect();
             let outer_radii = normalize_corner_radii(
                 self.border_radii,
@@ -1360,7 +1440,7 @@ impl Element {
             );
             let inner_radii = self.inner_clip_radii(outer_radii);
             let should_clip_promoted_descendants =
-                self.should_clip_children(&overflow_child_indices, inner_radii);
+                self.should_clip_children(&overflow_child_indices, inner_radii, arena);
             let use_mask_clip = should_clip_promoted_descendants && inner_radii.has_any_rounding();
             let previous_inner_scissor = if use_mask_clip {
                 Some(ctx.push_scissor_rect(self.inner_clip_scissor_rect()))
@@ -1378,24 +1458,41 @@ impl Element {
                 None
             };
 
+            let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
             if self.has_inner_render_area() {
-                for (idx, child) in self.children.iter_mut().enumerate() {
+                for (idx, child_key) in child_keys.iter().copied().enumerate() {
                     if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                         continue;
                     }
-                    if ctx.is_node_promoted(child.id()) {
+                    let child_id = arena
+                        .get(child_key)
+                        .map(|n| n.element.id())
+                        .unwrap_or(0);
+                    if ctx.is_node_promoted(child_id) {
                         Self::build_promoted_child(
                             graph,
+                            arena,
                             &mut ctx,
-                            child,
+                            child_key,
                             mask_target,
                         );
                         continue;
                     }
-                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                        let viewport = ctx.viewport();
-                        let next_state = element.compose_promoted_descendants_only(graph, ctx);
-                        ctx = UiBuildContext::from_parts(viewport, next_state);
+                    let viewport = ctx.viewport();
+                    let taken_state = ctx.state_clone();
+                    let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
+                    let next_ctx = arena.with_element_taken(child_key, |child, arena| {
+                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                            let vp = ctx_in.viewport();
+                            let next_state =
+                                element.compose_promoted_descendants_only(graph, arena, ctx_in);
+                            UiBuildContext::from_parts(vp, next_state)
+                        } else {
+                            ctx_in
+                        }
+                    });
+                    if let Some(c) = next_ctx {
+                        ctx = c;
                     }
                 }
             }
@@ -1405,29 +1502,50 @@ impl Element {
                     if !is_overflow {
                         continue;
                     }
-                    if let Some(child) = self.children.get_mut(idx) {
-                        if child
-                            .as_any()
-                            .downcast_ref::<Element>()
-                            .is_some_and(Element::should_append_to_root_viewport_render)
-                        {
-                            ctx.append_to_defer(child.id());
-                            continue;
-                        }
-                        if ctx.is_node_promoted(child.id()) {
-                            Self::build_promoted_child(
-                                graph,
-                                &mut ctx,
-                                child,
-                                mask_target,
-                            );
-                            continue;
-                        }
+                    let Some(child_key) = child_keys.get(idx).copied() else {
+                        continue;
+                    };
+                    let (child_id, is_defer) = arena
+                        .get(child_key)
+                        .map(|n| {
+                            (
+                                n.element.id(),
+                                n.element
+                                    .as_any()
+                                    .downcast_ref::<Element>()
+                                    .is_some_and(Element::should_append_to_root_viewport_render),
+                            )
+                        })
+                        .unwrap_or((0, false));
+                    if is_defer {
+                        ctx.append_to_defer(child_id);
+                        continue;
+                    }
+                    if ctx.is_node_promoted(child_id) {
+                        Self::build_promoted_child(
+                            graph,
+                            arena,
+                            &mut ctx,
+                            child_key,
+                            mask_target,
+                        );
+                        continue;
+                    }
+                    let viewport = ctx.viewport();
+                    let taken_state = ctx.state_clone();
+                    let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
+                    let next_ctx = arena.with_element_taken(child_key, |child, arena| {
                         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                            let viewport = ctx.viewport();
-                            let next_state = element.compose_promoted_descendants_only(graph, ctx);
-                            ctx = UiBuildContext::from_parts(viewport, next_state);
+                            let vp = ctx_in.viewport();
+                            let next_state =
+                                element.compose_promoted_descendants_only(graph, arena, ctx_in);
+                            UiBuildContext::from_parts(vp, next_state)
+                        } else {
+                            ctx_in
                         }
+                    });
+                    if let Some(c) = next_ctx {
+                        ctx = c;
                     }
                 }
             }
@@ -1613,11 +1731,16 @@ impl Element {
         ctx.set_current_target(parent_target);
     }
 
-    fn has_composited_promoted_descendants(&self, ctx: &UiBuildContext) -> bool {
-        let Some(children) = self.children() else {
-            return false;
-        };
-        for child in children {
+    fn has_composited_promoted_descendants(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        ctx: &UiBuildContext,
+    ) -> bool {
+        for child_key in &self.children {
+            let Some(node) = arena.get(*child_key) else {
+                continue;
+            };
+            let child = node.element.as_ref();
             if child
                 .as_any()
                 .downcast_ref::<Element>()
@@ -1629,7 +1752,7 @@ impl Element {
                 return true;
             }
             if let Some(element) = child.as_any().downcast_ref::<Element>() {
-                if element.has_composited_promoted_descendants(ctx) {
+                if element.has_composited_promoted_descendants(arena, ctx) {
                     return true;
                 }
             }
@@ -1640,6 +1763,7 @@ impl Element {
     pub(crate) fn build_promoted_layer(
         &mut self,
         graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
         ctx: UiBuildContext,
         requested_update_kind: crate::view::promotion::PromotedLayerUpdateKind,
         can_reuse_base: bool,
@@ -1658,7 +1782,7 @@ impl Element {
         let viewport = ctx.viewport();
         let mut ctx = ctx;
         if can_reuse_base {
-            self.collect_root_viewport_deferred_descendants(&mut ctx);
+            self.collect_root_viewport_deferred_descendants(arena, &mut ctx);
         }
         let base_target = ctx.current_target().expect("promoted layer target should exist");
         let base_state = if can_reuse_base {
@@ -1674,11 +1798,11 @@ impl Element {
                     render_target: base_target,
                 },
             ));
-            self.build_base_only(graph, ctx)
+            self.build_base_only(graph, arena, ctx)
         };
 
         let probe_ctx = UiBuildContext::from_parts(viewport.clone(), base_state.clone());
-        let has_composited_descendants = self.has_composited_promoted_descendants(&probe_ctx);
+        let has_composited_descendants = self.has_composited_promoted_descendants(arena, &probe_ctx);
         let requested_composition_update_kind = probe_ctx
             .promoted_composition_update_kind(self.id())
             .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
@@ -1781,11 +1905,24 @@ impl Element {
                 },
             ),
         );
-        self.compose_promoted_descendants_only(graph, compose_ctx)
+        self.compose_promoted_descendants_only(graph, arena, compose_ctx)
     }
 
     fn build_promoted_child(
         graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        ctx: &mut UiBuildContext,
+        child_key: crate::view::node_arena::NodeKey,
+        mask_target: Option<RenderTargetOut>,
+    ) {
+        arena.with_element_taken(child_key, |child, arena| {
+            Self::build_promoted_child_inner(graph, arena, ctx, child, mask_target);
+        });
+    }
+
+    fn build_promoted_child_inner(
+        graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
         ctx: &mut UiBuildContext,
         child: &mut Box<dyn ElementTrait>,
         mask_target: Option<RenderTargetOut>,
@@ -1822,8 +1959,11 @@ impl Element {
                 },
             );
             let viewport = ctx.viewport();
-            let next_state =
-                child.build(graph, UiBuildContext::from_parts(viewport, ctx.state_clone()));
+            let next_state = child.build(
+                graph,
+                arena,
+                UiBuildContext::from_parts(viewport, ctx.state_clone()),
+            );
             ctx.set_state(next_state);
             let _ = mask_target;
             return;
@@ -1841,13 +1981,17 @@ impl Element {
                 },
             );
             let viewport = ctx.viewport();
-            let next_state = child.build(graph, UiBuildContext::from_parts(viewport, ctx.state_clone()));
+            let next_state = child.build(
+                graph,
+                arena,
+                UiBuildContext::from_parts(viewport, ctx.state_clone()),
+            );
             ctx.set_state(next_state);
             let _ = mask_target;
             return;
         }
         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-            if let Some(reason) = element.inline_promotion_rendering_reason() {
+            if let Some(reason) = element.inline_promotion_rendering_reason(arena) {
                 if reason == "child-scissor-clip-inline"
                     || reason == "child-stencil-clip-inline"
                 {
@@ -1866,8 +2010,11 @@ impl Element {
                     },
                 );
                 let viewport = ctx.viewport();
-                let next_state =
-                    element.build(graph, UiBuildContext::from_parts(viewport, ctx.state_clone()));
+                let next_state = element.build(
+                    graph,
+                    arena,
+                    UiBuildContext::from_parts(viewport, ctx.state_clone()),
+                );
                 ctx.set_state(next_state);
                 let _ = mask_target;
                 return;
@@ -1879,6 +2026,7 @@ impl Element {
         let reuse_result = crate::view::base_component::can_reuse_promoted_subtree(
             child.as_ref(),
             ctx,
+            arena,
         );
         let can_reuse = matches!(
             update_kind,
@@ -1897,6 +2045,7 @@ impl Element {
         let child_state = if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
             element.build_promoted_layer(
                 graph,
+                arena,
                 child_ctx,
                 update_kind,
                 can_reuse,
@@ -1944,7 +2093,7 @@ impl Element {
                     render_target: layer_target,
                 },
             ));
-            child.build(graph, child_ctx)
+            child.build(graph, arena, child_ctx)
         };
         ctx.merge_child_state_side_effects(&child_state);
         let layer_target = child_state.target.unwrap_or(layer_target);

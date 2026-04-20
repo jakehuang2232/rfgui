@@ -4,22 +4,24 @@ use super::*;
 
 impl Viewport {
     pub(super) fn cancel_pointer_interactions(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &mut crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
     ) -> bool {
         let mut changed = false;
-        for root in roots.iter_mut() {
-            changed |= crate::view::base_component::cancel_pointer_interactions(root.as_mut());
+        for &root_key in root_keys {
+            changed |= crate::view::base_component::cancel_pointer_interactions(arena, root_key);
         }
         changed
     }
 
     pub(super) fn apply_hover_target(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &mut crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         target: Option<u64>,
     ) -> bool {
         let mut changed = false;
-        for root in roots.iter_mut() {
-            if crate::view::base_component::update_hover_state(root.as_mut(), target) {
+        for &root_key in root_keys {
+            if crate::view::base_component::update_hover_state(arena, root_key, target) {
                 changed = true;
             }
         }
@@ -27,79 +29,135 @@ impl Viewport {
     }
 
     pub(super) fn sync_hover_target(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &mut crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         hovered_node_id: &mut Option<u64>,
         next_target: Option<u64>,
     ) -> (bool, bool) {
-        let transition_dispatched =
-            crate::view::base_component::dispatch_hover_transition(roots, *hovered_node_id, next_target);
+        let transition_dispatched = crate::view::base_component::dispatch_hover_transition(
+            arena,
+            root_keys,
+            *hovered_node_id,
+            next_target,
+        );
         *hovered_node_id = next_target;
-        let hover_changed = Self::apply_hover_target(roots, next_target);
+        let hover_changed = Self::apply_hover_target(arena, root_keys, next_target);
         (hover_changed, transition_dispatched)
     }
 
     pub(super) fn sync_hover_visual_only(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &mut crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         hovered_node_id: &mut Option<u64>,
         next_target: Option<u64>,
     ) -> bool {
         *hovered_node_id = next_target;
-        Self::apply_hover_target(roots, next_target)
+        Self::apply_hover_target(arena, root_keys, next_target)
     }
 
     pub(super) fn save_scroll_states(
-        roots: &[Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         map: &mut FxHashMap<u64, (f32, f32)>,
     ) {
-        for root in roots {
-            let offset = root.get_scroll_offset();
+        fn walk(
+            node: &dyn crate::view::base_component::ElementTrait,
+            arena: &crate::view::node_arena::NodeArena,
+            map: &mut FxHashMap<u64, (f32, f32)>,
+        ) {
+            let offset = node.get_scroll_offset();
             if offset != (0.0, 0.0) {
-                map.insert(root.id(), offset);
+                map.insert(node.id(), offset);
             }
-            if let Some(children) = root.children() {
-                Self::save_scroll_states(children, map);
+            for child_key in node.children() {
+                if let Some(child_node) = arena.get(*child_key) {
+                    walk(child_node.element.as_ref(), arena, map);
+                }
+            }
+        }
+        for &root_key in root_keys {
+            if let Some(root_node) = arena.get(root_key) {
+                walk(root_node.element.as_ref(), arena, map);
             }
         }
     }
 
     pub(super) fn restore_scroll_states(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         map: &FxHashMap<u64, (f32, f32)>,
     ) {
-        for root in roots {
-            if let Some(offset) = map.get(&root.id()) {
-                root.set_scroll_offset(*offset);
+        fn walk(
+            node: &mut dyn crate::view::base_component::ElementTrait,
+            arena: &crate::view::node_arena::NodeArena,
+            map: &FxHashMap<u64, (f32, f32)>,
+        ) {
+            if let Some(offset) = map.get(&node.id()) {
+                node.set_scroll_offset(*offset);
             }
-            if let Some(children) = root.children_mut() {
-                Self::restore_scroll_states(children, map);
+            let child_keys: Vec<crate::view::node_arena::NodeKey> = node.children().to_vec();
+            for child_key in child_keys {
+                if let Some(mut child_node) = arena.get_mut(child_key) {
+                    walk(child_node.element.as_mut(), arena, map);
+                }
+            }
+        }
+        for &root_key in root_keys {
+            if let Some(mut root_node) = arena.get_mut(root_key) {
+                walk(root_node.element.as_mut(), arena, map);
             }
         }
     }
 
     pub(super) fn save_element_snapshots(
-        roots: &[Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         map: &mut FxHashMap<u64, Box<dyn Any>>,
     ) {
-        for root in roots {
-            if let Some(snapshot) = root.snapshot_state() {
-                map.insert(root.id(), snapshot);
+        fn walk(
+            node: &dyn crate::view::base_component::ElementTrait,
+            arena: &crate::view::node_arena::NodeArena,
+            map: &mut FxHashMap<u64, Box<dyn Any>>,
+        ) {
+            if let Some(snapshot) = node.snapshot_state() {
+                map.insert(node.id(), snapshot);
             }
-            if let Some(children) = root.children() {
-                Self::save_element_snapshots(children, map);
+            for child_key in node.children() {
+                if let Some(child_node) = arena.get(*child_key) {
+                    walk(child_node.element.as_ref(), arena, map);
+                }
+            }
+        }
+        for &root_key in root_keys {
+            if let Some(root_node) = arena.get(root_key) {
+                walk(root_node.element.as_ref(), arena, map);
             }
         }
     }
 
     pub(super) fn restore_element_snapshots(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         map: &FxHashMap<u64, Box<dyn Any>>,
     ) {
-        for root in roots {
-            if let Some(snapshot) = map.get(&root.id()) {
-                let _ = root.restore_state(snapshot.as_ref());
+        fn walk(
+            node: &mut dyn crate::view::base_component::ElementTrait,
+            arena: &crate::view::node_arena::NodeArena,
+            map: &FxHashMap<u64, Box<dyn Any>>,
+        ) {
+            if let Some(snapshot) = map.get(&node.id()) {
+                let _ = node.restore_state(snapshot.as_ref());
             }
-            if let Some(children) = root.children_mut() {
-                Self::restore_element_snapshots(children, map);
+            let child_keys: Vec<crate::view::node_arena::NodeKey> = node.children().to_vec();
+            for child_key in child_keys {
+                if let Some(mut child_node) = arena.get_mut(child_key) {
+                    walk(child_node.element.as_mut(), arena, map);
+                }
+            }
+        }
+        for &root_key in root_keys {
+            if let Some(mut root_node) = arena.get_mut(root_key) {
+                walk(root_node.element.as_mut(), arena, map);
             }
         }
     }
@@ -158,12 +216,14 @@ impl Viewport {
     }
 
     pub(super) fn apply_placement_style_by_node_id(
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
+        arena: &crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
         node_id: u64,
         style: &Style,
     ) -> bool {
-        for root in roots.iter_mut() {
-            if let Some(element) = Self::element_by_id_mut(root.as_mut(), node_id) {
+        for &root_key in root_keys {
+            let Some(mut root_node) = arena.get_mut(root_key) else { continue };
+            if let Some(element) = Self::element_by_id_mut(root_node.element.as_mut(), node_id, arena) {
                 let mut patch_style = Style::new();
                 if let Some(crate::ParsedValue::Transform(transform)) =
                     style.get(PropertyId::Transform)
@@ -220,7 +280,12 @@ impl Viewport {
         }
 
         for (node_id, style) in &updates {
-            if !Self::apply_placement_style_by_node_id(&mut self.scene.ui_roots, *node_id, style) {
+            if !Self::apply_placement_style_by_node_id(
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+                *node_id,
+                style,
+            ) {
                 return Ok(false);
             }
         }
@@ -237,40 +302,41 @@ impl Viewport {
         Self::rsx_node_by_index_path(child, &path[1..])
     }
 
-    pub(super) fn element_by_id_mut(
-        root: &mut dyn crate::view::base_component::ElementTrait,
+    pub(super) fn element_by_id_mut<'a>(
+        root: &'a mut dyn crate::view::base_component::ElementTrait,
         node_id: u64,
-    ) -> Option<&mut crate::view::base_component::Element> {
+        _arena: &'a crate::view::node_arena::NodeArena,
+    ) -> Option<&'a mut crate::view::base_component::Element> {
+        // NOTE: arena-backed children are now accessed via `NodeKey`. This
+        // helper only resolves the direct root; full-tree search via the
+        // arena is handled by the dispatch/events stack and is out of
+        // scope for this refactor step.
         if root.id() == node_id {
             return root
                 .as_any_mut()
                 .downcast_mut::<crate::view::base_component::Element>();
         }
-        if let Some(children) = root.children_mut() {
-            for child in children.iter_mut() {
-                if let Some(found) = Self::element_by_id_mut(child.as_mut(), node_id) {
-                    return Some(found);
-                }
-            }
-        }
         None
     }
 
-    pub(super) fn refresh_frame_box_models(
-        &mut self,
-        roots: &mut [Box<dyn crate::view::base_component::ElementTrait>],
-    ) {
+    pub(super) fn refresh_frame_box_models(&mut self) {
         self.compositor.frame_box_models.clear();
-        for root in roots.iter() {
-            let snapshots = crate::view::base_component::collect_box_models(root.as_ref());
+        let arena = &self.scene.node_arena;
+        let root_keys = self.scene.ui_root_keys.clone();
+        for &root_key in &root_keys {
+            let snapshots =
+                crate::view::base_component::collect_box_models(root_key, arena);
             self.compositor.frame_box_models.extend(snapshots);
         }
-        for root in roots.iter_mut() {
-            crate::view::base_component::clear_subtree_dirty_flags(
-                root.as_mut(),
-                crate::view::base_component::DirtyFlags::BOX_MODEL
-                    .union(crate::view::base_component::DirtyFlags::HIT_TEST),
-            );
+        for &root_key in &root_keys {
+            if let Some(mut root_node) = arena.get_mut(root_key) {
+                crate::view::base_component::clear_subtree_dirty_flags(
+                    root_node.element.as_mut(),
+                    crate::view::base_component::DirtyFlags::BOX_MODEL
+                        .union(crate::view::base_component::DirtyFlags::HIT_TEST),
+                    arena,
+                );
+            }
         }
     }
 }

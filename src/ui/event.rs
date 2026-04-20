@@ -4,6 +4,7 @@
 
 use crate::Cursor;
 use crate::platform::input::{Key, Modifiers, PointerType};
+use crate::ui::node_id::{EventTarget, NodeId};
 use crate::view::base_component::TextAreaRenderString;
 use smol_str::SmolStr;
 use std::cell::RefCell;
@@ -86,11 +87,11 @@ pub enum ViewportListenerAction {
     AddPointerMoveListener(PointerMoveHandlerProp),
     AddPointerUpListener(PointerUpHandlerProp),
     AddPointerUpListenerUntil(PointerUpUntilHandler),
-    SetFocus(Option<u64>),
+    SetFocus(Option<NodeId>),
     SetCursor(Option<Cursor>),
-    SelectTextRangeAll(u64),
+    SelectTextRangeAll(NodeId),
     SelectTextRange {
-        target_id: u64,
+        target_id: NodeId,
         start: usize,
         end: usize,
     },
@@ -99,11 +100,24 @@ pub enum ViewportListenerAction {
 
 #[derive(Default)]
 struct EventMetaState {
-    target_id: u64,
-    current_target_id: u64,
+    target: EventTarget,
+    current_target: EventTarget,
+    /// For pair-style events: the "other" node.
+    ///
+    /// - `PointerEnter` / `PointerLeave`: previously / next-hovered node
+    /// - `Focus`: blur-source node (where focus moved from)
+    /// - `Blur`: focus-destination node (where focus moved to)
+    ///
+    /// `None` when no counterpart exists (e.g. first focus, pointer
+    /// entering from outside the window).
+    related_target: Option<EventTarget>,
     propagation_stopped: bool,
     keep_focus_requested: bool,
-    pointer_capture_target_id: Option<u64>,
+    pointer_capture_target_id: Option<NodeId>,
+    /// Ancestor chain from `target` up to the containing root (inclusive of
+    /// both ends). Populated by the viewport dispatch layer when it has the
+    /// tree available; empty for synthetic events where no path was computed.
+    path: Rc<Vec<NodeId>>,
     viewport_listener_actions: Vec<ViewportListenerAction>,
 }
 
@@ -116,40 +130,82 @@ impl fmt::Debug for EventMeta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = self.state.borrow();
         f.debug_struct("EventMeta")
-            .field("target_id", &state.target_id)
-            .field("current_target_id", &state.current_target_id)
+            .field("target", &state.target)
+            .field("current_target", &state.current_target)
             .field("propagation_stopped", &state.propagation_stopped)
             .finish()
     }
 }
 
 impl EventMeta {
-    pub fn new(target_id: u64) -> Self {
+    pub fn new(target_id: NodeId) -> Self {
+        let target = EventTarget::bare(target_id);
         Self {
             state: Rc::new(RefCell::new(EventMetaState {
-                target_id,
-                current_target_id: target_id,
+                target,
+                current_target: target,
                 ..EventMetaState::default()
             })),
         }
     }
 
-    pub fn target_id(&self) -> u64 {
-        self.state.borrow().target_id
+    /// Construct an `EventMeta` seeded with a full [`EventTarget`]
+    /// (id + bounds). Prefer this over [`Self::new`] at dispatch sites
+    /// that already know the node's geometry.
+    pub fn with_target(target: EventTarget) -> Self {
+        Self {
+            state: Rc::new(RefCell::new(EventMetaState {
+                target,
+                current_target: target,
+                ..EventMetaState::default()
+            })),
+        }
     }
 
-    pub fn current_target_id(&self) -> u64 {
-        self.state.borrow().current_target_id
+    /// Node the event is dispatched to (the hit-test result or focused
+    /// node). Stable for the duration of the dispatch.
+    pub fn target(&self) -> EventTarget {
+        self.state.borrow().target
     }
 
-    pub fn set_target_id(&mut self, target_id: u64) {
+    /// Node currently processing the event as it bubbles. Changes as the
+    /// dispatch walks up ancestors.
+    pub fn current_target(&self) -> EventTarget {
+        self.state.borrow().current_target
+    }
+
+    pub fn target_id(&self) -> NodeId {
+        self.state.borrow().target.id
+    }
+
+    pub fn current_target_id(&self) -> NodeId {
+        self.state.borrow().current_target.id
+    }
+
+    pub fn set_target_id(&mut self, target_id: NodeId) {
+        let target = EventTarget::bare(target_id);
         let mut state = self.state.borrow_mut();
-        state.target_id = target_id;
-        state.current_target_id = target_id;
+        state.target = target;
+        state.current_target = target;
     }
 
-    pub fn set_current_target_id(&mut self, current_target_id: u64) {
-        self.state.borrow_mut().current_target_id = current_target_id;
+    pub fn set_current_target_id(&mut self, current_target_id: NodeId) {
+        self.state.borrow_mut().current_target.id = current_target_id;
+    }
+
+    /// Replace the `target` (the node that was originally hit). Usually
+    /// called once at dispatch start.
+    pub fn set_target(&mut self, target: EventTarget) {
+        let mut state = self.state.borrow_mut();
+        state.target = target;
+        state.current_target = target;
+    }
+
+    /// Update the `current_target` as the event bubbles up. Prefer this
+    /// over [`Self::set_current_target_id`] so ancestor bounds propagate
+    /// into handlers.
+    pub fn set_current_target(&mut self, current_target: EventTarget) {
+        self.state.borrow_mut().current_target = current_target;
     }
 
     pub fn propagation_stopped(&self) -> bool {
@@ -169,12 +225,40 @@ impl EventMeta {
     }
 
     pub fn request_pointer_capture(&mut self) {
-        let current_target_id = self.state.borrow().current_target_id;
+        let current_target_id = self.state.borrow().current_target.id;
         self.state.borrow_mut().pointer_capture_target_id = Some(current_target_id);
     }
 
-    pub fn pointer_capture_target_id(&self) -> Option<u64> {
+    pub fn pointer_capture_target_id(&self) -> Option<NodeId> {
         self.state.borrow().pointer_capture_target_id
+    }
+
+    /// Ancestor chain walked during dispatch: `target` first, root last
+    /// (DOM `composedPath()` ordering). Empty when the dispatch site did
+    /// not populate it (e.g. synthetic focus events, unit tests).
+    ///
+    /// Clones the shared path handle — cheap (`Rc` bump). Handlers that
+    /// need to iterate many times should cache the returned `Rc`.
+    pub fn composed_path(&self) -> Rc<Vec<NodeId>> {
+        Rc::clone(&self.state.borrow().path)
+    }
+
+    /// Replace the dispatch path. Called by the viewport dispatcher before
+    /// walking ancestors; user code should not need this.
+    pub(crate) fn set_path(&mut self, path: Vec<NodeId>) {
+        self.state.borrow_mut().path = Rc::new(path);
+    }
+
+    /// Counterpart node for pair-style events (see
+    /// [`EventMetaState::related_target`] for semantics per event).
+    pub fn related_target(&self) -> Option<EventTarget> {
+        self.state.borrow().related_target
+    }
+
+    /// Set the `related_target`. Called by the dispatcher when it knows the
+    /// counterpart (previous hover, focus source, …).
+    pub(crate) fn set_related_target(&mut self, related: Option<EventTarget>) {
+        self.state.borrow_mut().related_target = related;
     }
 
     pub fn viewport(&self) -> EventViewport {
@@ -187,7 +271,7 @@ impl EventMeta {
         std::mem::take(&mut self.state.borrow_mut().viewport_listener_actions)
     }
 
-    pub(crate) fn text_selection_target(&self, target_id: u64) -> TextSelectionTarget {
+    pub(crate) fn text_selection_target(&self, target_id: NodeId) -> TextSelectionTarget {
         TextSelectionTarget {
             state: self.state.clone(),
             target_id,
@@ -262,7 +346,7 @@ impl EventViewport {
             .push(ViewportListenerAction::SetCursor(cursor));
     }
 
-    pub fn set_focus(&mut self, node_id: Option<u64>) {
+    pub fn set_focus(&mut self, node_id: Option<NodeId>) {
         self.state
             .borrow_mut()
             .viewport_listener_actions
@@ -276,8 +360,6 @@ pub struct PointerEventData {
     pub viewport_y: f32,
     pub local_x: f32,
     pub local_y: f32,
-    pub current_target_width: f32,
-    pub current_target_height: f32,
     pub button: Option<PointerButton>,
     pub buttons: PointerButtons,
     pub modifiers: KeyModifiers,
@@ -386,7 +468,7 @@ pub struct FocusEvent {
 #[derive(Clone)]
 pub struct TextSelectionTarget {
     state: Rc<RefCell<EventMetaState>>,
-    target_id: u64,
+    target_id: NodeId,
 }
 
 impl fmt::Debug for TextSelectionTarget {

@@ -10,6 +10,7 @@ use crate::ui::{
 };
 use crate::view::Viewport;
 use crate::view::base_component::{Element, ElementTrait, Image, Svg, Text, TextArea};
+use crate::view::node_arena::{Node, NodeArena, NodeKey};
 use crate::view::{
     ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, SvgSource, TextStylePropSchema,
 };
@@ -834,25 +835,44 @@ fn convert_container_element(
         let token = child_identity_token(child, ordinal);
         child_path.push(token);
         let child_global_path = child_global_node_path(current_global_path.as_ref(), child, token);
+        let mut dropped: Vec<Box<dyn ElementTrait>> = Vec::new();
         append_child_nodes_flattening_fragments(
             &mut element,
             child,
             &child_path,
             child_global_path,
             &child_inherited_text_style,
+            &mut dropped,
         )?;
+        // Approach-C: legacy boxed builder has no place to attach these;
+        // the arena-backed descriptor path handles real tree commit.
+        drop(dropped);
         child_path.pop();
     }
 
     Ok(Box::new(element))
 }
 
+/// Legacy boxed-tree child flattener.
+///
+/// Approach-C migration: `Element::children` is now `Vec<NodeKey>`, so a
+/// standalone boxed tree can no longer attach descendants to its parent.
+/// This helper now writes the flattened children into `out` instead of
+/// stuffing them under `_parent`. Callers that still rely on a boxed tree
+/// (image/svg slot converters; text-area projection wrapper) receive an
+/// orphan root whose `children` key list is empty — intended, since the
+/// slot storage itself is being migrated next.
+///
+/// The arena-backed pipeline uses [`append_child_nodes_flattening_fragments_desc`]
+/// instead, which preserves the full descendant tree through
+/// [`ElementDescriptor`].
 fn append_child_nodes_flattening_fragments(
-    parent: &mut Element,
+    _parent: &mut Element,
     node: &RsxNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
+    out: &mut Vec<Box<dyn ElementTrait>>,
 ) -> Result<(), String> {
     match node {
         RsxNode::Fragment(fragment) => {
@@ -867,18 +887,19 @@ fn append_child_nodes_flattening_fragments(
                 let child_global_path =
                     child_global_node_path(current_global_path.as_ref(), child, token);
                 append_child_nodes_flattening_fragments(
-                    parent,
+                    _parent,
                     child,
                     &child_path,
                     child_global_path,
                     inherited_text_style,
+                    out,
                 )?;
                 child_path.pop();
             }
             Ok(())
         }
         _ => {
-            parent.add_child(convert_node(node, path, global_path, inherited_text_style)?);
+            out.push(convert_node(node, path, global_path, inherited_text_style)?);
             Ok(())
         }
     }
@@ -1094,6 +1115,7 @@ fn append_text_children(out: &mut String, node: &RsxNode) -> Result<(), String> 
     }
 }
 
+#[allow(dead_code)]
 fn convert_text_area_element(
     node: &RsxElementNode,
     path: &[u64],
@@ -1252,15 +1274,18 @@ fn convert_text_area_element(
     if let Some(bound) = binding {
         text_area.bind_text(bound);
     }
-    if !projection_nodes.is_empty() {
-        text_area.set_render_projection_nodes(projection_nodes);
-    }
+    // Legacy path: projection_nodes produced here are boxed trees with
+    // no arena handle. Drop them; the arena-backed descriptor path
+    // (`convert_text_area_element_desc`) is the active route used by
+    // `convert_node_desc`.
+    drop(projection_nodes);
     if !placeholder.is_empty() {
         text_area.set_placeholder(placeholder);
     }
     Ok(Box::new(text_area))
 }
 
+#[allow(dead_code)]
 fn convert_text_area_projection_child(
     node: &RsxNode,
     path: &[u64],
@@ -1331,6 +1356,7 @@ fn projection_inherited_style_from_context(inherited_text_style: &InheritedTextS
     style
 }
 
+#[allow(dead_code)]
 fn wrap_projection_children_for_adapter(
     path: &[u64],
     child_index: usize,
@@ -1358,12 +1384,14 @@ fn wrap_projection_children_for_adapter(
     style.insert(PropertyId::Width, ParsedValue::Auto);
     style.insert(PropertyId::Height, ParsedValue::Auto);
     wrapper.apply_style(style);
-    for child in children.drain(..) {
-        wrapper.add_child(child);
-    }
+    // Approach-C: legacy boxed wrapper cannot attach arena-tracked
+    // children. The real tree is committed via the descriptor pipeline
+    // elsewhere; here we just drop the orphan boxes.
+    drop(children.drain(..).collect::<Vec<_>>());
     Ok(Box::new(wrapper))
 }
 
+#[allow(dead_code)]
 fn apply_text_source_range_to_projection(
     node: &mut dyn ElementTrait,
     range: std::ops::Range<usize>,
@@ -1371,11 +1399,10 @@ fn apply_text_source_range_to_projection(
     if let Some(text_area) = node.as_any_mut().downcast_mut::<TextArea>() {
         text_area.set_source_text_range(Some(range.clone()));
     }
-    if let Some(children) = node.children_mut() {
-        for child in children {
-            apply_text_source_range_to_projection(child.as_mut(), range.clone());
-        }
-    }
+    // Approach-C: children are NodeKeys into the arena, which this
+    // boxed-tree helper has no access to. The descriptor-based
+    // projection builder (next task) walks the tree via the arena.
+    let _ = node.children_mut();
 }
 
 fn convert_image_element(
@@ -1392,8 +1419,6 @@ fn convert_image_element(
     let mut fit = ImageFit::Contain;
     let mut sampling = ImageSampling::Linear;
     let mut style: Option<Style> = None;
-    let mut loading = Vec::new();
-    let mut error = Vec::new();
 
     for (key, value) in node.props.iter() {
         if *key == "key" {
@@ -1405,22 +1430,26 @@ fn convert_image_element(
             "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
             "style" => style = Some(as_element_style(value, key)?),
             "loading" => {
-                loading = convert_image_slot(
+                // Arena-migration: slot wrappers are not yet threaded
+                // through the descriptor→commit pipeline. Drop the slot
+                // content silently; the Image/Svg still renders the
+                // underlying raster/source when ready.
+                let _ = convert_image_slot(
                     value,
                     path,
                     global_path.clone(),
                     inherited_text_style,
                     "loading",
-                )?
+                )?;
             }
             "error" => {
-                error = convert_image_slot(
+                let _ = convert_image_slot(
                     value,
                     path,
                     global_path.clone(),
                     inherited_text_style,
                     "error",
-                )?
+                )?;
             }
             _ => return Err(format!("unknown prop `{}` on <Image>", key)),
         }
@@ -1437,8 +1466,8 @@ fn convert_image_element(
     } else {
         image.apply_style(Style::new());
     }
-    image.set_loading_slot(loading);
-    image.set_error_slot(error);
+    image.set_loading_slot(Vec::new());
+    image.set_error_slot(Vec::new());
     Ok(Box::new(image))
 }
 
@@ -1456,8 +1485,6 @@ fn convert_svg_element(
     let mut fit = ImageFit::Contain;
     let mut sampling = ImageSampling::Linear;
     let mut style: Option<Style> = None;
-    let mut loading = Vec::new();
-    let mut error = Vec::new();
 
     for (key, value) in node.props.iter() {
         if *key == "key" {
@@ -1469,22 +1496,22 @@ fn convert_svg_element(
             "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
             "style" => style = Some(as_element_style(value, key)?),
             "loading" => {
-                loading = convert_image_slot(
+                let _ = convert_image_slot(
                     value,
                     path,
                     global_path.clone(),
                     inherited_text_style,
                     "loading",
-                )?
+                )?;
             }
             "error" => {
-                error = convert_image_slot(
+                let _ = convert_image_slot(
                     value,
                     path,
                     global_path.clone(),
                     inherited_text_style,
                     "error",
-                )?
+                )?;
             }
             _ => return Err(format!("unknown prop `{}` on <Svg>", key)),
         }
@@ -1501,11 +1528,524 @@ fn convert_svg_element(
     } else {
         svg.apply_style(Style::new());
     }
-    svg.set_loading_slot(loading);
-    svg.set_error_slot(error);
+    svg.set_loading_slot(Vec::new());
+    svg.set_error_slot(Vec::new());
     Ok(Box::new(svg))
 }
 
+fn convert_text_area_projection_child_desc(
+    node: &RsxNode,
+    path: &[u64],
+    child_index: usize,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<Option<(std::ops::Range<usize>, ElementDescriptor)>, String> {
+    let RsxNode::Element(element) = node else {
+        return Ok(None);
+    };
+    if element.tag != TEXT_AREA_PROJECTION_TAG {
+        return Ok(None);
+    }
+
+    let mut start = None;
+    let mut end = None;
+    for (key, value) in element.props.iter() {
+        match *key {
+            "source_text_start" => start = as_usize(value, key)?,
+            "source_text_end" => end = as_usize(value, key)?,
+            _ => {
+                return Err(format!(
+                    "unknown prop `{}` on <{}>",
+                    key, TEXT_AREA_PROJECTION_TAG
+                ));
+            }
+        }
+    }
+
+    let (Some(start), Some(end)) = (start, end) else {
+        return Err(
+            "TextArea projection child requires source_text_start/source_text_end".to_string(),
+        );
+    };
+
+    let fragment = RsxNode::fragment(element.children.clone());
+    let scope = [path, &[0x5458_5052, child_index as u64]].concat();
+    let mut children = rsx_to_descriptors_scoped_with_context(
+        &fragment,
+        &scope,
+        &projection_inherited_style_from_context(inherited_text_style),
+        0.0,
+        0.0,
+    )?;
+    let desc = wrap_projection_children_for_adapter_desc(path, child_index, &mut children)?;
+    Ok(Some((start..end, desc)))
+}
+
+fn wrap_projection_children_for_adapter_desc(
+    path: &[u64],
+    child_index: usize,
+    children: &mut Vec<ElementDescriptor>,
+) -> Result<ElementDescriptor, String> {
+    if children.is_empty() {
+        return Err("projection produced no elements".to_string());
+    }
+    if children.len() == 1 {
+        return Ok(children.remove(0));
+    }
+    let wrapper_id = stable_node_id_from_parts(
+        "TextAreaProjectionWrapper",
+        &[path, &[0x5458_5057, child_index as u64]].concat(),
+        None,
+    );
+    let mut wrapper = Element::new_with_id(wrapper_id, 0.0, 0.0, 0.0, 0.0);
+    wrapper.set_intrinsic_size_as_percent_base(false);
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::Layout,
+        ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+    );
+    style.insert(PropertyId::Width, ParsedValue::Auto);
+    style.insert(PropertyId::Height, ParsedValue::Auto);
+    wrapper.apply_style(style);
+    Ok(ElementDescriptor {
+        element: Box::new(wrapper) as Box<dyn ElementTrait>,
+        children: std::mem::take(children),
+        post_commit: None,
+    })
+}
+
+fn convert_text_area_element_desc(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<ElementDescriptor, String> {
+    // Re-parse props the same way the legacy converter does and build
+    // the leaf `TextArea` element. Projection children are collected as
+    // `ElementDescriptor`s and committed (detached, parent=text_area_key)
+    // in `post_commit`, then attached to the TextArea via
+    // `set_render_projection_nodes`.
+    let mut text_content = String::new();
+    let mut placeholder = String::new();
+    let mut binding: Option<Binding<String>> = None;
+    let mut text_area = TextArea::from_content_with_id(
+        stable_node_id_from_parts("TextArea", path, global_path.as_ref()),
+        "",
+    );
+    let mut style: Option<Style> = None;
+    let mut x: Option<f32> = None;
+    let mut y: Option<f32> = None;
+    let mut width: Option<Length> = None;
+    let mut height: Option<Length> = None;
+    let mut source_text_start: Option<usize> = None;
+    let mut source_text_end: Option<usize> = None;
+    let mut projection_descs: Vec<(std::ops::Range<usize>, ElementDescriptor)> = Vec::new();
+    let mut has_explicit_font = false;
+    let mut has_explicit_font_size = false;
+    let mut has_explicit_color = false;
+
+    for (key, value) in node.props.iter() {
+        if *key == "key" {
+            continue;
+        }
+        match *key {
+            "style" => style = Some(as_element_style(value, key)?),
+            "on_focus" => {
+                let handler = as_text_area_focus_handler(value, key)?;
+                text_area.on_focus(move |event| handler.call(event));
+            }
+            "on_blur" => {
+                let handler = as_blur_handler(value, key)?;
+                text_area.on_blur(move |event, _control| handler.call(event));
+            }
+            "on_change" => {
+                let handler = as_text_change_handler(value, key)?;
+                text_area.on_change(move |event| handler.call(event));
+            }
+            "content" => text_content = as_owned_string(value, key)?,
+            "placeholder" => placeholder = as_owned_string(value, key)?,
+            "binding" => binding = Some(as_binding_string(value, key)?),
+            "x" => x = Some(as_f32(value, key)?),
+            "y" => y = Some(as_f32(value, key)?),
+            "font_size" => {
+                text_area.set_font_size(as_font_size_px(
+                    value,
+                    key,
+                    inherited_text_style
+                        .font_size
+                        .unwrap_or(inherited_text_style.root_font_size),
+                    inherited_text_style.root_font_size,
+                    inherited_text_style.viewport_width,
+                    inherited_text_style.viewport_height,
+                )?);
+                has_explicit_font_size = true;
+            }
+            "font" => {
+                text_area.set_font(as_string(value, key)?);
+                has_explicit_font = true;
+            }
+            "opacity" => text_area.set_opacity(as_f32(value, key)?),
+            "multiline" => text_area.set_multiline(as_bool(value, key)?),
+            "read_only" => text_area.set_read_only(as_bool(value, key)?),
+            "max_length" => text_area.set_max_length(as_usize(value, key)?),
+            "source_text_start" => source_text_start = as_usize(value, key)?,
+            "source_text_end" => source_text_end = as_usize(value, key)?,
+            _ => return Err(format!("unknown prop `{}` on <TextArea>", key)),
+        }
+    }
+
+    if let (Some(start), Some(end)) = (source_text_start, source_text_end)
+        && start <= end
+    {
+        text_area.set_source_text_range(Some(start..end));
+    }
+
+    if let Some(style) = &style {
+        if let Some(value) = style.get(PropertyId::Width) {
+            width = size_length_from_parsed_value(value, "TextArea style.width")?;
+        }
+        if let Some(value) = style.get(PropertyId::Height) {
+            height = size_length_from_parsed_value(value, "TextArea style.height")?;
+        }
+        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+            text_area.set_color(color.clone());
+            has_explicit_color = true;
+        }
+        if let Some(selection) = style.selection()
+            && let Some(background) = selection.background_color()
+        {
+            text_area.set_selection_background_color(background.clone());
+        }
+    }
+
+    text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
+    if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
+        text_area.set_fonts(inherited_text_style.font_families.clone());
+    }
+    if !has_explicit_font_size && let Some(font_size) = inherited_text_style.font_size {
+        text_area.set_font_size(font_size);
+    }
+    if !has_explicit_color && let Some(color) = inherited_text_style.color {
+        text_area.set_color(color);
+    }
+    if let Some(cursor) = inherited_text_style.cursor {
+        text_area.set_cursor(cursor);
+    }
+    text_area.set_style_width(width);
+    text_area.set_style_height(height);
+
+    for (child_index, child) in node.children.iter().enumerate() {
+        if let Some(projection) = convert_text_area_projection_child_desc(
+            child,
+            path,
+            child_index,
+            inherited_text_style,
+        )? {
+            projection_descs.push(projection);
+            continue;
+        }
+        if binding.is_none() && text_content.is_empty() {
+            match child {
+                RsxNode::Text(content) => text_content.push_str(&content.content),
+                RsxNode::Fragment(fragment) => {
+                    for nested in &fragment.children {
+                        append_text_children(&mut text_content, nested)?;
+                    }
+                }
+                _ => return Err("<TextArea> children must be text".to_string()),
+            }
+        }
+    }
+
+    if binding.is_none() {
+        text_area.set_text(text_content);
+    } else if let Some(bound) = binding.as_ref() {
+        text_area.set_text(bound.get());
+    }
+    if let Some(bound) = binding {
+        text_area.bind_text(bound);
+    }
+    if !placeholder.is_empty() {
+        text_area.set_placeholder(placeholder);
+    }
+
+    let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> =
+        if projection_descs.is_empty() {
+            None
+        } else {
+            Some(Box::new(
+                move |arena: &mut NodeArena, text_area_key: NodeKey| {
+                    let projections: Vec<(
+                        std::ops::Range<usize>,
+                        NodeKey,
+                    )> = projection_descs
+                        .into_iter()
+                        .map(|(range, desc)| {
+                            let key = commit_descriptor_tree(arena, Some(text_area_key), desc);
+                            // Stamp the source range onto every nested
+                            // TextArea inside the freshly-committed
+                            // subtree.
+                            crate::view::base_component::apply_source_range_to_subtree(
+                                arena,
+                                key,
+                                range.clone(),
+                            );
+                            (range, key)
+                        })
+                        .collect();
+                    arena.with_element_taken(text_area_key, |element, arena_ref| {
+                        if let Some(ta) = element
+                            .as_any_mut()
+                            .downcast_mut::<TextArea>()
+                        {
+                            ta.set_render_projection_nodes(arena_ref, projections);
+                        }
+                    });
+                },
+            ))
+        };
+
+    Ok(ElementDescriptor {
+        element: Box::new(text_area) as Box<dyn ElementTrait>,
+        children: Vec::new(),
+        post_commit,
+    })
+}
+
+fn convert_image_slot_desc(
+    value: &PropValue,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+    slot_name: &str,
+) -> Result<Vec<ElementDescriptor>, String> {
+    let slot_node = RsxNode::from_prop_value(value.clone())?;
+    let mut wrapper = Element::new_with_id(
+        stable_node_id_from_parts(slot_name, path, global_path.as_ref()),
+        0.0,
+        0.0,
+        10_000.0,
+        10_000.0,
+    );
+    wrapper.set_intrinsic_size_as_percent_base(false);
+    let mut wrapper_style = Style::new();
+    wrapper_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .left(Length::px(0.0))
+                .right(Length::px(0.0))
+                .top(Length::px(0.0))
+                .bottom(Length::px(0.0)),
+        ),
+    );
+    wrapper.apply_style(wrapper_style);
+
+    let mut slot_path = Vec::with_capacity(path.len() + 1);
+    slot_path.extend_from_slice(path);
+    slot_path.push(stable_node_id(NodeIdSeed::Local {
+        kind: slot_name,
+        path,
+    }));
+    let slot_global_path = child_global_node_path(
+        global_path.as_ref(),
+        &slot_node,
+        slot_path[slot_path.len() - 1],
+    );
+    let mut wrapper_children: Vec<ElementDescriptor> = Vec::new();
+    append_child_nodes_flattening_fragments_desc(
+        &slot_node,
+        &slot_path,
+        slot_global_path,
+        inherited_text_style,
+        &mut wrapper_children,
+    )?;
+
+    Ok(vec![ElementDescriptor {
+        element: Box::new(wrapper) as Box<dyn ElementTrait>,
+        children: wrapper_children,
+        post_commit: None,
+    }])
+}
+
+fn convert_image_element_desc(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<ElementDescriptor, String> {
+    if !node.children.is_empty() {
+        return Err("<Image> does not accept children; use loading/error props".to_string());
+    }
+
+    let mut source: Option<ImageSource> = None;
+    let mut fit = ImageFit::Contain;
+    let mut sampling = ImageSampling::Linear;
+    let mut style: Option<Style> = None;
+    let mut loading_descs: Vec<ElementDescriptor> = Vec::new();
+    let mut error_descs: Vec<ElementDescriptor> = Vec::new();
+
+    for (key, value) in node.props.iter() {
+        if *key == "key" {
+            continue;
+        }
+        match *key {
+            "source" => source = Some(ImageSource::from_prop_value(value.clone())?),
+            "fit" => fit = ImageFit::from_prop_value(value.clone())?,
+            "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
+            "style" => style = Some(as_element_style(value, key)?),
+            "loading" => {
+                loading_descs = convert_image_slot_desc(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "loading",
+                )?;
+            }
+            "error" => {
+                error_descs = convert_image_slot_desc(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "error",
+                )?;
+            }
+            _ => return Err(format!("unknown prop `{}` on <Image>", key)),
+        }
+    }
+
+    let mut image = Image::new_with_id(
+        stable_node_id_from_parts("Image", path, global_path.as_ref()),
+        source.ok_or_else(|| "<Image> requires `source`".to_string())?,
+    );
+    image.set_fit(fit);
+    image.set_sampling(sampling);
+    if let Some(style) = style {
+        image.apply_style(style);
+    } else {
+        image.apply_style(Style::new());
+    }
+
+    let has_slots = !loading_descs.is_empty() || !error_descs.is_empty();
+    let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> = if has_slots {
+        Some(Box::new(move |arena: &mut NodeArena, image_key: NodeKey| {
+            let loading_keys: Vec<NodeKey> = loading_descs
+                .into_iter()
+                .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
+                .collect();
+            let error_keys: Vec<NodeKey> = error_descs
+                .into_iter()
+                .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
+                .collect();
+            arena.with_element_taken(image_key, |element, _arena_ref| {
+                if let Some(img) = element.as_any_mut().downcast_mut::<Image>() {
+                    img.set_loading_slot(loading_keys);
+                    img.set_error_slot(error_keys);
+                }
+            });
+        }))
+    } else {
+        None
+    };
+
+    Ok(ElementDescriptor {
+        element: Box::new(image) as Box<dyn ElementTrait>,
+        children: Vec::new(),
+        post_commit,
+    })
+}
+
+fn convert_svg_element_desc(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<ElementDescriptor, String> {
+    if !node.children.is_empty() {
+        return Err("<Svg> does not accept children; use loading/error props".to_string());
+    }
+
+    let mut source: Option<SvgSource> = None;
+    let mut fit = ImageFit::Contain;
+    let mut sampling = ImageSampling::Linear;
+    let mut style: Option<Style> = None;
+    let mut loading_descs: Vec<ElementDescriptor> = Vec::new();
+    let mut error_descs: Vec<ElementDescriptor> = Vec::new();
+
+    for (key, value) in node.props.iter() {
+        if *key == "key" {
+            continue;
+        }
+        match *key {
+            "source" => source = Some(SvgSource::from_prop_value(value.clone())?),
+            "fit" => fit = ImageFit::from_prop_value(value.clone())?,
+            "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
+            "style" => style = Some(as_element_style(value, key)?),
+            "loading" => {
+                loading_descs = convert_image_slot_desc(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "loading",
+                )?;
+            }
+            "error" => {
+                error_descs = convert_image_slot_desc(
+                    value,
+                    path,
+                    global_path.clone(),
+                    inherited_text_style,
+                    "error",
+                )?;
+            }
+            _ => return Err(format!("unknown prop `{}` on <Svg>", key)),
+        }
+    }
+
+    let mut svg = Svg::new_with_id(
+        stable_node_id_from_parts("Svg", path, global_path.as_ref()),
+        source.ok_or_else(|| "<Svg> requires `source`".to_string())?,
+    );
+    svg.set_fit(fit);
+    svg.set_sampling(sampling);
+    if let Some(style) = style {
+        svg.apply_style(style);
+    } else {
+        svg.apply_style(Style::new());
+    }
+
+    let has_slots = !loading_descs.is_empty() || !error_descs.is_empty();
+    let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> = if has_slots {
+        Some(Box::new(move |arena: &mut NodeArena, svg_key: NodeKey| {
+            let loading_keys: Vec<NodeKey> = loading_descs
+                .into_iter()
+                .map(|d| commit_descriptor_tree(arena, Some(svg_key), d))
+                .collect();
+            let error_keys: Vec<NodeKey> = error_descs
+                .into_iter()
+                .map(|d| commit_descriptor_tree(arena, Some(svg_key), d))
+                .collect();
+            arena.with_element_taken(svg_key, |element, _arena_ref| {
+                if let Some(s) = element.as_any_mut().downcast_mut::<Svg>() {
+                    s.set_loading_slot(loading_keys);
+                    s.set_error_slot(error_keys);
+                }
+            });
+        }))
+    } else {
+        None
+    };
+
+    Ok(ElementDescriptor {
+        element: Box::new(svg) as Box<dyn ElementTrait>,
+        children: Vec::new(),
+        post_commit,
+    })
+}
+
+#[allow(dead_code)]
 fn convert_image_slot(
     value: &PropValue,
     path: &[u64],
@@ -1546,13 +2086,16 @@ fn convert_image_slot(
         &slot_node,
         slot_path[slot_path.len() - 1],
     );
+    let mut dropped: Vec<Box<dyn ElementTrait>> = Vec::new();
     append_child_nodes_flattening_fragments(
         &mut wrapper,
         &slot_node,
         &slot_path,
         slot_global_path,
         inherited_text_style,
+        &mut dropped,
     )?;
+    drop(dropped);
     Ok(vec![Box::new(wrapper)])
 }
 
@@ -1924,6 +2467,431 @@ fn as_text_change_handler(
     }
 }
 
+// -----------------------------------------------------------------------------
+// Approach-C descriptor pipeline.
+//
+// The legacy `rsx_to_elements_*` functions above return boxed element
+// trees whose `Element.children` field (now `Vec<NodeKey>`) cannot be
+// populated outside an arena. The two-phase pipeline below builds an
+// arena-independent `ElementDescriptor` tree from an `RsxNode`, then
+// commits it into a `NodeArena` depth-first, setting parent/children
+// wiring and mirroring the child-key list onto `Element.children` so the
+// `ElementTrait::children()` API stays in sync.
+//
+// Callers (`render_rsx`, reconcile patch paths) hold the arena and use
+// `commit_descriptor_tree` / `arena_insert_child` / `arena_remove_child`
+// / `arena_replace_child` to apply full subtrees or individual edits.
+
+/// Arena-independent tree node produced during RSX → element conversion.
+///
+/// Holds a fully-populated element plus its child descriptors. Committed
+/// into a `NodeArena` by [`commit_descriptor_tree`], which inserts nodes
+/// depth-first and wires parent/child links.
+pub struct ElementDescriptor {
+    pub element: Box<dyn ElementTrait>,
+    pub children: Vec<ElementDescriptor>,
+    /// Runs after the element is inserted and its `children` committed.
+    /// Used by nodes that own side-channel subtrees (e.g. Image/Svg
+    /// loading/error slots) which live in the arena parented to this
+    /// node but stay outside its `Node.children` list until activated.
+    pub post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>>,
+}
+
+impl ElementDescriptor {
+    pub fn leaf(element: Box<dyn ElementTrait>) -> Self {
+        Self {
+            element,
+            children: Vec::new(),
+            post_commit: None,
+        }
+    }
+}
+
+/// Commit a descriptor tree into the arena under the given parent.
+///
+/// Depth-first: inserts each element into a fresh slot, sets its
+/// `Node.parent`, recurses for children, then records the full child-key
+/// list on both `Node.children` and the parent element's
+/// `Element.children` mirror (when the element is an `Element`). Returns
+/// the freshly allocated root key.
+pub fn commit_descriptor_tree(
+    arena: &mut NodeArena,
+    parent: Option<NodeKey>,
+    desc: ElementDescriptor,
+) -> NodeKey {
+    let ElementDescriptor {
+        element,
+        children,
+        post_commit,
+    } = desc;
+    let key = arena.insert(Node::with_parent(element, parent));
+    let mut child_keys = Vec::with_capacity(children.len());
+    for child in children {
+        let child_key = commit_descriptor_tree(arena, Some(key), child);
+        child_keys.push(child_key);
+    }
+    // Source of truth: Node.children in the arena wrapper.
+    arena.set_children(key, child_keys.clone());
+    // Mirror into Element.children so `ElementTrait::children()` works.
+    // Use a take/replace dance so `replace_children` can inspect
+    // child elements in the arena to recompute the absolute-descendant
+    // flag without double-borrowing the current slot.
+    arena.with_element_taken(key, |element, arena_ref| {
+        if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
+            let _previous = el.replace_children(arena_ref, child_keys);
+        }
+    });
+    if let Some(cb) = post_commit {
+        cb(arena, key);
+    }
+    key
+}
+
+/// Walk `path` indices through `arena.children_of` to resolve the target key.
+pub fn resolve_path(arena: &NodeArena, root: NodeKey, path: &[usize]) -> Option<NodeKey> {
+    let mut current = root;
+    for &idx in path {
+        let children = arena.children_of(current);
+        current = *children.get(idx)?;
+    }
+    Some(current)
+}
+
+/// Commit `desc` as a new child of `parent` at `index`, keeping both
+/// `Node.children` and the parent element's `Element.children` mirror in
+/// sync.
+pub fn arena_insert_child(
+    arena: &mut NodeArena,
+    parent: NodeKey,
+    index: usize,
+    desc: ElementDescriptor,
+) -> NodeKey {
+    let key = commit_descriptor_tree(arena, Some(parent), desc);
+    // Remove the tail-appended key that commit_descriptor_tree attached to
+    // the parent's own children? commit_descriptor_tree only touches the
+    // freshly-inserted root's children, not the parent. We still need to
+    // insert `key` into the parent's child list at `index`.
+    let mut children = arena.children_of(parent);
+    let insert_at = index.min(children.len());
+    children.insert(insert_at, key);
+    arena.set_children(parent, children.clone());
+    arena.with_element_taken(parent, |element, arena_ref| {
+        if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
+            let _previous = el.replace_children(arena_ref, children);
+        }
+    });
+    key
+}
+
+/// Remove the child of `parent` at `index` (and its whole subtree),
+/// keeping both child-list stores in sync.
+pub fn arena_remove_child(arena: &mut NodeArena, parent: NodeKey, index: usize) {
+    let mut children = arena.children_of(parent);
+    if index >= children.len() {
+        return;
+    }
+    let child_key = children.remove(index);
+    arena.set_children(parent, children.clone());
+    arena.with_element_taken(parent, |element, arena_ref| {
+        if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
+            let _previous = el.replace_children(arena_ref, children);
+        }
+    });
+    arena.remove_subtree(child_key);
+}
+
+/// Replace the child of `parent` at `index` with a freshly-committed
+/// descriptor. Returns the new child's NodeKey.
+pub fn arena_replace_child(
+    arena: &mut NodeArena,
+    parent: NodeKey,
+    index: usize,
+    desc: ElementDescriptor,
+) -> NodeKey {
+    let old_key = {
+        let children = arena.children_of(parent);
+        children.get(index).copied()
+    };
+    if let Some(old) = old_key {
+        arena.remove_subtree(old);
+    }
+    let new_key = commit_descriptor_tree(arena, Some(parent), desc);
+    let mut children = arena.children_of(parent);
+    if let Some(old) = old_key {
+        // remove_subtree drops the slot but not the parent's child entry.
+        if let Some(pos) = children.iter().position(|&k| k == old) {
+            children.remove(pos);
+        }
+    }
+    let insert_at = index.min(children.len());
+    children.insert(insert_at, new_key);
+    arena.set_children(parent, children.clone());
+    arena.with_element_taken(parent, |element, arena_ref| {
+        if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
+            let _previous = el.replace_children(arena_ref, children);
+        }
+    });
+    new_key
+}
+
+// --- RSX → ElementDescriptor conversion -------------------------------------
+
+/// Top-level: convert an `RsxNode` tree into a list of root descriptors
+/// (fragments flattened). Inherited text style derived from the provided
+/// viewport style.
+pub fn rsx_to_descriptors_with_context(
+    root: &RsxNode,
+    viewport_style: &Style,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> (Vec<ElementDescriptor>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut path = Vec::new();
+    let inherited =
+        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
+    let global_path = current_global_node_path(root, None);
+    append_nodes_with_path_desc(root, &mut out, &mut path, global_path, &inherited, &mut errors);
+    (out, errors)
+}
+
+/// Like `rsx_to_descriptors_with_context` but seeded with an explicit
+/// path scope + inherited style (not a viewport style). Used by
+/// TextArea projection rebuilding to emit descriptor trees that
+/// commit into an existing arena under the owning TextArea.
+pub fn rsx_to_descriptors_scoped_with_context(
+    root: &RsxNode,
+    scope: &[u64],
+    inherited_style: &Style,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<Vec<ElementDescriptor>, String> {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut path: Vec<u64> = scope.to_vec();
+    let inherited = InheritedTextStyle::from_viewport_style(
+        inherited_style,
+        viewport_width,
+        viewport_height,
+    );
+    let global_path = current_global_node_path(root, None);
+    append_nodes_with_path_desc(root, &mut out, &mut path, global_path, &inherited, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    Ok(out)
+}
+
+fn append_nodes_with_path_desc(
+    node: &RsxNode,
+    out: &mut Vec<ElementDescriptor>,
+    path: &mut Vec<u64>,
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+    errors: &mut Vec<String>,
+) {
+    match node {
+        RsxNode::Fragment(fragment) => {
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
+            let mut ordinals = FxHashMap::<&'static str, usize>::default();
+            for child in &fragment.children {
+                let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+                let token = child_identity_token(child, ordinal);
+                path.push(token);
+                let child_global_path =
+                    child_global_node_path(current_global_path.as_ref(), child, token);
+                append_nodes_with_path_desc(
+                    child,
+                    out,
+                    path,
+                    child_global_path,
+                    inherited_text_style,
+                    errors,
+                );
+                path.pop();
+            }
+        }
+        _ => {
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
+            match convert_node_desc(node, path, current_global_path, inherited_text_style) {
+                Ok(desc) => out.push(desc),
+                Err(err) => errors.push(format!("node_path={path:?}: {err}")),
+            }
+        }
+    }
+}
+
+fn convert_node_desc(
+    node: &RsxNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<ElementDescriptor, String> {
+    match node {
+        RsxNode::Text(_) | RsxNode::Fragment(_) => {
+            // Text is leaf; fragment should be flattened by caller.
+            convert_node(node, path, global_path, inherited_text_style).map(ElementDescriptor::leaf)
+        }
+        RsxNode::Element(el) => {
+            if is_builtin_image_node(el) {
+                return convert_image_element_desc(el, path, global_path, inherited_text_style);
+            }
+            if is_builtin_svg_node(el) {
+                return convert_svg_element_desc(el, path, global_path, inherited_text_style);
+            }
+            if is_builtin_text_area_node(el) {
+                return convert_text_area_element_desc(
+                    el,
+                    path,
+                    global_path,
+                    inherited_text_style,
+                );
+            }
+            if is_builtin_text_node(el) {
+                return convert_node(node, path, global_path, inherited_text_style)
+                    .map(ElementDescriptor::leaf);
+            }
+            if let Some(descriptor) = el.tag_descriptor
+                && let Ok(map) = typed_element_factories().read()
+                && map.contains_key(&descriptor.type_id)
+            {
+                let factory = map.get(&descriptor.type_id).unwrap().clone();
+                drop(map);
+                return factory(el, path).map(ElementDescriptor::leaf);
+            }
+            if let Ok(map) = element_factories().read() {
+                let maybe_factory = map
+                    .get(element_runtime_name(el))
+                    .cloned()
+                    .or_else(|| map.get(el.tag).cloned());
+                drop(map);
+                if let Some(factory) = maybe_factory {
+                    return factory(el, path).map(ElementDescriptor::leaf);
+                }
+            }
+            convert_container_element_desc(el, path, global_path, inherited_text_style)
+        }
+    }
+}
+
+fn convert_container_element_desc(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<ElementDescriptor, String> {
+    // Build the container Element via the legacy path — it produces a box
+    // with empty children — then strip off an ElementDescriptor whose
+    // children come from walking the RSX tree ourselves.
+    let element_box = convert_container_element(node, path, global_path.clone(), inherited_text_style)?;
+
+    // Re-derive child_inherited_text_style the way convert_container_element does
+    let mut child_inherited_text_style = inherited_text_style.clone();
+    for (key, value) in node.props.iter() {
+        if *key == "style" {
+            if let Ok(style) = as_element_style(value, key) {
+                if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
+                    child_inherited_text_style.font_families = font_family.as_slice().to_vec();
+                }
+                if let Some(font_size) = resolve_font_size_from_style(
+                    &style,
+                    child_inherited_text_style
+                        .font_size
+                        .unwrap_or(child_inherited_text_style.root_font_size),
+                    child_inherited_text_style.root_font_size,
+                    child_inherited_text_style.viewport_width,
+                    child_inherited_text_style.viewport_height,
+                ) {
+                    child_inherited_text_style.font_size = Some(font_size);
+                }
+                if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
+                    child_inherited_text_style.font_weight = Some(font_weight.value());
+                }
+                if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+                    child_inherited_text_style.color = Some(color.to_color());
+                }
+                if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
+                    child_inherited_text_style.cursor = Some(*cursor);
+                }
+                if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
+                    child_inherited_text_style.text_wrap = Some(*text_wrap);
+                }
+            }
+        }
+    }
+
+    let mut children: Vec<ElementDescriptor> = Vec::new();
+    let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
+    child_path.extend_from_slice(path);
+    let current_global_path = current_global_node_path(
+        &RsxNode::Element(std::rc::Rc::new(node.clone())),
+        global_path.as_ref(),
+    );
+    let mut ordinals = FxHashMap::<&'static str, usize>::default();
+    for child in &node.children {
+        let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+        let token = child_identity_token(child, ordinal);
+        child_path.push(token);
+        let child_global_path = child_global_node_path(current_global_path.as_ref(), child, token);
+        append_child_nodes_flattening_fragments_desc(
+            child,
+            &child_path,
+            child_global_path,
+            &child_inherited_text_style,
+            &mut children,
+        )?;
+        child_path.pop();
+    }
+
+    Ok(ElementDescriptor {
+        element: element_box,
+        children,
+        post_commit: None,
+    })
+}
+
+fn append_child_nodes_flattening_fragments_desc(
+    node: &RsxNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+    out: &mut Vec<ElementDescriptor>,
+) -> Result<(), String> {
+    match node {
+        RsxNode::Fragment(fragment) => {
+            let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
+            child_path.extend_from_slice(path);
+            let current_global_path = current_global_node_path(node, global_path.as_ref());
+            let mut ordinals = FxHashMap::<&'static str, usize>::default();
+            for child in &fragment.children {
+                let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
+                let token = child_identity_token(child, ordinal);
+                child_path.push(token);
+                let child_global_path =
+                    child_global_node_path(current_global_path.as_ref(), child, token);
+                append_child_nodes_flattening_fragments_desc(
+                    child,
+                    &child_path,
+                    child_global_path,
+                    inherited_text_style,
+                    out,
+                )?;
+                child_path.pop();
+            }
+            Ok(())
+        }
+        _ => {
+            out.push(convert_node_desc(
+                node,
+                path,
+                global_path,
+                inherited_text_style,
+            )?);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1937,8 +2905,9 @@ mod tests {
     };
     use crate::view::Viewport;
     use crate::view::base_component::{
-        Element, ElementTrait, Text, TextArea, get_cursor_by_id, hit_test,
+        Element, ElementTrait, Layoutable, Text, TextArea, get_cursor_by_id, hit_test,
     };
+    use crate::view::test_support::{commit_rsx_tree, measure_and_place};
     use crate::view::{
         Element as HostElement, ElementStylePropSchema, Svg as HostSvg, SvgSource,
         Text as HostText, TextArea as HostTextArea, TextStylePropSchema,
@@ -2281,28 +3250,62 @@ mod tests {
         }
     }
 
-    fn walk_layout(
-        node: &mut dyn crate::view::base_component::ElementTrait,
-        out: &mut Vec<(f32, f32, f32, f32)>,
-    ) {
-        let s = node.box_model_snapshot();
-        out.push((s.x, s.y, s.width, s.height));
-        if let Some(children) = node.children_mut() {
-            for child in children {
-                walk_layout(child.as_mut(), out);
-            }
+    fn std_constraints() -> crate::view::base_component::LayoutConstraints {
+        crate::view::base_component::LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         }
     }
 
-    fn collect_text_like_boxes(node: &dyn ElementTrait, out: &mut Vec<(f32, f32)>) {
-        if node.as_any().is::<Text>() || node.as_any().is::<TextArea>() {
-            let snapshot = node.box_model_snapshot();
-            out.push((snapshot.width, snapshot.height));
+    fn std_placement() -> crate::view::base_component::LayoutPlacement {
+        crate::view::base_component::LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+            viewport_height: 600.0,
         }
-        if let Some(children) = node.children() {
-            for child in children {
-                collect_text_like_boxes(child.as_ref(), out);
-            }
+    }
+
+    fn walk_layout(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        out: &mut Vec<(f32, f32, f32, f32)>,
+    ) {
+        let Some(node) = arena.get(key) else { return; };
+        let s = node.element.box_model_snapshot();
+        out.push((s.x, s.y, s.width, s.height));
+        let children = node.children.clone();
+        drop(node);
+        for child in children {
+            walk_layout(arena, child, out);
+        }
+    }
+
+    fn collect_text_like_boxes(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        out: &mut Vec<(f32, f32)>,
+    ) {
+        let Some(node) = arena.get(key) else { return; };
+        let el = node.element.as_ref();
+        if el.as_any().is::<Text>() || el.as_any().is::<TextArea>() {
+            let s = el.box_model_snapshot();
+            out.push((s.width, s.height));
+        }
+        let children = node.children.clone();
+        drop(node);
+        for child in children {
+            collect_text_like_boxes(arena, child, out);
         }
     }
 
@@ -2368,33 +3371,15 @@ mod tests {
 
         let tree = RsxNode::fragment(vec![first_panel, second_panel]);
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        for root in &mut roots {
-            root.measure(crate::view::base_component::LayoutConstraints {
-                max_width: 800.0,
-                max_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
-            root.place(crate::view::base_component::LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 800.0,
-                available_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        for root in &roots {
+            measure_and_place(&mut arena, *root, std_constraints(), std_placement());
         }
 
         let mut boxes = Vec::new();
-        for root in &mut roots {
-            walk_layout(root.as_mut(), &mut boxes);
+        for root in &roots {
+            walk_layout(&arena, *root, &mut boxes);
         }
         println!("boxes={boxes:?}");
 
@@ -2425,33 +3410,15 @@ mod tests {
                     .with_child(RsxNode::text("inner")),
             );
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        for root in &mut roots {
-            root.measure(crate::view::base_component::LayoutConstraints {
-                max_width: 800.0,
-                max_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
-            root.place(crate::view::base_component::LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 800.0,
-                available_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        for root in &roots {
+            measure_and_place(&mut arena, *root, std_constraints(), std_placement());
         }
 
         let mut boxes = Vec::new();
-        for root in &mut roots {
-            walk_layout(root.as_mut(), &mut boxes);
+        for root in &roots {
+            walk_layout(&arena, *root, &mut boxes);
         }
 
         assert!(
@@ -2490,30 +3457,12 @@ mod tests {
                     .with_prop("style", style_with_size(empty_element_style(), 70.0, 34.0)),
             );
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let snapshot = root.box_model_snapshot();
+        let snapshot = arena.get(root).unwrap().element.box_model_snapshot();
         assert_eq!(snapshot.width, 282.0);
         assert_eq!(snapshot.height, 34.0);
     }
@@ -2573,31 +3522,13 @@ mod tests {
             .with_prop("style", parent_style)
             .with_child(host_element_node().with_prop("style", child_style));
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let target_id = hit_test(root.as_ref(), 10.0, 10.0).expect("hit child");
-        let cursor = get_cursor_by_id(root.as_ref(), target_id).expect("cursor exists");
+        let target_id = hit_test(&arena, root, 10.0, 10.0).expect("hit child");
+        let cursor = get_cursor_by_id(&arena, root, target_id).expect("cursor exists");
         assert_eq!(cursor, Cursor::Pointer);
     }
 
@@ -2621,31 +3552,13 @@ mod tests {
                     .with_child(RsxNode::text("Button label")),
             );
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let target_id = hit_test(root.as_ref(), 10.0, 10.0).expect("hit text child");
-        let cursor = get_cursor_by_id(root.as_ref(), target_id).expect("cursor exists");
+        let target_id = hit_test(&arena, root, 10.0, 10.0).expect("hit text child");
+        let cursor = get_cursor_by_id(&arena, root, target_id).expect("cursor exists");
         assert_eq!(cursor, Cursor::Pointer);
     }
 
@@ -2668,31 +3581,13 @@ mod tests {
                     .with_child(RsxNode::text("MMMMMMMM")),
             );
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
         let mut text_boxes = Vec::new();
-        collect_text_like_boxes(root.as_ref(), &mut text_boxes);
+        collect_text_like_boxes(&arena, root, &mut text_boxes);
         let (width, height) = text_boxes.first().copied().expect("text box should exist");
         assert!(width > 150.0);
         assert!(height >= 30.0);
@@ -2721,58 +3616,40 @@ mod tests {
             ParsedValue::FontSize(FontSize::px(20.0)),
         );
 
-        let mut small = rsx_to_elements_with_context(&text_tree, &small_root_style, 800.0, 600.0)
-            .expect("convert with small root style");
-        let mut large = rsx_to_elements_with_context(&text_tree, &large_root_style, 800.0, 600.0)
-            .expect("convert with large root style");
+        let mut small_arena = crate::view::test_support::new_test_arena();
+        let small = crate::view::test_support::commit_rsx_tree_with_context(
+            &mut small_arena,
+            &text_tree,
+            &small_root_style,
+            800.0,
+            600.0,
+        );
+        let mut large_arena = crate::view::test_support::new_test_arena();
+        let large = crate::view::test_support::commit_rsx_tree_with_context(
+            &mut large_arena,
+            &text_tree,
+            &large_root_style,
+            800.0,
+            600.0,
+        );
 
-        for root in &mut small {
-            root.measure(crate::view::base_component::LayoutConstraints {
-                max_width: 800.0,
-                max_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
-            root.place(crate::view::base_component::LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 800.0,
-                available_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
+        for root in &small {
+            measure_and_place(&mut small_arena, *root, std_constraints(), std_placement());
         }
-        for root in &mut large {
-            root.measure(crate::view::base_component::LayoutConstraints {
-                max_width: 800.0,
-                max_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
-            root.place(crate::view::base_component::LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 800.0,
-                available_height: 600.0,
-                viewport_width: 800.0,
-                percent_base_width: Some(800.0),
-                percent_base_height: Some(600.0),
-                viewport_height: 600.0,
-            });
+        for root in &large {
+            measure_and_place(&mut large_arena, *root, std_constraints(), std_placement());
         }
 
-        let small_snapshot = small.first().expect("small root").box_model_snapshot();
-        let large_snapshot = large.first().expect("large root").box_model_snapshot();
+        let small_snapshot = small_arena
+            .get(*small.first().expect("small root"))
+            .unwrap()
+            .element
+            .box_model_snapshot();
+        let large_snapshot = large_arena
+            .get(*large.first().expect("large root"))
+            .unwrap()
+            .element
+            .box_model_snapshot();
         assert!(large_snapshot.width > small_snapshot.width * 1.5);
         assert!(large_snapshot.height > small_snapshot.height * 1.5);
     }
@@ -2792,31 +3669,13 @@ mod tests {
                     .with_prop("multiline", false),
             );
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
         let mut text_boxes = Vec::new();
-        collect_text_like_boxes(root.as_ref(), &mut text_boxes);
+        collect_text_like_boxes(&arena, root, &mut text_boxes);
         let (_width, height) = text_boxes
             .iter()
             .copied()
@@ -2856,30 +3715,45 @@ mod tests {
                     .with_prop("multiline", false),
             );
 
-        let inherited = rsx_to_elements(&inherited_tree).expect("convert inherited tree");
-        let explicit = rsx_to_elements(&explicit_tree).expect("convert explicit tree");
+        let mut inherited_arena = crate::view::test_support::new_test_arena();
+        let inherited = commit_rsx_tree(&mut inherited_arena, &inherited_tree);
+        let mut explicit_arena = crate::view::test_support::new_test_arena();
+        let explicit = commit_rsx_tree(&mut explicit_arena, &explicit_tree);
 
-        let inherited_textarea = inherited
-            .first()
-            .and_then(|root| root.children())
-            .and_then(|children| children.first())
-            .and_then(|node| node.as_any().downcast_ref::<TextArea>())
-            .expect("inherited textarea");
-        let explicit_textarea = explicit
-            .first()
-            .and_then(|root| root.children())
-            .and_then(|children| children.first())
-            .and_then(|node| node.as_any().downcast_ref::<TextArea>())
-            .expect("explicit textarea");
+        let inherited_ta_key = {
+            let root = *inherited.first().expect("inherited root");
+            *inherited_arena
+                .children_of(root)
+                .first()
+                .expect("inherited ta child")
+        };
+        let explicit_ta_key = {
+            let root = *explicit.first().expect("explicit root");
+            *explicit_arena
+                .children_of(root)
+                .first()
+                .expect("explicit ta child")
+        };
 
-        assert_eq!(
-            inherited_textarea.color_rgba_f32(),
-            parent_color.to_rgba_f32()
-        );
-        assert_eq!(
-            explicit_textarea.color_rgba_f32(),
-            local_color.to_rgba_f32()
-        );
+        let inherited_rgba = inherited_arena
+            .get(inherited_ta_key)
+            .unwrap()
+            .element
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .expect("inherited textarea")
+            .color_rgba_f32();
+        let explicit_rgba = explicit_arena
+            .get(explicit_ta_key)
+            .unwrap()
+            .element
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .expect("explicit textarea")
+            .color_rgba_f32();
+
+        assert_eq!(inherited_rgba, parent_color.to_rgba_f32());
+        assert_eq!(explicit_rgba, local_color.to_rgba_f32());
     }
 
     #[test]
@@ -2905,9 +3779,16 @@ mod tests {
             />
         };
 
-        let roots = rsx_to_elements(&tree).expect("convert rsx");
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
         assert_eq!(roots.len(), 1);
-        assert!(roots[0].as_any().downcast_ref::<TextArea>().is_some());
+        assert!(arena
+            .get(roots[0])
+            .unwrap()
+            .element
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .is_some());
     }
 
     #[test]
@@ -2923,30 +3804,12 @@ mod tests {
             .with_prop("content", "hello")
             .with_prop("multiline", true);
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let snapshot = root.box_model_snapshot();
+        let snapshot = arena.get(root).unwrap().element.box_model_snapshot();
         assert_eq!(snapshot.width, 296.0);
         assert_eq!(snapshot.height, 78.0);
     }
@@ -2974,35 +3837,16 @@ mod tests {
                     .with_prop("multiline", true),
             );
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let textarea = root
-            .children()
-            .expect("parent children")
+        let ta_key = *arena
+            .children_of(root)
             .first()
             .expect("textarea child");
-        let snapshot = textarea.box_model_snapshot();
+        let snapshot = arena.get(ta_key).unwrap().element.box_model_snapshot();
         assert_eq!(snapshot.width, 200.0);
         assert_eq!(snapshot.height, 50.0);
     }
@@ -3023,36 +3867,14 @@ mod tests {
             .with_prop("style", root_style)
             .with_child(host_element_node().with_prop("style", child_style));
 
-        let mut roots = rsx_to_elements(&tree).expect("convert rsx");
-        let root = roots.first_mut().expect("single root");
-        root.measure(crate::view::base_component::LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
-        root.place(crate::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        });
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let child = root
-            .children()
-            .expect("root children")
-            .first()
-            .expect("child");
-        let root_snapshot = root.box_model_snapshot();
-        let child_snapshot = child.box_model_snapshot();
+        let child_key = *arena.children_of(root).first().expect("child");
+        let root_snapshot = arena.get(root).unwrap().element.box_model_snapshot();
+        let child_snapshot = arena.get(child_key).unwrap().element.box_model_snapshot();
         assert_eq!(root_snapshot.height, 0.0);
         assert_eq!(child_snapshot.height, 0.0);
     }

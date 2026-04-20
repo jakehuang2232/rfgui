@@ -15,11 +15,51 @@ mod tests {
         Window,
     };
     use rfgui::ui::{
-        EventMeta, PointerButton as UiPointerButton, PointerEventData, PropValue, RsxElementNode,
-        RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, global_state,
+        EventMeta, NodeId, PointerButton as UiPointerButton, PointerEventData, PropValue,
+        RsxElementNode, RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, global_state,
         rsx, take_state_dirty,
     };
-    use rfgui::view::{Element, Image, Text, TextArea};
+    use rfgui::view::base_component::{LayoutConstraints, LayoutPlacement};
+    use rfgui::view::{
+        Element, Image, NodeArena, NodeKey, Text, TextArea, commit_descriptor_tree,
+        rsx_to_descriptors_with_context,
+    };
+
+    // ---- Local arena test helpers (Session 3 arena refactor) ----
+    //
+    // `rfgui` keeps its arena fixtures in `src/view/test_support.rs` gated
+    // behind `#[cfg(test)]`, so downstream crates can't reuse them. We
+    // re-implement the minimal subset using the public descriptor pipeline
+    // (`commit_descriptor_tree`, `rsx_to_descriptors_with_context`).
+
+    fn commit_rsx_tree_into(arena: &mut NodeArena, tree: &RsxNode) -> Vec<NodeKey> {
+        let (descs, errors) = rsx_to_descriptors_with_context(
+            tree,
+            &rfgui::Style::new(),
+            0.0,
+            0.0,
+        );
+        assert!(
+            errors.is_empty(),
+            "commit_rsx_tree: rsx conversion errors: {errors:?}"
+        );
+        descs
+            .into_iter()
+            .map(|d| commit_descriptor_tree(arena, None, d))
+            .collect()
+    }
+
+    fn measure_and_place_root(
+        arena: &mut NodeArena,
+        root: NodeKey,
+        constraints: LayoutConstraints,
+        placement: LayoutPlacement,
+    ) {
+        arena.with_element_taken(root, |el, a| {
+            el.measure(constraints, a);
+            el.place(placement, a);
+        });
+    }
 
     fn select_label(item: &String, _: usize) -> String {
         item.clone()
@@ -53,40 +93,43 @@ mod tests {
             />
         };
 
-        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert checkbox");
-        let root = roots.get_mut(0).expect("has root");
-        root.measure(rfgui::view::base_component::LayoutConstraints {
-            max_width: 320.0,
-            max_height: 120.0,
-            viewport_width: 320.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(120.0),
-        });
-        root.place(rfgui::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 320.0,
-            available_height: 120.0,
-            viewport_width: 320.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(120.0),
-        });
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &tree);
+        let root_key = *roots.first().expect("has root");
+        measure_and_place_root(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 320.0,
+                max_height: 120.0,
+                viewport_width: 320.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 120.0,
+                viewport_width: 320.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
         let mut viewport = rfgui::view::Viewport::new();
         let mut control = rfgui::view::ViewportControl::new(&mut viewport);
         let mut click = rfgui::ui::ClickEvent {
-            meta: EventMeta::new(0),
+            meta: EventMeta::new(NodeId(0)),
             pointer: PointerEventData {
                 viewport_x: 8.0,
                 viewport_y: 8.0,
                 local_x: 0.0,
                 local_y: 0.0,
-                current_target_width: 0.0,
-                current_target_height: 0.0,
                 button: Some(UiPointerButton::Left),
                 buttons: rfgui::ui::PointerButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
@@ -98,7 +141,8 @@ mod tests {
         };
 
         let handled = rfgui::view::base_component::dispatch_click_from_hit_test(
-            root.as_mut(),
+            &mut arena,
+            root_key,
             &mut click,
             &mut control,
         );
@@ -121,9 +165,10 @@ mod tests {
             />
         };
 
-        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert select");
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &tree);
         let mut viewport = rfgui::view::Viewport::new();
-        click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
+        click_once(&mut arena, roots[0], &mut viewport, 10.0, 10.0);
         assert_eq!(selected.get(), "Option A");
         assert_ne!(take_state_dirty(), UiDirtyState::NONE);
     }
@@ -147,9 +192,10 @@ mod tests {
         };
 
         let first_tree = build_tree();
-        let mut roots = rfgui::rsx_to_elements(&first_tree).expect("convert select");
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &first_tree);
         let mut viewport = rfgui::view::Viewport::new();
-        click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
+        click_once(&mut arena, roots[0], &mut viewport, 10.0, 10.0);
         assert_ne!(take_state_dirty(), UiDirtyState::NONE);
 
         let second_tree = build_tree();
@@ -182,40 +228,48 @@ mod tests {
         };
 
         let first_tree = build_tree();
-        let mut roots = rfgui::rsx_to_elements(&first_tree).expect("convert select");
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &first_tree);
         let mut viewport = rfgui::view::Viewport::new();
-        click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
+        click_once(&mut arena, roots[0], &mut viewport, 10.0, 10.0);
         assert_ne!(take_state_dirty(), UiDirtyState::NONE);
 
         let second_tree = build_tree();
-        let mut roots = rfgui::rsx_to_elements(&second_tree).expect("convert open select");
-        let root = roots.get_mut(0).expect("has root");
-        root.measure(rfgui::view::base_component::LayoutConstraints {
-            max_width: 320.0,
-            max_height: 240.0,
-            viewport_width: 320.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(240.0),
-        });
-        root.place(rfgui::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 320.0,
-            available_height: 240.0,
-            viewport_width: 320.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(240.0),
-        });
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &second_tree);
+        let root_key = *roots.first().expect("has root");
+        measure_and_place_root(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 320.0,
+                max_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+        );
 
-        let root_children = root.children().expect("root children");
-        let menu = root_children.get(1).expect("menu child");
-        let menu_children = menu.children().expect("menu options");
-        let first_option = menu_children.first().expect("first option");
-        let option_snapshot = first_option.box_model_snapshot();
+        let menu_key = arena.children_of(root_key)[1];
+        let first_option_key = arena.children_of(menu_key)[0];
+        let option_snapshot = arena
+            .get(first_option_key)
+            .expect("first option node")
+            .element
+            .box_model_snapshot();
 
         assert!(
             option_snapshot.height < 80.0,
@@ -257,42 +311,45 @@ mod tests {
     }
 
     fn click_once(
-        root: &mut dyn rfgui::view::base_component::ElementTrait,
+        arena: &mut NodeArena,
+        root_key: NodeKey,
         viewport: &mut rfgui::view::Viewport,
         x: f32,
         y: f32,
     ) {
-        root.measure(rfgui::view::base_component::LayoutConstraints {
-            max_width: 320.0,
-            max_height: 240.0,
-            viewport_width: 320.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(240.0),
-        });
-        root.place(rfgui::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 320.0,
-            available_height: 240.0,
-            viewport_width: 320.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(240.0),
-        });
+        measure_and_place_root(
+            arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 320.0,
+                max_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+        );
 
         let mut control = rfgui::view::ViewportControl::new(viewport);
         let mut click = rfgui::ui::ClickEvent {
-            meta: EventMeta::new(0),
+            meta: EventMeta::new(NodeId(0)),
             pointer: PointerEventData {
                 viewport_x: x,
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
-                current_target_width: 0.0,
-                current_target_height: 0.0,
                 button: Some(UiPointerButton::Left),
                 buttons: rfgui::ui::PointerButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
@@ -304,7 +361,8 @@ mod tests {
         };
 
         let handled = rfgui::view::base_component::dispatch_click_from_hit_test(
-            root,
+            arena,
+            root_key,
             &mut click,
             &mut control,
         );
@@ -418,89 +476,111 @@ mod tests {
         };
 
         fn save_snapshots(
-            nodes: &[Box<dyn rfgui::view::base_component::ElementTrait>],
+            arena: &NodeArena,
+            keys: &[NodeKey],
             out: &mut std::collections::HashMap<u64, Box<dyn std::any::Any>>,
         ) {
-            for node in nodes {
-                if let Some(snapshot) = node.snapshot_state() {
-                    out.insert(node.id(), snapshot);
+            for &key in keys {
+                let (id, snapshot, children) = {
+                    let Some(node) = arena.get(key) else { continue };
+                    let snap = node.element.snapshot_state();
+                    let id = node.element.id();
+                    let kids = node.children.clone();
+                    (id, snap, kids)
+                };
+                if let Some(snapshot) = snapshot {
+                    out.insert(id, snapshot);
                 }
-                if let Some(children) = node.children() {
-                    save_snapshots(children, out);
-                }
+                save_snapshots(arena, &children, out);
             }
         }
 
         fn restore_snapshots(
-            nodes: &mut [Box<dyn rfgui::view::base_component::ElementTrait>],
+            arena: &mut NodeArena,
+            keys: &[NodeKey],
             snapshots: &std::collections::HashMap<u64, Box<dyn std::any::Any>>,
         ) {
-            for node in nodes {
-                if let Some(snapshot) = snapshots.get(&node.id()) {
-                    let _ = node.restore_state(snapshot.as_ref());
-                }
-                if let Some(children) = node.children_mut() {
-                    restore_snapshots(children, snapshots);
-                }
+            for &key in keys {
+                let children = {
+                    arena.with_element_taken(key, |el, _| {
+                        if let Some(snapshot) = snapshots.get(&el.id()) {
+                            let _ = el.restore_state(snapshot.as_ref());
+                        }
+                    });
+                    arena
+                        .get(key)
+                        .map(|n| n.children.clone())
+                        .unwrap_or_default()
+                };
+                restore_snapshots(arena, &children, snapshots);
             }
         }
 
         fn measure_and_place(
-            nodes: &mut [Box<dyn rfgui::view::base_component::ElementTrait>],
+            arena: &mut NodeArena,
+            keys: &[NodeKey],
         ) -> Vec<(f32, f32, f32, f32, bool)> {
             let mut out = Vec::new();
-            for node in nodes.iter_mut() {
-                node.measure(rfgui::view::base_component::LayoutConstraints {
-                    max_width: 320.0,
-                    max_height: 120.0,
-                    viewport_width: 320.0,
-                    viewport_height: 120.0,
-                    percent_base_width: Some(320.0),
-                    percent_base_height: Some(120.0),
-                });
-                node.place(rfgui::view::base_component::LayoutPlacement {
-                    parent_x: 0.0,
-                    parent_y: 0.0,
-                    visual_offset_x: 0.0,
-                    visual_offset_y: 0.0,
-                    available_width: 320.0,
-                    available_height: 120.0,
-                    viewport_width: 320.0,
-                    viewport_height: 120.0,
-                    percent_base_width: Some(320.0),
-                    percent_base_height: Some(120.0),
-                });
+            for &key in keys {
+                measure_and_place_root(
+                    arena,
+                    key,
+                    LayoutConstraints {
+                        max_width: 320.0,
+                        max_height: 120.0,
+                        viewport_width: 320.0,
+                        viewport_height: 120.0,
+                        percent_base_width: Some(320.0),
+                        percent_base_height: Some(120.0),
+                    },
+                    LayoutPlacement {
+                        parent_x: 0.0,
+                        parent_y: 0.0,
+                        visual_offset_x: 0.0,
+                        visual_offset_y: 0.0,
+                        available_width: 320.0,
+                        available_height: 120.0,
+                        viewport_width: 320.0,
+                        viewport_height: 120.0,
+                        percent_base_width: Some(320.0),
+                        percent_base_height: Some(120.0),
+                    },
+                );
                 fn walk(
-                    node: &dyn rfgui::view::base_component::ElementTrait,
+                    arena: &NodeArena,
+                    key: NodeKey,
                     out: &mut Vec<(f32, f32, f32, f32, bool)>,
                 ) {
-                    let snapshot = node.box_model_snapshot();
+                    let (snap, children) = {
+                        let Some(node) = arena.get(key) else { return };
+                        (node.element.box_model_snapshot(), node.children.clone())
+                    };
                     out.push((
-                        snapshot.x,
-                        snapshot.y,
-                        snapshot.width,
-                        snapshot.height,
-                        snapshot.should_render,
+                        snap.x,
+                        snap.y,
+                        snap.width,
+                        snap.height,
+                        snap.should_render,
                     ));
-                    if let Some(children) = node.children() {
-                        for child in children {
-                            walk(child.as_ref(), out);
-                        }
+                    for child in children {
+                        walk(arena, child, out);
                     }
                 }
-                walk(node.as_ref(), &mut out);
+                walk(arena, key, &mut out);
             }
             out
         }
 
-        let mut first_roots = rfgui::rsx_to_elements(&first).expect("convert first switch");
-        let first_boxes = measure_and_place(&mut first_roots);
+        let mut first_arena = NodeArena::new();
+        let first_roots = commit_rsx_tree_into(&mut first_arena, &first);
+        let first_boxes = measure_and_place(&mut first_arena, &first_roots);
         let mut snapshots = std::collections::HashMap::<u64, Box<dyn std::any::Any>>::new();
-        save_snapshots(&first_roots, &mut snapshots);
+        save_snapshots(&first_arena, &first_roots, &mut snapshots);
 
-        let mut second_roots = rfgui::rsx_to_elements(&second).expect("convert rebuilt switch");
-        restore_snapshots(&mut second_roots, &snapshots);
-        let second_boxes = measure_and_place(&mut second_roots);
+        let mut second_arena = NodeArena::new();
+        let second_roots = commit_rsx_tree_into(&mut second_arena, &second);
+        restore_snapshots(&mut second_arena, &second_roots, &snapshots);
+        let second_boxes = measure_and_place(&mut second_arena, &second_roots);
 
         assert_eq!(
             first_boxes, second_boxes,
@@ -524,44 +604,47 @@ mod tests {
         );
     }
 
-    fn collect_text_boxes(
-        node: &dyn rfgui::view::base_component::ElementTrait,
-        out: &mut Vec<(f32, f32)>,
-    ) {
-        if node.as_any().is::<rfgui::view::base_component::Text>() {
-            let snapshot = node.box_model_snapshot();
-            out.push((snapshot.width, snapshot.height));
+    fn collect_text_boxes(arena: &NodeArena, key: NodeKey, out: &mut Vec<(f32, f32)>) {
+        let (is_text, snap, children) = {
+            let Some(node) = arena.get(key) else { return };
+            (
+                node.element
+                    .as_any()
+                    .is::<rfgui::view::base_component::Text>(),
+                node.element.box_model_snapshot(),
+                node.children.clone(),
+            )
+        };
+        if is_text {
+            out.push((snap.width, snap.height));
         }
-        if let Some(children) = node.children() {
-            for child in children {
-                collect_text_boxes(child.as_ref(), out);
-            }
+        for child in children {
+            collect_text_boxes(arena, child, out);
         }
     }
 
     fn collect_layout_boxes(
-        node: &dyn rfgui::view::base_component::ElementTrait,
+        arena: &NodeArena,
+        key: NodeKey,
         depth: usize,
         out: &mut Vec<(usize, String, f32, f32, f32, f32)>,
     ) {
-        let snapshot = node.box_model_snapshot();
-        let kind = if node.as_any().is::<rfgui::view::base_component::Text>() {
-            "Text".to_string()
-        } else {
-            "Element".to_string()
+        let (kind, snap, children) = {
+            let Some(node) = arena.get(key) else { return };
+            let kind = if node
+                .element
+                .as_any()
+                .is::<rfgui::view::base_component::Text>()
+            {
+                "Text".to_string()
+            } else {
+                "Element".to_string()
+            };
+            (kind, node.element.box_model_snapshot(), node.children.clone())
         };
-        out.push((
-            depth,
-            kind,
-            snapshot.x,
-            snapshot.y,
-            snapshot.width,
-            snapshot.height,
-        ));
-        if let Some(children) = node.children() {
-            for child in children {
-                collect_layout_boxes(child.as_ref(), depth + 1, out);
-            }
+        out.push((depth, kind, snap.x, snap.y, snap.width, snap.height));
+        for child in children {
+            collect_layout_boxes(arena, child, depth + 1, out);
         }
     }
 
@@ -572,31 +655,36 @@ mod tests {
                 label="Enable"
             />
         };
-        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert checkbox");
-        let root = roots.get_mut(0).expect("has root");
-        root.measure(rfgui::view::base_component::LayoutConstraints {
-            max_width: 320.0,
-            max_height: 120.0,
-            viewport_width: 320.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(120.0),
-        });
-        root.place(rfgui::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 320.0,
-            available_height: 120.0,
-            viewport_width: 320.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(120.0),
-        });
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &tree);
+        let root_key = *roots.first().expect("has root");
+        measure_and_place_root(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 320.0,
+                max_height: 120.0,
+                viewport_width: 320.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 120.0,
+                viewport_width: 320.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(120.0),
+            },
+        );
 
         let mut boxes = Vec::new();
-        collect_text_boxes(root.as_ref(), &mut boxes);
+        collect_text_boxes(&arena, root_key, &mut boxes);
         let max_width = boxes
             .iter()
             .map(|(width, _)| *width)
@@ -619,7 +707,7 @@ mod tests {
         };
 
         let mut event = TextChangeEvent {
-            meta: EventMeta::new(0),
+            meta: EventMeta::new(NodeId(0)),
             value: "12.5".to_string(),
         };
         handler.call(&mut event);
@@ -728,9 +816,10 @@ mod tests {
             </Accordion>
         };
 
-        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert accordion");
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &tree);
         let mut viewport = rfgui::view::Viewport::new();
-        click_once(roots[0].as_mut(), &mut viewport, 10.0, 10.0);
+        click_once(&mut arena, roots[0], &mut viewport, 10.0, 10.0);
 
         assert!(expanded.get());
     }
@@ -743,31 +832,36 @@ mod tests {
             </Accordion>
         };
 
-        let mut roots = rfgui::rsx_to_elements(&tree).expect("convert accordion");
-        let root = roots.get_mut(0).expect("root");
-        root.measure(rfgui::view::base_component::LayoutConstraints {
-            max_width: 420.0,
-            max_height: 200.0,
-            viewport_width: 420.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(420.0),
-            percent_base_height: Some(200.0),
-        });
-        root.place(rfgui::view::base_component::LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 420.0,
-            available_height: 200.0,
-            viewport_width: 420.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(420.0),
-            percent_base_height: Some(200.0),
-        });
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &tree);
+        let root_key = *roots.first().expect("root");
+        measure_and_place_root(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 420.0,
+                max_height: 200.0,
+                viewport_width: 420.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(420.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 420.0,
+                available_height: 200.0,
+                viewport_width: 420.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(420.0),
+                percent_base_height: Some(200.0),
+            },
+        );
 
         let mut boxes = Vec::new();
-        collect_layout_boxes(root.as_ref(), 0, &mut boxes);
+        collect_layout_boxes(&arena, root_key, 0, &mut boxes);
         let header = &boxes[1];
         let title = &boxes[2];
         let icon = &boxes[4];

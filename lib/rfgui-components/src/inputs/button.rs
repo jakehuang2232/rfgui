@@ -1,6 +1,6 @@
 use crate::{ButtonSizeSpec, Theme, use_theme};
 use rfgui::ui::{
-    ClickEvent, ClickHandlerProp, EventMeta, PointerButton, PointerDownHandlerProp,
+    ClickEvent, ClickHandlerProp, EventMeta, NodeId, PointerButton, PointerDownHandlerProp,
     PointerEnterHandlerProp, PointerEventData, PointerLeaveHandlerProp, RsxComponent,
     RsxNode, component, props, rsx, use_interval, use_state,
 };
@@ -235,7 +235,7 @@ struct ButtonRepeatState {
 
 #[derive(Clone, PartialEq)]
 struct ButtonRepeatTrigger {
-    target_id: u64,
+    target_id: NodeId,
     pointer: PointerEventData,
 }
 
@@ -393,7 +393,7 @@ fn ButtonView(
             let button_target_id = trigger.target_id;
             let repeat_state_for_move = repeat_state.clone();
             let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
-                if move_event.meta.target_id() == 0 && move_event.meta.current_target_id() == 0 {
+                if move_event.meta.target_id() == NodeId::default() && move_event.meta.current_target_id() == NodeId::default() {
                     repeat_state_for_move.update(|state| {
                         if state.pressed {
                             state.hovered = false;

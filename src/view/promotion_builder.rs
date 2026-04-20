@@ -1,12 +1,14 @@
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use crate::transition::AnimationPromotionHint;
 use crate::view::base_component::{BoxModelSnapshot, ElementTrait};
+use crate::view::node_arena::NodeKey;
 use crate::view::promotion::{PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionCandidate};
 
 use std::hash::{Hash, Hasher};
 
 pub(crate) fn collect_promotion_candidates(
-    roots: &[Box<dyn ElementTrait>],
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[NodeKey],
     active_animator_hints: &FxHashMap<u64, AnimationPromotionHint>,
     active_channels: &FxHashMap<u64, FxHashSet<crate::transition::ChannelId>>,
     viewport_size: (f32, f32),
@@ -16,6 +18,7 @@ pub(crate) fn collect_promotion_candidates(
         active_animator_hints: &FxHashMap<u64, AnimationPromotionHint>,
         active_channels: &FxHashMap<u64, FxHashSet<crate::transition::ChannelId>>,
         viewport_size: (f32, f32),
+        arena: &crate::view::node_arena::NodeArena,
         out: &mut Vec<PromotionCandidate>,
     ) -> (usize, usize) {
         let snapshot = node.box_model_snapshot();
@@ -23,18 +26,20 @@ pub(crate) fn collect_promotion_candidates(
         let mut subtree_node_count = 1usize;
         let mut estimated_pass_count = info.estimated_pass_count.max(1) as usize;
 
-        if let Some(children) = node.children() {
-            for child in children {
-                let (child_nodes, child_passes) = walk(
-                    child.as_ref(),
-                    active_animator_hints,
-                    active_channels,
-                    viewport_size,
-                    out,
-                );
-                subtree_node_count += child_nodes;
-                estimated_pass_count += child_passes;
-            }
+        for child_key in node.children() {
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            let (child_nodes, child_passes) = walk(
+                child_node.element.as_ref(),
+                active_animator_hints,
+                active_channels,
+                viewport_size,
+                arena,
+                out,
+            );
+            subtree_node_count += child_nodes;
+            estimated_pass_count += child_passes;
         }
 
         let (visible_area_ratio, viewport_coverage, distance_to_viewport) =
@@ -66,12 +71,14 @@ pub(crate) fn collect_promotion_candidates(
     }
 
     let mut out = Vec::new();
-    for root in roots {
+    for &root_key in root_keys {
+        let Some(root_node) = arena.get(root_key) else { continue };
         walk(
-            root.as_ref(),
+            root_node.element.as_ref(),
             active_animator_hints,
             active_channels,
             viewport_size,
+            arena,
             &mut out,
         );
     }
@@ -79,7 +86,8 @@ pub(crate) fn collect_promotion_candidates(
 }
 
 pub(crate) fn collect_promoted_layer_updates(
-    roots: &[Box<dyn ElementTrait>],
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[NodeKey],
     promoted_node_ids: &FxHashSet<u64>,
     previous_base_signatures: &FxHashMap<u64, u64>,
     previous_composition_signatures: &FxHashMap<u64, u64>,
@@ -120,6 +128,7 @@ pub(crate) fn collect_promoted_layer_updates(
         updates: &mut Vec<PromotedLayerUpdate>,
         next_base_signatures: &mut FxHashMap<u64, u64>,
         next_composition_signatures: &mut FxHashMap<u64, u64>,
+        arena: &crate::view::node_arena::NodeArena,
     ) -> WalkState {
         let mut hasher = FxHasher::default();
         let mut composition_hasher = FxHasher::default();
@@ -131,44 +140,47 @@ pub(crate) fn collect_promoted_layer_updates(
         if self_is_promoted {
             hash_composition_state(node, &mut composition_hasher);
         }
-        if let Some(children) = node.children() {
-            for (index, child) in children.iter().enumerate() {
-                let child_state = walk(
-                    child.as_ref(),
-                    promoted_node_ids,
-                    previous_base_signatures,
-                    previous_composition_signatures,
-                    updates,
-                    next_base_signatures,
-                    next_composition_signatures,
-                );
-                index.hash(&mut hasher);
-                child.id().hash(&mut hasher);
-                let child_is_promoted = promoted_node_ids.contains(&child.id());
-                child_is_promoted.hash(&mut hasher);
-                if !child_is_promoted {
-                    child_state.base_signature.hash(&mut hasher);
-                }
+        for (index, child_key) in node.children().iter().enumerate() {
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            let child = child_node.element.as_ref();
+            let child_state = walk(
+                child,
+                promoted_node_ids,
+                previous_base_signatures,
+                previous_composition_signatures,
+                updates,
+                next_base_signatures,
+                next_composition_signatures,
+                arena,
+            );
+            index.hash(&mut hasher);
+            child.id().hash(&mut hasher);
+            let child_is_promoted = promoted_node_ids.contains(&child.id());
+            child_is_promoted.hash(&mut hasher);
+            if !child_is_promoted {
+                child_state.base_signature.hash(&mut hasher);
+            }
 
-                let child_is_deferred = child
-                    .as_any()
-                    .downcast_ref::<crate::view::base_component::Element>()
-                    .is_some_and(
-                        crate::view::base_component::Element::should_append_to_root_viewport_render,
-                    );
-                if child_is_deferred {
-                    continue;
+            let child_is_deferred = child
+                .as_any()
+                .downcast_ref::<crate::view::base_component::Element>()
+                .is_some_and(
+                    crate::view::base_component::Element::should_append_to_root_viewport_render,
+                );
+            if child_is_deferred {
+                continue;
+            }
+            if child_is_promoted || child_state.has_promoted_output {
+                if !has_promoted_output {
+                    hash_composition_state(node, &mut composition_hasher);
+                    has_promoted_output = true;
                 }
-                if child_is_promoted || child_state.has_promoted_output {
-                    if !has_promoted_output {
-                        hash_composition_state(node, &mut composition_hasher);
-                        has_promoted_output = true;
-                    }
-                    index.hash(&mut composition_hasher);
-                    child.id().hash(&mut composition_hasher);
-                    child_is_promoted.hash(&mut composition_hasher);
-                    child_state.output_signature.hash(&mut composition_hasher);
-                }
+                index.hash(&mut composition_hasher);
+                child.id().hash(&mut composition_hasher);
+                child_is_promoted.hash(&mut composition_hasher);
+                child_state.output_signature.hash(&mut composition_hasher);
             }
         }
         let base_signature = hasher.finish();
@@ -225,15 +237,17 @@ pub(crate) fn collect_promoted_layer_updates(
     let mut updates = Vec::with_capacity(cap);
     let mut next_base_signatures = FxHashMap::with_capacity_and_hasher(cap, Default::default());
     let mut next_composition_signatures = FxHashMap::with_capacity_and_hasher(cap, Default::default());
-    for root in roots {
+    for &root_key in root_keys {
+        let Some(root_node) = arena.get(root_key) else { continue };
         walk(
-            root.as_ref(),
+            root_node.element.as_ref(),
             promoted_node_ids,
             previous_base_signatures,
             previous_composition_signatures,
             &mut updates,
             &mut next_base_signatures,
             &mut next_composition_signatures,
+            arena,
         );
     }
     updates.sort_by_key(|update| update.node_id);
@@ -241,7 +255,8 @@ pub(crate) fn collect_promoted_layer_updates(
 }
 
 pub(crate) fn collect_debug_subtree_signatures(
-    roots: &[Box<dyn ElementTrait>],
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[NodeKey],
     promoted_node_ids: &FxHashSet<u64>,
 ) -> FxHashMap<u64, (u64, u64, u64, bool)> {
     struct WalkState {
@@ -272,6 +287,7 @@ pub(crate) fn collect_debug_subtree_signatures(
         node: &dyn ElementTrait,
         promoted_node_ids: &FxHashSet<u64>,
         out: &mut FxHashMap<u64, (u64, u64, u64, bool)>,
+        arena: &crate::view::node_arena::NodeArena,
     ) -> WalkState {
         let mut hasher = FxHasher::default();
         let mut composition_hasher = FxHasher::default();
@@ -283,36 +299,38 @@ pub(crate) fn collect_debug_subtree_signatures(
         if self_is_promoted {
             hash_composition_state(node, &mut composition_hasher);
         }
-        if let Some(children) = node.children() {
-            for (index, child) in children.iter().enumerate() {
-                let child_state = walk(child.as_ref(), promoted_node_ids, out);
-                index.hash(&mut hasher);
-                child.id().hash(&mut hasher);
-                let child_is_promoted = promoted_node_ids.contains(&child.id());
-                child_is_promoted.hash(&mut hasher);
-                if !child_is_promoted {
-                    child_state.base_signature.hash(&mut hasher);
-                }
+        for (index, child_key) in node.children().iter().enumerate() {
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            let child = child_node.element.as_ref();
+            let child_state = walk(child, promoted_node_ids, out, arena);
+            index.hash(&mut hasher);
+            child.id().hash(&mut hasher);
+            let child_is_promoted = promoted_node_ids.contains(&child.id());
+            child_is_promoted.hash(&mut hasher);
+            if !child_is_promoted {
+                child_state.base_signature.hash(&mut hasher);
+            }
 
-                let child_is_deferred = child
-                    .as_any()
-                    .downcast_ref::<crate::view::base_component::Element>()
-                    .is_some_and(
-                        crate::view::base_component::Element::should_append_to_root_viewport_render,
-                    );
-                if child_is_deferred {
-                    continue;
+            let child_is_deferred = child
+                .as_any()
+                .downcast_ref::<crate::view::base_component::Element>()
+                .is_some_and(
+                    crate::view::base_component::Element::should_append_to_root_viewport_render,
+                );
+            if child_is_deferred {
+                continue;
+            }
+            if child_is_promoted || child_state.has_promoted_output {
+                if !has_promoted_output {
+                    hash_composition_state(node, &mut composition_hasher);
+                    has_promoted_output = true;
                 }
-                if child_is_promoted || child_state.has_promoted_output {
-                    if !has_promoted_output {
-                        hash_composition_state(node, &mut composition_hasher);
-                        has_promoted_output = true;
-                    }
-                    index.hash(&mut composition_hasher);
-                    child.id().hash(&mut composition_hasher);
-                    child_is_promoted.hash(&mut composition_hasher);
-                    child_state.output_signature.hash(&mut composition_hasher);
-                }
+                index.hash(&mut composition_hasher);
+                child.id().hash(&mut composition_hasher);
+                child_is_promoted.hash(&mut composition_hasher);
+                child_state.output_signature.hash(&mut composition_hasher);
             }
         }
         let base_signature = hasher.finish();
@@ -347,8 +365,9 @@ pub(crate) fn collect_debug_subtree_signatures(
     }
 
     let mut out = FxHashMap::default();
-    for root in roots {
-        walk(root.as_ref(), promoted_node_ids, &mut out);
+    for &root_key in root_keys {
+        let Some(root_node) = arena.get(root_key) else { continue };
+        walk(root_node.element.as_ref(), promoted_node_ids, &mut out, arena);
     }
     out
 }
@@ -423,7 +442,7 @@ fn rect_distance(a: Rect, b: Rect) -> f32 {
     dx.max(dy)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::style::{

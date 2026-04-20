@@ -34,8 +34,8 @@ pub struct Svg {
     source_key: u64,
     fit: ImageFit,
     sampling: ImageSampling,
-    loading_slot: Vec<Box<dyn ElementTrait>>,
-    error_slot: Vec<Box<dyn ElementTrait>>,
+    loading_slot: Vec<crate::view::node_arena::NodeKey>,
+    error_slot: Vec<crate::view::node_arena::NodeKey>,
     active_slot: ActiveSlot,
     active_raster_key: Option<u64>,
     active_raster_size: Option<(u32, u32)>,
@@ -75,11 +75,11 @@ impl Svg {
         self.element.apply_style(style);
     }
 
-    pub fn set_loading_slot(&mut self, slot: Vec<Box<dyn ElementTrait>>) {
+    pub fn set_loading_slot(&mut self, slot: Vec<crate::view::node_arena::NodeKey>) {
         self.loading_slot = slot;
     }
 
-    pub fn set_error_slot(&mut self, slot: Vec<Box<dyn ElementTrait>>) {
+    pub fn set_error_slot(&mut self, slot: Vec<crate::view::node_arena::NodeKey>) {
         self.error_slot = slot;
     }
 
@@ -87,7 +87,11 @@ impl Svg {
         snapshot_svg_document(self.source_key).unwrap_or(SvgDocumentSnapshot::Loading)
     }
 
-    fn sync_active_slot(&mut self, next_slot: ActiveSlot) {
+    fn sync_active_slot(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        next_slot: ActiveSlot,
+    ) {
         if self.active_slot == next_slot {
             return;
         }
@@ -96,7 +100,7 @@ impl Svg {
             ActiveSlot::Loading => std::mem::take(&mut self.loading_slot),
             ActiveSlot::Error => std::mem::take(&mut self.error_slot),
         };
-        let previous_children = self.element.replace_children(next_children);
+        let previous_children = self.element.replace_children(arena, next_children);
         match self.active_slot {
             ActiveSlot::None => {}
             ActiveSlot::Loading => self.loading_slot = previous_children,
@@ -216,24 +220,8 @@ impl ElementTrait for Svg {
         self.element.id()
     }
 
-    fn parent_id(&self) -> Option<u64> {
-        self.element.parent_id()
-    }
-
-    fn set_parent_id(&mut self, parent_id: Option<u64>) {
-        self.element.set_parent_id(parent_id);
-    }
-
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         self.element.box_model_snapshot()
-    }
-
-    fn children(&self) -> Option<&[Box<dyn ElementTrait>]> {
-        self.element.children()
-    }
-
-    fn children_mut(&mut self) -> Option<&mut [Box<dyn ElementTrait>]> {
-        self.element.children_mut()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -294,15 +282,23 @@ impl EventTarget for Svg {
 }
 
 impl Layoutable for Svg {
-    fn measure(&mut self, constraints: LayoutConstraints) {
+    fn measure(
+        &mut self,
+        constraints: LayoutConstraints,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         let snapshot = self.document_snapshot();
-        self.sync_active_slot(Self::resolve_document_slot(&snapshot));
-        self.element.measure(constraints);
+        self.sync_active_slot(arena, Self::resolve_document_slot(&snapshot));
+        self.element.measure(constraints, arena);
         self.apply_intrinsic_measurement(constraints, Self::intrinsic_size(&snapshot));
     }
 
-    fn place(&mut self, placement: LayoutPlacement) {
-        self.element.place(placement);
+    fn place(
+        &mut self,
+        placement: LayoutPlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.element.place(placement, arena);
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -343,12 +339,17 @@ impl Drop for Svg {
 }
 
 impl Renderable for Svg {
-    fn build(&mut self, graph: &mut FrameGraph, ctx: UiBuildContext) -> super::BuildState {
+    fn build(
+        &mut self,
+        graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        ctx: UiBuildContext,
+    ) -> super::BuildState {
         let document_snapshot = self.document_snapshot();
-        self.sync_active_slot(Self::resolve_document_slot(&document_snapshot));
+        self.sync_active_slot(arena, Self::resolve_document_slot(&document_snapshot));
 
         let viewport = ctx.viewport();
-        let base_state = self.element.build_base_only(graph, ctx);
+        let base_state = self.element.build_base_only(graph, arena, ctx);
         let mut ctx = UiBuildContext::from_parts(viewport, base_state);
         let SvgDocumentSnapshot::Ready {
             intrinsic_width,
@@ -377,7 +378,7 @@ impl Renderable for Svg {
             ImageSnapshot::Error(_) => ActiveSlot::Error,
             ImageSnapshot::Ready(_) => ActiveSlot::None,
         };
-        self.sync_active_slot(active_slot);
+        self.sync_active_slot(arena, active_slot);
         let ImageSnapshot::Ready(image) = snapshot else {
             return ctx.into_state();
         };
@@ -451,6 +452,7 @@ mod tests {
     use crate::time::{Duration, Instant};
     use crate::view::SvgSource;
     use crate::view::base_component::{LayoutConstraints, Layoutable};
+    use crate::view::test_support::new_test_arena;
 
     fn simple_svg() -> SvgSource {
         SvgSource::Content(
@@ -463,14 +465,18 @@ mod tests {
         let mut svg = Svg::new_with_id(1, simple_svg());
         svg.apply_style(Style::new());
         std::thread::sleep(std::time::Duration::from_millis(10));
-        svg.measure(LayoutConstraints {
-            max_width: 500.0,
-            max_height: 500.0,
-            viewport_width: 500.0,
-            viewport_height: 500.0,
-            percent_base_width: None,
-            percent_base_height: None,
-        });
+        let mut arena = new_test_arena();
+        svg.measure(
+            LayoutConstraints {
+                max_width: 500.0,
+                max_height: 500.0,
+                viewport_width: 500.0,
+                viewport_height: 500.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            &mut arena,
+        );
         assert_eq!(svg.measured_size(), (80.0, 40.0));
     }
 

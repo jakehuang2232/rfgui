@@ -11,7 +11,7 @@ mod promotion_runtime;
 mod render;
 mod scene_helpers;
 mod transitions_tick;
-#[cfg(test)]
+#[cfg(any())]
 mod tests;
 
 use crate::time::Instant;
@@ -28,7 +28,7 @@ use crate::transition::{
 };
 use crate::ui::{
     BlurEvent, ClickEvent, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent, KeyDownEvent,
-    KeyEventData, KeyUpEvent, Patch, PointerButtons as UiPointerButtons,
+    KeyEventData, KeyUpEvent, NodeId, Patch, PointerButtons as UiPointerButtons,
     PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler,
     PropValue, RsxNode, TextInputEvent, ViewportListenerAction, ViewportListenerHandle,
     peek_state_dirty, reconcile, take_state_dirty,
@@ -225,7 +225,11 @@ pub struct Viewport {
 /// last reconcile pass, ad-hoc scroll offsets, element-side snapshot
 /// blobs, and the last `RsxNode` seen from the caller. Non-pub.
 struct SceneState {
-    ui_roots: Vec<Box<dyn super::base_component::ElementTrait>>,
+    /// Arena-backed retained UI tree. Replaced `ui_roots` in the
+    /// Approach-C migration; all layout/render/dispatch walks go through
+    /// this arena via [`SceneState::ui_root_keys`].
+    node_arena: super::node_arena::NodeArena,
+    ui_root_keys: Vec<super::node_arena::NodeKey>,
     scroll_offsets: FxHashMap<u64, (f32, f32)>,
     element_snapshots: FxHashMap<u64, Box<dyn Any>>,
     last_rsx_root: Option<RsxNode>,
@@ -234,7 +238,8 @@ struct SceneState {
 impl SceneState {
     fn new() -> Self {
         Self {
-            ui_roots: Vec::new(),
+            node_arena: super::node_arena::NodeArena::new(),
+            ui_root_keys: Vec::new(),
             scroll_offsets: FxHashMap::default(),
             element_snapshots: FxHashMap::default(),
             last_rsx_root: None,

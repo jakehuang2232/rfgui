@@ -625,10 +625,6 @@ impl Element {
         self.core.id
     }
 
-    pub fn parent_id(&self) -> Option<u64> {
-        self.core.parent_id
-    }
-
     pub(crate) fn child_layout_origin(&self) -> (f32, f32) {
         (
             self.layout_flow_inner_position.x - self.scroll_offset.x,
@@ -640,33 +636,41 @@ impl Element {
         (self.layout_flow_position.x, self.layout_flow_position.y)
     }
 
-    pub fn add_child(&mut self, child: Box<dyn ElementTrait>) {
-        let mut child = child;
-        if child.parent_id() != Some(self.core.id) {
-            child.set_parent_id(Some(self.core.id));
-        }
-        if let Some(element) = child.as_any().downcast_ref::<Element>() {
-            self.has_absolute_descendant_for_hit_test |= element
-                .is_absolute_positioned_for_hit_test()
-                || element.has_absolute_descendant_for_hit_test;
+    /// Append a pre-inserted arena node as child. Caller must already have
+    /// inserted the child into the arena and set its `Node.parent` to this
+    /// element's own key.
+    ///
+    /// Approach-C migration: old API took `Box<dyn ElementTrait>` and
+    /// pushed into a `Vec<Box<_>>` owned by this element. That ownership
+    /// now lives in [`crate::view::node_arena::NodeArena`]; callers hand
+    /// keys instead.
+    pub fn add_child(&mut self, arena: &crate::view::node_arena::NodeArena, child: crate::view::node_arena::NodeKey) {
+        if let Some(child_node) = arena.get(child) {
+            if let Some(element) = child_node.element.as_any().downcast_ref::<Element>() {
+                self.has_absolute_descendant_for_hit_test |= element
+                    .is_absolute_positioned_for_hit_test()
+                    || element.has_absolute_descendant_for_hit_test;
+            }
         }
         self.children.push(child);
         self.mark_layout_dirty();
     }
 
+    /// Replace the child-key list wholesale. Returns the previous keys so
+    /// the caller can remove the corresponding nodes from the arena.
     pub(crate) fn replace_children(
         &mut self,
-        mut children: Vec<Box<dyn ElementTrait>>,
-    ) -> Vec<Box<dyn ElementTrait>> {
+        arena: &crate::view::node_arena::NodeArena,
+        children: Vec<crate::view::node_arena::NodeKey>,
+    ) -> Vec<crate::view::node_arena::NodeKey> {
         self.has_absolute_descendant_for_hit_test = false;
-        for child in &mut children {
-            if child.parent_id() != Some(self.core.id) {
-                child.set_parent_id(Some(self.core.id));
-            }
-            if let Some(element) = child.as_any().downcast_ref::<Element>() {
-                self.has_absolute_descendant_for_hit_test |= element
-                    .is_absolute_positioned_for_hit_test()
-                    || element.has_absolute_descendant_for_hit_test;
+        for child in &children {
+            if let Some(child_node) = arena.get(*child) {
+                if let Some(element) = child_node.element.as_any().downcast_ref::<Element>() {
+                    self.has_absolute_descendant_for_hit_test |= element
+                        .is_absolute_positioned_for_hit_test()
+                        || element.has_absolute_descendant_for_hit_test;
+                }
             }
         }
         self.mark_layout_dirty();
@@ -694,15 +698,23 @@ impl Element {
             && self.computed_style.position.clip_mode() == ClipMode::Viewport
     }
 
-    fn collect_root_viewport_deferred_descendants(&self, ctx: &mut UiBuildContext) {
-        for child in &self.children {
-            let Some(element) = child.as_any().downcast_ref::<Element>() else {
+    /// Recurses through `Node.children` keys in the arena. Caller must
+    /// pass a live arena reference since children now live there rather
+    /// than nested under this element.
+    fn collect_root_viewport_deferred_descendants(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        ctx: &mut UiBuildContext,
+    ) {
+        for child_key in &self.children {
+            let Some(child_node) = arena.get(*child_key) else { continue };
+            let Some(element) = child_node.element.as_any().downcast_ref::<Element>() else {
                 continue;
             };
             if element.should_append_to_root_viewport_render() {
                 ctx.append_to_defer(element.id());
             }
-            element.collect_root_viewport_deferred_descendants(ctx);
+            element.collect_root_viewport_deferred_descendants(arena, ctx);
         }
     }
 }

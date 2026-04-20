@@ -289,7 +289,11 @@ impl Element {
         self.border_radius = self.border_radii.max();
     }
 
-    fn update_content_size_from_children(&mut self) {
+    fn update_content_size_from_children(
+        &mut self,
+        arena: &crate::view::node_arena::NodeArena,
+        absolute_mask: &[bool],
+    ) {
         if self.children.is_empty() {
             self.content_size = Size {
                 width: 0.0,
@@ -299,12 +303,16 @@ impl Element {
         }
         let mut max_x = 0.0_f32;
         let mut max_y = 0.0_f32;
-        for (idx, child) in self.children.iter().enumerate() {
-            if self.child_is_absolute(idx) {
+        for (idx, child_key) in self.children.iter().copied().enumerate() {
+            if absolute_mask.get(idx).copied().unwrap_or(false) {
                 continue;
             }
-            let snapshot = child.box_model_snapshot();
-            let (child_flow_x, child_flow_y) = child
+            let Some(child_node) = arena.get(child_key) else {
+                continue;
+            };
+            let snapshot = child_node.element.box_model_snapshot();
+            let (child_flow_x, child_flow_y) = child_node
+                .element
                 .as_any()
                 .downcast_ref::<Element>()
                 .map(|el| (el.layout_flow_position.x, el.layout_flow_position.y))
@@ -327,21 +335,25 @@ impl Element {
         self.scroll_offset.y = self.scroll_offset.y.clamp(0.0, max_y);
     }
 
-    fn update_size_from_measured_children(&mut self) {
-        let has_in_flow_children = self
-            .children
-            .iter()
-            .enumerate()
-            .any(|(idx, _)| !self.child_is_absolute(idx));
+    fn update_size_from_measured_children(
+        &mut self,
+        arena: &crate::view::node_arena::NodeArena,
+        absolute_mask: &[bool],
+    ) {
+        let has_in_flow_children = absolute_mask.iter().any(|is_abs| !*is_abs)
+            && absolute_mask.len() == self.children.len();
 
         let mut max_w = 0.0_f32;
         let mut max_h = 0.0_f32;
         if has_in_flow_children {
-            for (idx, child) in self.children.iter().enumerate() {
-                if self.child_is_absolute(idx) {
+            for (idx, child_key) in self.children.iter().copied().enumerate() {
+                if absolute_mask.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
-                let (w, h) = child.measured_size();
+                let Some(child_node) = arena.get(child_key) else {
+                    continue;
+                };
+                let (w, h) = child_node.element.measured_size();
                 max_w = max_w.max(w);
                 max_h = max_h.max(h);
             }
@@ -1066,38 +1078,91 @@ impl Element {
         })
     }
 
-    fn child_is_absolute(&self, index: usize) -> bool {
+    fn child_is_absolute(
+        &self,
+        index: usize,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> bool {
         self.children
             .get(index)
-            .and_then(|child| child.as_any().downcast_ref::<Element>())
-            .is_some_and(|el| el.computed_style.position.mode() == PositionMode::Absolute)
-    }
-
-    fn child_renders_outside_inner_clip(&self, index: usize) -> bool {
-        self.children
-            .get(index)
-            .and_then(|child| child.as_any().downcast_ref::<Element>())
-            .is_some_and(|el| {
-                if el.computed_style.position.mode() != PositionMode::Absolute {
-                    return false;
-                }
-                match el.computed_style.position.clip_mode() {
-                    ClipMode::Parent => false,
-                    ClipMode::Viewport => true,
-                    ClipMode::AnchorParent => el.computed_style.position.anchor_name().is_some(),
-                }
+            .and_then(|k| arena.get(*k))
+            .and_then(|node| {
+                node.element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .map(|el| el.computed_style.position.mode() == PositionMode::Absolute)
             })
+            .unwrap_or(false)
     }
 
-    fn recompute_absolute_descendant_for_hit_test(&mut self) {
-        self.has_absolute_descendant_for_hit_test = self.children.iter().any(|child| {
-            child
-                .as_any()
-                .downcast_ref::<Element>()
-                .is_some_and(|element| {
-                    element.is_absolute_positioned_for_hit_test()
-                        || element.has_absolute_descendant_for_hit_test
+    /// Build a parallel `Vec<bool>` matching `self.children` indices where
+    /// each entry is `child_is_absolute(idx)`. Running this once at the top
+    /// of `place_children` (and then re-using the slice across the two
+    /// place passes + `update_size_from_measured_children` +
+    /// `update_content_size_from_children`) converts 3–5 redundant per-child
+    /// downcasts into a single pass. Cheap to call; caller owns the buffer.
+    pub(crate) fn compute_children_absolute_mask(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> Vec<bool> {
+        let mut mask = Vec::with_capacity(self.children.len());
+        for child_key in &self.children {
+            let is_abs = arena
+                .get(*child_key)
+                .and_then(|node| {
+                    node.element
+                        .as_any()
+                        .downcast_ref::<Element>()
+                        .map(|el| el.computed_style.position.mode() == PositionMode::Absolute)
                 })
+                .unwrap_or(false);
+            mask.push(is_abs);
+        }
+        mask
+    }
+
+    fn child_renders_outside_inner_clip(
+        &self,
+        index: usize,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> bool {
+        self.children
+            .get(index)
+            .and_then(|k| arena.get(*k))
+            .and_then(|node| {
+                node.element.as_any().downcast_ref::<Element>().map(|el| {
+                    if el.computed_style.position.mode() != PositionMode::Absolute {
+                        return false;
+                    }
+                    match el.computed_style.position.clip_mode() {
+                        ClipMode::Parent => false,
+                        ClipMode::Viewport => true,
+                        ClipMode::AnchorParent => {
+                            el.computed_style.position.anchor_name().is_some()
+                        }
+                    }
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn recompute_absolute_descendant_for_hit_test(
+        &mut self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) {
+        self.has_absolute_descendant_for_hit_test = self.children.iter().any(|child_key| {
+            arena
+                .get(*child_key)
+                .and_then(|node| {
+                    node.element
+                        .as_any()
+                        .downcast_ref::<Element>()
+                        .map(|el| {
+                            el.is_absolute_positioned_for_hit_test()
+                                || el.has_absolute_descendant_for_hit_test
+                        })
+                })
+                .unwrap_or(false)
         });
     }
 
@@ -1111,6 +1176,7 @@ impl Element {
         child_available_height: f32,
         child_inner_width: f32,
         child_inner_height: f32,
+        arena: &mut crate::view::node_arena::NodeArena,
     ) {
         let inherited_hit_test_clip = self.hit_test_clip_rect.unwrap_or(Rect {
             x: self.core.layout_position.x,
@@ -1144,6 +1210,7 @@ impl Element {
                 viewport_height,
                 child_percent_base_width,
                 child_percent_base_height,
+                arena,
             );
             let place_flex_elapsed_ms =
                 place_flex_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1163,25 +1230,35 @@ impl Element {
             let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
             let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
             let non_axis_children_started_at = Instant::now();
-            for idx in 0..self.children.len() {
-                if self.child_is_absolute(idx) {
+            let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
+            // Build the is-absolute mask once: each call is arena.get +
+            // RefCell::borrow + downcast, and this loop used to do it twice
+            // per child (non-abs then abs pass), with more redundant calls
+            // from update_content_size_from_children.
+            let absolute_mask = self.compute_children_absolute_mask(arena);
+            for (idx, child_key) in child_keys.iter().copied().enumerate() {
+                if absolute_mask.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
-                let child = &mut self.children[idx];
                 LAYOUT_PLACE_PROFILE.with(|profile| {
                     profile.borrow_mut().child_place_calls += 1;
                 });
-                child.place(LayoutPlacement {
-                    parent_x: origin_x,
-                    parent_y: origin_y,
-                    visual_offset_x,
-                    visual_offset_y,
-                    available_width: child_available_width,
-                    available_height: child_available_height,
-                    viewport_width,
-                    viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
+                arena.with_element_taken(child_key, |child, arena| {
+                    child.place(
+                        LayoutPlacement {
+                            parent_x: origin_x,
+                            parent_y: origin_y,
+                            visual_offset_x,
+                            visual_offset_y,
+                            available_width: child_available_width,
+                            available_height: child_available_height,
+                            viewport_width,
+                            viewport_height,
+                            percent_base_width: child_percent_base_width,
+                            percent_base_height: child_percent_base_height,
+                        },
+                        arena,
+                    );
                 });
             }
             let non_axis_children_elapsed_ms =
@@ -1190,27 +1267,31 @@ impl Element {
                 profile.borrow_mut().non_axis_child_place_ms += non_axis_children_elapsed_ms;
             });
             let absolute_children_started_at = Instant::now();
-            for idx in 0..self.children.len() {
-                if !self.child_is_absolute(idx) {
+            for (idx, child_key) in child_keys.iter().copied().enumerate() {
+                if !absolute_mask.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
-                let child = &mut self.children[idx];
                 LAYOUT_PLACE_PROFILE.with(|profile| {
                     let mut profile = profile.borrow_mut();
                     profile.child_place_calls += 1;
                     profile.absolute_child_place_calls += 1;
                 });
-                child.place(LayoutPlacement {
-                    parent_x: origin_x,
-                    parent_y: origin_y,
-                    visual_offset_x,
-                    visual_offset_y,
-                    available_width: child_available_width,
-                    available_height: child_available_height,
-                    viewport_width,
-                    viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
+                arena.with_element_taken(child_key, |child, arena| {
+                    child.place(
+                        LayoutPlacement {
+                            parent_x: origin_x,
+                            parent_y: origin_y,
+                            visual_offset_x,
+                            visual_offset_y,
+                            available_width: child_available_width,
+                            available_height: child_available_height,
+                            viewport_width,
+                            viewport_height,
+                            percent_base_width: child_percent_base_width,
+                            percent_base_height: child_percent_base_height,
+                        },
+                        arena,
+                    );
                 });
             }
             let absolute_children_elapsed_ms =
@@ -1219,8 +1300,12 @@ impl Element {
                 profile.borrow_mut().absolute_child_place_ms += absolute_children_elapsed_ms;
             });
         }
+        // Mask is scoped per-branch above (axis layout builds its own);
+        // recompute once here so both branches feed the helper without
+        // paying for another per-child downcast inside it.
+        let absolute_mask_for_content = self.compute_children_absolute_mask(arena);
         let update_content_size_started_at = Instant::now();
-        self.update_content_size_from_children();
+        self.update_content_size_from_children(arena, &absolute_mask_for_content);
         let update_content_size_elapsed_ms =
             update_content_size_started_at.elapsed().as_secs_f64() * 1000.0;
         LAYOUT_PLACE_PROFILE.with(|profile| {
@@ -1233,7 +1318,7 @@ impl Element {
             profile.borrow_mut().clamp_scroll_ms += clamp_scroll_elapsed_ms;
         });
         let recompute_hit_test_started_at = Instant::now();
-        self.recompute_absolute_descendant_for_hit_test();
+        self.recompute_absolute_descendant_for_hit_test(arena);
         let recompute_hit_test_elapsed_ms =
             recompute_hit_test_started_at.elapsed().as_secs_f64() * 1000.0;
         LAYOUT_PLACE_PROFILE.with(|profile| {
@@ -1253,6 +1338,7 @@ impl Element {
         viewport_height: f32,
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
+        arena: &mut crate::view::node_arena::NodeArena,
     ) {
         if self.children.is_empty() {
             return;
@@ -1270,6 +1356,7 @@ impl Element {
                 viewport_height,
                 child_percent_base_width,
                 child_percent_base_height,
+                arena,
             )
         };
 
@@ -1319,6 +1406,7 @@ impl Element {
             for (item_idx, item) in line.iter().enumerate() {
                 let child_idx = item.child_index;
                 let item_main = item.main;
+                let child_key = self.children[child_idx];
                 LAYOUT_PLACE_PROFILE.with(|profile| {
                     profile.borrow_mut().child_place_calls += 1;
                 });
@@ -1336,62 +1424,72 @@ impl Element {
                             main_cursor + item.main_offset,
                         )
                     };
-                    self.children[child_idx].place_inline(InlinePlacement {
-                        node_index: item.node_index,
-                        x: origin_x + visual_offset_x + offset_x,
-                        y: origin_y + visual_offset_y + offset_y,
-                        offset_x,
-                        offset_y,
-                        parent_x: origin_x,
-                        parent_y: origin_y,
-                        visual_offset_x,
-                        visual_offset_y,
-                        available_width: child_available_width,
-                        available_height: child_available_height,
-                        viewport_width,
-                        viewport_height,
-                        percent_base_width: child_percent_base_width,
-                        percent_base_height: child_percent_base_height,
+                    arena.with_element_taken(child_key, |child, arena| {
+                        child.place_inline(
+                            InlinePlacement {
+                                node_index: item.node_index,
+                                x: origin_x + visual_offset_x + offset_x,
+                                y: origin_y + visual_offset_y + offset_y,
+                                offset_x,
+                                offset_y,
+                                parent_x: origin_x,
+                                parent_y: origin_y,
+                                visual_offset_x,
+                                visual_offset_y,
+                                available_width: child_available_width,
+                                available_height: child_available_height,
+                                viewport_width,
+                                viewport_height,
+                                percent_base_width: child_percent_base_width,
+                                percent_base_height: child_percent_base_height,
+                            },
+                            arena,
+                        );
                     });
                 } else {
-                    if is_row {
-                        self.children[child_idx].set_layout_width(item_main);
-                    } else {
-                        self.children[child_idx].set_layout_height(item_main);
-                    }
-                    let stretched_cross = if cross_size == CrossSize::Stretch
-                        && self.children[child_idx].flex_props().allows_cross_stretch(is_row)
-                    {
+                    arena.with_element_taken(child_key, |child, arena| {
                         if is_row {
-                            self.children[child_idx].set_layout_height(line_cross);
+                            child.set_layout_width(item_main);
                         } else {
-                            self.children[child_idx].set_layout_width(line_cross);
+                            child.set_layout_height(item_main);
                         }
-                        Some(line_cross)
-                    } else {
-                        None
-                    };
-                    let alignment_cross = self.children[child_idx]
-                        .cross_alignment_size(is_row, stretched_cross)
-                        .max(0.0);
-                    let cross_offset = cross_item_offset(line_cross, alignment_cross, align);
-                    let (offset_x, offset_y) = if is_row {
-                        (main_cursor, cross_cursor + cross_offset)
-                    } else {
-                        (cross_cursor + cross_offset, main_cursor)
-                    };
-                    self.children[child_idx].set_layout_offset(offset_x, offset_y);
-                    self.children[child_idx].place(LayoutPlacement {
-                        parent_x: origin_x,
-                        parent_y: origin_y,
-                        visual_offset_x,
-                        visual_offset_y,
-                        available_width: child_available_width,
-                        available_height: child_available_height,
-                        viewport_width,
-                        viewport_height,
-                        percent_base_width: child_percent_base_width,
-                        percent_base_height: child_percent_base_height,
+                        let stretched_cross = if cross_size == CrossSize::Stretch
+                            && child.flex_props().allows_cross_stretch(is_row)
+                        {
+                            if is_row {
+                                child.set_layout_height(line_cross);
+                            } else {
+                                child.set_layout_width(line_cross);
+                            }
+                            Some(line_cross)
+                        } else {
+                            None
+                        };
+                        let alignment_cross = child
+                            .cross_alignment_size(is_row, stretched_cross, arena)
+                            .max(0.0);
+                        let cross_offset = cross_item_offset(line_cross, alignment_cross, align);
+                        let (offset_x, offset_y) = if is_row {
+                            (main_cursor, cross_cursor + cross_offset)
+                        } else {
+                            (cross_cursor + cross_offset, main_cursor)
+                        };
+                        child.set_layout_offset(offset_x, offset_y);
+                        child.place(
+                            LayoutPlacement {
+                                parent_x: origin_x,
+                                parent_y: origin_y,
+                                visual_offset_x,
+                                visual_offset_y,
+                                available_width: child_available_width,
+                                available_height: child_available_height,
+                                viewport_width,
+                                viewport_height,
+                                percent_base_width: child_percent_base_width,
+                                percent_base_height: child_percent_base_height,
+                            },
+                            arena,
+                        );
                     });
                 }
                 main_cursor += item_main;
@@ -1412,8 +1510,9 @@ impl Element {
         });
 
         let absolute_children_started_at = Instant::now();
-        for idx in 0..self.children.len() {
-            if !self.child_is_absolute(idx) {
+        let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
+        for (idx, child_key) in child_keys.iter().copied().enumerate() {
+            if !self.child_is_absolute(idx, arena) {
                 continue;
             }
             LAYOUT_PLACE_PROFILE.with(|profile| {
@@ -1421,17 +1520,22 @@ impl Element {
                 profile.child_place_calls += 1;
                 profile.absolute_child_place_calls += 1;
             });
-            self.children[idx].place(LayoutPlacement {
-                parent_x: origin_x,
-                parent_y: origin_y,
-                visual_offset_x,
-                visual_offset_y,
-                available_width: child_available_width,
-                available_height: child_available_height,
-                viewport_width,
-                viewport_height,
-                percent_base_width: child_percent_base_width,
-                percent_base_height: child_percent_base_height,
+            arena.with_element_taken(child_key, |child, arena| {
+                child.place(
+                    LayoutPlacement {
+                        parent_x: origin_x,
+                        parent_y: origin_y,
+                        visual_offset_x,
+                        visual_offset_y,
+                        available_width: child_available_width,
+                        available_height: child_available_height,
+                        viewport_width,
+                        viewport_height,
+                        percent_base_width: child_percent_base_width,
+                        percent_base_height: child_percent_base_height,
+                    },
+                    arena,
+                );
             });
         }
         let absolute_children_elapsed_ms =

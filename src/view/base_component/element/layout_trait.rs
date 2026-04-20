@@ -1,5 +1,9 @@
 impl Layoutable for Element {
-    fn measure(&mut self, constraints: LayoutConstraints) {
+    fn measure(
+        &mut self,
+        constraints: LayoutConstraints,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         self.layout_assigned_width = None;
         self.layout_assigned_height = None;
         let context = constraints.context();
@@ -12,8 +16,13 @@ impl Layoutable for Element {
             percent_base_height: context.percent_base_height,
         };
 
-        let child_layout_dirty = self.children.iter().any(|child| {
-            crate::view::base_component::subtree_dirty_flags(child.as_ref())
+        // Read the pre-computed per-frame cache instead of walking the
+        // entire subtree per child. The cache is refreshed by
+        // `NodeArena::refresh_subtree_dirty_cache` at the top of each
+        // layout pass (see `viewport/render.rs::run_layout_pass`).
+        let child_layout_dirty = self.children.iter().any(|child_key| {
+            arena
+                .cached_subtree_dirty(*child_key)
                 .intersects(DirtyFlags::LAYOUT)
         });
         let inline_measure_context_changed = self.is_fragmentable_inline_element()
@@ -37,7 +46,7 @@ impl Layoutable for Element {
             Layout::Inline | Layout::Flex { .. } | Layout::Flow { .. }
         );
         if is_axis_layout {
-            self.measure_flex_children(proposal);
+            self.measure_flex_children(proposal, arena);
         } else {
             let bw_l = resolve_px_or_zero(
                 self.computed_style.border_widths.left,
@@ -125,21 +134,28 @@ impl Layoutable for Element {
                 None
             };
 
-            for child in &mut self.children {
-                child.measure(LayoutConstraints {
-                    max_width: child_available_width,
-                    max_height: child_available_height,
-                    viewport_width: proposal.viewport_width,
-                    viewport_height: proposal.viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
+            let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
+            for child_key in child_keys {
+                arena.with_element_taken(child_key, |child, arena| {
+                    child.measure(
+                        LayoutConstraints {
+                            max_width: child_available_width,
+                            max_height: child_available_height,
+                            viewport_width: proposal.viewport_width,
+                            viewport_height: proposal.viewport_height,
+                            percent_base_width: child_percent_base_width,
+                            percent_base_height: child_percent_base_height,
+                        },
+                        arena,
+                    );
                 });
             }
 
             if self.computed_style.width == SizeValue::Auto
                 || self.computed_style.height == SizeValue::Auto
             {
-                self.update_size_from_measured_children();
+                let mask = self.compute_children_absolute_mask(arena);
+                self.update_size_from_measured_children(arena, &mask);
             }
         }
         self.apply_size_constraints(proposal, true);
@@ -150,11 +166,14 @@ impl Layoutable for Element {
         self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
     }
 
-    fn place(&mut self, placement: LayoutPlacement) {
-        let child_dirty_flags = self.children.iter().fold(DirtyFlags::NONE, |flags, child| {
-            flags.union(crate::view::base_component::subtree_dirty_flags(
-                child.as_ref(),
-            ))
+    fn place(
+        &mut self,
+        placement: LayoutPlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        // O(1) cache read per child; see refresh_subtree_dirty_cache.
+        let child_dirty_flags = self.children.iter().fold(DirtyFlags::NONE, |flags, child_key| {
+            flags.union(arena.cached_subtree_dirty(*child_key))
         });
         let runtime_dirty = self.dirty_flags.union(child_dirty_flags);
         if !runtime_dirty.intersects(
@@ -260,6 +279,7 @@ impl Layoutable for Element {
             child_available_height,
             child_layout_inner_size.width,
             child_layout_inner_size.height,
+            arena,
         );
         let place_children_elapsed_ms = place_children_started_at.elapsed().as_secs_f64() * 1000.0;
         LAYOUT_PLACE_PROFILE.with(|profile| {
@@ -294,7 +314,12 @@ impl Layoutable for Element {
         }
     }
 
-    fn cross_alignment_size(&self, is_row: bool, stretched_cross: Option<f32>) -> f32 {
+    fn cross_alignment_size(
+        &self,
+        is_row: bool,
+        stretched_cross: Option<f32>,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> f32 {
         let rendered_cross = if is_row {
             self.core.layout_size.height.max(0.0)
         } else {
@@ -376,31 +401,44 @@ impl Layoutable for Element {
         }
     }
 
-    fn measure_inline(&mut self, context: InlineMeasureContext) {
+    fn measure_inline(
+        &mut self,
+        context: InlineMeasureContext,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         if self.is_fragmentable_inline_element() {
             self.pending_inline_measure_context = Some(context);
-            self.measure(LayoutConstraints {
-                max_width: context.full_available_width.max(0.0),
-                max_height: 1_000_000.0,
-                viewport_width: context.viewport_width,
-                viewport_height: context.viewport_height,
-                percent_base_width: context.percent_base_width,
-                percent_base_height: context.percent_base_height,
-            });
+            self.measure(
+                LayoutConstraints {
+                    max_width: context.full_available_width.max(0.0),
+                    max_height: 1_000_000.0,
+                    viewport_width: context.viewport_width,
+                    viewport_height: context.viewport_height,
+                    percent_base_width: context.percent_base_width,
+                    percent_base_height: context.percent_base_height,
+                },
+                arena,
+            );
             self.pending_inline_measure_context = None;
         } else {
-            self.measure(LayoutConstraints {
-                max_width: context.first_available_width.max(0.0),
-                max_height: 1_000_000.0,
-                viewport_width: context.viewport_width,
-                viewport_height: context.viewport_height,
-                percent_base_width: context.percent_base_width,
-                percent_base_height: context.percent_base_height,
-            });
+            self.measure(
+                LayoutConstraints {
+                    max_width: context.first_available_width.max(0.0),
+                    max_height: 1_000_000.0,
+                    viewport_width: context.viewport_width,
+                    viewport_height: context.viewport_height,
+                    percent_base_width: context.percent_base_width,
+                    percent_base_height: context.percent_base_height,
+                },
+                arena,
+            );
         }
     }
 
-    fn get_inline_nodes_size(&self) -> Vec<InlineNodeSize> {
+    fn get_inline_nodes_size(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> Vec<InlineNodeSize> {
         if self.is_fragmentable_inline_element() {
             let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
@@ -408,7 +446,7 @@ impl Layoutable for Element {
                 .children
                 .iter()
                 .enumerate()
-                .filter(|(idx, _)| !self.child_is_absolute(*idx))
+                .filter(|(idx, _)| !self.child_is_absolute(*idx, arena))
                 .count();
             if inline_child_count > 1 {
                 if let Some(info) = self.flex_info.as_ref() {
@@ -433,11 +471,14 @@ impl Layoutable for Element {
                 return Vec::new();
             }
             let mut nodes = Vec::new();
-            for (idx, child) in self.children.iter().enumerate() {
-                if self.child_is_absolute(idx) {
+            for (idx, child_key) in self.children.iter().enumerate() {
+                if self.child_is_absolute(idx, arena) {
                     continue;
                 }
-                nodes.extend(child.get_inline_nodes_size());
+                if let Some(child_node) = arena.get(*child_key) {
+                    // Child's element borrow — forward but with a fresh arena ref.
+                    nodes.extend(child_node.element.get_inline_nodes_size(arena));
+                }
             }
             if let Some(first) = nodes.first_mut() {
                 first.width += left_inset;
@@ -451,7 +492,11 @@ impl Layoutable for Element {
         vec![InlineNodeSize { width, height }]
     }
 
-    fn place_inline(&mut self, placement: InlinePlacement) {
+    fn place_inline(
+        &mut self,
+        placement: InlinePlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         if self.is_fragmentable_inline_element() {
             let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
@@ -479,7 +524,7 @@ impl Layoutable for Element {
                 .children
                 .iter()
                 .enumerate()
-                .filter(|(idx, _)| !self.child_is_absolute(*idx))
+                .filter(|(idx, _)| !self.child_is_absolute(*idx, arena))
                 .count();
             let is_row = matches!(
                 self.computed_style.layout_axis_direction(),
@@ -539,11 +584,17 @@ impl Layoutable for Element {
                             placement.y + main_cursor + item.main_offset,
                         )
                     };
-                    self.children[item.child_index].place_inline(InlinePlacement {
-                        x,
-                        y,
-                        node_index: item.node_index,
-                        ..placement
+                    let child_key = self.children[item.child_index];
+                    arena.with_element_taken(child_key, |child, arena| {
+                        child.place_inline(
+                            InlinePlacement {
+                                x,
+                                y,
+                                node_index: item.node_index,
+                                ..placement
+                            },
+                            arena,
+                        );
                     });
                     main_cursor += item.main.max(0.0);
                     prev_child_index = Some(item.child_index);
@@ -554,11 +605,14 @@ impl Layoutable for Element {
                 let mut current = 0_usize;
                 let mut total_nodes = 0_usize;
                 let mut target: Option<(usize, usize, f32, f32)> = None;
-                for (child_idx, child) in self.children.iter().enumerate() {
-                    if self.child_is_absolute(child_idx) {
+                for (child_idx, child_key) in self.children.iter().enumerate() {
+                    if self.child_is_absolute(child_idx, arena) {
                         continue;
                     }
-                    let nodes = child.get_inline_nodes_size();
+                    let nodes = arena
+                        .get(*child_key)
+                        .map(|n| n.element.get_inline_nodes_size(arena))
+                        .unwrap_or_default();
                     total_nodes += nodes.len();
                     if target.is_none() && placement.node_index < current + nodes.len() {
                         let local_index = placement.node_index - current;
@@ -570,16 +624,22 @@ impl Layoutable for Element {
                 let Some((child_idx, local_index, width, height)) = target else {
                     return;
                 };
-                self.children[child_idx].place_inline(InlinePlacement {
-                    x: placement.x
-                        + if placement.node_index == 0 {
-                            left_inset
-                        } else {
-                            0.0
+                let child_key = self.children[child_idx];
+                arena.with_element_taken(child_key, |child, arena| {
+                    child.place_inline(
+                        InlinePlacement {
+                            x: placement.x
+                                + if placement.node_index == 0 {
+                                    left_inset
+                                } else {
+                                    0.0
+                                },
+                            y: placement.y,
+                            node_index: local_index,
+                            ..placement
                         },
-                    y: placement.y,
-                    node_index: local_index,
-                    ..placement
+                        arena,
+                    );
                 });
                 (width.max(0.0), height.max(0.0), total_nodes)
             };
@@ -646,18 +706,21 @@ impl Layoutable for Element {
             );
         } else {
             self.set_layout_offset(placement.offset_x, placement.offset_y);
-            self.place(LayoutPlacement {
-                parent_x: placement.parent_x,
-                parent_y: placement.parent_y,
-                visual_offset_x: placement.visual_offset_x,
-                visual_offset_y: placement.visual_offset_y,
-                available_width: placement.available_width,
-                available_height: placement.available_height,
-                viewport_width: placement.viewport_width,
-                viewport_height: placement.viewport_height,
-                percent_base_width: placement.percent_base_width,
-                percent_base_height: placement.percent_base_height,
-            });
+            self.place(
+                LayoutPlacement {
+                    parent_x: placement.parent_x,
+                    parent_y: placement.parent_y,
+                    visual_offset_x: placement.visual_offset_x,
+                    visual_offset_y: placement.visual_offset_y,
+                    available_width: placement.available_width,
+                    available_height: placement.available_height,
+                    viewport_width: placement.viewport_width,
+                    viewport_height: placement.viewport_height,
+                    percent_base_width: placement.percent_base_width,
+                    percent_base_height: placement.percent_base_height,
+                },
+                arena,
+            );
         }
     }
 }
