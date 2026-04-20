@@ -33,12 +33,14 @@ impl Viewport {
         root_keys: &[crate::view::node_arena::NodeKey],
         hovered_node_id: &mut Option<crate::view::node_arena::NodeKey>,
         next_target: Option<crate::view::node_arena::NodeKey>,
+        pointer: crate::ui::PointerEventData,
     ) -> (bool, bool) {
         let transition_dispatched = crate::view::base_component::dispatch_hover_transition(
             arena,
             root_keys,
             *hovered_node_id,
             next_target,
+            pointer,
         );
         *hovered_node_id = next_target;
         let hover_changed = Self::apply_hover_target(arena, root_keys, next_target);

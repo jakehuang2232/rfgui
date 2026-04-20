@@ -169,6 +169,35 @@ impl Runner {
             });
             let _ = viewport.dispatch_platform_key_event(&platform_event);
         }
+        // Clipboard shortcuts: Cmd/Ctrl+C/X/V on key-down. Fire the
+        // semantic event in addition to the raw key event so apps can
+        // react either way. Skip during IME composition to avoid
+        // stepping on conversion gestures.
+        if pressed && !self.ime_composing && modifiers.command() {
+            use rfgui::platform::input::Key;
+            match rf_key {
+                Key::KeyC => {
+                    if let Some(viewport) = self.viewport.as_mut() {
+                        let _ = viewport.dispatch_copy_event();
+                    }
+                }
+                Key::KeyX => {
+                    if let Some(viewport) = self.viewport.as_mut() {
+                        let _ = viewport.dispatch_cut_event();
+                    }
+                }
+                Key::KeyV => {
+                    if let Some(text) = self.clipboard.get() {
+                        if !text.is_empty() {
+                            if let Some(viewport) = self.viewport.as_mut() {
+                                let _ = viewport.dispatch_paste_event(text);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         if pressed && !self.ime_composing {
             if let Some(text) = event.text.as_ref() {
                 if !text.is_empty()
@@ -180,6 +209,8 @@ impl Runner {
                 {
                     let ti = PlatformTextInput {
                         text: text.to_string(),
+                        input_type: rfgui::platform::PlatformInputType::Typing,
+                        is_composing: false,
                     };
                     let ti_event = AppEvent::TextInput(ti.clone());
                     if let Some(viewport) = self.viewport.as_mut() {
@@ -199,6 +230,9 @@ impl Runner {
         match ime {
             Ime::Enabled => {
                 self.ime_composing = false;
+                if let Some(viewport) = self.viewport.as_mut() {
+                    let _ = viewport.dispatch_ime_enabled_event();
+                }
             }
             Ime::Disabled => {
                 self.ime_composing = false;
@@ -206,9 +240,13 @@ impl Runner {
                     text: String::new(),
                     cursor_start: None,
                     cursor_end: None,
+                    selection_start: None,
+                    selection_end: None,
+                    attributes: Vec::new(),
                 };
                 if let Some(viewport) = self.viewport.as_mut() {
                     let _ = viewport.dispatch_platform_ime_preedit(&preedit);
+                    let _ = viewport.dispatch_ime_disabled_event();
                 }
             }
             Ime::Preedit(text, cursor) => {
@@ -221,6 +259,9 @@ impl Runner {
                     text,
                     cursor_start: start,
                     cursor_end: end,
+                    selection_start: None,
+                    selection_end: None,
+                    attributes: Vec::new(),
                 };
                 let app_event = AppEvent::ImePreedit(preedit.clone());
                 if let Some(viewport) = self.viewport.as_mut() {
@@ -237,7 +278,11 @@ impl Runner {
                 if text.is_empty() {
                     return;
                 }
-                let ti = PlatformTextInput { text };
+                let ti = PlatformTextInput {
+                    text: text.clone(),
+                    input_type: rfgui::platform::PlatformInputType::ImeCommit,
+                    is_composing: false,
+                };
                 let app_event = AppEvent::TextInput(ti.clone());
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport.dispatch_app_event(&app_event, PlatformServices {
@@ -245,6 +290,9 @@ impl Runner {
                         cursor: &mut self.cursor,
                         redraw: &self.redraw,
                     });
+                    // Fire the dedicated lifecycle event first so observers see
+                    // the commit before the text-input insertion path runs.
+                    let _ = viewport.dispatch_ime_commit_event(text);
                     let _ = viewport.dispatch_platform_text_input(&ti);
                 }
             }
@@ -353,9 +401,80 @@ impl Runner {
                 *self.redraw_flag.lock().unwrap() = false;
                 window.request_redraw();
             }
+            for cmd in &requests.window_commands {
+                apply_window_command(window, cmd);
+            }
+            for cmd in &requests.ime_commands {
+                apply_ime_command(window, cmd);
+            }
         }
         if let Some(text) = requests.clipboard_write {
             self.clipboard.set(&text);
+        }
+        if requests.request_paste {
+            if let Some(text) = self.clipboard.get() {
+                if !text.is_empty() {
+                    if let Some(viewport) = self.viewport.as_mut() {
+                        let _ = viewport.dispatch_paste_event(text);
+                    }
+                }
+            }
+        }
+        // `pending_drags` still unhandled — Sprint 8b wires drag state
+        // machine & OS drag bridge.
+        let _ = requests.pending_drags;
+    }
+}
+
+fn apply_window_command(window: &Window, cmd: &rfgui::platform::WindowCommand) {
+    use rfgui::platform::WindowCommand;
+    match cmd {
+        WindowCommand::Close => {
+            // winit 0.30 has no explicit close method on `Window`; the
+            // runner needs an `ActiveEventLoop` to call `exit()`. Caller
+            // should send a close via an app channel instead. We swallow
+            // for now so handlers can at least express intent.
+        }
+        WindowCommand::Minimize => {
+            window.set_minimized(true);
+        }
+        WindowCommand::Maximize => {
+            window.set_maximized(true);
+        }
+        WindowCommand::Restore => {
+            window.set_minimized(false);
+            window.set_maximized(false);
+        }
+        WindowCommand::SetFullscreen(enable) => {
+            use winit::window::Fullscreen;
+            window.set_fullscreen(if *enable {
+                Some(Fullscreen::Borderless(None))
+            } else {
+                None
+            });
+        }
+        WindowCommand::SetTitle(title) => {
+            window.set_title(title);
+        }
+    }
+}
+
+fn apply_ime_command(window: &Window, cmd: &rfgui::platform::ImeCommand) {
+    use rfgui::platform::ImeCommand;
+    match cmd {
+        ImeCommand::Enable => {
+            window.set_ime_allowed(true);
+        }
+        ImeCommand::Disable => {
+            window.set_ime_allowed(false);
+        }
+        ImeCommand::SetCursorRect(x, y, w, h) => {
+            use winit::dpi::LogicalPosition;
+            use winit::dpi::LogicalSize;
+            window.set_ime_cursor_area(
+                LogicalPosition::new(*x as f64, *y as f64),
+                LogicalSize::new(*w as f64, *h as f64),
+            );
         }
     }
 }
@@ -413,9 +532,11 @@ impl ApplicationHandler for Runner {
             WindowEvent::Resized(size) => {
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport.set_size(size.width, size.height);
+                    let scale = viewport.scale_factor();
                     let ev = AppEvent::Resized {
                         width: size.width,
                         height: size.height,
+                        scale,
                     };
                     viewport.dispatch_app_event(&ev, PlatformServices {
                         clipboard: self.clipboard.as_mut(),
@@ -432,6 +553,7 @@ impl ApplicationHandler for Runner {
                     viewport.set_scale_factor(scale_factor as f32);
                     let ev = AppEvent::ScaleFactorChanged {
                         scale: scale_factor as f32,
+                        suggested_size: None,
                     };
                     viewport.dispatch_app_event(&ev, PlatformServices {
                         clipboard: self.clipboard.as_mut(),
@@ -530,20 +652,24 @@ impl ApplicationHandler for Runner {
                 let Some((dx, dy)) = self.normalize_wheel(delta) else {
                     return;
                 };
-                let ev = AppEvent::Wheel(PlatformWheelEvent {
+                let position = self.last_mouse_logical.unwrap_or((0.0, 0.0));
+                let wheel = PlatformWheelEvent {
                     delta_x: -dx,
                     delta_y: -dy,
-                });
+                    position,
+                    modifiers: rfgui::platform::Modifiers::empty(),
+                    delta_mode: rfgui::platform::WheelDeltaMode::Pixel,
+                    phase: rfgui::platform::WheelPhase::Changed,
+                    timestamp: rfgui::time::Instant::now(),
+                };
+                let ev = AppEvent::Wheel(wheel);
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport.dispatch_app_event(&ev, PlatformServices {
                         clipboard: self.clipboard.as_mut(),
                         cursor: &mut self.cursor,
                         redraw: &self.redraw,
                     });
-                    let _ = viewport.dispatch_platform_wheel_event(&PlatformWheelEvent {
-                        delta_x: -dx,
-                        delta_y: -dy,
-                    });
+                    let _ = viewport.dispatch_platform_wheel_event(&wheel);
                 }
             }
             WindowEvent::Focused(focused) => {
@@ -577,6 +703,72 @@ impl ApplicationHandler for Runner {
             }
             WindowEvent::RedrawRequested => {
                 self.render_once();
+            }
+            WindowEvent::Moved(pos) => {
+                let ev = AppEvent::Moved { x: pos.x, y: pos.y };
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
+            }
+            WindowEvent::Occluded(occluded) => {
+                let ev = AppEvent::Occluded(occluded);
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
+            }
+            WindowEvent::ThemeChanged(theme) => {
+                let mapped = match theme {
+                    winit::window::Theme::Light => rfgui::app::WindowTheme::Light,
+                    winit::window::Theme::Dark => rfgui::app::WindowTheme::Dark,
+                };
+                let ev = AppEvent::ThemeChanged(mapped);
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
+            }
+            WindowEvent::HoveredFile(path) => {
+                // winit delivers one path per event; coalesce into a single
+                // `FilesHovered` call so downstream handlers see a batch.
+                let ev = AppEvent::FilesHovered(vec![path]);
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
+            }
+            WindowEvent::HoveredFileCancelled => {
+                let ev = AppEvent::FilesHoverCancelled;
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
+            }
+            WindowEvent::DroppedFile(path) => {
+                let ev = AppEvent::FilesDropped(vec![path]);
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.dispatch_app_event(&ev, PlatformServices {
+                        clipboard: self.clipboard.as_mut(),
+                        cursor: &mut self.cursor,
+                        redraw: &self.redraw,
+                    });
+                }
             }
             _ => {}
         }

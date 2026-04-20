@@ -3818,7 +3818,7 @@ mod tests {
     use super::{TextArea, TextAreaRenderFragmentKind};
     use crate::ColorLike;
     use crate::Length;
-    use crate::ui::{Binding, BlurEvent, EventMeta, FocusEvent, NodeId, PointerButton, PointerButtons, PointerDownEvent, PointerEventData, TextInputEvent, ViewportListenerAction, rsx, KeyModifiers};
+    use crate::ui::{Binding, BlurEvent, EventMeta, FocusEvent, Modifiers, NodeId, PointerButton, PointerButtons, PointerDownEvent, PointerEventData, TextInputEvent, EventCommand, rsx};
     use crate::view::base_component::{
         DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
         Layoutable, dispatch_pointer_down_from_hit_test, select_all_text_by_id,
@@ -4332,6 +4332,7 @@ mod tests {
         let mut control = ViewportControl::new(&mut viewport);
         let mut blur = BlurEvent {
             meta: EventMeta::new(NodeId::default()),
+            reason: crate::ui::FocusReason::Programmatic,
         };
         let mut scratch_arena = crate::view::node_arena::NodeArena::new();
         EventTarget::dispatch_blur(
@@ -4361,6 +4362,8 @@ mod tests {
         let mut event = TextInputEvent {
             meta: EventMeta::new(crate::view::node_arena::NodeKey::default()),
             text: "llo".to_string(),
+            input_type: crate::ui::InputType::Typing,
+            is_composing: false,
         };
         let mut scratch_arena = crate::view::node_arena::NodeArena::new();
         EventTarget::dispatch_text_input(
@@ -4386,6 +4389,7 @@ mod tests {
         let mut control = ViewportControl::new(&mut viewport);
         let mut event = FocusEvent {
             meta: EventMeta::new(crate::view::node_arena::NodeKey::default()),
+            reason: crate::ui::FocusReason::Programmatic,
         };
         let mut scratch_arena = crate::view::node_arena::NodeArena::new();
         EventTarget::dispatch_focus(
@@ -4401,7 +4405,7 @@ mod tests {
         // carries the null key. We only assert the action *shape* here.
         assert!(matches!(
             actions.as_slice(),
-            [ViewportListenerAction::SelectTextRangeAll(_)]
+            [EventCommand::SelectTextRangeAll(_)]
         ));
 
         let area_id = area.stable_id();
@@ -4465,7 +4469,7 @@ mod tests {
                         back: false,
                         forward: false,
                     },
-                    modifiers: KeyModifiers::default(),
+                    modifiers: Modifiers::default(),
                 pointer_id: 0,
                 pointer_type: PointerType::Mouse,
                 pressure: 0.0,
@@ -4508,7 +4512,7 @@ mod tests {
                         back: false,
                         forward: false,
                     },
-                    modifiers: KeyModifiers::default(),
+                    modifiers: Modifiers::default(),
                 pointer_id: 0,
                 pointer_type: PointerType::Mouse,
                 pressure: 0.0,

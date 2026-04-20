@@ -165,7 +165,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
         let was_focused_on_pointer_down_binding = was_focused_on_pointer_down_binding.clone();
         PointerDownHandlerProp::new(move |event| {
             was_focused_on_pointer_down_binding.set(is_focused);
-            if event.meta.keep_focus_requested() {
+            if event.meta.focus_change_suppressed() {
                 return;
             }
             event
@@ -261,7 +261,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
         .iter()
         .map(|item| {
             let mouse_down = PointerDownHandlerProp::new(move |event| {
-                event.meta.keep_focus();
+                event.meta.suppress_focus_change();
                 event.meta.stop_propagation();
             });
             let option_disabled = item.disabled;

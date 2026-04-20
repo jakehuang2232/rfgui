@@ -56,6 +56,7 @@ cargo build
 
 ```bash
 cargo run -r -p examples --bin 01_window
+cargo run -r -p examples --bin 00_hello_world
 ```
 
 ## Project Layout

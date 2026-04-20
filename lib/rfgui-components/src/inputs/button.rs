@@ -217,9 +217,9 @@ impl rfgui::ui::RsxTag for Button {
 
     fn create_node(
         props: Self::StrictProps,
-        children: Vec<rfgui::ui::RsxNode>,
+        children: Vec<RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
-    ) -> rfgui::ui::RsxNode {
+    ) -> RsxNode {
         <Self as RsxComponent<ButtonProps>>::render(props, children)
     }
 }
@@ -243,6 +243,7 @@ fn trigger_click(handler: &ClickHandlerProp, trigger: &ButtonRepeatTrigger) {
     let mut event = ClickEvent {
         meta: EventMeta::new(trigger.target_id),
         pointer: trigger.pointer.clone(),
+        click_count: 1,
     };
     handler.call(&mut event);
 }

@@ -5,9 +5,13 @@
 use crate::FontSize;
 use crate::TextAlign;
 use crate::ui::{
-    BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
+    BlurHandlerProp, ClickHandlerProp, ContextMenuHandlerProp, CopyHandlerProp, CutHandlerProp,
+    DragEndHandlerProp, DragLeaveHandlerProp, DragOverHandlerProp, DragStartHandlerProp,
+    DropHandlerProp, FocusHandlerProp, ImeCommitHandlerProp, ImeDisabledHandlerProp,
+    ImeEnabledHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp, PasteHandlerProp,
     PointerDownHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp, PointerMoveHandlerProp,
     PointerUpHandlerProp, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp, TextChangeHandlerProp,
+    WheelHandlerProp,
 };
 use std::any::{Any, TypeId};
 use std::fmt;
@@ -387,10 +391,23 @@ pub enum PropValue {
     OnPointerEnter(PointerEnterHandlerProp),
     OnPointerLeave(PointerLeaveHandlerProp),
     OnClick(ClickHandlerProp),
+    OnContextMenu(ContextMenuHandlerProp),
+    OnWheel(WheelHandlerProp),
     OnKeyDown(KeyDownHandlerProp),
     OnKeyUp(KeyUpHandlerProp),
     OnFocus(FocusHandlerProp),
     OnBlur(BlurHandlerProp),
+    OnImeCommit(ImeCommitHandlerProp),
+    OnImeEnabled(ImeEnabledHandlerProp),
+    OnImeDisabled(ImeDisabledHandlerProp),
+    OnDragStart(DragStartHandlerProp),
+    OnDragOver(DragOverHandlerProp),
+    OnDragLeave(DragLeaveHandlerProp),
+    OnDrop(DropHandlerProp),
+    OnDragEnd(DragEndHandlerProp),
+    OnCopy(CopyHandlerProp),
+    OnCut(CutHandlerProp),
+    OnPaste(PasteHandlerProp),
     OnTextAreaFocus(TextAreaFocusHandlerProp),
     OnChange(TextChangeHandlerProp),
     OnTextAreaRender(TextAreaRenderHandlerProp),
@@ -496,6 +513,18 @@ impl From<ClickHandlerProp> for PropValue {
     }
 }
 
+impl From<ContextMenuHandlerProp> for PropValue {
+    fn from(value: ContextMenuHandlerProp) -> Self {
+        PropValue::OnContextMenu(value)
+    }
+}
+
+impl From<WheelHandlerProp> for PropValue {
+    fn from(value: WheelHandlerProp) -> Self {
+        PropValue::OnWheel(value)
+    }
+}
+
 impl From<KeyDownHandlerProp> for PropValue {
     fn from(value: KeyDownHandlerProp) -> Self {
         PropValue::OnKeyDown(value)
@@ -517,6 +546,62 @@ impl From<FocusHandlerProp> for PropValue {
 impl From<BlurHandlerProp> for PropValue {
     fn from(value: BlurHandlerProp) -> Self {
         PropValue::OnBlur(value)
+    }
+}
+
+impl From<ImeCommitHandlerProp> for PropValue {
+    fn from(value: ImeCommitHandlerProp) -> Self {
+        PropValue::OnImeCommit(value)
+    }
+}
+impl From<ImeEnabledHandlerProp> for PropValue {
+    fn from(value: ImeEnabledHandlerProp) -> Self {
+        PropValue::OnImeEnabled(value)
+    }
+}
+impl From<ImeDisabledHandlerProp> for PropValue {
+    fn from(value: ImeDisabledHandlerProp) -> Self {
+        PropValue::OnImeDisabled(value)
+    }
+}
+impl From<DragStartHandlerProp> for PropValue {
+    fn from(value: DragStartHandlerProp) -> Self {
+        PropValue::OnDragStart(value)
+    }
+}
+impl From<DragOverHandlerProp> for PropValue {
+    fn from(value: DragOverHandlerProp) -> Self {
+        PropValue::OnDragOver(value)
+    }
+}
+impl From<DragLeaveHandlerProp> for PropValue {
+    fn from(value: DragLeaveHandlerProp) -> Self {
+        PropValue::OnDragLeave(value)
+    }
+}
+impl From<DropHandlerProp> for PropValue {
+    fn from(value: DropHandlerProp) -> Self {
+        PropValue::OnDrop(value)
+    }
+}
+impl From<DragEndHandlerProp> for PropValue {
+    fn from(value: DragEndHandlerProp) -> Self {
+        PropValue::OnDragEnd(value)
+    }
+}
+impl From<CopyHandlerProp> for PropValue {
+    fn from(value: CopyHandlerProp) -> Self {
+        PropValue::OnCopy(value)
+    }
+}
+impl From<CutHandlerProp> for PropValue {
+    fn from(value: CutHandlerProp) -> Self {
+        PropValue::OnCut(value)
+    }
+}
+impl From<PasteHandlerProp> for PropValue {
+    fn from(value: PasteHandlerProp) -> Self {
+        PropValue::OnPaste(value)
     }
 }
 
@@ -640,6 +725,18 @@ impl IntoPropValue for ClickHandlerProp {
     }
 }
 
+impl IntoPropValue for ContextMenuHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnContextMenu(self)
+    }
+}
+
+impl IntoPropValue for WheelHandlerProp {
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnWheel(self)
+    }
+}
+
 impl IntoPropValue for KeyDownHandlerProp {
     fn into_prop_value(self) -> PropValue {
         PropValue::OnKeyDown(self)
@@ -662,6 +759,40 @@ impl IntoPropValue for BlurHandlerProp {
     fn into_prop_value(self) -> PropValue {
         PropValue::OnBlur(self)
     }
+}
+
+impl IntoPropValue for ImeCommitHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnImeCommit(self) }
+}
+impl IntoPropValue for ImeEnabledHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnImeEnabled(self) }
+}
+impl IntoPropValue for ImeDisabledHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnImeDisabled(self) }
+}
+impl IntoPropValue for DragStartHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnDragStart(self) }
+}
+impl IntoPropValue for DragOverHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnDragOver(self) }
+}
+impl IntoPropValue for DragLeaveHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnDragLeave(self) }
+}
+impl IntoPropValue for DropHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnDrop(self) }
+}
+impl IntoPropValue for DragEndHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnDragEnd(self) }
+}
+impl IntoPropValue for CopyHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnCopy(self) }
+}
+impl IntoPropValue for CutHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnCut(self) }
+}
+impl IntoPropValue for PasteHandlerProp {
+    fn into_prop_value(self) -> PropValue { PropValue::OnPaste(self) }
 }
 
 impl IntoPropValue for TextAreaFocusHandlerProp {
@@ -779,6 +910,24 @@ impl FromPropValue for ClickHandlerProp {
     }
 }
 
+impl FromPropValue for ContextMenuHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnContextMenu(v) => Ok(v),
+            _ => Err("expected context menu handler value".to_string()),
+        }
+    }
+}
+
+impl FromPropValue for WheelHandlerProp {
+    fn from_prop_value(value: PropValue) -> Result<Self, String> {
+        match value {
+            PropValue::OnWheel(v) => Ok(v),
+            _ => Err("expected wheel handler value".to_string()),
+        }
+    }
+}
+
 impl FromPropValue for KeyDownHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
@@ -814,6 +963,31 @@ impl FromPropValue for BlurHandlerProp {
         }
     }
 }
+
+macro_rules! impl_from_prop_value_event {
+    ($ty:ident, $variant:ident, $label:expr) => {
+        impl FromPropValue for $ty {
+            fn from_prop_value(value: PropValue) -> Result<Self, String> {
+                match value {
+                    PropValue::$variant(v) => Ok(v),
+                    _ => Err(concat!("expected ", $label, " handler value").to_string()),
+                }
+            }
+        }
+    };
+}
+
+impl_from_prop_value_event!(ImeCommitHandlerProp, OnImeCommit, "ime commit");
+impl_from_prop_value_event!(ImeEnabledHandlerProp, OnImeEnabled, "ime enabled");
+impl_from_prop_value_event!(ImeDisabledHandlerProp, OnImeDisabled, "ime disabled");
+impl_from_prop_value_event!(DragStartHandlerProp, OnDragStart, "drag start");
+impl_from_prop_value_event!(DragOverHandlerProp, OnDragOver, "drag over");
+impl_from_prop_value_event!(DragLeaveHandlerProp, OnDragLeave, "drag leave");
+impl_from_prop_value_event!(DropHandlerProp, OnDrop, "drop");
+impl_from_prop_value_event!(DragEndHandlerProp, OnDragEnd, "drag end");
+impl_from_prop_value_event!(CopyHandlerProp, OnCopy, "copy");
+impl_from_prop_value_event!(CutHandlerProp, OnCut, "cut");
+impl_from_prop_value_event!(PasteHandlerProp, OnPaste, "paste");
 
 impl FromPropValue for TextAreaFocusHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {

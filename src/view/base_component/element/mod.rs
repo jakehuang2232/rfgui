@@ -1148,6 +1148,22 @@ pub trait EventTarget {
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
+    fn dispatch_context_menu(
+        &mut self,
+        _event: &mut crate::ui::ContextMenuEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_wheel(
+        &mut self,
+        _event: &mut crate::ui::WheelEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
     fn dispatch_key_down(
         &mut self,
         _event: &mut KeyDownEvent,
@@ -1191,6 +1207,94 @@ pub trait EventTarget {
     fn dispatch_blur(
         &mut self,
         _event: &mut BlurEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_ime_commit(
+        &mut self,
+        _event: &mut crate::ui::ImeCommitEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_ime_enabled(
+        &mut self,
+        _event: &mut crate::ui::ImeEnabledEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_ime_disabled(
+        &mut self,
+        _event: &mut crate::ui::ImeDisabledEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_drag_start(
+        &mut self,
+        _event: &mut crate::ui::DragStartEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_drag_over(
+        &mut self,
+        _event: &mut crate::ui::DragOverEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_drag_leave(
+        &mut self,
+        _event: &mut crate::ui::DragLeaveEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_drop(
+        &mut self,
+        _event: &mut crate::ui::DropEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_drag_end(
+        &mut self,
+        _event: &mut crate::ui::DragEndEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_copy(
+        &mut self,
+        _event: &mut crate::ui::CopyEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_cut(
+        &mut self,
+        _event: &mut crate::ui::CutEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+    fn dispatch_paste(
+        &mut self,
+        _event: &mut crate::ui::PasteEvent,
         _control: &mut ViewportControl<'_>,
         _arena: &mut crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
@@ -1367,10 +1471,31 @@ type PointerMoveHandler = Box<dyn FnMut(&mut PointerMoveEvent, &mut ViewportCont
 type PointerEnterHandler = Box<dyn FnMut(&mut PointerEnterEvent)>;
 type PointerLeaveHandler = Box<dyn FnMut(&mut PointerLeaveEvent)>;
 type ClickHandler = Box<dyn FnMut(&mut ClickEvent, &mut ViewportControl<'_>)>;
+type ContextMenuHandler =
+    Box<dyn FnMut(&mut crate::ui::ContextMenuEvent, &mut ViewportControl<'_>)>;
+type WheelHandler = Box<dyn FnMut(&mut crate::ui::WheelEvent, &mut ViewportControl<'_>)>;
 type KeyDownHandler = Box<dyn FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>)>;
 type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>)>;
 type FocusHandler = Box<dyn FnMut(&mut FocusEvent, &mut ViewportControl<'_>)>;
 type BlurHandler = Box<dyn FnMut(&mut BlurEvent, &mut ViewportControl<'_>)>;
+type ImeCommitHandler =
+    Box<dyn FnMut(&mut crate::ui::ImeCommitEvent, &mut ViewportControl<'_>)>;
+type ImeEnabledHandler =
+    Box<dyn FnMut(&mut crate::ui::ImeEnabledEvent, &mut ViewportControl<'_>)>;
+type ImeDisabledHandler =
+    Box<dyn FnMut(&mut crate::ui::ImeDisabledEvent, &mut ViewportControl<'_>)>;
+type DragStartHandler =
+    Box<dyn FnMut(&mut crate::ui::DragStartEvent, &mut ViewportControl<'_>)>;
+type DragOverHandler =
+    Box<dyn FnMut(&mut crate::ui::DragOverEvent, &mut ViewportControl<'_>)>;
+type DragLeaveHandler =
+    Box<dyn FnMut(&mut crate::ui::DragLeaveEvent, &mut ViewportControl<'_>)>;
+type DropHandler = Box<dyn FnMut(&mut crate::ui::DropEvent, &mut ViewportControl<'_>)>;
+type DragEndHandler =
+    Box<dyn FnMut(&mut crate::ui::DragEndEvent, &mut ViewportControl<'_>)>;
+type CopyHandler = Box<dyn FnMut(&mut crate::ui::CopyEvent, &mut ViewportControl<'_>)>;
+type CutHandler = Box<dyn FnMut(&mut crate::ui::CutEvent, &mut ViewportControl<'_>)>;
+type PasteHandler = Box<dyn FnMut(&mut crate::ui::PasteEvent, &mut ViewportControl<'_>)>;
 
 /// Cold-path storage for event handlers. Boxed and lazily allocated so that
 /// elements without handlers pay only 8 bytes (the `Option<Box<_>>` pointer).
@@ -1382,10 +1507,23 @@ struct ElementEventHandlers {
     pointer_enter: Vec<PointerEnterHandler>,
     pointer_leave: Vec<PointerLeaveHandler>,
     click: Vec<ClickHandler>,
+    context_menu: Vec<ContextMenuHandler>,
+    wheel: Vec<WheelHandler>,
     key_down: Vec<KeyDownHandler>,
     key_up: Vec<KeyUpHandler>,
     focus: Vec<FocusHandler>,
     blur: Vec<BlurHandler>,
+    ime_commit: Vec<ImeCommitHandler>,
+    ime_enabled: Vec<ImeEnabledHandler>,
+    ime_disabled: Vec<ImeDisabledHandler>,
+    drag_start: Vec<DragStartHandler>,
+    drag_over: Vec<DragOverHandler>,
+    drag_leave: Vec<DragLeaveHandler>,
+    drop: Vec<DropHandler>,
+    drag_end: Vec<DragEndHandler>,
+    copy: Vec<CopyHandler>,
+    cut: Vec<CutHandler>,
+    paste: Vec<PasteHandler>,
 }
 
 /// Cold-path storage for pending transition/animation requests. Boxed and
@@ -1818,26 +1956,6 @@ impl ElementTrait for Element {
         self.core.id
     }
 
-    fn children(&self) -> &[crate::view::node_arena::NodeKey] {
-        &self.children
-    }
-
-    fn children_mut(&mut self) -> Option<&mut Vec<crate::view::node_arena::NodeKey>> {
-        Some(&mut self.children)
-    }
-
-    fn parent_id(&self) -> Option<u64> {
-        self.core.parent_id
-    }
-
-    fn set_parent_id(&mut self, parent_id: Option<u64>) {
-        self.core.parent_id = parent_id;
-    }
-
-    fn has_active_animator(&self) -> bool {
-        self.last_started_animator.is_some()
-    }
-
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         BoxModelSnapshot {
             node_id: self.core.id,
@@ -1857,6 +1975,60 @@ impl ElementTrait for Element {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(self.capture_style_snapshot()))
+    }
+
+    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
+        let Some(snapshot) = snapshot.downcast_ref::<ElementStyleSnapshot>() else {
+            return false;
+        };
+
+        self.core.set_width(snapshot.width);
+        self.core.set_height(snapshot.height);
+        self.core.layout_size = Size {
+            width: snapshot.layout_width,
+            height: snapshot.layout_height,
+        };
+        self.is_hovered = snapshot.is_hovered;
+        self.opacity = snapshot.opacity;
+        self.border_radius = snapshot.border_radius;
+        self.background_color = Box::new(snapshot.background_color);
+        self.foreground_color = snapshot.foreground_color;
+        self.border_colors.top = Box::new(snapshot.border_top_color);
+        self.border_colors.right = Box::new(snapshot.border_right_color);
+        self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
+        self.border_colors.left = Box::new(snapshot.border_left_color);
+        self.box_shadows = snapshot.box_shadows.clone();
+        self.transform = snapshot.transform.clone();
+        self.transform_origin = snapshot.transform_origin;
+        self.update_resolved_transform();
+        if let Some(transition_snapshot) = snapshot.transition_snapshot {
+            self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
+            self.layout_transition_visual_offset_x =
+                transition_snapshot.layout_transition_visual_offset_x;
+            self.layout_transition_visual_offset_y =
+                transition_snapshot.layout_transition_visual_offset_y;
+            self.layout_transition_override_width =
+                transition_snapshot.layout_transition_override_width;
+            self.layout_transition_override_height =
+                transition_snapshot.layout_transition_override_height;
+            self.layout_transition_target_x = transition_snapshot.layout_transition_target_x;
+            self.layout_transition_target_y = transition_snapshot.layout_transition_target_y;
+            self.layout_transition_target_width =
+                transition_snapshot.layout_transition_target_width;
+            self.layout_transition_target_height =
+                transition_snapshot.layout_transition_target_height;
+            self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
+            self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
+            self.layout_assigned_width = transition_snapshot.layout_assigned_width;
+            self.layout_assigned_height = transition_snapshot.layout_assigned_height;
+        }
+        self.has_style_snapshot = true;
+        self.recompute_style();
+        true
     }
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
@@ -1887,6 +2059,10 @@ impl ElementTrait for Element {
             is_scroll_container: self.scroll_direction != ScrollDirection::None,
             is_hovered: self.is_hovered,
         }
+    }
+
+    fn has_active_animator(&self) -> bool {
+        self.last_started_animator.is_some()
     }
 
     fn promotion_self_signature(&self) -> u64 {
@@ -2078,58 +2254,20 @@ impl ElementTrait for Element {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
-    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        Some(Box::new(self.capture_style_snapshot()))
+    fn children(&self) -> &[crate::view::node_arena::NodeKey] {
+        &self.children
     }
 
-    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
-        let Some(snapshot) = snapshot.downcast_ref::<ElementStyleSnapshot>() else {
-            return false;
-        };
+    fn children_mut(&mut self) -> Option<&mut Vec<crate::view::node_arena::NodeKey>> {
+        Some(&mut self.children)
+    }
 
-        self.core.set_width(snapshot.width);
-        self.core.set_height(snapshot.height);
-        self.core.layout_size = Size {
-            width: snapshot.layout_width,
-            height: snapshot.layout_height,
-        };
-        self.is_hovered = snapshot.is_hovered;
-        self.opacity = snapshot.opacity;
-        self.border_radius = snapshot.border_radius;
-        self.background_color = Box::new(snapshot.background_color);
-        self.foreground_color = snapshot.foreground_color;
-        self.border_colors.top = Box::new(snapshot.border_top_color);
-        self.border_colors.right = Box::new(snapshot.border_right_color);
-        self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
-        self.border_colors.left = Box::new(snapshot.border_left_color);
-        self.box_shadows = snapshot.box_shadows.clone();
-        self.transform = snapshot.transform.clone();
-        self.transform_origin = snapshot.transform_origin;
-        self.update_resolved_transform();
-        if let Some(transition_snapshot) = snapshot.transition_snapshot {
-            self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
-            self.layout_transition_visual_offset_x =
-                transition_snapshot.layout_transition_visual_offset_x;
-            self.layout_transition_visual_offset_y =
-                transition_snapshot.layout_transition_visual_offset_y;
-            self.layout_transition_override_width =
-                transition_snapshot.layout_transition_override_width;
-            self.layout_transition_override_height =
-                transition_snapshot.layout_transition_override_height;
-            self.layout_transition_target_x = transition_snapshot.layout_transition_target_x;
-            self.layout_transition_target_y = transition_snapshot.layout_transition_target_y;
-            self.layout_transition_target_width =
-                transition_snapshot.layout_transition_target_width;
-            self.layout_transition_target_height =
-                transition_snapshot.layout_transition_target_height;
-            self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
-            self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
-            self.layout_assigned_width = transition_snapshot.layout_assigned_width;
-            self.layout_assigned_height = transition_snapshot.layout_assigned_height;
-        }
-        self.has_style_snapshot = true;
-        self.recompute_style();
-        true
+    fn parent_id(&self) -> Option<u64> {
+        self.core.parent_id
+    }
+
+    fn set_parent_id(&mut self, parent_id: Option<u64>) {
+        self.core.parent_id = parent_id;
     }
 }
 

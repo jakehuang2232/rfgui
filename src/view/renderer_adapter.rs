@@ -801,6 +801,14 @@ fn build_container_element_shell(
                 let handler = as_click_handler(value, key)?;
                 element.on_click(move |event, _control| handler.call(event));
             }
+            "on_context_menu" => {
+                let handler = as_context_menu_handler(value, key)?;
+                element.on_context_menu(move |event, _control| handler.call(event));
+            }
+            "on_wheel" => {
+                let handler = as_wheel_handler(value, key)?;
+                element.on_wheel(move |event, _control| handler.call(event));
+            }
             "on_key_down" => {
                 let handler = as_key_down_handler(value, key)?;
                 element.on_key_down(move |event, _control| handler.call(event));
@@ -816,6 +824,50 @@ fn build_container_element_shell(
             "on_blur" => {
                 let handler = as_blur_handler(value, key)?;
                 element.on_blur(move |event, _control| handler.call(event));
+            }
+            "on_ime_commit" => {
+                let handler = as_ime_commit_handler(value, key)?;
+                element.on_ime_commit(move |event, _control| handler.call(event));
+            }
+            "on_ime_enabled" => {
+                let handler = as_ime_enabled_handler(value, key)?;
+                element.on_ime_enabled(move |event, _control| handler.call(event));
+            }
+            "on_ime_disabled" => {
+                let handler = as_ime_disabled_handler(value, key)?;
+                element.on_ime_disabled(move |event, _control| handler.call(event));
+            }
+            "on_drag_start" => {
+                let handler = as_drag_start_handler(value, key)?;
+                element.on_drag_start(move |event, _control| handler.call(event));
+            }
+            "on_drag_over" => {
+                let handler = as_drag_over_handler(value, key)?;
+                element.on_drag_over(move |event, _control| handler.call(event));
+            }
+            "on_drag_leave" => {
+                let handler = as_drag_leave_handler(value, key)?;
+                element.on_drag_leave(move |event, _control| handler.call(event));
+            }
+            "on_drop" => {
+                let handler = as_drop_handler(value, key)?;
+                element.on_drop(move |event, _control| handler.call(event));
+            }
+            "on_drag_end" => {
+                let handler = as_drag_end_handler(value, key)?;
+                element.on_drag_end(move |event, _control| handler.call(event));
+            }
+            "on_copy" => {
+                let handler = as_copy_handler(value, key)?;
+                element.on_copy(move |event, _control| handler.call(event));
+            }
+            "on_cut" => {
+                let handler = as_cut_handler(value, key)?;
+                element.on_cut(move |event, _control| handler.call(event));
+            }
+            "on_paste" => {
+                let handler = as_paste_handler(value, key)?;
+                element.on_paste(move |event, _control| handler.call(event));
             }
             _ => {
                 return Err(format!(
@@ -2430,6 +2482,23 @@ fn as_click_handler(value: &PropValue, key: &str) -> Result<crate::ui::ClickHand
     }
 }
 
+fn as_context_menu_handler(
+    value: &PropValue,
+    key: &str,
+) -> Result<crate::ui::ContextMenuHandlerProp, String> {
+    match value {
+        PropValue::OnContextMenu(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects context menu handler value")),
+    }
+}
+
+fn as_wheel_handler(value: &PropValue, key: &str) -> Result<crate::ui::WheelHandlerProp, String> {
+    match value {
+        PropValue::OnWheel(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects wheel handler value")),
+    }
+}
+
 fn as_key_down_handler(
     value: &PropValue,
     key: &str,
@@ -2460,6 +2529,29 @@ fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandle
         _ => Err(format!("prop `{key}` expects blur handler value")),
     }
 }
+
+macro_rules! as_event_handler_fn {
+    ($fn_name:ident, $ty:ty, $variant:ident, $label:expr) => {
+        fn $fn_name(value: &PropValue, key: &str) -> Result<$ty, String> {
+            match value {
+                PropValue::$variant(v) => Ok(v.clone()),
+                _ => Err(format!("prop `{}` expects {} handler value", key, $label)),
+            }
+        }
+    };
+}
+
+as_event_handler_fn!(as_ime_commit_handler, crate::ui::ImeCommitHandlerProp, OnImeCommit, "ime commit");
+as_event_handler_fn!(as_ime_enabled_handler, crate::ui::ImeEnabledHandlerProp, OnImeEnabled, "ime enabled");
+as_event_handler_fn!(as_ime_disabled_handler, crate::ui::ImeDisabledHandlerProp, OnImeDisabled, "ime disabled");
+as_event_handler_fn!(as_drag_start_handler, crate::ui::DragStartHandlerProp, OnDragStart, "drag start");
+as_event_handler_fn!(as_drag_over_handler, crate::ui::DragOverHandlerProp, OnDragOver, "drag over");
+as_event_handler_fn!(as_drag_leave_handler, crate::ui::DragLeaveHandlerProp, OnDragLeave, "drag leave");
+as_event_handler_fn!(as_drop_handler, crate::ui::DropHandlerProp, OnDrop, "drop");
+as_event_handler_fn!(as_drag_end_handler, crate::ui::DragEndHandlerProp, OnDragEnd, "drag end");
+as_event_handler_fn!(as_copy_handler, crate::ui::CopyHandlerProp, OnCopy, "copy");
+as_event_handler_fn!(as_cut_handler, crate::ui::CutHandlerProp, OnCut, "cut");
+as_event_handler_fn!(as_paste_handler, crate::ui::PasteHandlerProp, OnPaste, "paste");
 
 fn as_text_area_focus_handler(
     value: &PropValue,

@@ -22,6 +22,14 @@ use crate::platform::{
 use crate::ui::RsxNode;
 use crate::view::viewport::ViewportControl;
 
+/// Host window theme. Pushed via [`AppEvent::ThemeChanged`] when the OS
+/// setting flips. Apps typically use this to re-pick a colour palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowTheme {
+    Light,
+    Dark,
+}
+
 /// Platform-neutral application event. Wraps the `Platform*Event` types
 /// from `crate::platform::input`; hosts translate their own event shapes
 /// (winit `WindowEvent`, DOM events, …) into one of these before calling
@@ -39,11 +47,43 @@ pub enum AppEvent {
     Resized {
         width: u32,
         height: u32,
-    },
-    /// DPI / scale factor changed. Host also pushes it to the viewport.
-    ScaleFactorChanged {
+        /// Scale factor in effect at the time of this event. Sent
+        /// alongside the size so the `App` can compute logical px
+        /// without racing a separate `ScaleFactorChanged`.
         scale: f32,
     },
+    /// DPI / scale factor changed. Host also pushes it to the viewport.
+    /// `suggested_size` is the new physical size the host recommends
+    /// adopting (mirrors winit 0.29+ callback semantics). `None` when the
+    /// backend cannot suggest a size.
+    ScaleFactorChanged {
+        scale: f32,
+        suggested_size: Option<(u32, u32)>,
+    },
+    /// Host window moved (top-left corner, physical pixels).
+    Moved {
+        x: i32,
+        y: i32,
+    },
+    /// Host window minimized.
+    Minimized,
+    /// Host window maximized.
+    Maximized,
+    /// Host window restored (unmaximized or de-minimized).
+    Restored,
+    /// Host surface occluded / unoccluded. When `true`, the app should
+    /// skip rendering to save work; unchanged state still gets a single
+    /// event.
+    Occluded(bool),
+    /// System / app theme changed (Light ↔ Dark).
+    ThemeChanged(WindowTheme),
+    /// File drag-and-drop hover started over the host surface. Paths
+    /// preview the payload so the app can highlight the drop target.
+    FilesHovered(Vec<std::path::PathBuf>),
+    /// Drag-hover ended without a drop.
+    FilesHoverCancelled,
+    /// Files were dropped on the host surface.
+    FilesDropped(Vec<std::path::PathBuf>),
     /// Host window / tab gained or lost focus. Distinct from per-element
     /// focus dispatched via `Viewport::dispatch_focus_event`.
     HostFocus(bool),

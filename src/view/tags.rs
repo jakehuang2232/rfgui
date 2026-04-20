@@ -572,9 +572,7 @@ pub mod v2_bench {
 #[cfg(test)]
 mod v2_poc_tests {
     use super::*;
-    use crate::ui::{
-        __rsx_default_from_phantom, __rsx_infer_inner_option, create_element,
-    };
+    use crate::ui::{__rsx_default_inner_option, create_element};
     #[allow(unused_imports)]
     use crate::ui::RsxTag;
 
@@ -607,7 +605,7 @@ mod v2_poc_tests {
             {
                 let mut init: ElementPropSchema = Default::default();
                 init.style = Some({
-                    let mut s = __rsx_default_from_phantom(__rsx_infer_inner_option(&init.style));
+                    let mut s = __rsx_default_inner_option(&init.style);
                     s.background_color = Some(Box::new(crate::Color::hex("#000000")));
                     s
                 });
@@ -629,10 +627,10 @@ mod v2_poc_tests {
             {
                 let mut init: ElementPropSchema = Default::default();
                 init.style = Some({
-                    let mut s = __rsx_default_from_phantom(__rsx_infer_inner_option(&init.style));
+                    let mut s = __rsx_default_inner_option(&init.style);
                     s.background_color = Some(Box::new(crate::Color::hex("#111111")));
                     s.hover = Some({
-                        let mut h = __rsx_default_from_phantom(__rsx_infer_inner_option(&s.hover));
+                        let mut h = __rsx_default_inner_option(&s.hover);
                         h.background_color = Some(Box::new(crate::Color::hex("#222222")));
                         h
                     });

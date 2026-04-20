@@ -28,9 +28,10 @@ pub mod web_backend;
 pub use callback::{CallbackCursorSink, CallbackRedrawRequester};
 pub use headless::{HeadlessBackend, NullClipboard, NullCursorSink, NullRedrawRequester};
 pub use input::{
-    Key, Modifiers, PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton,
-    PlatformPointerEvent, PlatformPointerEventKind, PlatformTextInput, PlatformWheelEvent,
-    PointerType,
+    Key, Modifiers, PlatformImePreedit, PlatformInputType, PlatformKeyEvent, PlatformPointerButton,
+    PlatformPointerEvent, PlatformPointerEventKind, PlatformPreeditAttribute,
+    PlatformPreeditStyle, PlatformTextInput, PlatformWheelEvent, PointerType, WheelDeltaMode,
+    WheelPhase,
 };
 
 /// Anything that can back a `wgpu::Surface`.
@@ -81,6 +82,46 @@ pub struct PlatformServices<'a> {
     pub redraw: &'a dyn RedrawRequester,
 }
 
+/// Host window lifecycle action requested by a handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowCommand {
+    /// Close the host window.
+    Close,
+    /// Minimize the host window.
+    Minimize,
+    /// Maximize the host window.
+    Maximize,
+    /// Undo minimize / maximize.
+    Restore,
+    /// Enter (true) or exit (false) fullscreen.
+    SetFullscreen(bool),
+    /// Replace the host window title.
+    SetTitle(String),
+}
+
+/// IME control action.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImeCommand {
+    /// Enable IME composition.
+    Enable,
+    /// Disable IME composition.
+    Disable,
+    /// Tell the IME where the text caret is, in viewport-space logical
+    /// pixels `(x, y, width, height)`. The platform uses this to place
+    /// candidate windows.
+    SetCursorRect(f32, f32, f32, f32),
+}
+
+/// Outbound drag-initiation request. Runner drives the OS drag
+/// machinery and delivers [`crate::ui::DragEndEvent`] back when the
+/// operation completes.
+#[derive(Debug, Clone)]
+pub struct PendingDrag {
+    pub source_id: crate::ui::NodeId,
+    pub payload: Vec<crate::ui::DragPayload>,
+    pub effect_allowed: crate::ui::DragEffect,
+}
+
 /// Outbound requests drained from the viewport after a frame or event
 /// dispatch. The backend applies these to real platform APIs.
 ///
@@ -95,11 +136,29 @@ pub struct PlatformRequests {
     pub clipboard_write: Option<String>,
     /// Whether the viewport wants another redraw scheduled.
     pub request_redraw: bool,
+    /// Host window lifecycle ops batched in dispatch order. Drained once
+    /// per frame; the backend applies them sequentially.
+    pub window_commands: Vec<WindowCommand>,
+    /// IME control ops batched in dispatch order.
+    pub ime_commands: Vec<ImeCommand>,
+    /// Drag operations the viewport wants the runner to start. Usually
+    /// zero or one per frame.
+    pub pending_drags: Vec<PendingDrag>,
+    /// Runner should read the OS clipboard and dispatch a
+    /// [`crate::ui::PasteEvent`]. Coalesced to a single request per
+    /// frame — duplicates are idempotent.
+    pub request_paste: bool,
 }
 
 impl PlatformRequests {
     pub fn is_empty(&self) -> bool {
-        self.cursor.is_none() && self.clipboard_write.is_none() && !self.request_redraw
+        self.cursor.is_none()
+            && self.clipboard_write.is_none()
+            && !self.request_redraw
+            && self.window_commands.is_empty()
+            && self.ime_commands.is_empty()
+            && self.pending_drags.is_empty()
+            && !self.request_paste
     }
 }
 

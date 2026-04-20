@@ -132,12 +132,13 @@ mod tests {
                 local_y: 0.0,
                 button: Some(UiPointerButton::Left),
                 buttons: rfgui::ui::PointerButtons::default(),
-                modifiers: rfgui::ui::KeyModifiers::default(),
+                modifiers: rfgui::ui::Modifiers::default(),
                 pointer_id: 0,
                 pointer_type: rfgui::platform::PointerType::Mouse,
                 pressure: 0.0,
                 timestamp: rfgui::time::Instant::now(),
             },
+            click_count: 1,
         };
 
         let handled = rfgui::view::base_component::dispatch_click_from_hit_test(
@@ -352,12 +353,13 @@ mod tests {
                 local_y: 0.0,
                 button: Some(UiPointerButton::Left),
                 buttons: rfgui::ui::PointerButtons::default(),
-                modifiers: rfgui::ui::KeyModifiers::default(),
+                modifiers: rfgui::ui::Modifiers::default(),
                 pointer_id: 0,
                 pointer_type: rfgui::platform::PointerType::Mouse,
                 pressure: 0.0,
                 timestamp: rfgui::time::Instant::now(),
             },
+            click_count: 1,
         };
 
         let handled = rfgui::view::base_component::dispatch_click_from_hit_test(
