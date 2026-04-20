@@ -185,18 +185,31 @@ impl Viewport {
         let root_keys = &self.scene.ui_root_keys;
         let promoted_root = root_keys.iter().find_map(|&rk| {
             let root_node = arena.get(rk)?;
-            let root_id = root_node.element.id();
+            let root_id = root_node.element.stable_id();
             if !self.compositor.promotion_state.promoted_node_ids.contains(&root_id) {
                 return None;
             }
             if root_id == target
                 || self.scene.ui_root_keys.iter().any(|&inner_rk| {
-                    crate::view::base_component::subtree_contains_node(
-                        arena,
-                        inner_rk,
-                        root_id,
-                        target,
-                    )
+                    // Debug path: walk inner_rk subtree to find the stable_id
+                    // matching `target`. Avoids needing a NodeKey-by-stable-id
+                    // lookup on hot dispatch path.
+                    fn contains_stable(
+                        arena: &crate::view::node_arena::NodeArena,
+                        key: crate::view::node_arena::NodeKey,
+                        target_stable: u64,
+                    ) -> bool {
+                        let Some(node) = arena.get(key) else { return false };
+                        if node.element.stable_id() == target_stable {
+                            return true;
+                        }
+                        let children: Vec<_> = node.children.clone();
+                        drop(node);
+                        children
+                            .into_iter()
+                            .any(|c| contains_stable(arena, c, target_stable))
+                    }
+                    contains_stable(arena, inner_rk, target)
                 })
             {
                 Some(root_id)

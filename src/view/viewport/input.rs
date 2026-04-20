@@ -52,10 +52,10 @@ impl ViewportDebugOptions {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct InputState {
-    pub focused_node_id: Option<u64>,
+    pub focused_node_id: Option<crate::view::node_arena::NodeKey>,
     pub selects: Vec<u64>,
-    pub pointer_capture_node_id: Option<u64>,
-    pub hovered_node_id: Option<u64>,
+    pub pointer_capture_node_id: Option<crate::view::node_arena::NodeKey>,
+    pub hovered_node_id: Option<crate::view::node_arena::NodeKey>,
     pub pointer_position_viewport: Option<(f32, f32)>,
     pub pending_click: Option<PendingClick>,
     pub pressed_pointer_buttons: FxHashSet<PointerButton>,
@@ -66,7 +66,7 @@ pub(super) struct InputState {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PendingClick {
     pub button: PointerButton,
-    pub target_id: u64,
+    pub target_id: crate::view::node_arena::NodeKey,
     pub viewport_x: f32,
     pub viewport_y: f32,
 }
@@ -74,7 +74,7 @@ pub(super) struct PendingClick {
 pub(super) fn is_valid_click_candidate(
     pending_click: PendingClick,
     button: PointerButton,
-    hit_target: Option<u64>,
+    hit_target: Option<crate::view::node_arena::NodeKey>,
     up_x: f32,
     up_y: f32,
 ) -> bool {

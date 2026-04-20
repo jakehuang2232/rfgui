@@ -229,6 +229,7 @@ impl Element {
         &mut self,
         event: &PointerDownEvent,
         control: &mut ViewportControl<'_>,
+        self_key: crate::view::node_arena::NodeKey,
     ) -> bool {
         if event.pointer.button != Some(UiPointerButton::Left) {
             return false;
@@ -249,7 +250,7 @@ impl Element {
                     grab_offset: local_y - thumb.y,
                     reanchor_on_first_move: false,
                 });
-                control.set_pointer_capture(self.core.id);
+                control.set_pointer_capture(self_key);
                 self.note_scrollbar_interaction();
                 return true;
             }
@@ -271,7 +272,7 @@ impl Element {
                     grab_offset: grab,
                     reanchor_on_first_move: true,
                 });
-                control.set_pointer_capture(self.core.id);
+                control.set_pointer_capture(self_key);
                 self.note_scrollbar_interaction();
                 return true;
             }
@@ -285,7 +286,7 @@ impl Element {
                     grab_offset: local_x - thumb.x,
                     reanchor_on_first_move: false,
                 });
-                control.set_pointer_capture(self.core.id);
+                control.set_pointer_capture(self_key);
                 self.note_scrollbar_interaction();
                 return true;
             }
@@ -307,7 +308,7 @@ impl Element {
                     grab_offset: grab,
                     reanchor_on_first_move: true,
                 });
-                control.set_pointer_capture(self.core.id);
+                control.set_pointer_capture(self_key);
                 self.note_scrollbar_interaction();
                 return true;
             }
@@ -380,12 +381,13 @@ impl Element {
         &mut self,
         event: &PointerUpEvent,
         control: &mut ViewportControl<'_>,
+        self_key: crate::view::node_arena::NodeKey,
     ) -> bool {
         if event.pointer.button != Some(UiPointerButton::Left) {
             return false;
         }
         if self.scrollbar_drag.take().is_some() {
-            control.release_pointer_capture(self.core.id);
+            control.release_pointer_capture(self_key);
             self.note_scrollbar_interaction();
             return true;
         }
@@ -621,7 +623,7 @@ impl Element {
         self.event_handlers.get_or_insert_with(Default::default).blur.push(Box::new(handler));
     }
 
-    pub fn id(&self) -> u64 {
+    pub fn stable_id(&self) -> u64 {
         self.core.id
     }
 
@@ -712,7 +714,7 @@ impl Element {
                 continue;
             };
             if element.should_append_to_root_viewport_render() {
-                ctx.append_to_defer(element.id());
+                ctx.append_to_defer(element.stable_id());
             }
             element.collect_root_viewport_deferred_descendants(arena, ctx);
         }

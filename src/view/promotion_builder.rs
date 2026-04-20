@@ -135,7 +135,7 @@ pub(crate) fn collect_promoted_layer_updates(
         node.promotion_self_signature().hash(&mut hasher);
         node.promotion_clip_intersection_signature()
             .hash(&mut hasher);
-        let self_is_promoted = promoted_node_ids.contains(&node.id());
+        let self_is_promoted = promoted_node_ids.contains(&node.stable_id());
         let mut has_promoted_output = self_is_promoted;
         if self_is_promoted {
             hash_composition_state(node, &mut composition_hasher);
@@ -156,8 +156,8 @@ pub(crate) fn collect_promoted_layer_updates(
                 arena,
             );
             index.hash(&mut hasher);
-            child.id().hash(&mut hasher);
-            let child_is_promoted = promoted_node_ids.contains(&child.id());
+            child.stable_id().hash(&mut hasher);
+            let child_is_promoted = promoted_node_ids.contains(&child.stable_id());
             child_is_promoted.hash(&mut hasher);
             if !child_is_promoted {
                 child_state.base_signature.hash(&mut hasher);
@@ -178,7 +178,7 @@ pub(crate) fn collect_promoted_layer_updates(
                     has_promoted_output = true;
                 }
                 index.hash(&mut composition_hasher);
-                child.id().hash(&mut composition_hasher);
+                child.stable_id().hash(&mut composition_hasher);
                 child_is_promoted.hash(&mut composition_hasher);
                 child_state.output_signature.hash(&mut composition_hasher);
             }
@@ -197,25 +197,25 @@ pub(crate) fn collect_promoted_layer_updates(
         } else {
             base_signature
         };
-        if promoted_node_ids.contains(&node.id()) {
-            let previous_base_signature = previous_base_signatures.get(&node.id()).copied();
+        if promoted_node_ids.contains(&node.stable_id()) {
+            let previous_base_signature = previous_base_signatures.get(&node.stable_id()).copied();
             let kind = if previous_base_signature == Some(base_signature) {
                 PromotedLayerUpdateKind::Reuse
             } else {
                 PromotedLayerUpdateKind::Reraster
             };
             let previous_composition_signature =
-                previous_composition_signatures.get(&node.id()).copied();
+                previous_composition_signatures.get(&node.stable_id()).copied();
             let composition_kind = if previous_composition_signature == Some(composition_signature)
             {
                 PromotedLayerUpdateKind::Reuse
             } else {
                 PromotedLayerUpdateKind::Reraster
             };
-            next_base_signatures.insert(node.id(), base_signature);
-            next_composition_signatures.insert(node.id(), composition_signature);
+            next_base_signatures.insert(node.stable_id(), base_signature);
+            next_composition_signatures.insert(node.stable_id(), composition_signature);
             updates.push(PromotedLayerUpdate {
-                node_id: node.id(),
+                node_id: node.stable_id(),
                 parent_id: node.parent_id(),
                 kind,
                 base_signature,
@@ -294,7 +294,7 @@ pub(crate) fn collect_debug_subtree_signatures(
         node.promotion_self_signature().hash(&mut hasher);
         node.promotion_clip_intersection_signature()
             .hash(&mut hasher);
-        let self_is_promoted = promoted_node_ids.contains(&node.id());
+        let self_is_promoted = promoted_node_ids.contains(&node.stable_id());
         let mut has_promoted_output = self_is_promoted;
         if self_is_promoted {
             hash_composition_state(node, &mut composition_hasher);
@@ -306,8 +306,8 @@ pub(crate) fn collect_debug_subtree_signatures(
             let child = child_node.element.as_ref();
             let child_state = walk(child, promoted_node_ids, out, arena);
             index.hash(&mut hasher);
-            child.id().hash(&mut hasher);
-            let child_is_promoted = promoted_node_ids.contains(&child.id());
+            child.stable_id().hash(&mut hasher);
+            let child_is_promoted = promoted_node_ids.contains(&child.stable_id());
             child_is_promoted.hash(&mut hasher);
             if !child_is_promoted {
                 child_state.base_signature.hash(&mut hasher);
@@ -328,7 +328,7 @@ pub(crate) fn collect_debug_subtree_signatures(
                     has_promoted_output = true;
                 }
                 index.hash(&mut composition_hasher);
-                child.id().hash(&mut composition_hasher);
+                child.stable_id().hash(&mut composition_hasher);
                 child_is_promoted.hash(&mut composition_hasher);
                 child_state.output_signature.hash(&mut composition_hasher);
             }
@@ -348,7 +348,7 @@ pub(crate) fn collect_debug_subtree_signatures(
             base_signature
         };
         out.insert(
-            node.id(),
+            node.stable_id(),
             (
                 base_signature,
                 composition_signature,
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn root_nodes_with_box_shadow_remain_promotion_candidates() {
         let mut shadowed_root = Element::new(24.0, 16.0, 120.0, 80.0);
-        let shadowed_root_id = shadowed_root.id();
+        let shadowed_root_id = shadowed_root.stable_id();
         let mut root_style = Style::new();
         root_style.insert(
             PropertyId::BoxShadow,
@@ -519,7 +519,7 @@ mod tests {
 
         let mut parent = Element::new(0.0, 0.0, 240.0, 180.0);
         let mut shadowed_child = Element::new(12.0, 12.0, 120.0, 80.0);
-        let shadowed_child_id = shadowed_child.id();
+        let shadowed_child_id = shadowed_child.stable_id();
         let mut child_style = Style::new();
         child_style.insert(
             PropertyId::BoxShadow,

@@ -157,8 +157,8 @@ impl Image {
 }
 
 impl ElementTrait for Image {
-    fn id(&self) -> u64 {
-        self.element.id()
+    fn stable_id(&self) -> u64 {
+        self.element.stable_id()
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
@@ -317,7 +317,7 @@ impl Renderable for Image {
                 mask_uv_bounds: None,
                 use_mask: false,
                 source_is_premultiplied: false,
-                opacity: if ctx.is_node_promoted(self.id()) {
+                opacity: if ctx.is_node_promoted(self.stable_id()) {
                     1.0
                 } else {
                     self.element.promotion_node_info().opacity.clamp(0.0, 1.0)

@@ -122,10 +122,10 @@ pub(crate) fn round_layout_value(value: f32) -> f32 {
 
 pub(crate) fn get_debug_element_render_state_by_id(
     root: &dyn ElementTrait,
-    node_id: u64,
+    stable_id: u64,
     arena: &crate::view::node_arena::NodeArena,
 ) -> Option<DebugElementRenderState> {
-    if root.id() == node_id {
+    if root.stable_id() == stable_id {
         return root
             .as_any()
             .downcast_ref::<Element>()
@@ -136,7 +136,7 @@ pub(crate) fn get_debug_element_render_state_by_id(
             continue;
         };
         if let Some(state) =
-            get_debug_element_render_state_by_id(child_node.element.as_ref(), node_id, arena)
+            get_debug_element_render_state_by_id(child_node.element.as_ref(), stable_id, arena)
         {
             return Some(state);
         }
@@ -146,10 +146,10 @@ pub(crate) fn get_debug_element_render_state_by_id(
 
 pub(crate) fn get_debug_promotion_signatures_by_id(
     root: &dyn ElementTrait,
-    node_id: u64,
+    stable_id: u64,
     arena: &crate::view::node_arena::NodeArena,
 ) -> Option<(u64, u64)> {
-    if root.id() == node_id {
+    if root.stable_id() == stable_id {
         return Some((
             root.promotion_self_signature(),
             root.promotion_clip_intersection_signature(),
@@ -160,7 +160,7 @@ pub(crate) fn get_debug_promotion_signatures_by_id(
             continue;
         };
         if let Some(signatures) =
-            get_debug_promotion_signatures_by_id(child_node.element.as_ref(), node_id, arena)
+            get_debug_promotion_signatures_by_id(child_node.element.as_ref(), stable_id, arena)
         {
             return Some(signatures);
         }
@@ -179,8 +179,8 @@ pub(crate) fn get_node_ancestry_ids(
         path: &mut Vec<u64>,
         arena: &crate::view::node_arena::NodeArena,
     ) -> bool {
-        path.push(node.id());
-        if node.id() == target_id {
+        path.push(node.stable_id());
+        if node.stable_id() == target_id {
             return true;
         }
         for child_key in node.children() {
@@ -210,7 +210,7 @@ pub(crate) fn build_node_by_id(
     arena: &mut crate::view::node_arena::NodeArena,
     ctx: &mut UiBuildContext,
 ) -> bool {
-    if node.id() == node_id {
+    if node.stable_id() == node_id {
         if let Some(element) = node.as_any().downcast_ref::<Element>() {
             trace_promoted_build(
                 "deferred-build-node",
@@ -433,7 +433,7 @@ pub(crate) fn collect_layout_transition_snapshots(
             .unwrap_or((snapshot.x, snapshot.y));
         if can_seed_snapshot {
             out.insert(
-                node.element.id(),
+                node.element.stable_id(),
                 LayoutTransitionSnapshotSeed {
                     layout_x: snapshot.x,
                     layout_y: snapshot.y,
@@ -479,7 +479,7 @@ pub(crate) fn seed_layout_transition_snapshots(
         snapshots: &FxHashMap<u64, LayoutTransitionSnapshotSeed>,
     ) {
         let _ = arena.with_element_taken(key, |element, arena| {
-            if let Some(seed) = snapshots.get(&element.id()) {
+            if let Some(seed) = snapshots.get(&element.stable_id()) {
                 if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
                     el.seed_layout_transition_snapshot(
                         seed.layout_x,
@@ -540,7 +540,7 @@ fn find_deepest_in_viewport_clip_subtree(
     key: crate::view::node_arena::NodeKey,
     x: f32,
     y: f32,
-) -> Option<u64> {
+) -> Option<crate::view::node_arena::NodeKey> {
     let node = arena.get(key)?;
     let (x, y) = hit_test_point_for_node(node.element.as_ref(), x, y);
     let snapshot = node.element.box_model_snapshot();
@@ -554,16 +554,16 @@ fn find_deepest_in_viewport_clip_subtree(
         return None;
     }
     if node.element.intercepts_pointer_at(x, y) {
-        return Some(snapshot.node_id);
+        return Some(key);
     }
     let children: Vec<_> = node.children.clone();
     drop(node);
     for child_key in children.iter().rev() {
-        if let Some(id) = find_deepest_in_viewport_clip_subtree(arena, *child_key, x, y) {
-            return Some(id);
+        if let Some(k) = find_deepest_in_viewport_clip_subtree(arena, *child_key, x, y) {
+            return Some(k);
         }
     }
-    Some(snapshot.node_id)
+    Some(key)
 }
 
 fn find_viewport_clip_priority(
@@ -571,7 +571,7 @@ fn find_viewport_clip_priority(
     key: crate::view::node_arena::NodeKey,
     x: f32,
     y: f32,
-) -> Option<u64> {
+) -> Option<crate::view::node_arena::NodeKey> {
     let node = arena.get(key)?;
     let snapshot = node.element.box_model_snapshot();
     if !snapshot.should_render && !hit_test_has_absolute_descendant(node.element.as_ref()) {
@@ -591,8 +591,8 @@ fn find_viewport_clip_priority(
     drop(node);
 
     for child_key in children.iter().rev() {
-        if let Some(id) = find_viewport_clip_priority(arena, *child_key, x, y) {
-            return Some(id);
+        if let Some(k) = find_viewport_clip_priority(arena, *child_key, x, y) {
+            return Some(k);
         }
     }
 
@@ -612,7 +612,7 @@ pub fn hit_test(
     root_key: crate::view::node_arena::NodeKey,
     viewport_x: f32,
     viewport_y: f32,
-) -> Option<u64> {
+) -> Option<crate::view::node_arena::NodeKey> {
     fn child_allows_outside_parent_hit(
         child: &dyn ElementTrait,
         x: f32,
@@ -641,7 +641,7 @@ pub fn hit_test(
         x: f32,
         y: f32,
         viewport_rect: HitTestRect,
-    ) -> Option<u64> {
+    ) -> Option<crate::view::node_arena::NodeKey> {
         let node = arena.get(key)?;
         let (x, y) = hit_test_point_for_node(node.element.as_ref(), x, y);
         let snapshot = node.element.box_model_snapshot();
@@ -656,7 +656,7 @@ pub fn hit_test(
         let in_self =
             point_in_box_model(&snapshot, x, y) && node.element.hit_test_visible_at(x, y);
         if in_self && node.element.intercepts_pointer_at(x, y) {
-            return Some(snapshot.node_id);
+            return Some(key);
         }
         if !in_self && !has_absolute_descendant {
             return None;
@@ -678,13 +678,13 @@ pub fn hit_test(
                     continue;
                 }
             }
-            if let Some(id) = find(arena, *child_key, x, y, viewport_rect) {
-                return Some(id);
+            if let Some(k) = find(arena, *child_key, x, y, viewport_rect) {
+                return Some(k);
             }
         }
 
         if in_self {
-            Some(snapshot.node_id)
+            Some(key)
         } else {
             None
         }
@@ -697,8 +697,8 @@ pub fn hit_test(
         width: root_snapshot.width.max(0.0),
         height: root_snapshot.height.max(0.0),
     };
-    if let Some(id) = find_viewport_clip_priority(arena, root_key, viewport_x, viewport_y) {
-        return Some(id);
+    if let Some(k) = find_viewport_clip_priority(arena, root_key, viewport_x, viewport_y) {
+        return Some(k);
     }
     find(arena, root_key, viewport_x, viewport_y, viewport_rect)
 }
@@ -718,8 +718,8 @@ pub fn hit_test_roots(
     root_keys: &[crate::view::node_arena::NodeKey],
     viewport_x: f32,
     viewport_y: f32,
-) -> Option<(usize, u64)> {
-    let mut fallback: Option<(usize, u64)> = None;
+) -> Option<(usize, crate::view::node_arena::NodeKey)> {
+    let mut fallback: Option<(usize, crate::view::node_arena::NodeKey)> = None;
     for (idx, &root_key) in root_keys.iter().enumerate().rev() {
         let Some(root) = arena.get(root_key) else { continue };
         let snapshot = root.element.box_model_snapshot();
@@ -734,14 +734,14 @@ pub fn hit_test_roots(
         let children: Vec<_> = root.children.clone();
         drop(root);
         for child_key in children.iter().rev() {
-            if let Some(id) = find_viewport_clip_priority(arena, *child_key, viewport_x, viewport_y)
+            if let Some(k) = find_viewport_clip_priority(arena, *child_key, viewport_x, viewport_y)
             {
-                return Some((idx, id));
+                return Some((idx, k));
             }
         }
         if fallback.is_none() {
-            if let Some(id) = hit_test(arena, root_key, viewport_x, viewport_y) {
-                fallback = Some((idx, id));
+            if let Some(k) = hit_test(arena, root_key, viewport_x, viewport_y) {
+                fallback = Some((idx, k));
             }
         }
     }
@@ -749,19 +749,28 @@ pub fn hit_test_roots(
 }
 
 /// Build the `target → root` path (DOM `composedPath` order) for the given
-/// target within `root`. Returns empty if the target is not in the tree.
+/// target key, by walking the arena parent chain from `target_key` upward.
+///
+/// Stops at the root (parent=None) or when `root_key` is reached (inclusive).
+/// Ordering matches DOM `composedPath()`: target first, root last. Elements
+/// are emitted as `NodeId` (alias for `NodeKey`) — the event layer uses
+/// NodeKey end-to-end now.
 fn composed_path_for_target(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
 ) -> Vec<crate::ui::NodeId> {
     let mut path = Vec::new();
-    if append_path_to_target(arena, root_key, target_id, &mut path) {
-        path.reverse();
-        path.into_iter().map(crate::ui::NodeId::from).collect()
-    } else {
-        Vec::new()
+    let mut current = Some(target_key);
+    while let Some(k) = current {
+        path.push(k);
+        if k == root_key {
+            return path;
+        }
+        current = arena.parent_of(k);
     }
+    // target_key not reachable from root_key — return empty per contract.
+    Vec::new()
 }
 
 pub fn dispatch_pointer_down_from_hit_test(
@@ -770,12 +779,12 @@ pub fn dispatch_pointer_down_from_hit_test(
     event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
+    let Some(target_key) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
-    event.meta.set_target_id(target_id.into());
-    event.meta.set_path(composed_path_for_target(arena, root_key, target_id));
-    dispatch_pointer_down_bubble(arena, root_key, target_id, event, control)
+    event.meta.set_target_id(target_key);
+    event.meta.set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_down_bubble(arena, target_key, event, control)
 }
 
 pub fn dispatch_pointer_up_from_hit_test(
@@ -784,24 +793,27 @@ pub fn dispatch_pointer_up_from_hit_test(
     event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
+    let Some(target_key) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
-    event.meta.set_target_id(target_id.into());
-    event.meta.set_path(composed_path_for_target(arena, root_key, target_id));
-    dispatch_pointer_up_bubble(arena, root_key, target_id, event, control)
+    event.meta.set_target_id(target_key);
+    event.meta.set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_up_bubble(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_pointer_up_to_target(
     arena: &mut crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    event.meta.set_target_id(target_id.into());
-    event.meta.set_path(composed_path_for_target(arena, root_key, target_id));
-    dispatch_pointer_up_bubble(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event.meta.set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_up_bubble(arena, target_key, event, control)
 }
 
 pub fn dispatch_pointer_move_from_hit_test(
@@ -810,24 +822,27 @@ pub fn dispatch_pointer_move_from_hit_test(
     event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
+    let Some(target_key) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
-    event.meta.set_target_id(target_id.into());
-    event.meta.set_path(composed_path_for_target(arena, root_key, target_id));
-    dispatch_pointer_move_bubble(arena, root_key, target_id, event, control)
+    event.meta.set_target_id(target_key);
+    event.meta.set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_move_bubble(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_pointer_move_to_target(
     arena: &mut crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    event.meta.set_target_id(target_id.into());
-    event.meta.set_path(composed_path_for_target(arena, root_key, target_id));
-    dispatch_pointer_move_bubble(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event.meta.set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_move_bubble(arena, target_key, event, control)
 }
 
 pub fn dispatch_click_from_hit_test(
@@ -836,24 +851,27 @@ pub fn dispatch_click_from_hit_test(
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
+    let Some(target_key) = hit_test(arena, root_key, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
-    event.meta.set_target_id(target_id.into());
-    event.meta.set_path(composed_path_for_target(arena, root_key, target_id));
-    dispatch_click_bubble(arena, root_key, target_id, event, control)
+    event.meta.set_target_id(target_key);
+    event.meta.set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_click_bubble(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_click_to_target(
     arena: &mut crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    event.meta.set_target_id(target_id.into());
-    event.meta.set_path(composed_path_for_target(arena, root_key, target_id));
-    dispatch_click_bubble(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event.meta.set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_click_bubble(arena, target_key, event, control)
 }
 
 pub fn dispatch_scroll_from_hit_test(
@@ -864,45 +882,45 @@ pub fn dispatch_scroll_from_hit_test(
     delta_x: f32,
     delta_y: f32,
 ) -> bool {
-    let Some(target_id) = hit_test(arena, root_key, viewport_x, viewport_y) else {
+    let Some(target_key) = hit_test(arena, root_key, viewport_x, viewport_y) else {
         return false;
     };
-    dispatch_scroll_bubble(arena, root_key, target_id, delta_x, delta_y)
+    dispatch_scroll_bubble(arena, target_key, delta_x, delta_y)
 }
 
 pub(crate) fn find_scroll_handler_from_target(
     arena: &crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     delta_x: f32,
     delta_y: f32,
-) -> Option<u64> {
-    find_scroll_handler_bubble(arena, root_key, target_id, delta_x, delta_y)
+) -> Option<crate::view::node_arena::NodeKey> {
+    find_scroll_handler_bubble(arena, target_key, delta_x, delta_y)
 }
 
 pub(crate) fn dispatch_scroll_to_target(
     arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     delta_x: f32,
     delta_y: f32,
 ) -> bool {
-    dispatch_scroll_bubble(arena, root_key, target_id, delta_x, delta_y)
+    dispatch_scroll_bubble(arena, target_key, delta_x, delta_y)
 }
 
 pub fn get_scroll_offset_by_id(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    node_id: u64,
+    stable_id: u64,
 ) -> Option<(f32, f32)> {
     let node = arena.get(root_key)?;
-    if node.element.id() == node_id {
+    if node.element.stable_id() == stable_id {
         return Some(node.element.get_scroll_offset());
     }
     let children: Vec<_> = node.children.clone();
     drop(node);
     for child_key in children {
-        if let Some(offset) = get_scroll_offset_by_id(arena, child_key, node_id) {
+        if let Some(offset) = get_scroll_offset_by_id(arena, child_key, stable_id) {
             return Some(offset);
         }
     }
@@ -912,18 +930,18 @@ pub fn get_scroll_offset_by_id(
 pub fn set_scroll_offset_by_id(
     arena: &mut crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    node_id: u64,
+    stable_id: u64,
     offset: (f32, f32),
 ) -> bool {
     arena
         .with_element_taken(root_key, |element, arena| {
-            if element.id() == node_id {
+            if element.stable_id() == stable_id {
                 element.set_scroll_offset(offset);
                 return true;
             }
             let children: Vec<_> = element.children().to_vec();
             for child_key in children {
-                if set_scroll_offset_by_id(arena, child_key, node_id, offset) {
+                if set_scroll_offset_by_id(arena, child_key, stable_id, offset) {
                     return true;
                 }
             }
@@ -1003,7 +1021,7 @@ pub(crate) fn collect_transition_track_allowlist(
         if let Some(element) = node.element.as_any().downcast_ref::<Element>() {
             for channel in element.active_transition_channels() {
                 out.insert(TrackKey {
-                    target: node.element.id(),
+                    target: node.element.stable_id(),
                     channel,
                 });
             }
@@ -1034,7 +1052,7 @@ pub(crate) fn collect_node_id_allowlist(
         out: &mut FxHashSet<u64>,
     ) {
         let Some(node) = arena.get(key) else { return };
-        out.insert(node.element.id());
+        out.insert(node.element.stable_id());
         let children: Vec<_> = node.children.clone();
         drop(node);
         for child_key in children {
@@ -1062,7 +1080,7 @@ pub(crate) fn reconcile_transition_runtime_state(
         arena
             .with_element_taken(key, |element, arena| {
                 let mut changed = false;
-                let node_id = element.id();
+                let node_id = element.stable_id();
                 if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
                     changed |=
                         el.reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
@@ -1086,13 +1104,13 @@ pub(crate) fn reconcile_transition_runtime_state(
 pub(crate) fn set_style_field_by_id(
     arena: &mut crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    node_id: u64,
+    stable_id: u64,
     field: StyleField,
     value: StyleValue,
 ) -> bool {
     arena
         .with_element_taken(root_key, |root, arena| {
-            set_style_field_by_id_inner(root.as_mut(), arena, node_id, field, value)
+            set_style_field_by_id_inner(root.as_mut(), arena, stable_id, field, value)
         })
         .unwrap_or(false)
 }
@@ -1100,11 +1118,11 @@ pub(crate) fn set_style_field_by_id(
 fn set_style_field_by_id_inner(
     root: &mut dyn ElementTrait,
     arena: &mut crate::view::node_arena::NodeArena,
-    node_id: u64,
+    stable_id: u64,
     field: StyleField,
     value: StyleValue,
 ) -> bool {
-    if root.id() == node_id {
+    if root.stable_id() == stable_id {
         if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
             match field {
                 StyleField::Opacity => {
@@ -1197,7 +1215,7 @@ fn set_style_field_by_id_inner(
     }
     let children: Vec<_> = root.children().to_vec();
     for child_key in children {
-        if set_style_field_by_id(arena, child_key, node_id, field, value.clone()) {
+        if set_style_field_by_id(arena, child_key, stable_id, field, value.clone()) {
             return true;
         }
     }
@@ -1225,7 +1243,7 @@ fn set_layout_field_by_id_inner(
     field: LayoutField,
     value: f32,
 ) -> bool {
-    if root.id() == node_id {
+    if root.stable_id() == node_id {
         if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
             match field {
                 LayoutField::Width => element.set_layout_transition_width(value),
@@ -1269,7 +1287,7 @@ fn set_visual_field_by_id_inner(
     field: VisualField,
     value: f32,
 ) -> bool {
-    if root.id() == node_id {
+    if root.stable_id() == node_id {
         if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
             match field {
                 VisualField::X => element.set_layout_transition_x(value),
@@ -1291,21 +1309,20 @@ fn set_visual_field_by_id_inner(
 pub(crate) fn update_hover_state(
     arena: &mut crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    target_id: Option<u64>,
+    target_key: Option<crate::view::node_arena::NodeKey>,
 ) -> bool {
     fn walk(
         arena: &mut crate::view::node_arena::NodeArena,
         key: crate::view::node_arena::NodeKey,
-        target_id: Option<u64>,
+        target_key: Option<crate::view::node_arena::NodeKey>,
     ) -> (bool, bool) {
         arena
             .with_element_taken(key, |element, arena| {
-                let self_id = element.id();
-                let mut contains_target = target_id == Some(self_id);
+                let mut contains_target = target_key == Some(key);
                 let mut changed = false;
                 let children: Vec<_> = element.children().to_vec();
                 for child_key in children.into_iter().rev() {
-                    let (child_contains_target, child_changed) = walk(arena, child_key, target_id);
+                    let (child_contains_target, child_changed) = walk(arena, child_key, target_key);
                     contains_target |= child_contains_target;
                     changed |= child_changed;
                 }
@@ -1315,103 +1332,69 @@ pub(crate) fn update_hover_state(
             .unwrap_or((false, false))
     }
 
-    walk(arena, root_key, target_id).1
+    walk(arena, root_key, target_key).1
 }
 
-fn append_path_to_target(
-    arena: &crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
-    path: &mut Vec<u64>,
-) -> bool {
-    let Some(node) = arena.get(key) else { return false };
-    let self_id = node.element.id();
-    path.push(self_id);
-    if self_id == target_id {
-        return true;
-    }
-    let children: Vec<_> = node.children.clone();
-    drop(node);
-    for child_key in children {
-        if append_path_to_target(arena, child_key, target_id, path) {
-            return true;
-        }
-    }
-    let _ = path.pop();
-    false
-}
-
+/// Build a root-to-target path using `arena.parent_of`. Returns empty when
+/// `target_key` is not reachable from any provided root.
 pub(crate) fn hover_path_for_target(
     arena: &crate::view::node_arena::NodeArena,
     root_keys: &[crate::view::node_arena::NodeKey],
-    target_id: Option<u64>,
-) -> Vec<u64> {
-    let Some(target_id) = target_id else {
+    target_key: Option<crate::view::node_arena::NodeKey>,
+) -> Vec<crate::view::node_arena::NodeKey> {
+    let Some(target_key) = target_key else {
         return Vec::new();
     };
-
-    for &root_key in root_keys {
-        let mut path = Vec::new();
-        if append_path_to_target(arena, root_key, target_id, &mut path) {
-            return path;
-        }
+    if !arena.contains_key(target_key) {
+        return Vec::new();
     }
 
+    // Walk up from target, collecting keys.
+    let mut up = Vec::new();
+    let mut cur = Some(target_key);
+    while let Some(k) = cur {
+        up.push(k);
+        cur = arena.parent_of(k);
+    }
+    // Verify the uppermost ancestor is one of the roots.
+    let root_reached = up.last().copied();
+    if let Some(last) = root_reached {
+        if root_keys.iter().any(|&r| r == last) {
+            up.reverse();
+            return up;
+        }
+    }
     Vec::new()
 }
 
-fn dispatch_pointer_enter_to_target(
+fn dispatch_pointer_enter_to_key(
     arena: &mut crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
-    target_id: u64,
-    related: Option<u64>,
+    related: Option<crate::view::node_arena::NodeKey>,
 ) -> bool {
     arena
         .with_element_taken(key, |element, arena| {
-            if element.id() == target_id {
-                let mut meta = crate::ui::EventMeta::new(target_id.into());
-                meta.set_related_target(
-                    related.map(|id| crate::ui::EventTarget::bare(crate::ui::NodeId::from(id))),
-                );
-                let mut event = PointerEnterEvent { meta };
-                element.dispatch_pointer_enter(&mut event);
-                return true;
-            }
-            let children: Vec<_> = element.children().to_vec();
-            for child_key in children {
-                if dispatch_pointer_enter_to_target(arena, child_key, target_id, related) {
-                    return true;
-                }
-            }
-            false
+            let mut meta = crate::ui::EventMeta::new(key);
+            meta.set_related_target(related.map(crate::ui::EventTarget::bare));
+            let mut event = PointerEnterEvent { meta };
+            element.dispatch_pointer_enter(&mut event, arena, key);
+            true
         })
         .unwrap_or(false)
 }
 
-fn dispatch_pointer_leave_to_target(
+fn dispatch_pointer_leave_to_key(
     arena: &mut crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
-    target_id: u64,
-    related: Option<u64>,
+    related: Option<crate::view::node_arena::NodeKey>,
 ) -> bool {
     arena
         .with_element_taken(key, |element, arena| {
-            if element.id() == target_id {
-                let mut meta = crate::ui::EventMeta::new(target_id.into());
-                meta.set_related_target(
-                    related.map(|id| crate::ui::EventTarget::bare(crate::ui::NodeId::from(id))),
-                );
-                let mut event = PointerLeaveEvent { meta };
-                element.dispatch_pointer_leave(&mut event);
-                return true;
-            }
-            let children: Vec<_> = element.children().to_vec();
-            for child_key in children {
-                if dispatch_pointer_leave_to_target(arena, child_key, target_id, related) {
-                    return true;
-                }
-            }
-            false
+            let mut meta = crate::ui::EventMeta::new(key);
+            meta.set_related_target(related.map(crate::ui::EventTarget::bare));
+            let mut event = PointerLeaveEvent { meta };
+            element.dispatch_pointer_leave(&mut event, arena, key);
+            true
         })
         .unwrap_or(false)
 }
@@ -1419,8 +1402,8 @@ fn dispatch_pointer_leave_to_target(
 pub(crate) fn dispatch_hover_transition(
     arena: &mut crate::view::node_arena::NodeArena,
     root_keys: &[crate::view::node_arena::NodeKey],
-    previous_target: Option<u64>,
-    next_target: Option<u64>,
+    previous_target: Option<crate::view::node_arena::NodeKey>,
+    next_target: Option<crate::view::node_arena::NodeKey>,
 ) -> bool {
     if previous_target == next_target {
         return false;
@@ -1439,21 +1422,15 @@ pub(crate) fn dispatch_hover_transition(
 
     let mut dispatched = false;
 
-    for &node_id in previous_path[common_prefix_len..].iter().rev() {
-        for &root_key in root_keys {
-            if dispatch_pointer_leave_to_target(arena, root_key, node_id, next_target) {
-                dispatched = true;
-                break;
-            }
+    for &k in previous_path[common_prefix_len..].iter().rev() {
+        if dispatch_pointer_leave_to_key(arena, k, next_target) {
+            dispatched = true;
         }
     }
 
-    for &node_id in &next_path[common_prefix_len..] {
-        for &root_key in root_keys {
-            if dispatch_pointer_enter_to_target(arena, root_key, node_id, previous_target) {
-                dispatched = true;
-                break;
-            }
+    for &k in &next_path[common_prefix_len..] {
+        if dispatch_pointer_enter_to_key(arena, k, previous_target) {
+            dispatched = true;
         }
     }
 
@@ -1485,62 +1462,80 @@ pub(crate) fn cancel_pointer_interactions(
 
 pub(crate) fn dispatch_key_down_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_key_down_impl(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_key_down_impl(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_key_up_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_key_up_impl(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_key_up_impl(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_text_input_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut TextInputEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_text_input_impl(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_text_input_impl(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_ime_preedit_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut ImePreeditEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_ime_preedit_impl(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_ime_preedit_impl(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_focus_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut FocusEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_focus_impl(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_focus_impl(arena, target_key, event, control)
 }
 
 pub(crate) fn dispatch_blur_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut BlurEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    dispatch_blur_impl(arena, root_key, target_id, event, control)
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_blur_impl(arena, target_key, event, control)
 }
 
 fn local_point_for_node(
@@ -1557,475 +1552,364 @@ fn local_point_for_node(
     (paint_x - snapshot.x, paint_y - snapshot.y)
 }
 
+/// Bubble a pointer-down event from `target_key` up the arena parent chain.
+/// Dispatches to target first, then each ancestor (via `arena.parent_of`)
+/// until the root is reached or `stop_propagation` is called.
 fn dispatch_pointer_down_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let snapshot = element.box_model_snapshot();
-            let mut found = node_id == target_id;
-
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_pointer_down_bubble(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-
-            let (local_x, local_y) = local_point_for_node(
-                element.as_ref(),
-                &snapshot,
-                event.pointer.viewport_x,
-                event.pointer.viewport_y,
-            );
-            event.pointer.local_x = local_x;
-            event.pointer.local_y = local_y;
-            let ct = crate::ui::EventTarget {
-                id: node_id.into(),
-                bounds: crate::ui::Rect::new(
-                    snapshot.x,
-                    snapshot.y,
-                    snapshot.width,
-                    snapshot.height,
-                ),
-                local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-            };
-            event.meta.set_current_target(ct);
-            element.dispatch_pointer_down(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                let node_id = element.stable_id();
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget {
+                    id: key,
+                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                };
+                event.meta.set_current_target(ct);
+                let _ = node_id;
+                element.dispatch_pointer_down(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_pointer_up_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let snapshot = element.box_model_snapshot();
-            let mut found = node_id == target_id;
-
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_pointer_up_bubble(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-
-            let (local_x, local_y) = local_point_for_node(
-                element.as_ref(),
-                &snapshot,
-                event.pointer.viewport_x,
-                event.pointer.viewport_y,
-            );
-            event.pointer.local_x = local_x;
-            event.pointer.local_y = local_y;
-            let ct = crate::ui::EventTarget {
-                id: node_id.into(),
-                bounds: crate::ui::Rect::new(
-                    snapshot.x,
-                    snapshot.y,
-                    snapshot.width,
-                    snapshot.height,
-                ),
-                local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-            };
-            event.meta.set_current_target(ct);
-            element.dispatch_pointer_up(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget {
+                    id: key,
+                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                };
+                event.meta.set_current_target(ct);
+                element.dispatch_pointer_up(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_pointer_move_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let snapshot = element.box_model_snapshot();
-            let mut found = node_id == target_id;
-
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_pointer_move_bubble(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-
-            let (local_x, local_y) = local_point_for_node(
-                element.as_ref(),
-                &snapshot,
-                event.pointer.viewport_x,
-                event.pointer.viewport_y,
-            );
-            event.pointer.local_x = local_x;
-            event.pointer.local_y = local_y;
-            let ct = crate::ui::EventTarget {
-                id: node_id.into(),
-                bounds: crate::ui::Rect::new(
-                    snapshot.x,
-                    snapshot.y,
-                    snapshot.width,
-                    snapshot.height,
-                ),
-                local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-            };
-            event.meta.set_current_target(ct);
-            element.dispatch_pointer_move(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget {
+                    id: key,
+                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                };
+                event.meta.set_current_target(ct);
+                element.dispatch_pointer_move(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_click_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let snapshot = element.box_model_snapshot();
-            let mut found = node_id == target_id;
-
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_click_bubble(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-
-            let (local_x, local_y) = local_point_for_node(
-                element.as_ref(),
-                &snapshot,
-                event.pointer.viewport_x,
-                event.pointer.viewport_y,
-            );
-            event.pointer.local_x = local_x;
-            event.pointer.local_y = local_y;
-            let ct = crate::ui::EventTarget {
-                id: node_id.into(),
-                bounds: crate::ui::Rect::new(
-                    snapshot.x,
-                    snapshot.y,
-                    snapshot.width,
-                    snapshot.height,
-                ),
-                local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-            };
-            event.meta.set_current_target(ct);
-            element.dispatch_click(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget {
+                    id: key,
+                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                };
+                event.meta.set_current_target(ct);
+                element.dispatch_click(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
+/// Bubble a scroll event from `target_key` upward, letting the deepest
+/// ancestor that can scroll consume the delta.
 fn dispatch_scroll_bubble(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     dx: f32,
     dy: f32,
 ) -> bool {
-    fn walk(
-        arena: &mut crate::view::node_arena::NodeArena,
-        key: crate::view::node_arena::NodeKey,
-        target_id: u64,
-        dx: f32,
-        dy: f32,
-    ) -> (bool, bool) {
-        arena
-            .with_element_taken(key, |element, arena| {
-                let node_id = element.id();
-                if node_id == target_id {
-                    let handled = element.scroll_by(dx, dy);
-                    return (true, handled);
-                }
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    let (found, handled) = walk(arena, child_key, target_id, dx, dy);
-                    if !found {
-                        continue;
-                    }
-                    if handled {
-                        return (true, true);
-                    }
-                    let self_handled = element.scroll_by(dx, dy);
-                    return (true, self_handled);
-                }
-                (false, false)
-            })
-            .unwrap_or((false, false))
+    let mut current = Some(target_key);
+    while let Some(key) = current {
+        let next = arena.parent_of(key);
+        let handled = arena
+            .with_element_taken(key, |element, _arena| element.scroll_by(dx, dy))
+            .unwrap_or(false);
+        if handled {
+            return true;
+        }
+        current = next;
     }
-
-    walk(arena, key, target_id, dx, dy).1
+    false
 }
 
 fn find_scroll_handler_bubble(
     arena: &crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     dx: f32,
     dy: f32,
-) -> Option<u64> {
-    fn walk(
-        arena: &crate::view::node_arena::NodeArena,
-        key: crate::view::node_arena::NodeKey,
-        target_id: u64,
-        dx: f32,
-        dy: f32,
-    ) -> (bool, Option<u64>) {
-        let Some(node) = arena.get(key) else { return (false, None) };
-        let node_id = node.element.id();
-        if node_id == target_id {
-            let can = node.element.can_scroll_by(dx, dy);
-            return if can { (true, Some(node_id)) } else { (true, None) };
+) -> Option<crate::view::node_arena::NodeKey> {
+    let mut current = Some(target_key);
+    while let Some(key) = current {
+        let can = arena.get(key).is_some_and(|n| n.element.can_scroll_by(dx, dy));
+        if can {
+            return Some(key);
         }
-        let children: Vec<_> = node.children.clone();
-        let can_self = node.element.can_scroll_by(dx, dy);
-        drop(node);
-        for child_key in children.iter().rev() {
-            let (found, handled) = walk(arena, *child_key, target_id, dx, dy);
-            if !found {
-                continue;
-            }
-            if handled.is_some() {
-                return (true, handled);
-            }
-            if can_self {
-                return (true, Some(node_id));
-            }
-            return (true, None);
-        }
-        (false, None)
+        current = arena.parent_of(key);
     }
-
-    walk(arena, key, target_id, dx, dy).1
+    None
 }
 
 fn dispatch_key_down_impl(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let mut found = node_id == target_id;
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_key_down_impl(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-            event.meta.set_current_target_id(node_id.into());
-            element.dispatch_key_down(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_key_down(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_key_up_impl(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let mut found = node_id == target_id;
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_key_up_impl(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-            event.meta.set_current_target_id(node_id.into());
-            element.dispatch_key_up(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_key_up(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_focus_impl(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut FocusEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let mut found = node_id == target_id;
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_focus_impl(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-            event.meta.set_current_target_id(node_id.into());
-            element.dispatch_focus(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_focus(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_text_input_impl(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut TextInputEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let mut found = node_id == target_id;
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_text_input_impl(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-            event.meta.set_current_target_id(node_id.into());
-            element.dispatch_text_input(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_text_input(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_ime_preedit_impl(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut ImePreeditEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let mut found = node_id == target_id;
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_ime_preedit_impl(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-            event.meta.set_current_target_id(node_id.into());
-            element.dispatch_ime_preedit(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_ime_preedit(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn dispatch_blur_impl(
     arena: &mut crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    target_id: u64,
+    target_key: crate::view::node_arena::NodeKey,
     event: &mut BlurEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    arena
-        .with_element_taken(key, |element, arena| {
-            let node_id = element.id();
-            let mut found = node_id == target_id;
-            if !found {
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    if dispatch_blur_impl(arena, child_key, target_id, event, control) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found || event.meta.propagation_stopped() {
-                return found;
-            }
-            event.meta.set_current_target_id(node_id.into());
-            element.dispatch_blur(event, control);
-            true
-        })
-        .unwrap_or(false)
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        let next = arena.parent_of(key);
+        let did = arena
+            .with_element_taken(key, |element, arena| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_blur(event, control, arena, key);
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        current = next;
+    }
+    dispatched
 }
 
 fn point_in_box_model(snapshot: &BoxModelSnapshot, x: f32, y: f32) -> bool {
@@ -2080,16 +1964,16 @@ fn distance_sq(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
 pub fn get_ime_cursor_rect_by_id(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    node_id: u64,
+    stable_id: u64,
 ) -> Option<(f32, f32, f32, f32)> {
     let node = arena.get(root_key)?;
-    if node.element.id() == node_id {
+    if node.element.stable_id() == stable_id {
         return node.element.ime_cursor_rect();
     }
     let children: Vec<_> = node.children.clone();
     drop(node);
     for child_key in children {
-        if let Some(rect) = get_ime_cursor_rect_by_id(arena, child_key, node_id) {
+        if let Some(rect) = get_ime_cursor_rect_by_id(arena, child_key, stable_id) {
             return Some(rect);
         }
     }
@@ -2099,16 +1983,16 @@ pub fn get_ime_cursor_rect_by_id(
 pub fn get_cursor_by_id(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    node_id: u64,
+    stable_id: u64,
 ) -> Option<crate::Cursor> {
     let node = arena.get(root_key)?;
-    if node.element.id() == node_id {
+    if node.element.stable_id() == stable_id {
         return Some(node.element.cursor());
     }
     let children: Vec<_> = node.children.clone();
     drop(node);
     for child_key in children {
-        if let Some(cursor) = get_cursor_by_id(arena, child_key, node_id) {
+        if let Some(cursor) = get_cursor_by_id(arena, child_key, stable_id) {
             return Some(cursor);
         }
     }
@@ -2122,7 +2006,7 @@ pub(crate) fn select_all_text_by_id(
 ) -> bool {
     arena
         .with_element_taken(root_key, |element, arena| {
-            if element.id() == node_id {
+            if element.stable_id() == node_id {
                 if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
                     text_area.select_all();
                     return true;
@@ -2149,7 +2033,7 @@ pub(crate) fn select_text_range_by_id(
 ) -> bool {
     arena
         .with_element_taken(root_key, |element, arena| {
-            if element.id() == node_id {
+            if element.stable_id() == node_id {
                 if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
                     text_area.select_range(start, end);
                     return true;
@@ -2167,54 +2051,33 @@ pub(crate) fn select_text_range_by_id(
         .unwrap_or(false)
 }
 
+/// True when `descendant_key` lies in the subtree rooted at `ancestor_key`
+/// (walks via `arena.parent_of`). `root_key` is retained for API compatibility
+/// and used only to bound the search (ancestor must be reachable from it).
 pub fn subtree_contains_node(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
-    ancestor_id: u64,
-    node_id: u64,
+    ancestor_key: crate::view::node_arena::NodeKey,
+    descendant_key: crate::view::node_arena::NodeKey,
 ) -> bool {
-    fn find_ancestor(
-        arena: &crate::view::node_arena::NodeArena,
-        key: crate::view::node_arena::NodeKey,
-        target_id: u64,
-    ) -> Option<crate::view::node_arena::NodeKey> {
-        let node = arena.get(key)?;
-        if node.element.id() == target_id {
-            return Some(key);
-        }
-        let children: Vec<_> = node.children.clone();
-        drop(node);
-        for child_key in children {
-            if let Some(k) = find_ancestor(arena, child_key, target_id) {
-                return Some(k);
-            }
-        }
-        None
+    if !arena.contains_key(ancestor_key) || !arena.contains_key(descendant_key) {
+        return false;
     }
-
-    fn contains_node_id(
-        arena: &crate::view::node_arena::NodeArena,
-        key: crate::view::node_arena::NodeKey,
-        target_id: u64,
-    ) -> bool {
-        let Some(node) = arena.get(key) else { return false };
-        if node.element.id() == target_id {
+    // Walk up from descendant_key, checking for ancestor_key along the way.
+    // Stop if we exit the root_key's subtree.
+    let mut cur = Some(descendant_key);
+    let mut reached_root = false;
+    while let Some(k) = cur {
+        if k == ancestor_key {
             return true;
         }
-        let children: Vec<_> = node.children.clone();
-        drop(node);
-        for child_key in children {
-            if contains_node_id(arena, child_key, target_id) {
-                return true;
-            }
+        if k == root_key {
+            reached_root = true;
         }
-        false
+        cur = arena.parent_of(k);
     }
-
-    match find_ancestor(arena, root_key, ancestor_id) {
-        Some(k) => contains_node_id(arena, k, node_id),
-        None => false,
-    }
+    let _ = reached_root;
+    false
 }
 
 pub fn has_animation_frame_request(
@@ -2260,65 +2123,91 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::PointerDownEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_pointer_down(event, control);
+            self.$field.dispatch_pointer_down(event, control, arena, self_key);
         }
         fn dispatch_pointer_up(
             &mut self,
             event: &mut $crate::ui::PointerUpEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_pointer_up(event, control);
+            self.$field.dispatch_pointer_up(event, control, arena, self_key);
         }
         fn dispatch_pointer_move(
             &mut self,
             event: &mut $crate::ui::PointerMoveEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_pointer_move(event, control);
+            self.$field.dispatch_pointer_move(event, control, arena, self_key);
         }
         fn dispatch_click(
             &mut self,
             event: &mut $crate::ui::ClickEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_click(event, control);
+            self.$field.dispatch_click(event, control, arena, self_key);
         }
         fn dispatch_key_down(
             &mut self,
             event: &mut $crate::ui::KeyDownEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_key_down(event, control);
+            self.$field.dispatch_key_down(event, control, arena, self_key);
         }
         fn dispatch_key_up(
             &mut self,
             event: &mut $crate::ui::KeyUpEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_key_up(event, control);
+            self.$field.dispatch_key_up(event, control, arena, self_key);
         }
         fn dispatch_focus(
             &mut self,
             event: &mut $crate::ui::FocusEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_focus(event, control);
+            self.$field.dispatch_focus(event, control, arena, self_key);
         }
         fn dispatch_blur(
             &mut self,
             event: &mut $crate::ui::BlurEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
         ) {
-            self.$field.dispatch_blur(event, control);
+            self.$field.dispatch_blur(event, control, arena, self_key);
         }
     };
     (@state_and_requests $field:ident) => {
-        fn dispatch_pointer_enter(&mut self, event: &mut $crate::ui::PointerEnterEvent) {
-            self.$field.dispatch_pointer_enter(event);
+        fn dispatch_pointer_enter(
+            &mut self,
+            event: &mut $crate::ui::PointerEnterEvent,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
+        ) {
+            self.$field.dispatch_pointer_enter(event, arena, self_key);
         }
-        fn dispatch_pointer_leave(&mut self, event: &mut $crate::ui::PointerLeaveEvent) {
-            self.$field.dispatch_pointer_leave(event);
+        fn dispatch_pointer_leave(
+            &mut self,
+            event: &mut $crate::ui::PointerLeaveEvent,
+            arena: &mut $crate::view::node_arena::NodeArena,
+            self_key: $crate::view::node_arena::NodeKey,
+        ) {
+            self.$field.dispatch_pointer_leave(event, arena, self_key);
         }
         fn cancel_pointer_interaction(&mut self) -> bool {
             self.$field.cancel_pointer_interaction()
@@ -2419,7 +2308,6 @@ mod tests {
         root.set_background_color_value(Color::rgb(16, 16, 16));
         let parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
-        let child_id = child.id();
         let mut child_style = Style::new();
         child_style.insert(
             PropertyId::BackgroundColor,
@@ -2439,11 +2327,11 @@ mod tests {
         let mut arena = new_test_arena();
         let root_key = commit_element(&mut arena, Box::new(root));
         let parent_key = commit_child(&mut arena, root_key, Box::new(parent));
-        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
         measure_and_place(&mut arena, root_key, constraints(400.0, 300.0), placement(400.0, 300.0));
 
-        assert_eq!(hit_test(&arena, root_key, 135.0, 15.0), Some(child_id));
+        assert_eq!(hit_test(&arena, root_key, 135.0, 15.0), Some(child_key));
     }
 
     #[test]
@@ -2455,17 +2343,16 @@ mod tests {
         parent.apply_style(parent_style);
 
         let mut child = Element::new(10.0, 10.0, 20.0, 20.0);
-        let child_id = child.id();
         child.set_background_color_value(Color::rgb(255, 0, 0));
 
         let mut arena = new_test_arena();
         let root_key = commit_element(&mut arena, Box::new(root));
         let parent_key = commit_child(&mut arena, root_key, Box::new(parent));
-        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
         measure_and_place(&mut arena, root_key, constraints(400.0, 300.0), placement(400.0, 300.0));
 
-        assert_eq!(hit_test(&arena, root_key, 115.0, 15.0), Some(child_id));
+        assert_eq!(hit_test(&arena, root_key, 115.0, 15.0), Some(child_key));
     }
 
     #[test]
@@ -2479,17 +2366,16 @@ mod tests {
         parent.apply_style(parent_style);
 
         let mut child = Element::new(70.0, 10.0, 20.0, 20.0);
-        let child_id = child.id();
         child.set_background_color_value(Color::rgb(255, 0, 0));
 
         let mut arena = new_test_arena();
         let root_key = commit_element(&mut arena, Box::new(root));
         let parent_key = commit_child(&mut arena, root_key, Box::new(parent));
-        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
         measure_and_place(&mut arena, root_key, constraints(400.0, 300.0), placement(400.0, 300.0));
 
-        assert_eq!(hit_test(&arena, root_key, 80.0, 80.0), Some(child_id));
+        assert_eq!(hit_test(&arena, root_key, 80.0, 80.0), Some(child_key));
     }
 
     #[test]
@@ -2510,7 +2396,6 @@ mod tests {
         );
         parent.apply_style(parent_style);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
-        let child_id = child.id();
         let mut child_style = Style::new();
         child_style.insert(
             PropertyId::BackgroundColor,
@@ -2531,11 +2416,11 @@ mod tests {
         let mut arena = new_test_arena();
         let root_key = commit_element(&mut arena, Box::new(root));
         let parent_key = commit_child(&mut arena, root_key, Box::new(parent));
-        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
         measure_and_place(&mut arena, root_key, constraints(400.0, 300.0), placement(400.0, 300.0));
 
-        assert_eq!(hit_test(&arena, root_key, 135.0, 15.0), Some(child_id));
+        assert_eq!(hit_test(&arena, root_key, 135.0, 15.0), Some(child_key));
     }
 
     #[test]
@@ -2543,7 +2428,6 @@ mod tests {
         let root = Element::new(0.0, 0.0, 400.0, 300.0);
         let parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
-        let child_id = child.id();
         let mut child_style = Style::new();
         child_style.insert(
             PropertyId::Position,
@@ -2559,17 +2443,16 @@ mod tests {
         let mut arena = new_test_arena();
         let root_key = commit_element(&mut arena, Box::new(root));
         let parent_key = commit_child(&mut arena, root_key, Box::new(parent));
-        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
         measure_and_place(&mut arena, root_key, constraints(400.0, 300.0), placement(400.0, 300.0));
 
-        assert_ne!(hit_test(&arena, root_key, 135.0, 15.0), Some(child_id));
+        assert_ne!(hit_test(&arena, root_key, 135.0, 15.0), Some(child_key));
     }
 
     #[test]
     fn hit_test_prefers_scrollbar_over_children() {
         let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
-        let root_id = root.id();
         let mut root_style = Style::new();
         root_style.insert(
             PropertyId::BackgroundColor,
@@ -2594,13 +2477,12 @@ mod tests {
             }
         });
 
-        assert_eq!(hit_test(&arena, root_key, 115.0, 60.0), Some(root_id));
+        assert_eq!(hit_test(&arena, root_key, 115.0, 60.0), Some(root_key));
     }
 
     #[test]
     fn overflow_child_hit_bubbles_but_parent_is_not_targetable_outside_clip() {
         let mut root = Element::new(0.0, 0.0, 200.0, 160.0);
-        let root_id = root.id();
         root.set_background_color_value(Color::rgb(16, 16, 16));
         let mut clip_parent = Element::new(0.0, 0.0, 100.0, 80.0);
         clip_parent.set_background_color_value(Color::rgb(32, 32, 32));
@@ -2623,7 +2505,6 @@ mod tests {
         parent.apply_style(parent_style);
 
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
-        let child_id = child.id();
         let child_clicks = Rc::new(Cell::new(0));
         let child_clicks_binding = child_clicks.clone();
         child.on_click(move |_event, _control| {
@@ -2649,12 +2530,12 @@ mod tests {
         let root_key = commit_element(&mut arena, Box::new(root));
         let clip_parent_key = commit_child(&mut arena, root_key, Box::new(clip_parent));
         let parent_key = commit_child(&mut arena, clip_parent_key, Box::new(parent));
-        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
         measure_and_place(&mut arena, root_key, constraints(200.0, 160.0), placement(200.0, 160.0));
 
-        assert_eq!(hit_test(&arena, root_key, 115.0, 15.0), Some(child_id));
-        assert_eq!(hit_test(&arena, root_key, 145.0, 15.0), Some(root_id));
+        assert_eq!(hit_test(&arena, root_key, 115.0, 15.0), Some(child_key));
+        assert_eq!(hit_test(&arena, root_key, 145.0, 15.0), Some(root_key));
 
         let mut viewport = Viewport::new();
         let mut control = ViewportControl::new(&mut viewport);
@@ -2714,21 +2595,18 @@ mod tests {
         let order = Rc::new(RefCell::new(Vec::new()));
 
         let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
-        let root_id = root.id();
         let root_order = order.clone();
         root.on_pointer_enter(move |_event| root_order.borrow_mut().push("root-enter"));
         let root_order = order.clone();
         root.on_pointer_leave(move |_event| root_order.borrow_mut().push("root-leave"));
 
         let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
-        let parent_id = parent.id();
         let parent_order = order.clone();
         parent.on_pointer_enter(move |_event| parent_order.borrow_mut().push("parent-enter"));
         let parent_order = order.clone();
         parent.on_pointer_leave(move |_event| parent_order.borrow_mut().push("parent-leave"));
 
         let mut child = Element::new(0.0, 0.0, 60.0, 60.0);
-        let child_id = child.id();
         let child_order = order.clone();
         child.on_pointer_enter(move |_event| child_order.borrow_mut().push("child-enter"));
         let child_order = order.clone();
@@ -2737,11 +2615,11 @@ mod tests {
         let mut arena = new_test_arena();
         let root_key = commit_element(&mut arena, Box::new(root));
         let parent_key = commit_child(&mut arena, root_key, Box::new(parent));
-        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
 
         let roots = [root_key];
 
-        assert!(dispatch_hover_transition(&mut arena, &roots, None, Some(child_id)));
+        assert!(dispatch_hover_transition(&mut arena, &roots, None, Some(child_key)));
         assert_eq!(
             order.borrow().as_slice(),
             &["root-enter", "parent-enter", "child-enter"]
@@ -2751,8 +2629,8 @@ mod tests {
         assert!(dispatch_hover_transition(
             &mut arena,
             &roots,
-            Some(child_id),
-            Some(parent_id),
+            Some(child_key),
+            Some(parent_key),
         ));
         assert_eq!(order.borrow().as_slice(), &["child-leave"]);
 
@@ -2760,7 +2638,7 @@ mod tests {
         assert!(dispatch_hover_transition(
             &mut arena,
             &roots,
-            Some(parent_id),
+            Some(parent_key),
             None,
         ));
         assert_eq!(order.borrow().as_slice(), &["parent-leave", "root-leave"]);
@@ -2769,8 +2647,8 @@ mod tests {
         assert!(!dispatch_hover_transition(
             &mut arena,
             &roots,
-            Some(root_id),
-            Some(root_id),
+            Some(root_key),
+            Some(root_key),
         ));
         assert!(order.borrow().is_empty());
     }

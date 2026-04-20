@@ -1,57 +1,16 @@
 //! Stable identifier for retained-tree nodes.
 //!
-//! Transitional state during the Approach-C arena migration: `NodeId` is
-//! still a `u64` wrapper used by the event API (Step 1 of the event
-//! refactor), while [`crate::view::node_arena::NodeKey`] is the real
-//! slotmap-generational arena key. The two get merged in the cleanup
-//! phase once every dispatch path has been ported onto the arena.
+//! Post arena-migration cleanup: `NodeId` is a type alias for
+//! [`crate::view::node_arena::NodeKey`] (slotmap generational key). Event API
+//! surfaces and dispatch internals use `NodeId` exclusively; the legacy u64
+//! `stable_id` path survives only for cross-frame stable-id lookups (e.g.
+//! `get_scroll_offset_by_id`).
 
-use std::fmt;
-
-/// Opaque id assigned by the viewport to each element in the retained
-/// tree.
+/// Opaque id assigned by the viewport to each element in the retained tree.
 ///
-/// Transitional u64 wrapper — the target form is an alias for
-/// [`crate::view::node_arena::NodeKey`]. Kept separate for now so the
-/// event API can continue to compile while element-layer code is
-/// progressively ported onto the arena.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub struct NodeId(pub u64);
-
-impl NodeId {
-    /// Raw wire value. Prefer `NodeId` in signatures; use this only when
-    /// interoperating with legacy `u64`-typed internals.
-    #[inline]
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-}
-
-impl fmt::Debug for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "NodeId({})", self.0)
-    }
-}
-
-impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{}", self.0)
-    }
-}
-
-impl From<u64> for NodeId {
-    #[inline]
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<NodeId> for u64 {
-    #[inline]
-    fn from(value: NodeId) -> Self {
-        value.0
-    }
-}
+/// Alias to [`crate::view::node_arena::NodeKey`]. `Copy + Hash + Eq`; the null
+/// key (`NodeKey::default()`) marks "no target" / sentinel slots.
+pub type NodeId = crate::view::node_arena::NodeKey;
 
 /// Axis-aligned rectangle in viewport-space (logical pixels).
 ///

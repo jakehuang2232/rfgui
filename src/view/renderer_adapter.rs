@@ -3527,8 +3527,9 @@ mod tests {
         let root = *roots.first().expect("single root");
         measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let target_id = hit_test(&arena, root, 10.0, 10.0).expect("hit child");
-        let cursor = get_cursor_by_id(&arena, root, target_id).expect("cursor exists");
+        let target_key = hit_test(&arena, root, 10.0, 10.0).expect("hit child");
+        let target_stable_id = arena.get(target_key).unwrap().element.stable_id();
+        let cursor = get_cursor_by_id(&arena, root, target_stable_id).expect("cursor exists");
         assert_eq!(cursor, Cursor::Pointer);
     }
 
@@ -3557,8 +3558,9 @@ mod tests {
         let root = *roots.first().expect("single root");
         measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let target_id = hit_test(&arena, root, 10.0, 10.0).expect("hit text child");
-        let cursor = get_cursor_by_id(&arena, root, target_id).expect("cursor exists");
+        let target_key = hit_test(&arena, root, 10.0, 10.0).expect("hit text child");
+        let target_stable_id = arena.get(target_key).unwrap().element.stable_id();
+        let cursor = get_cursor_by_id(&arena, root, target_stable_id).expect("cursor exists");
         assert_eq!(cursor, Cursor::Pointer);
     }
 

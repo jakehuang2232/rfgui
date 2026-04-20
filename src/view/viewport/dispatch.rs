@@ -92,18 +92,18 @@ impl Viewport {
         if handled {
             self.input_state.pending_click = Some(PendingClick {
                 button,
-                target_id: event.meta.target_id().raw(),
+                target_id: event.meta.target_id(),
                 viewport_x: x,
                 viewport_y: y,
             });
         }
         if let Some(capture_target_id) = event.meta.pointer_capture_target_id() {
-            self.input_state.pointer_capture_node_id = Some(capture_target_id.raw());
+            self.input_state.pointer_capture_node_id = Some(capture_target_id);
         }
         self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
         self.sync_focus_dispatch();
         if handled {
-            let clicked_target = event.meta.target_id().raw();
+            let clicked_target = event.meta.target_id();
             let keep_focus_requested = event.meta.keep_focus_requested();
             let focus_after = self.focused_node_id();
             let focus_changed_by_handler = focus_after != focus_before;
@@ -361,32 +361,42 @@ impl Viewport {
         let mut pending_scroll_track: Option<(TrackTarget, (f32, f32), (f32, f32))> = None;
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
-        let Some((root_index, target_id)) =
+        let Some((root_index, target_key)) =
             Self::find_scroll_handler_at_pointer(&arena, &root_keys, x, y, delta_x, delta_y)
         else {
             self.scene.node_arena = arena;
             return false;
         };
+        // Cross-frame scroll track keys are u64 stable_ids; resolve once.
+        let target_stable_id = arena
+            .get(target_key)
+            .map(|n| n.element.stable_id())
+            .unwrap_or(0);
         if let Some(&root_key) = root_keys.get(root_index) {
-            if let Some(from) =
-                crate::view::base_component::get_scroll_offset_by_id(&arena, root_key, target_id)
-            {
+            if let Some(from) = crate::view::base_component::get_scroll_offset_by_id(
+                &arena, root_key, target_stable_id,
+            ) {
                 let _ = crate::view::base_component::dispatch_scroll_to_target(
                     &mut arena,
                     root_key,
-                    target_id,
+                    target_key,
                     delta_x,
                     delta_y,
                 );
                 if let Some(to) = crate::view::base_component::get_scroll_offset_by_id(
-                    &arena, root_key, target_id,
+                    &arena,
+                    root_key,
+                    target_stable_id,
                 ) {
                     let _ = crate::view::base_component::set_scroll_offset_by_id(
-                        &mut arena, root_key, target_id, from,
+                        &mut arena,
+                        root_key,
+                        target_stable_id,
+                        from,
                     );
 
                     if (to.0 - from.0).abs() > 0.001 || (to.1 - from.1).abs() > 0.001 {
-                        pending_scroll_track = Some((target_id, from, to));
+                        pending_scroll_track = Some((target_stable_id, from, to));
                     }
                 }
             }
@@ -434,38 +444,31 @@ impl Viewport {
         y: f32,
         delta_x: f32,
         delta_y: f32,
-    ) -> Option<(usize, u64)> {
+    ) -> Option<(usize, crate::view::node_arena::NodeKey)> {
         let hit_target = root_keys
             .iter()
             .rev()
             .find_map(|&root_key| crate::view::base_component::hit_test(arena, root_key, x, y))?;
-        let mut best_match: Option<(usize, u64, usize)> = None;
 
-        for (root_index, &root_key) in root_keys.iter().enumerate() {
-            let Some(root_node) = arena.get(root_key) else { continue };
-            let target_path = {
-                let el = root_node.element.as_ref();
-                crate::view::base_component::get_node_ancestry_ids(el, hit_target, arena)
-            };
-            let Some(target_path) = target_path else { continue };
-            let handler_id = crate::view::base_component::find_scroll_handler_from_target(
-                arena, root_key, hit_target, delta_x, delta_y,
-            );
-            let Some(handler_id) = handler_id else { continue };
-            let handler_path = {
-                let el = root_node.element.as_ref();
-                crate::view::base_component::get_node_ancestry_ids(el, handler_id, arena)
-            };
-            let Some(handler_path) = handler_path else { continue };
-            drop(root_node);
-            let ancestor_distance = target_path.len().saturating_sub(handler_path.len());
-            match best_match {
-                Some((_, _, best_distance)) if ancestor_distance >= best_distance => {}
-                _ => best_match = Some((root_index, handler_id, ancestor_distance)),
+        // Walk up from hit_target via arena.parent_of, stopping at the first
+        // ancestor that reports `can_scroll_by`. Determine which root it sits
+        // under by walking further up to the root.
+        let handler_key = crate::view::base_component::find_scroll_handler_from_target(
+            arena, hit_target, hit_target, delta_x, delta_y,
+        )?;
+        // Find the root that contains handler_key.
+        let mut cur = Some(handler_key);
+        let mut root_of_handler: Option<crate::view::node_arena::NodeKey> = None;
+        while let Some(k) = cur {
+            if root_keys.iter().any(|&r| r == k) {
+                root_of_handler = Some(k);
+                break;
             }
+            cur = arena.parent_of(k);
         }
-
-        best_match.map(|(root_index, handler_id, _)| (root_index, handler_id))
+        let root_of_handler = root_of_handler?;
+        let root_index = root_keys.iter().position(|&r| r == root_of_handler)?;
+        Some((root_index, handler_key))
     }
 
     pub fn dispatch_key_down_event(&mut self, data: KeyEventData) -> bool {
@@ -473,7 +476,7 @@ impl Viewport {
             return false;
         };
         let mut event = KeyDownEvent {
-            meta: EventMeta::new(target_id.into()),
+            meta: EventMeta::new(target_id),
             key: data,
         };
         let mut arena = std::mem::take(&mut self.scene.node_arena);
@@ -508,7 +511,7 @@ impl Viewport {
             return false;
         };
         let mut event = KeyUpEvent {
-            meta: EventMeta::new(target_id.into()),
+            meta: EventMeta::new(target_id),
             key: data,
         };
         let mut arena = std::mem::take(&mut self.scene.node_arena);
@@ -547,7 +550,7 @@ impl Viewport {
             return false;
         };
         let mut event = TextInputEvent {
-            meta: EventMeta::new(target_id.into()),
+            meta: EventMeta::new(target_id),
             text,
         };
         let mut arena = std::mem::take(&mut self.scene.node_arena);
@@ -587,7 +590,7 @@ impl Viewport {
             return false;
         };
         let mut event = ImePreeditEvent {
-            meta: EventMeta::new(target_id.into()),
+            meta: EventMeta::new(target_id),
             text,
             cursor,
         };
@@ -619,17 +622,17 @@ impl Viewport {
         handled
     }
 
-    pub fn dispatch_focus_event(&mut self, target_id: u64) -> bool {
+    pub fn dispatch_focus_event(&mut self, target_id: NodeId) -> bool {
         self.dispatch_focus_event_with_related(target_id, None)
     }
 
     pub(super) fn dispatch_focus_event_with_related(
         &mut self,
-        target_id: u64,
-        related: Option<u64>,
+        target_id: NodeId,
+        related: Option<NodeId>,
     ) -> bool {
-        let mut meta = EventMeta::new(target_id.into());
-        meta.set_related_target(related.map(|id| crate::ui::EventTarget::bare(NodeId::from(id))));
+        let mut meta = EventMeta::new(target_id);
+        meta.set_related_target(related.map(crate::ui::EventTarget::bare));
         let mut event = FocusEvent { meta };
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
@@ -659,17 +662,17 @@ impl Viewport {
         handled
     }
 
-    pub fn dispatch_blur_event(&mut self, target_id: u64) -> bool {
+    pub fn dispatch_blur_event(&mut self, target_id: NodeId) -> bool {
         self.dispatch_blur_event_with_related(target_id, None)
     }
 
     pub(super) fn dispatch_blur_event_with_related(
         &mut self,
-        target_id: u64,
-        related: Option<u64>,
+        target_id: NodeId,
+        related: Option<NodeId>,
     ) -> bool {
-        let mut meta = EventMeta::new(target_id.into());
-        meta.set_related_target(related.map(|id| crate::ui::EventTarget::bare(NodeId::from(id))));
+        let mut meta = EventMeta::new(target_id);
+        meta.set_related_target(related.map(crate::ui::EventTarget::bare));
         let mut event = BlurEvent { meta };
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
@@ -766,12 +769,17 @@ impl Viewport {
     }
 
     pub fn focused_ime_cursor_rect(&self) -> Option<(f32, f32, f32, f32)> {
-        let target_id = self.focused_node_id()?;
+        let target_key = self.focused_node_id()?;
+        let stable_id = self
+            .scene
+            .node_arena
+            .get(target_key)
+            .map(|n| n.element.stable_id())?;
         for &root_key in self.scene.ui_root_keys.iter().rev() {
             if let Some(rect) = crate::view::base_component::get_ime_cursor_rect_by_id(
                 &self.scene.node_arena,
                 root_key,
-                target_id,
+                stable_id,
             ) {
                 return Some(rect);
             }
@@ -825,14 +833,22 @@ impl Viewport {
         if let Some(cursor) = self.cursor_override {
             return cursor;
         }
-        let Some(target_id) = self.input_state.hovered_node_id else {
+        let Some(target_key) = self.input_state.hovered_node_id else {
+            return Cursor::Default;
+        };
+        let Some(stable_id) = self
+            .scene
+            .node_arena
+            .get(target_key)
+            .map(|n| n.element.stable_id())
+        else {
             return Cursor::Default;
         };
         for &root_key in self.scene.ui_root_keys.iter().rev() {
             if let Some(cursor) = crate::view::base_component::get_cursor_by_id(
                 &self.scene.node_arena,
                 root_key,
-                target_id,
+                stable_id,
             ) {
                 return cursor;
             }
@@ -890,7 +906,7 @@ impl Viewport {
                         .push(ViewportPointerUpListener::Until(handler));
                 }
                 ViewportListenerAction::SetFocus(node_id) => {
-                    self.set_focused_node_id(node_id.map(|n| n.raw()));
+                    self.set_focused_node_id(node_id);
                 }
                 ViewportListenerAction::SetCursor(cursor) => {
                     self.set_cursor(cursor);
@@ -898,11 +914,15 @@ impl Viewport {
                 ViewportListenerAction::SelectTextRangeAll(target_id) => {
                     let mut arena = std::mem::take(&mut self.scene.node_arena);
                     let root_keys = self.scene.ui_root_keys.clone();
+                    let stable_id = arena
+                        .get(target_id)
+                        .map(|n| n.element.stable_id())
+                        .unwrap_or(0);
                     for &root_key in root_keys.iter().rev() {
                         if crate::view::base_component::select_all_text_by_id(
                             &mut arena,
                             root_key,
-                            target_id.raw(),
+                            stable_id,
                         ) {
                             selection_changed = true;
                             break;
@@ -917,11 +937,15 @@ impl Viewport {
                 } => {
                     let mut arena = std::mem::take(&mut self.scene.node_arena);
                     let root_keys = self.scene.ui_root_keys.clone();
+                    let stable_id = arena
+                        .get(target_id)
+                        .map(|n| n.element.stable_id())
+                        .unwrap_or(0);
                     for &root_key in root_keys.iter().rev() {
                         if crate::view::base_component::select_text_range_by_id(
                             &mut arena,
                             root_key,
-                            target_id.raw(),
+                            stable_id,
                             start,
                             end,
                         ) {

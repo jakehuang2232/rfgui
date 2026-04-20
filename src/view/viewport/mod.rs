@@ -123,7 +123,7 @@ impl<'a> ViewportControl<'a> {
         self.viewport.request_redraw();
     }
 
-    pub fn set_focus(&mut self, node_id: Option<u64>) {
+    pub fn set_focus(&mut self, node_id: Option<crate::view::node_arena::NodeKey>) {
         self.viewport.set_focused_node_id(node_id);
     }
 
@@ -149,11 +149,11 @@ impl<'a> ViewportControl<'a> {
         self.viewport.cancel_scroll_track(target, axis);
     }
 
-    pub fn set_pointer_capture(&mut self, node_id: u64) {
+    pub fn set_pointer_capture(&mut self, node_id: crate::view::node_arena::NodeKey) {
         self.viewport.set_pointer_capture_node_id(Some(node_id));
     }
 
-    pub fn release_pointer_capture(&mut self, node_id: u64) {
+    pub fn release_pointer_capture(&mut self, node_id: crate::view::node_arena::NodeKey) {
         if self.viewport.pointer_capture_node_id() == Some(node_id) {
             self.viewport.set_pointer_capture_node_id(None);
         }
@@ -201,7 +201,7 @@ pub struct Viewport {
     compositor: CompositorState,
     input_state: InputState,
     clipboard_fallback: Option<String>,
-    dispatched_focus_node_id: Option<u64>,
+    dispatched_focus_node_id: Option<crate::view::node_arena::NodeKey>,
     scene: SceneState,
     transitions: TransitionRuntime,
     cursor_override: Option<Cursor>,
@@ -638,19 +638,19 @@ impl Viewport {
         self.compositor.promotion_config = config;
     }
 
-    pub fn set_focused_node_id(&mut self, node_id: Option<u64>) {
+    pub fn set_focused_node_id(&mut self, node_id: Option<crate::view::node_arena::NodeKey>) {
         self.input_state.focused_node_id = node_id;
     }
 
-    pub fn focused_node_id(&self) -> Option<u64> {
+    pub fn focused_node_id(&self) -> Option<crate::view::node_arena::NodeKey> {
         self.input_state.focused_node_id
     }
 
-    pub fn set_pointer_capture_node_id(&mut self, node_id: Option<u64>) {
+    pub fn set_pointer_capture_node_id(&mut self, node_id: Option<crate::view::node_arena::NodeKey>) {
         self.input_state.pointer_capture_node_id = node_id;
     }
 
-    pub fn pointer_capture_node_id(&self) -> Option<u64> {
+    pub fn pointer_capture_node_id(&self) -> Option<crate::view::node_arena::NodeKey> {
         self.input_state.pointer_capture_node_id
     }
 
