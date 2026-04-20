@@ -692,15 +692,19 @@ fn convert_element(
     convert_container_element(node, path, global_path, inherited_text_style)
 }
 
-fn convert_container_element(
+/// Build the container Element plus child-inherited text style without
+/// walking children. Shared by the legacy boxed path
+/// (`convert_container_element`) and the arena descriptor path
+/// (`convert_container_element_desc`). Eliminates a double RSX child walk.
+fn build_container_element_shell(
     node: &RsxElementNode,
     path: &[u64],
-    global_path: Option<GlobalNodePath>,
+    global_path: Option<&GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
-) -> Result<Box<dyn ElementTrait>, String> {
+) -> Result<(Element, InheritedTextStyle), String> {
     let initial_size = if path.is_empty() { 10_000.0 } else { 0.0 };
     let mut element = Element::new_with_id(
-        stable_node_id_from_parts(element_runtime_name(node), path, global_path.as_ref()),
+        stable_node_id_from_parts(element_runtime_name(node), path, global_path),
         0.0,
         0.0,
         initial_size,
@@ -822,6 +826,18 @@ fn convert_container_element(
             }
         }
     }
+
+    Ok((element, child_inherited_text_style))
+}
+
+fn convert_container_element(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<Box<dyn ElementTrait>, String> {
+    let (mut element, child_inherited_text_style) =
+        build_container_element_shell(node, path, global_path.as_ref(), inherited_text_style)?;
 
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
     child_path.extend_from_slice(path);
@@ -2780,45 +2796,9 @@ fn convert_container_element_desc(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<ElementDescriptor, String> {
-    // Build the container Element via the legacy path — it produces a box
-    // with empty children — then strip off an ElementDescriptor whose
-    // children come from walking the RSX tree ourselves.
-    let element_box = convert_container_element(node, path, global_path.clone(), inherited_text_style)?;
-
-    // Re-derive child_inherited_text_style the way convert_container_element does
-    let mut child_inherited_text_style = inherited_text_style.clone();
-    for (key, value) in node.props.iter() {
-        if *key == "style" {
-            if let Ok(style) = as_element_style(value, key) {
-                if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
-                    child_inherited_text_style.font_families = font_family.as_slice().to_vec();
-                }
-                if let Some(font_size) = resolve_font_size_from_style(
-                    &style,
-                    child_inherited_text_style
-                        .font_size
-                        .unwrap_or(child_inherited_text_style.root_font_size),
-                    child_inherited_text_style.root_font_size,
-                    child_inherited_text_style.viewport_width,
-                    child_inherited_text_style.viewport_height,
-                ) {
-                    child_inherited_text_style.font_size = Some(font_size);
-                }
-                if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
-                    child_inherited_text_style.font_weight = Some(font_weight.value());
-                }
-                if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-                    child_inherited_text_style.color = Some(color.to_color());
-                }
-                if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
-                    child_inherited_text_style.cursor = Some(*cursor);
-                }
-                if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
-                    child_inherited_text_style.text_wrap = Some(*text_wrap);
-                }
-            }
-        }
-    }
+    let (element, child_inherited_text_style) =
+        build_container_element_shell(node, path, global_path.as_ref(), inherited_text_style)?;
+    let element_box: Box<dyn ElementTrait> = Box::new(element);
 
     let mut children: Vec<ElementDescriptor> = Vec::new();
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));

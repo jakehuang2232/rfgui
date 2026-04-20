@@ -103,8 +103,13 @@ pub(crate) fn collect_promoted_layer_updates(
         has_promoted_output: bool,
     }
 
-    fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut FxHasher) {
-        node.promotion_clip_intersection_signature().hash(hasher);
+    fn hash_composition_state(
+        node: &dyn ElementTrait,
+        hasher: &mut FxHasher,
+        arena: &crate::view::node_arena::NodeArena,
+    ) {
+        node.promotion_clip_intersection_signature(arena)
+            .hash(hasher);
         let bounds = node.promotion_composite_bounds();
         bounds.x.to_bits().hash(hasher);
         bounds.y.to_bits().hash(hasher);
@@ -133,12 +138,12 @@ pub(crate) fn collect_promoted_layer_updates(
         let mut hasher = FxHasher::default();
         let mut composition_hasher = FxHasher::default();
         node.promotion_self_signature().hash(&mut hasher);
-        node.promotion_clip_intersection_signature()
+        node.promotion_clip_intersection_signature(arena)
             .hash(&mut hasher);
         let self_is_promoted = promoted_node_ids.contains(&node.stable_id());
         let mut has_promoted_output = self_is_promoted;
         if self_is_promoted {
-            hash_composition_state(node, &mut composition_hasher);
+            hash_composition_state(node, &mut composition_hasher, arena);
         }
         for (index, child_key) in node.children().iter().enumerate() {
             let Some(child_node) = arena.get(*child_key) else {
@@ -174,7 +179,7 @@ pub(crate) fn collect_promoted_layer_updates(
             }
             if child_is_promoted || child_state.has_promoted_output {
                 if !has_promoted_output {
-                    hash_composition_state(node, &mut composition_hasher);
+                    hash_composition_state(node, &mut composition_hasher, arena);
                     has_promoted_output = true;
                 }
                 index.hash(&mut composition_hasher);
@@ -266,8 +271,13 @@ pub(crate) fn collect_debug_subtree_signatures(
         has_promoted_output: bool,
     }
 
-    fn hash_composition_state(node: &dyn ElementTrait, hasher: &mut FxHasher) {
-        node.promotion_clip_intersection_signature().hash(hasher);
+    fn hash_composition_state(
+        node: &dyn ElementTrait,
+        hasher: &mut FxHasher,
+        arena: &crate::view::node_arena::NodeArena,
+    ) {
+        node.promotion_clip_intersection_signature(arena)
+            .hash(hasher);
         let bounds = node.promotion_composite_bounds();
         bounds.x.to_bits().hash(hasher);
         bounds.y.to_bits().hash(hasher);
@@ -292,12 +302,12 @@ pub(crate) fn collect_debug_subtree_signatures(
         let mut hasher = FxHasher::default();
         let mut composition_hasher = FxHasher::default();
         node.promotion_self_signature().hash(&mut hasher);
-        node.promotion_clip_intersection_signature()
+        node.promotion_clip_intersection_signature(arena)
             .hash(&mut hasher);
         let self_is_promoted = promoted_node_ids.contains(&node.stable_id());
         let mut has_promoted_output = self_is_promoted;
         if self_is_promoted {
-            hash_composition_state(node, &mut composition_hasher);
+            hash_composition_state(node, &mut composition_hasher, arena);
         }
         for (index, child_key) in node.children().iter().enumerate() {
             let Some(child_node) = arena.get(*child_key) else {
@@ -324,7 +334,7 @@ pub(crate) fn collect_debug_subtree_signatures(
             }
             if child_is_promoted || child_state.has_promoted_output {
                 if !has_promoted_output {
-                    hash_composition_state(node, &mut composition_hasher);
+                    hash_composition_state(node, &mut composition_hasher, arena);
                     has_promoted_output = true;
                 }
                 index.hash(&mut composition_hasher);
