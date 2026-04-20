@@ -21,8 +21,8 @@ use crate::transition::{
     VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
 };
 use crate::ui::{
-    BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, MouseButton as UiMouseButton,
-    MouseDownEvent, MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent,
+    BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, PointerButton as UiPointerButton,
+    PointerDownEvent, PointerEnterEvent, PointerLeaveEvent, PointerMoveEvent, PointerUpEvent,
 };
 use crate::view::base_component::round_layout_value;
 use crate::view::frame_graph::texture_resource::TextureHandle;
@@ -1072,22 +1072,22 @@ pub trait Layoutable {
 }
 
 pub trait EventTarget {
-    fn dispatch_mouse_down(
+    fn dispatch_pointer_down(
         &mut self,
-        _event: &mut MouseDownEvent,
+        _event: &mut PointerDownEvent,
         _control: &mut ViewportControl<'_>,
     ) {
     }
-    fn dispatch_mouse_up(&mut self, _event: &mut MouseUpEvent, _control: &mut ViewportControl<'_>) {
+    fn dispatch_pointer_up(&mut self, _event: &mut PointerUpEvent, _control: &mut ViewportControl<'_>) {
     }
-    fn dispatch_mouse_move(
+    fn dispatch_pointer_move(
         &mut self,
-        _event: &mut MouseMoveEvent,
+        _event: &mut PointerMoveEvent,
         _control: &mut ViewportControl<'_>,
     ) {
     }
-    fn dispatch_mouse_enter(&mut self, _event: &mut MouseEnterEvent) {}
-    fn dispatch_mouse_leave(&mut self, _event: &mut MouseLeaveEvent) {}
+    fn dispatch_pointer_enter(&mut self, _event: &mut PointerEnterEvent) {}
+    fn dispatch_pointer_leave(&mut self, _event: &mut PointerLeaveEvent) {}
     fn dispatch_click(&mut self, _event: &mut ClickEvent, _control: &mut ViewportControl<'_>) {}
     fn dispatch_key_down(&mut self, _event: &mut KeyDownEvent, _control: &mut ViewportControl<'_>) {
     }
@@ -1239,11 +1239,11 @@ pub(crate) struct DebugElementRenderState {
     pub border_radius: f32,
 }
 
-type MouseDownHandler = Box<dyn FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>)>;
-type MouseUpHandler = Box<dyn FnMut(&mut MouseUpEvent, &mut ViewportControl<'_>)>;
-type MouseMoveHandler = Box<dyn FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>)>;
-type MouseEnterHandler = Box<dyn FnMut(&mut MouseEnterEvent)>;
-type MouseLeaveHandler = Box<dyn FnMut(&mut MouseLeaveEvent)>;
+type PointerDownHandler = Box<dyn FnMut(&mut PointerDownEvent, &mut ViewportControl<'_>)>;
+type PointerUpHandler = Box<dyn FnMut(&mut PointerUpEvent, &mut ViewportControl<'_>)>;
+type PointerMoveHandler = Box<dyn FnMut(&mut PointerMoveEvent, &mut ViewportControl<'_>)>;
+type PointerEnterHandler = Box<dyn FnMut(&mut PointerEnterEvent)>;
+type PointerLeaveHandler = Box<dyn FnMut(&mut PointerLeaveEvent)>;
 type ClickHandler = Box<dyn FnMut(&mut ClickEvent, &mut ViewportControl<'_>)>;
 type KeyDownHandler = Box<dyn FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>)>;
 type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>)>;
@@ -1254,11 +1254,11 @@ type BlurHandler = Box<dyn FnMut(&mut BlurEvent, &mut ViewportControl<'_>)>;
 /// elements without handlers pay only 8 bytes (the `Option<Box<_>>` pointer).
 #[derive(Default)]
 struct ElementEventHandlers {
-    mouse_down: Vec<MouseDownHandler>,
-    mouse_up: Vec<MouseUpHandler>,
-    mouse_move: Vec<MouseMoveHandler>,
-    mouse_enter: Vec<MouseEnterHandler>,
-    mouse_leave: Vec<MouseLeaveHandler>,
+    pointer_down: Vec<PointerDownHandler>,
+    pointer_up: Vec<PointerUpHandler>,
+    pointer_move: Vec<PointerMoveHandler>,
+    pointer_enter: Vec<PointerEnterHandler>,
+    pointer_leave: Vec<PointerLeaveHandler>,
     click: Vec<ClickHandler>,
     key_down: Vec<KeyDownHandler>,
     key_up: Vec<KeyUpHandler>,

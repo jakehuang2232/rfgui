@@ -17,8 +17,8 @@ use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::desktop_backend::ArboardClipboard;
 use rfgui::platform::{
     CallbackCursorSink, CallbackRedrawRequester, Clipboard, NullClipboard, PlatformImePreedit,
-    PlatformKeyEvent, PlatformMouseButton, PlatformMouseEvent, PlatformMouseEventKind,
-    PlatformServices, PlatformTextInput, PlatformWheelEvent,
+    PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent, PlatformPointerEventKind,
+    PlatformServices, PlatformTextInput, PlatformWheelEvent, PointerType,
 };
 use rfgui::ui::{next_timer_deadline, run_due_timers};
 use rfgui::view::viewport::{RenderFrameResult, Viewport};
@@ -437,26 +437,29 @@ impl ApplicationHandler for Runner {
                     })
                     .unwrap_or((position.x as f32, position.y as f32));
                 self.last_mouse_logical = Some((logical_x, logical_y));
-                let move_event = PlatformMouseEvent {
-                    kind: PlatformMouseEventKind::Move {
+                let move_event = PlatformPointerEvent {
+                    kind: PlatformPointerEventKind::Move {
                         x: logical_x,
                         y: logical_y,
                     },
+                    pointer_id: 0,
+                    pointer_type: PointerType::Mouse,
+                    pressure: 0.0,
                 };
-                let ev = AppEvent::Mouse(move_event);
+                let ev = AppEvent::Pointer(move_event);
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport.dispatch_app_event(&ev, PlatformServices {
                         clipboard: self.clipboard.as_mut(),
                         cursor: &mut self.cursor,
                         redraw: &self.redraw,
                     });
-                    let _ = viewport.dispatch_platform_mouse_event(&move_event);
+                    let _ = viewport.dispatch_platform_pointer_event(&move_event);
                 }
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor_in_window = false;
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.clear_mouse_position_viewport();
+                    viewport.clear_pointer_position_viewport();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -465,33 +468,47 @@ impl ApplicationHandler for Runner {
                 };
                 let pressed = matches!(state, ElementState::Pressed);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.set_mouse_button_pressed(
+                    viewport.set_pointer_button_pressed(
                         platform_button_to_viewport(mapped),
                         pressed,
                     );
                     let kind = if pressed {
-                        PlatformMouseEventKind::Down(mapped)
+                        PlatformPointerEventKind::Down(mapped)
                     } else {
-                        PlatformMouseEventKind::Up(mapped)
+                        PlatformPointerEventKind::Up(mapped)
                     };
-                    let ev = AppEvent::Mouse(PlatformMouseEvent { kind });
+                    let pressure = if pressed { 0.5 } else { 0.0 };
+                    let ev = AppEvent::Pointer(PlatformPointerEvent {
+                        kind,
+                        pointer_id: 0,
+                        pointer_type: PointerType::Mouse,
+                        pressure,
+                    });
                     viewport.dispatch_app_event(&ev, PlatformServices {
                         clipboard: self.clipboard.as_mut(),
                         cursor: &mut self.cursor,
                         redraw: &self.redraw,
                     });
-                    let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent { kind });
+                    let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
+                        kind,
+                        pointer_id: 0,
+                        pointer_type: PointerType::Mouse,
+                        pressure,
+                    });
                     if !pressed {
-                        let click = PlatformMouseEvent {
-                            kind: PlatformMouseEventKind::Click(mapped),
+                        let click = PlatformPointerEvent {
+                            kind: PlatformPointerEventKind::Click(mapped),
+                            pointer_id: 0,
+                            pointer_type: PointerType::Mouse,
+                            pressure: 0.0,
                         };
-                        let click_ev = AppEvent::Mouse(click);
+                        let click_ev = AppEvent::Pointer(click);
                         viewport.dispatch_app_event(&click_ev, PlatformServices {
                             clipboard: self.clipboard.as_mut(),
                             cursor: &mut self.cursor,
                             redraw: &self.redraw,
                         });
-                        let _ = viewport.dispatch_platform_mouse_event(&click);
+                        let _ = viewport.dispatch_platform_pointer_event(&click);
                     }
                 }
             }
@@ -563,7 +580,7 @@ impl ApplicationHandler for Runner {
         let has_listener = self
             .viewport
             .as_ref()
-            .map(|v| v.has_viewport_mouse_listeners())
+            .map(|v| v.has_viewport_pointer_listeners())
             .unwrap_or(false);
         if !has_listener {
             return;
@@ -579,12 +596,15 @@ impl ApplicationHandler for Runner {
                 let (dx, dy) =
                     viewport.physical_to_logical_point(delta.0 as f32, delta.1 as f32);
                 let next = (last_x + dx, last_y + dy);
-                viewport.set_mouse_position_viewport(next.0, next.1);
-                let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent {
-                    kind: PlatformMouseEventKind::Move {
+                viewport.set_pointer_position_viewport(next.0, next.1);
+                let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
+                    kind: PlatformPointerEventKind::Move {
                         x: next.0,
                         y: next.1,
                     },
+                    pointer_id: 0,
+                    pointer_type: PointerType::Mouse,
+                    pressure: 0.0,
                 });
                 self.last_mouse_logical = Some(next);
             }
@@ -597,18 +617,14 @@ impl ApplicationHandler for Runner {
                 };
                 if let Some(viewport) = self.viewport.as_mut() {
                     if let Some((x, y)) = self.last_mouse_logical {
-                        viewport.set_mouse_position_viewport(x, y);
+                        viewport.set_pointer_position_viewport(x, y);
                     }
-                    viewport.set_mouse_button_pressed(
+                    viewport.set_pointer_button_pressed(
                         platform_button_to_viewport(mapped),
                         false,
                     );
-                    let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent {
-                        kind: PlatformMouseEventKind::Up(mapped),
-                    });
-                    let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent {
-                        kind: PlatformMouseEventKind::Click(mapped),
-                    });
+                    let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent { kind: PlatformPointerEventKind::Up(mapped), pointer_id: 0, pointer_type: PointerType::Mouse, pressure: 0.0 });
+                    let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent { kind: PlatformPointerEventKind::Click(mapped), pointer_id: 0, pointer_type: PointerType::Mouse, pressure: 0.0 });
                 }
             }
             _ => {}
@@ -752,42 +768,42 @@ fn should_dispatch_text(viewport: &Viewport, text: &str) -> bool {
 /// Map winit's `DeviceEvent::Button` numeric code onto the platform enum
 /// used by the rest of the pipeline. Only the standard five-button
 /// mouse layout is covered — extra side buttons are ignored.
-fn device_button_to_platform(button: u32) -> Option<PlatformMouseButton> {
+fn device_button_to_platform(button: u32) -> Option<PlatformPointerButton> {
     Some(match button {
-        1 => PlatformMouseButton::Left,
-        2 => PlatformMouseButton::Right,
-        3 => PlatformMouseButton::Middle,
-        4 => PlatformMouseButton::Back,
-        5 => PlatformMouseButton::Forward,
+        1 => PlatformPointerButton::Left,
+        2 => PlatformPointerButton::Right,
+        3 => PlatformPointerButton::Middle,
+        4 => PlatformPointerButton::Back,
+        5 => PlatformPointerButton::Forward,
         _ => return None,
     })
 }
 
-/// Bridge from the engine's `PlatformMouseButton` to the viewport's
-/// internal `MouseButton`. Kept separate so the platform enum does not
-/// leak implementation details of `view::viewport::MouseButton`.
+/// Bridge from the engine's `PlatformPointerButton` to the viewport's
+/// internal `PointerButton`. Kept separate so the platform enum does not
+/// leak implementation details of `view::viewport::PointerButton`.
 fn platform_button_to_viewport(
-    button: PlatformMouseButton,
-) -> rfgui::view::viewport::MouseButton {
-    use rfgui::view::viewport::MouseButton as Vb;
+    button: PlatformPointerButton,
+) -> rfgui::view::viewport::PointerButton {
+    use rfgui::view::viewport::PointerButton as Vb;
     match button {
-        PlatformMouseButton::Left => Vb::Left,
-        PlatformMouseButton::Right => Vb::Right,
-        PlatformMouseButton::Middle => Vb::Middle,
-        PlatformMouseButton::Back => Vb::Back,
-        PlatformMouseButton::Forward => Vb::Forward,
-        PlatformMouseButton::Other(code) => Vb::Other(code),
+        PlatformPointerButton::Left => Vb::Left,
+        PlatformPointerButton::Right => Vb::Right,
+        PlatformPointerButton::Middle => Vb::Middle,
+        PlatformPointerButton::Back => Vb::Back,
+        PlatformPointerButton::Forward => Vb::Forward,
+        PlatformPointerButton::Other(code) => Vb::Other(code),
     }
 }
 
-fn winit_button_to_platform(button: WinitMouseButton) -> Option<PlatformMouseButton> {
+fn winit_button_to_platform(button: WinitMouseButton) -> Option<PlatformPointerButton> {
     Some(match button {
-        WinitMouseButton::Left => PlatformMouseButton::Left,
-        WinitMouseButton::Right => PlatformMouseButton::Right,
-        WinitMouseButton::Middle => PlatformMouseButton::Middle,
-        WinitMouseButton::Back => PlatformMouseButton::Back,
-        WinitMouseButton::Forward => PlatformMouseButton::Forward,
-        WinitMouseButton::Other(code) => PlatformMouseButton::Other(code),
+        WinitMouseButton::Left => PlatformPointerButton::Left,
+        WinitMouseButton::Right => PlatformPointerButton::Right,
+        WinitMouseButton::Middle => PlatformPointerButton::Middle,
+        WinitMouseButton::Back => PlatformPointerButton::Back,
+        WinitMouseButton::Forward => PlatformPointerButton::Forward,
+        WinitMouseButton::Other(code) => PlatformPointerButton::Other(code),
     })
 }
 

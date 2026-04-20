@@ -694,7 +694,7 @@ impl Viewport {
         if !roots.is_empty() {
             transition_changed_after_layout = self.render_render_tree(&mut roots, dt, now_seconds);
         }
-        let next_hover_target = self.mouse_position_viewport().and_then(|(x, y)| {
+        let next_hover_target = self.pointer_position_viewport().and_then(|(x, y)| {
             roots
                 .iter()
                 .rev()

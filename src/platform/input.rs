@@ -6,11 +6,11 @@
 //! that every backend must produce, so conversion code in future backends
 //! (winit, web, headless) has a single target.
 
-/// Mirror of `view::viewport::MouseButton`, kept in the platform layer so
+/// Mirror of `view::viewport::PointerButton`, kept in the platform layer so
 /// backends can build events without importing viewport internals. Phase 3
 /// will collapse the two into a single type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PlatformMouseButton {
+pub enum PlatformPointerButton {
     Left,
     Right,
     Middle,
@@ -19,17 +19,29 @@ pub enum PlatformMouseButton {
     Other(u16),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PlatformMouseEventKind {
-    Down(PlatformMouseButton),
-    Up(PlatformMouseButton),
-    Move { x: f32, y: f32 },
-    Click(PlatformMouseButton),
+/// Kind of pointer device producing an event. Lives in the platform layer so
+/// backends can tag events without importing the ui-layer `PointerEventData`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PointerType {
+    Mouse,
+    Pen,
+    Touch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PlatformMouseEvent {
-    pub kind: PlatformMouseEventKind,
+pub enum PlatformPointerEventKind {
+    Down(PlatformPointerButton),
+    Up(PlatformPointerButton),
+    Move { x: f32, y: f32 },
+    Click(PlatformPointerButton),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlatformPointerEvent {
+    pub kind: PlatformPointerEventKind,
+    pub pointer_id: u64,
+    pub pointer_type: PointerType,
+    pub pressure: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

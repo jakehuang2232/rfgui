@@ -1,7 +1,7 @@
 use crate::{ButtonSizeSpec, Theme, use_theme};
 use rfgui::ui::{
-    ClickEvent, ClickHandlerProp, EventMeta, MouseButton, MouseDownHandlerProp,
-    MouseEnterHandlerProp, MouseEventData, MouseLeaveHandlerProp, RsxComponent,
+    ClickEvent, ClickHandlerProp, EventMeta, PointerButton, PointerDownHandlerProp,
+    PointerEnterHandlerProp, PointerEventData, PointerLeaveHandlerProp, RsxComponent,
     RsxNode, component, props, rsx, use_interval, use_state,
 };
 use rfgui::view::{Element, Text};
@@ -236,13 +236,13 @@ struct ButtonRepeatState {
 #[derive(Clone, PartialEq)]
 struct ButtonRepeatTrigger {
     target_id: u64,
-    mouse: MouseEventData,
+    pointer: PointerEventData,
 }
 
 fn trigger_click(handler: &ClickHandlerProp, trigger: &ButtonRepeatTrigger) {
     let mut event = ClickEvent {
         meta: EventMeta::new(trigger.target_id),
-        mouse: trigger.mouse.clone(),
+        pointer: trigger.pointer.clone(),
     };
     handler.call(&mut event);
 }
@@ -370,8 +370,8 @@ fn ButtonView(
     let mouse_down = if repeat_enabled {
         let repeat_state = repeat_state.binding();
         let on_click = on_click.clone();
-        Some(MouseDownHandlerProp::new(move |event| {
-            if event.mouse.button != Some(MouseButton::Left) {
+        Some(PointerDownHandlerProp::new(move |event| {
+            if event.pointer.button != Some(PointerButton::Left) {
                 return;
             }
             let Some(handler) = on_click.as_ref() else {
@@ -379,7 +379,7 @@ fn ButtonView(
             };
             let trigger = ButtonRepeatTrigger {
                 target_id: event.meta.current_target_id(),
-                mouse: event.mouse.clone(),
+                pointer: event.pointer.clone(),
             };
             repeat_state.set(ButtonRepeatState {
                 pressed: true,
@@ -392,7 +392,7 @@ fn ButtonView(
 
             let button_target_id = trigger.target_id;
             let repeat_state_for_move = repeat_state.clone();
-            let move_listener = event.viewport.add_mouse_move_listener(move |move_event| {
+            let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
                 if move_event.meta.target_id() == 0 && move_event.meta.current_target_id() == 0 {
                     repeat_state_for_move.update(|state| {
                         if state.pressed {
@@ -409,7 +409,7 @@ fn ButtonView(
             });
 
             let repeat_state_for_up = repeat_state.clone();
-            event.viewport.add_mouse_up_listener_until(move |up_event| {
+            event.viewport.add_pointer_up_listener_until(move |up_event| {
                 up_event.viewport.remove_listener(move_listener);
                 repeat_state_for_up.update(|state| {
                     state.pressed = false;
@@ -427,7 +427,7 @@ fn ButtonView(
 
     let mouse_enter = if repeat_enabled {
         let repeat_state = repeat_state.binding();
-        Some(MouseEnterHandlerProp::new(move |_event| {
+        Some(PointerEnterHandlerProp::new(move |_event| {
             repeat_state.update(|state| {
                 if state.pressed {
                     state.hovered = true;
@@ -440,7 +440,7 @@ fn ButtonView(
 
     let mouse_leave = if repeat_enabled {
         let repeat_state = repeat_state.binding();
-        Some(MouseLeaveHandlerProp::new(move |_event| {
+        Some(PointerLeaveHandlerProp::new(move |_event| {
             repeat_state.update(|state| {
                 if state.pressed {
                     state.hovered = false;
@@ -485,9 +485,9 @@ fn ButtonView(
                     background: resolved_hover_background,
                 },
             }}
-            on_mouse_down={mouse_down}
-            on_mouse_enter={mouse_enter}
-            on_mouse_leave={mouse_leave}
+            on_pointer_down={mouse_down}
+            on_pointer_enter={mouse_enter}
+            on_pointer_leave={mouse_leave}
             on_click={if !disabled && !repeat_enabled { on_click } else { None }}
         >
             {start_icon}

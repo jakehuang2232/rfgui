@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::{ExpandMoreIcon, use_theme};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
-    MouseDownHandlerProp, RsxComponent, RsxNode, component, props, rsx,
+    PointerDownHandlerProp, RsxComponent, RsxNode, component, props, rsx,
     use_state,
 };
 use rfgui::view::{Element, Text};
@@ -163,7 +163,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     };
     let pseudo_mouse_down = {
         let was_focused_on_pointer_down_binding = was_focused_on_pointer_down_binding.clone();
-        MouseDownHandlerProp::new(move |event| {
+        PointerDownHandlerProp::new(move |event| {
             was_focused_on_pointer_down_binding.set(is_focused);
             if event.meta.keep_focus_requested() {
                 return;
@@ -192,7 +192,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                 max_width: Length::percent(100.0),
                 font_size: theme.typography.size.sm,
             }}
-            on_mouse_down={pseudo_mouse_down}
+            on_pointer_down={pseudo_mouse_down}
             on_focus={pseudo_focus}
             on_blur={pseudo_blur}
             on_key_down={pseudo_key_down}
@@ -260,7 +260,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
     let option_nodes: Vec<RsxNode> = menu_items
         .iter()
         .map(|item| {
-            let mouse_down = MouseDownHandlerProp::new(move |event| {
+            let mouse_down = PointerDownHandlerProp::new(move |event| {
                 event.meta.keep_focus();
                 event.meta.stop_propagation();
             });
@@ -293,7 +293,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
                             background: theme.component.select.option_hover_background.clone(),
                         }
                     }}
-                    on_mouse_down={mouse_down}
+                    on_pointer_down={mouse_down}
                     on_click={click}
                 >
                     <Text

@@ -741,25 +741,25 @@ fn event_handler_binding(
     key: &Ident,
 ) -> Option<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
     let binding = match key.to_string().as_str() {
-        "on_mouse_down" => (
-            quote!(::rfgui::ui::into_mouse_down_handler),
-            quote!(::rfgui::ui::MouseDownEvent),
+        "on_pointer_down" => (
+            quote!(::rfgui::ui::into_pointer_down_handler),
+            quote!(::rfgui::ui::PointerDownEvent),
         ),
-        "on_mouse_up" => (
-            quote!(::rfgui::ui::into_mouse_up_handler),
-            quote!(::rfgui::ui::MouseUpEvent),
+        "on_pointer_up" => (
+            quote!(::rfgui::ui::into_pointer_up_handler),
+            quote!(::rfgui::ui::PointerUpEvent),
         ),
-        "on_mouse_move" => (
-            quote!(::rfgui::ui::into_mouse_move_handler),
-            quote!(::rfgui::ui::MouseMoveEvent),
+        "on_pointer_move" => (
+            quote!(::rfgui::ui::into_pointer_move_handler),
+            quote!(::rfgui::ui::PointerMoveEvent),
         ),
-        "on_mouse_enter" => (
-            quote!(::rfgui::ui::into_mouse_enter_handler),
-            quote!(::rfgui::ui::MouseEnterEvent),
+        "on_pointer_enter" => (
+            quote!(::rfgui::ui::into_pointer_enter_handler),
+            quote!(::rfgui::ui::PointerEnterEvent),
         ),
-        "on_mouse_leave" => (
-            quote!(::rfgui::ui::into_mouse_leave_handler),
-            quote!(::rfgui::ui::MouseLeaveEvent),
+        "on_pointer_leave" => (
+            quote!(::rfgui::ui::into_pointer_leave_handler),
+            quote!(::rfgui::ui::PointerLeaveEvent),
         ),
         "on_click" => (
             quote!(::rfgui::ui::into_click_handler),
@@ -1463,7 +1463,7 @@ mod tests {
     #[test]
     fn keeps_parsing_after_invalid_prop_expression() {
         let parsed = syn::parse_str::<MultipleNodes>(
-            r#"<Element on_mouse_down={resize_bottom_down />}</Element><Label />"#,
+            r#"<Element on_pointer_down={resize_bottom_down />}</Element><Label />"#,
         )
         .expect("rsx should recover invalid prop expression");
 
@@ -1477,7 +1477,7 @@ mod tests {
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
         assert!(
-            expanded.contains("invalid Rust expression for prop `on_mouse_down` inside `{...}`")
+            expanded.contains("invalid Rust expression for prop `on_pointer_down` inside `{...}`")
         );
 
         match &parsed.nodes[1] {

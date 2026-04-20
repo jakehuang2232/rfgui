@@ -5,8 +5,8 @@
 use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, FromPropValue, IntoPropValue,
-    KeyDownHandlerProp, KeyUpHandlerProp, MouseDownHandlerProp, MouseEnterHandlerProp,
-    MouseLeaveHandlerProp, MouseMoveHandlerProp, MouseUpHandlerProp,
+    KeyDownHandlerProp, KeyUpHandlerProp, PointerDownHandlerProp, PointerEnterHandlerProp,
+    PointerLeaveHandlerProp, PointerMoveHandlerProp, PointerUpHandlerProp,
     RsxComponent, SharedPropValue, TextAreaFocusHandlerProp,
     TextAreaRenderHandlerProp, TextChangeHandlerProp, props,
 };
@@ -70,11 +70,11 @@ pub enum SvgSource {
 pub struct ElementPropSchema {
     pub anchor: Option<String>,
     pub style: Option<ElementStylePropSchema>,
-    pub on_mouse_down: Option<MouseDownHandlerProp>,
-    pub on_mouse_up: Option<MouseUpHandlerProp>,
-    pub on_mouse_move: Option<MouseMoveHandlerProp>,
-    pub on_mouse_enter: Option<MouseEnterHandlerProp>,
-    pub on_mouse_leave: Option<MouseLeaveHandlerProp>,
+    pub on_pointer_down: Option<PointerDownHandlerProp>,
+    pub on_pointer_up: Option<PointerUpHandlerProp>,
+    pub on_pointer_move: Option<PointerMoveHandlerProp>,
+    pub on_pointer_enter: Option<PointerEnterHandlerProp>,
+    pub on_pointer_leave: Option<PointerLeaveHandlerProp>,
     pub on_click: Option<ClickHandlerProp>,
     pub on_key_down: Option<KeyDownHandlerProp>,
     pub on_key_up: Option<KeyUpHandlerProp>,
@@ -263,20 +263,20 @@ impl RsxComponent<ElementPropSchema> for Element {
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
         }
-        if let Some(handler) = props.on_mouse_down {
-            node = node.with_prop("on_mouse_down", handler);
+        if let Some(handler) = props.on_pointer_down {
+            node = node.with_prop("on_pointer_down", handler);
         }
-        if let Some(handler) = props.on_mouse_up {
-            node = node.with_prop("on_mouse_up", handler);
+        if let Some(handler) = props.on_pointer_up {
+            node = node.with_prop("on_pointer_up", handler);
         }
-        if let Some(handler) = props.on_mouse_move {
-            node = node.with_prop("on_mouse_move", handler);
+        if let Some(handler) = props.on_pointer_move {
+            node = node.with_prop("on_pointer_move", handler);
         }
-        if let Some(handler) = props.on_mouse_enter {
-            node = node.with_prop("on_mouse_enter", handler);
+        if let Some(handler) = props.on_pointer_enter {
+            node = node.with_prop("on_pointer_enter", handler);
         }
-        if let Some(handler) = props.on_mouse_leave {
-            node = node.with_prop("on_mouse_leave", handler);
+        if let Some(handler) = props.on_pointer_leave {
+            node = node.with_prop("on_pointer_leave", handler);
         }
         if let Some(handler) = props.on_click {
             node = node.with_prop("on_click", handler);

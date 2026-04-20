@@ -1,5 +1,5 @@
 use super::{
-    MouseButton, PendingClick, Viewport, build_reuse_overlay_geometry, is_valid_click_candidate,
+    PointerButton, PendingClick, Viewport, build_reuse_overlay_geometry, is_valid_click_candidate,
 };
 use crate::transition::CHANNEL_STYLE_BOX_SHADOW;
 use crate::ui::{Binding, RsxNode, UiDirtyState};
@@ -58,7 +58,7 @@ fn element_by_id_mut(
 #[test]
 fn click_requires_same_button_and_target() {
     let pending = PendingClick {
-        button: MouseButton::Left,
+        button: PointerButton::Left,
         target_id: 42,
         viewport_x: 10.0,
         viewport_y: 10.0,
@@ -66,21 +66,21 @@ fn click_requires_same_button_and_target() {
 
     assert!(is_valid_click_candidate(
         pending,
-        MouseButton::Left,
+        PointerButton::Left,
         Some(42),
         12.0,
         12.0
     ));
     assert!(!is_valid_click_candidate(
         pending,
-        MouseButton::Right,
+        PointerButton::Right,
         Some(42),
         12.0,
         12.0
     ));
     assert!(!is_valid_click_candidate(
         pending,
-        MouseButton::Left,
+        PointerButton::Left,
         Some(99),
         12.0,
         12.0
@@ -90,7 +90,7 @@ fn click_requires_same_button_and_target() {
 #[test]
 fn click_rejects_large_pointer_travel() {
     let pending = PendingClick {
-        button: MouseButton::Left,
+        button: PointerButton::Left,
         target_id: 7,
         viewport_x: 10.0,
         viewport_y: 10.0,
@@ -98,14 +98,14 @@ fn click_rejects_large_pointer_travel() {
 
     assert!(is_valid_click_candidate(
         pending,
-        MouseButton::Left,
+        PointerButton::Left,
         Some(7),
         14.0,
         13.0
     ));
     assert!(!is_valid_click_candidate(
         pending,
-        MouseButton::Left,
+        PointerButton::Left,
         Some(7),
         16.0,
         10.0
@@ -224,13 +224,13 @@ fn wheel_uses_only_topmost_hit_target_ancestry() {
     let mut viewport = Viewport::new();
     viewport.scene.ui_roots.push(Box::new(background));
     viewport.scene.ui_roots.push(Box::new(foreground));
-    viewport.set_mouse_position_viewport(50.0, 50.0);
+    viewport.set_pointer_position_viewport(50.0, 50.0);
 
     assert_eq!(
         Viewport::find_scroll_handler_at_pointer(&viewport.scene.ui_roots, 50.0, 50.0, 0.0, 24.0),
         None
     );
-    assert!(!viewport.dispatch_mouse_wheel_event(0.0, 24.0));
+    assert!(!viewport.dispatch_pointer_wheel_event(0.0, 24.0));
     assert_eq!(
         get_scroll_offset_by_id(viewport.scene.ui_roots[0].as_ref(), background_id),
         Some((0.0, 0.0))
@@ -270,13 +270,13 @@ fn wheel_bubbles_to_ancestor_when_child_is_at_scroll_limit() {
 
     let mut viewport = Viewport::new();
     viewport.scene.ui_roots.push(Box::new(root));
-    viewport.set_mouse_position_viewport(50.0, 50.0);
+    viewport.set_pointer_position_viewport(50.0, 50.0);
 
     assert_eq!(
         Viewport::find_scroll_handler_at_pointer(&viewport.scene.ui_roots, 50.0, 50.0, 0.0, 24.0),
         Some((0, root_id))
     );
-    assert!(viewport.dispatch_mouse_wheel_event(0.0, 24.0));
+    assert!(viewport.dispatch_pointer_wheel_event(0.0, 24.0));
     assert_eq!(
         get_scroll_offset_by_id(viewport.scene.ui_roots[0].as_ref(), child_id),
         Some((0.0, 200.0))

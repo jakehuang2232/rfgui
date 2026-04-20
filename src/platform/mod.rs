@@ -28,8 +28,8 @@ pub mod web_backend;
 pub use callback::{CallbackCursorSink, CallbackRedrawRequester};
 pub use headless::{HeadlessBackend, NullClipboard, NullCursorSink, NullRedrawRequester};
 pub use input::{
-    PlatformImePreedit, PlatformKeyEvent, PlatformMouseButton, PlatformMouseEvent,
-    PlatformMouseEventKind, PlatformTextInput, PlatformWheelEvent,
+    PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent,
+    PlatformPointerEventKind, PlatformTextInput, PlatformWheelEvent, PointerType,
 };
 
 /// Anything that can back a `wgpu::Surface`.

@@ -62,11 +62,11 @@ macro_rules! impl_no_arg_event_into_optional_prop {
     };
 }
 
-impl_event_into_optional_prop!(crate::ui::MouseDownHandlerProp, crate::ui::MouseDownEvent);
-impl_event_into_optional_prop!(crate::ui::MouseUpHandlerProp, crate::ui::MouseUpEvent);
-impl_event_into_optional_prop!(crate::ui::MouseMoveHandlerProp, crate::ui::MouseMoveEvent);
-impl_event_into_optional_prop!(crate::ui::MouseEnterHandlerProp, crate::ui::MouseEnterEvent);
-impl_event_into_optional_prop!(crate::ui::MouseLeaveHandlerProp, crate::ui::MouseLeaveEvent);
+impl_event_into_optional_prop!(crate::ui::PointerDownHandlerProp, crate::ui::PointerDownEvent);
+impl_event_into_optional_prop!(crate::ui::PointerUpHandlerProp, crate::ui::PointerUpEvent);
+impl_event_into_optional_prop!(crate::ui::PointerMoveHandlerProp, crate::ui::PointerMoveEvent);
+impl_event_into_optional_prop!(crate::ui::PointerEnterHandlerProp, crate::ui::PointerEnterEvent);
+impl_event_into_optional_prop!(crate::ui::PointerLeaveHandlerProp, crate::ui::PointerLeaveEvent);
 impl_event_into_optional_prop!(crate::ui::ClickHandlerProp, crate::ui::ClickEvent);
 impl_event_into_optional_prop!(crate::ui::KeyDownHandlerProp, crate::ui::KeyDownEvent);
 impl_event_into_optional_prop!(crate::ui::KeyUpHandlerProp, crate::ui::KeyUpEvent);
@@ -82,24 +82,24 @@ impl_event_into_optional_prop!(
     crate::view::base_component::TextAreaRenderString
 );
 impl_no_arg_event_into_optional_prop!(
-    crate::ui::MouseDownHandlerProp,
-    crate::ui::into_mouse_down_handler
+    crate::ui::PointerDownHandlerProp,
+    crate::ui::into_pointer_down_handler
 );
 impl_no_arg_event_into_optional_prop!(
-    crate::ui::MouseUpHandlerProp,
-    crate::ui::into_mouse_up_handler
+    crate::ui::PointerUpHandlerProp,
+    crate::ui::into_pointer_up_handler
 );
 impl_no_arg_event_into_optional_prop!(
-    crate::ui::MouseMoveHandlerProp,
-    crate::ui::into_mouse_move_handler
+    crate::ui::PointerMoveHandlerProp,
+    crate::ui::into_pointer_move_handler
 );
 impl_no_arg_event_into_optional_prop!(
-    crate::ui::MouseEnterHandlerProp,
-    crate::ui::into_mouse_enter_handler
+    crate::ui::PointerEnterHandlerProp,
+    crate::ui::into_pointer_enter_handler
 );
 impl_no_arg_event_into_optional_prop!(
-    crate::ui::MouseLeaveHandlerProp,
-    crate::ui::into_mouse_leave_handler
+    crate::ui::PointerLeaveHandlerProp,
+    crate::ui::into_pointer_leave_handler
 );
 impl_no_arg_event_into_optional_prop!(crate::ui::ClickHandlerProp, crate::ui::into_click_handler);
 impl_no_arg_event_into_optional_prop!(

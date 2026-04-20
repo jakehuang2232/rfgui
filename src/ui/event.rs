@@ -3,6 +3,7 @@
 //! Event payloads and handler prop types used by the retained UI runtime.
 
 use crate::Cursor;
+use crate::platform::input::PointerType;
 use crate::view::base_component::TextAreaRenderString;
 use std::cell::RefCell;
 use std::fmt;
@@ -10,7 +11,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MouseButton {
+pub enum PointerButton {
     Left,
     Right,
     Middle,
@@ -28,7 +29,7 @@ pub struct KeyModifiers {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct MouseButtons {
+pub struct PointerButtons {
     pub left: bool,
     pub right: bool,
     pub middle: bool,
@@ -40,15 +41,15 @@ pub struct MouseButtons {
 pub struct ViewportListenerHandle(pub u64);
 
 #[derive(Clone)]
-pub struct MouseUpUntilHandler {
+pub struct PointerUpUntilHandler {
     id: u64,
-    handler: Rc<RefCell<dyn FnMut(&mut MouseUpEvent) -> bool>>,
+    handler: Rc<RefCell<dyn FnMut(&mut PointerUpEvent) -> bool>>,
 }
 
-impl MouseUpUntilHandler {
+impl PointerUpUntilHandler {
     pub fn new<F>(handler: F) -> Self
     where
-        F: FnMut(&mut MouseUpEvent) -> bool + 'static,
+        F: FnMut(&mut PointerUpEvent) -> bool + 'static,
     {
         Self {
             id: next_handler_id(),
@@ -60,20 +61,20 @@ impl MouseUpUntilHandler {
         self.id
     }
 
-    pub fn call(&self, event: &mut MouseUpEvent) -> bool {
+    pub fn call(&self, event: &mut PointerUpEvent) -> bool {
         (self.handler.borrow_mut())(event)
     }
 }
 
-impl PartialEq for MouseUpUntilHandler {
+impl PartialEq for PointerUpUntilHandler {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl fmt::Debug for MouseUpUntilHandler {
+impl fmt::Debug for PointerUpUntilHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MouseUpUntilHandler")
+        f.debug_struct("PointerUpUntilHandler")
             .field("id", &self.id)
             .finish()
     }
@@ -81,9 +82,9 @@ impl fmt::Debug for MouseUpUntilHandler {
 
 #[derive(Clone, Debug)]
 pub enum ViewportListenerAction {
-    AddMouseMoveListener(MouseMoveHandlerProp),
-    AddMouseUpListener(MouseUpHandlerProp),
-    AddMouseUpListenerUntil(MouseUpUntilHandler),
+    AddPointerMoveListener(PointerMoveHandlerProp),
+    AddPointerUpListener(PointerUpHandlerProp),
+    AddPointerUpListenerUntil(PointerUpUntilHandler),
     SetFocus(Option<u64>),
     SetCursor(Option<Cursor>),
     SelectTextRangeAll(u64),
@@ -208,40 +209,40 @@ impl fmt::Debug for EventViewport {
 }
 
 impl EventViewport {
-    pub fn add_mouse_move_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
+    pub fn add_pointer_move_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
     where
-        F: FnMut(&mut MouseMoveEvent) + 'static,
+        F: FnMut(&mut PointerMoveEvent) + 'static,
     {
-        let handler_prop = MouseMoveHandlerProp::new(handler);
+        let handler_prop = PointerMoveHandlerProp::new(handler);
         let handle = ViewportListenerHandle(handler_prop.id());
         self.state
             .borrow_mut()
             .viewport_listener_actions
-            .push(ViewportListenerAction::AddMouseMoveListener(handler_prop));
+            .push(ViewportListenerAction::AddPointerMoveListener(handler_prop));
         handle
     }
 
-    pub fn add_mouse_up_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
+    pub fn add_pointer_up_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
     where
-        F: FnMut(&mut MouseUpEvent) + 'static,
+        F: FnMut(&mut PointerUpEvent) + 'static,
     {
-        let handler_prop = MouseUpHandlerProp::new(handler);
+        let handler_prop = PointerUpHandlerProp::new(handler);
         let handle = ViewportListenerHandle(handler_prop.id());
         self.state
             .borrow_mut()
             .viewport_listener_actions
-            .push(ViewportListenerAction::AddMouseUpListener(handler_prop));
+            .push(ViewportListenerAction::AddPointerUpListener(handler_prop));
         handle
     }
 
-    pub fn add_mouse_up_listener_until<F>(&mut self, handler: F) -> ViewportListenerHandle
+    pub fn add_pointer_up_listener_until<F>(&mut self, handler: F) -> ViewportListenerHandle
     where
-        F: FnMut(&mut MouseUpEvent) -> bool + 'static,
+        F: FnMut(&mut PointerUpEvent) -> bool + 'static,
     {
-        let handler_prop = MouseUpUntilHandler::new(handler);
+        let handler_prop = PointerUpUntilHandler::new(handler);
         let handle = ViewportListenerHandle(handler_prop.id());
         self.state.borrow_mut().viewport_listener_actions.push(
-            ViewportListenerAction::AddMouseUpListenerUntil(handler_prop),
+            ViewportListenerAction::AddPointerUpListenerUntil(handler_prop),
         );
         handle
     }
@@ -269,16 +270,20 @@ impl EventViewport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MouseEventData {
+pub struct PointerEventData {
     pub viewport_x: f32,
     pub viewport_y: f32,
     pub local_x: f32,
     pub local_y: f32,
     pub current_target_width: f32,
     pub current_target_height: f32,
-    pub button: Option<MouseButton>,
-    pub buttons: MouseButtons,
+    pub button: Option<PointerButton>,
+    pub buttons: PointerButtons,
     pub modifiers: KeyModifiers,
+    pub pointer_id: u64,
+    pub pointer_type: PointerType,
+    pub pressure: f32,
+    pub timestamp: crate::time::Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -290,40 +295,40 @@ pub struct KeyEventData {
 }
 
 #[derive(Debug, Clone)]
-pub struct MouseDownEvent {
+pub struct PointerDownEvent {
     pub meta: EventMeta,
-    pub mouse: MouseEventData,
+    pub pointer: PointerEventData,
     pub viewport: EventViewport,
 }
 
 #[derive(Debug, Clone)]
-pub struct MouseUpEvent {
+pub struct PointerUpEvent {
     pub meta: EventMeta,
-    pub mouse: MouseEventData,
+    pub pointer: PointerEventData,
     pub viewport: EventViewport,
 }
 
 #[derive(Debug, Clone)]
-pub struct MouseMoveEvent {
+pub struct PointerMoveEvent {
     pub meta: EventMeta,
-    pub mouse: MouseEventData,
+    pub pointer: PointerEventData,
     pub viewport: EventViewport,
 }
 
 #[derive(Debug, Clone)]
-pub struct MouseEnterEvent {
+pub struct PointerEnterEvent {
     pub meta: EventMeta,
 }
 
 #[derive(Debug, Clone)]
-pub struct MouseLeaveEvent {
+pub struct PointerLeaveEvent {
     pub meta: EventMeta,
 }
 
 #[derive(Debug, Clone)]
 pub struct ClickEvent {
     pub meta: EventMeta,
-    pub mouse: MouseEventData,
+    pub pointer: PointerEventData,
 }
 
 #[derive(Debug, Clone)]
@@ -407,33 +412,33 @@ pub struct BlurEvent {
 }
 
 #[derive(Clone)]
-pub struct MouseDownHandlerProp {
+pub struct PointerDownHandlerProp {
     id: u64,
-    handler: Rc<RefCell<dyn FnMut(&mut MouseDownEvent)>>,
+    handler: Rc<RefCell<dyn FnMut(&mut PointerDownEvent)>>,
 }
 
 #[derive(Clone)]
-pub struct MouseUpHandlerProp {
+pub struct PointerUpHandlerProp {
     id: u64,
-    handler: Rc<RefCell<dyn FnMut(&mut MouseUpEvent)>>,
+    handler: Rc<RefCell<dyn FnMut(&mut PointerUpEvent)>>,
 }
 
 #[derive(Clone)]
-pub struct MouseMoveHandlerProp {
+pub struct PointerMoveHandlerProp {
     id: u64,
-    handler: Rc<RefCell<dyn FnMut(&mut MouseMoveEvent)>>,
+    handler: Rc<RefCell<dyn FnMut(&mut PointerMoveEvent)>>,
 }
 
 #[derive(Clone)]
-pub struct MouseEnterHandlerProp {
+pub struct PointerEnterHandlerProp {
     id: u64,
-    handler: Rc<RefCell<dyn FnMut(&mut MouseEnterEvent)>>,
+    handler: Rc<RefCell<dyn FnMut(&mut PointerEnterEvent)>>,
 }
 
 #[derive(Clone)]
-pub struct MouseLeaveHandlerProp {
+pub struct PointerLeaveHandlerProp {
     id: u64,
-    handler: Rc<RefCell<dyn FnMut(&mut MouseLeaveEvent)>>,
+    handler: Rc<RefCell<dyn FnMut(&mut PointerLeaveEvent)>>,
 }
 
 #[derive(Clone)]
@@ -584,11 +589,11 @@ macro_rules! impl_into_event_handler_prop {
     };
 }
 
-impl_handler_prop!(MouseDownHandlerProp, MouseDownEvent);
-impl_handler_prop!(MouseUpHandlerProp, MouseUpEvent);
-impl_handler_prop!(MouseMoveHandlerProp, MouseMoveEvent);
-impl_handler_prop!(MouseEnterHandlerProp, MouseEnterEvent);
-impl_handler_prop!(MouseLeaveHandlerProp, MouseLeaveEvent);
+impl_handler_prop!(PointerDownHandlerProp, PointerDownEvent);
+impl_handler_prop!(PointerUpHandlerProp, PointerUpEvent);
+impl_handler_prop!(PointerMoveHandlerProp, PointerMoveEvent);
+impl_handler_prop!(PointerEnterHandlerProp, PointerEnterEvent);
+impl_handler_prop!(PointerLeaveHandlerProp, PointerLeaveEvent);
 impl_handler_prop!(ClickHandlerProp, ClickEvent);
 impl_handler_prop!(KeyDownHandlerProp, KeyDownEvent);
 impl_handler_prop!(KeyUpHandlerProp, KeyUpEvent);
@@ -599,25 +604,25 @@ impl_handler_prop!(TextChangeHandlerProp, TextChangeEvent);
 impl_handler_prop!(TextAreaRenderHandlerProp, TextAreaRenderString);
 
 impl_into_event_handler_prop!(
-    MouseDownHandlerProp,
-    MouseDownEvent,
-    into_mouse_down_handler
+    PointerDownHandlerProp,
+    PointerDownEvent,
+    into_pointer_down_handler
 );
-impl_into_event_handler_prop!(MouseUpHandlerProp, MouseUpEvent, into_mouse_up_handler);
+impl_into_event_handler_prop!(PointerUpHandlerProp, PointerUpEvent, into_pointer_up_handler);
 impl_into_event_handler_prop!(
-    MouseMoveHandlerProp,
-    MouseMoveEvent,
-    into_mouse_move_handler
-);
-impl_into_event_handler_prop!(
-    MouseEnterHandlerProp,
-    MouseEnterEvent,
-    into_mouse_enter_handler
+    PointerMoveHandlerProp,
+    PointerMoveEvent,
+    into_pointer_move_handler
 );
 impl_into_event_handler_prop!(
-    MouseLeaveHandlerProp,
-    MouseLeaveEvent,
-    into_mouse_leave_handler
+    PointerEnterHandlerProp,
+    PointerEnterEvent,
+    into_pointer_enter_handler
+);
+impl_into_event_handler_prop!(
+    PointerLeaveHandlerProp,
+    PointerLeaveEvent,
+    into_pointer_leave_handler
 );
 impl_into_event_handler_prop!(ClickHandlerProp, ClickEvent, into_click_handler);
 impl_into_event_handler_prop!(KeyDownHandlerProp, KeyDownEvent, into_key_down_handler);
@@ -640,39 +645,39 @@ impl_into_event_handler_prop!(
     into_text_area_render_handler
 );
 
-pub fn on_mouse_down<F>(handler: F) -> MouseDownHandlerProp
+pub fn on_pointer_down<F>(handler: F) -> PointerDownHandlerProp
 where
-    F: FnMut(&mut MouseDownEvent) + 'static,
+    F: FnMut(&mut PointerDownEvent) + 'static,
 {
-    MouseDownHandlerProp::new(handler)
+    PointerDownHandlerProp::new(handler)
 }
 
-pub fn on_mouse_up<F>(handler: F) -> MouseUpHandlerProp
+pub fn on_pointer_up<F>(handler: F) -> PointerUpHandlerProp
 where
-    F: FnMut(&mut MouseUpEvent) + 'static,
+    F: FnMut(&mut PointerUpEvent) + 'static,
 {
-    MouseUpHandlerProp::new(handler)
+    PointerUpHandlerProp::new(handler)
 }
 
-pub fn on_mouse_move<F>(handler: F) -> MouseMoveHandlerProp
+pub fn on_pointer_move<F>(handler: F) -> PointerMoveHandlerProp
 where
-    F: FnMut(&mut MouseMoveEvent) + 'static,
+    F: FnMut(&mut PointerMoveEvent) + 'static,
 {
-    MouseMoveHandlerProp::new(handler)
+    PointerMoveHandlerProp::new(handler)
 }
 
-pub fn on_mouse_enter<F>(handler: F) -> MouseEnterHandlerProp
+pub fn on_pointer_enter<F>(handler: F) -> PointerEnterHandlerProp
 where
-    F: FnMut(&mut MouseEnterEvent) + 'static,
+    F: FnMut(&mut PointerEnterEvent) + 'static,
 {
-    MouseEnterHandlerProp::new(handler)
+    PointerEnterHandlerProp::new(handler)
 }
 
-pub fn on_mouse_leave<F>(handler: F) -> MouseLeaveHandlerProp
+pub fn on_pointer_leave<F>(handler: F) -> PointerLeaveHandlerProp
 where
-    F: FnMut(&mut MouseLeaveEvent) + 'static,
+    F: FnMut(&mut PointerLeaveEvent) + 'static,
 {
-    MouseLeaveHandlerProp::new(handler)
+    PointerLeaveHandlerProp::new(handler)
 }
 
 pub fn on_click<F>(handler: F) -> ClickHandlerProp

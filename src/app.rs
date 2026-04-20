@@ -16,7 +16,7 @@
 
 use crate::Color;
 use crate::platform::{
-    PlatformImePreedit, PlatformKeyEvent, PlatformMouseEvent, PlatformServices, PlatformTextInput,
+    PlatformImePreedit, PlatformKeyEvent, PlatformPointerEvent, PlatformServices, PlatformTextInput,
     PlatformWheelEvent,
 };
 use crate::ui::RsxNode;
@@ -28,7 +28,7 @@ use crate::view::viewport::ViewportControl;
 /// `App::on_event`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
-    Mouse(PlatformMouseEvent),
+    Pointer(PlatformPointerEvent),
     Wheel(PlatformWheelEvent),
     Key(PlatformKeyEvent),
     TextInput(PlatformTextInput),

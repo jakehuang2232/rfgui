@@ -1,6 +1,6 @@
 use crate::{CheckIcon, use_theme};
 use rfgui::ui::{
-    Binding, ClickHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp,
+    Binding, ClickHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp,
     RsxComponent, RsxNode, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
@@ -50,10 +50,10 @@ impl RsxComponent<CheckboxProps> for Checkbox {
             }
         });
 
-        let on_mouse_enter =
-            MouseEnterHandlerProp::new(move |_event| hover_state_for_enter.set(true));
-        let on_mouse_leave =
-            MouseLeaveHandlerProp::new(move |_event| hover_state_for_leave.set(false));
+        let on_pointer_enter =
+            PointerEnterHandlerProp::new(move |_event| hover_state_for_enter.set(true));
+        let on_pointer_leave =
+            PointerLeaveHandlerProp::new(move |_event| hover_state_for_leave.set(false));
 
         rsx! {
             <Element style={{
@@ -61,8 +61,8 @@ impl RsxComponent<CheckboxProps> for Checkbox {
                 gap: theme.spacing.md,
             }}
             on_click={click}
-            on_mouse_enter={on_mouse_enter}
-            on_mouse_leave={on_mouse_leave}
+            on_pointer_enter={on_pointer_enter}
+            on_pointer_leave={on_pointer_leave}
             >
                 <Element style={{
                     width: checkbox_theme.size,
