@@ -1,51 +1,51 @@
 impl EventTarget for Element {
-    fn dispatch_mouse_down(
+    fn dispatch_pointer_down(
         &mut self,
-        event: &mut MouseDownEvent,
+        event: &mut PointerDownEvent,
         control: &mut ViewportControl<'_>,
     ) {
-        if self.handle_scrollbar_mouse_down(event, control) {
+        if self.handle_scrollbar_pointer_down(event, control) {
             event.meta.keep_focus();
             event.meta.stop_propagation();
             return;
         }
         if let Some(h) = &mut self.event_handlers {
-            for handler in &mut h.mouse_down {
+            for handler in &mut h.pointer_down {
                 handler(event, control);
             }
         }
     }
 
-    fn dispatch_mouse_up(&mut self, event: &mut MouseUpEvent, control: &mut ViewportControl<'_>) {
-        if self.handle_scrollbar_mouse_up(event, control) {
+    fn dispatch_pointer_up(&mut self, event: &mut PointerUpEvent, control: &mut ViewportControl<'_>) {
+        if self.handle_scrollbar_pointer_up(event, control) {
             event.meta.stop_propagation();
             return;
         }
         if let Some(h) = &mut self.event_handlers {
-            for handler in &mut h.mouse_up {
+            for handler in &mut h.pointer_up {
                 handler(event, control);
             }
         }
     }
 
-    fn dispatch_mouse_move(
+    fn dispatch_pointer_move(
         &mut self,
-        event: &mut MouseMoveEvent,
+        event: &mut PointerMoveEvent,
         control: &mut ViewportControl<'_>,
     ) {
-        if self.handle_scrollbar_mouse_move(event, control) {
+        if self.handle_scrollbar_pointer_move(event, control) {
             event.meta.stop_propagation();
             return;
         }
         if let Some(h) = &mut self.event_handlers {
-            for handler in &mut h.mouse_move {
+            for handler in &mut h.pointer_move {
                 handler(event, control);
             }
         }
     }
 
     fn dispatch_click(&mut self, event: &mut ClickEvent, control: &mut ViewportControl<'_>) {
-        if self.is_scrollbar_hit(event.mouse.local_x, event.mouse.local_y) {
+        if self.is_scrollbar_hit(event.pointer.local_x, event.pointer.local_y) {
             event.meta.stop_propagation();
             return;
         }
@@ -104,17 +104,17 @@ impl EventTarget for Element {
         true
     }
 
-    fn dispatch_mouse_enter(&mut self, event: &mut MouseEnterEvent) {
+    fn dispatch_pointer_enter(&mut self, event: &mut PointerEnterEvent) {
         if let Some(h) = &mut self.event_handlers {
-            for handler in &mut h.mouse_enter {
+            for handler in &mut h.pointer_enter {
                 handler(event);
             }
         }
     }
 
-    fn dispatch_mouse_leave(&mut self, event: &mut MouseLeaveEvent) {
+    fn dispatch_pointer_leave(&mut self, event: &mut PointerLeaveEvent) {
         if let Some(h) = &mut self.event_handlers {
-            for handler in &mut h.mouse_leave {
+            for handler in &mut h.pointer_leave {
                 handler(event);
             }
         }

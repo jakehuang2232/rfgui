@@ -1,5 +1,5 @@
 use crate::time::{Duration, Instant};
-use crate::ui::MouseButton as UiMouseButton;
+use crate::ui::PointerButton as UiPointerButton;
 use crate::view::font_system::create_font_system;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, RectPassParams};
@@ -143,7 +143,7 @@ pub struct TextArea {
     cursor_char: usize,
     selection_anchor_char: Option<usize>,
     selection_focus_char: Option<usize>,
-    mouse_selecting: bool,
+    pointer_selecting: bool,
     is_focused: bool,
     scroll_y: f32,
     ime_preedit: String,
@@ -290,7 +290,7 @@ impl TextArea {
             cursor_char: 0,
             selection_anchor_char: None,
             selection_focus_char: None,
-            mouse_selecting: false,
+            pointer_selecting: false,
             is_focused: false,
             scroll_y: 0.0,
             ime_preedit: String::new(),
@@ -2705,9 +2705,9 @@ impl ElementTrait for TextArea {
 }
 
 impl EventTarget for TextArea {
-    fn dispatch_mouse_down(
+    fn dispatch_pointer_down(
         &mut self,
-        event: &mut crate::ui::MouseDownEvent,
+        event: &mut crate::ui::PointerDownEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
         control.set_focus(Some(self.id()));
@@ -2715,11 +2715,11 @@ impl EventTarget for TextArea {
         self.clear_preedit();
         self.reset_caret_blink();
         let previous = self.cursor_char;
-        if !self.set_cursor_from_projection_position(event.mouse.viewport_x, event.mouse.viewport_y)
+        if !self.set_cursor_from_projection_position(event.pointer.viewport_x, event.pointer.viewport_y)
         {
-            self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+            self.set_cursor_from_local_position(event.pointer.local_x, event.pointer.local_y);
         }
-        if event.mouse.modifiers.shift {
+        if event.pointer.modifiers.shift {
             let anchor = self.selection_anchor_char.unwrap_or(previous);
             self.selection_anchor_char = Some(anchor);
             self.selection_focus_char = Some(self.cursor_char);
@@ -2727,41 +2727,41 @@ impl EventTarget for TextArea {
             self.selection_anchor_char = Some(self.cursor_char);
             self.selection_focus_char = Some(self.cursor_char);
         }
-        self.mouse_selecting = event.mouse.button == Some(UiMouseButton::Left);
-        if self.mouse_selecting {
+        self.pointer_selecting = event.pointer.button == Some(UiPointerButton::Left);
+        if self.pointer_selecting {
             control.set_pointer_capture(self.id());
         }
-        self.element.dispatch_mouse_down(event, control);
+        self.element.dispatch_pointer_down(event, control);
         event.meta.stop_propagation();
         control.request_redraw();
     }
 
-    fn dispatch_mouse_up(
+    fn dispatch_pointer_up(
         &mut self,
-        event: &mut crate::ui::MouseUpEvent,
+        event: &mut crate::ui::PointerUpEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
-        if event.mouse.button == Some(UiMouseButton::Left) {
-            self.mouse_selecting = false;
+        if event.pointer.button == Some(UiPointerButton::Left) {
+            self.pointer_selecting = false;
             control.release_pointer_capture(self.id());
             if self.selection_anchor_char == self.selection_focus_char {
                 self.clear_selection();
             }
             control.request_redraw();
         }
-        self.element.dispatch_mouse_up(event, control);
+        self.element.dispatch_pointer_up(event, control);
     }
 
-    fn dispatch_mouse_move(
+    fn dispatch_pointer_move(
         &mut self,
-        event: &mut crate::ui::MouseMoveEvent,
+        event: &mut crate::ui::PointerMoveEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
     ) {
-        if self.mouse_selecting && event.mouse.buttons.left {
+        if self.pointer_selecting && event.pointer.buttons.left {
             if !self
-                .set_cursor_from_projection_position(event.mouse.viewport_x, event.mouse.viewport_y)
+                .set_cursor_from_projection_position(event.pointer.viewport_x, event.pointer.viewport_y)
             {
-                self.set_cursor_from_local_position(event.mouse.local_x, event.mouse.local_y);
+                self.set_cursor_from_local_position(event.pointer.local_x, event.pointer.local_y);
             }
             if self.selection_anchor_char.is_none() {
                 self.selection_anchor_char = Some(self.cursor_char);
@@ -2770,7 +2770,7 @@ impl EventTarget for TextArea {
             event.meta.stop_propagation();
             control.request_redraw();
         }
-        self.element.dispatch_mouse_move(event, control);
+        self.element.dispatch_pointer_move(event, control);
     }
 
     fn dispatch_click(
@@ -2782,8 +2782,8 @@ impl EventTarget for TextArea {
     }
 
     fn cancel_pointer_interaction(&mut self) -> bool {
-        let was_selecting = self.mouse_selecting;
-        self.mouse_selecting = false;
+        let was_selecting = self.pointer_selecting;
+        self.pointer_selecting = false;
         was_selecting || self.element.cancel_pointer_interaction()
     }
 
@@ -2886,7 +2886,7 @@ impl EventTarget for TextArea {
     ) {
         let had_selection = self.selection_range_chars().is_some();
         self.is_focused = false;
-        self.mouse_selecting = false;
+        self.pointer_selecting = false;
         self.clear_selection();
         self.cached_ime_cursor_rect = None;
         self.glyph_layout_valid = false;
@@ -3572,12 +3572,12 @@ mod tests {
     use crate::ColorLike;
     use crate::Length;
     use crate::ui::{
-        Binding, BlurEvent, EventMeta, FocusEvent, MouseButton, MouseButtons, MouseDownEvent,
-        MouseEventData, TextInputEvent, ViewportListenerAction, rsx,
+        Binding, BlurEvent, EventMeta, FocusEvent, PointerButton, PointerButtons, PointerDownEvent,
+        PointerEventData, TextInputEvent, ViewportListenerAction, rsx,
     };
     use crate::view::base_component::{
         DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
-        Layoutable, dispatch_mouse_down_from_hit_test, select_all_text_by_id,
+        Layoutable, dispatch_pointer_down_from_hit_test, select_all_text_by_id,
         select_text_range_by_id,
     };
     use crate::view::renderer_adapter::rsx_to_elements;
@@ -3904,23 +3904,27 @@ mod tests {
         let mut control = ViewportControl::new(&mut viewport);
         let meta = EventMeta::new(0);
         let viewport_api = meta.viewport();
-        let mut event = MouseDownEvent {
+        let mut event = PointerDownEvent {
             meta,
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: click_x,
                 viewport_y: click_y,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: MouseButtons::default(),
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
                 modifiers: Default::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
             },
             viewport: viewport_api,
         };
 
-        assert!(dispatch_mouse_down_from_hit_test(
+        assert!(dispatch_pointer_down_from_hit_test(
             &mut area,
             &mut event,
             &mut control
@@ -4112,18 +4116,18 @@ mod tests {
         {
             let mut control = ViewportControl::new(&mut viewport);
             let down_meta = EventMeta::new(area.id());
-            let mut down = crate::ui::MouseDownEvent {
+            let mut down = crate::ui::PointerDownEvent {
                 viewport: down_meta.viewport(),
                 meta: down_meta,
-                mouse: crate::ui::MouseEventData {
+                pointer: crate::ui::PointerEventData {
                     viewport_x: 4.0,
                     viewport_y: 4.0,
                     local_x: 4.0,
                     local_y: 4.0,
                     current_target_width: 0.0,
                     current_target_height: 0.0,
-                    button: Some(crate::ui::MouseButton::Left),
-                    buttons: crate::ui::MouseButtons {
+                    button: Some(crate::ui::PointerButton::Left),
+                    buttons: crate::ui::PointerButtons {
                         left: true,
                         right: false,
                         middle: false,
@@ -4131,29 +4135,33 @@ mod tests {
                         forward: false,
                     },
                     modifiers: crate::ui::KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
                 },
             };
 
-            EventTarget::dispatch_mouse_down(&mut area, &mut down, &mut control);
+            EventTarget::dispatch_pointer_down(&mut area, &mut down, &mut control);
         }
         assert_eq!(viewport.pointer_capture_node_id(), Some(area.id()));
-        assert!(area.mouse_selecting);
+        assert!(area.pointer_selecting);
 
         {
             let mut control = ViewportControl::new(&mut viewport);
             let up_meta = EventMeta::new(area.id());
-            let mut up = crate::ui::MouseUpEvent {
+            let mut up = crate::ui::PointerUpEvent {
                 viewport: up_meta.viewport(),
                 meta: up_meta,
-                mouse: crate::ui::MouseEventData {
+                pointer: crate::ui::PointerEventData {
                     viewport_x: 4.0,
                     viewport_y: 4.0,
                     local_x: 4.0,
                     local_y: 4.0,
                     current_target_width: 0.0,
                     current_target_height: 0.0,
-                    button: Some(crate::ui::MouseButton::Left),
-                    buttons: crate::ui::MouseButtons {
+                    button: Some(crate::ui::PointerButton::Left),
+                    buttons: crate::ui::PointerButtons {
                         left: false,
                         right: false,
                         middle: false,
@@ -4161,22 +4169,26 @@ mod tests {
                         forward: false,
                     },
                     modifiers: crate::ui::KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
                 },
             };
 
-            EventTarget::dispatch_mouse_up(&mut area, &mut up, &mut control);
+            EventTarget::dispatch_pointer_up(&mut area, &mut up, &mut control);
         }
         assert_eq!(viewport.pointer_capture_node_id(), None);
-        assert!(!area.mouse_selecting);
+        assert!(!area.pointer_selecting);
     }
 
     #[test]
     fn cancel_pointer_interaction_stops_mouse_selection() {
         let mut area = TextArea::from_content("hello");
-        area.mouse_selecting = true;
+        area.pointer_selecting = true;
 
         assert!(EventTarget::cancel_pointer_interaction(&mut area));
-        assert!(!area.mouse_selecting);
+        assert!(!area.pointer_selecting);
     }
 
     #[test]

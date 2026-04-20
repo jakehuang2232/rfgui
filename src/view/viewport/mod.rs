@@ -28,10 +28,10 @@ use crate::transition::{
 };
 use crate::ui::{
     BlurEvent, ClickEvent, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent, KeyDownEvent,
-    KeyEventData, KeyModifiers, KeyUpEvent, MouseButtons as UiMouseButtons, MouseDownEvent,
-    MouseEventData, MouseMoveEvent, MouseUpEvent, MouseUpUntilHandler, Patch, PropValue, RsxNode,
-    TextInputEvent, ViewportListenerAction, ViewportListenerHandle, peek_state_dirty, reconcile,
-    take_state_dirty,
+    KeyEventData, KeyModifiers, KeyUpEvent, Patch, PointerButtons as UiPointerButtons,
+    PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler,
+    PropValue, RsxNode, TextInputEvent, ViewportListenerAction, ViewportListenerHandle,
+    peek_state_dirty, reconcile, take_state_dirty,
 };
 use crate::view::base_component::Renderable;
 use crate::view::frame_graph::texture_resource::TextureDesc;
@@ -77,15 +77,16 @@ use self::frame::{
     BeginFrameProfile, EndFrameProfile, FrameState, FrameStats, FrameTimings, LayoutPassResult,
 };
 use self::input::{
-    InputState, PendingClick, ViewportMouseUpListener, is_valid_click_candidate, to_ui_mouse_button,
+    InputState, PendingClick, ViewportPointerUpListener, is_valid_click_candidate,
+    to_ui_pointer_button,
 };
-pub use self::input::{MouseButton, ViewportDebugOptions};
+pub use self::input::{PointerButton, ViewportDebugOptions};
 use self::transitions_tick::TransitionHostAdapter;
 use crate::app::App;
 use crate::platform::{
-    PlatformImePreedit, PlatformKeyEvent, PlatformMouseButton, PlatformMouseEvent,
-    PlatformMouseEventKind, PlatformRequests, PlatformTextInput,
-    PlatformWheelEvent,
+    PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent,
+    PlatformPointerEventKind, PlatformRequests, PlatformTextInput, PlatformWheelEvent,
+    PointerType,
 };
 
 pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
@@ -211,8 +212,8 @@ pub struct Viewport {
     /// every render. Hosts query this via `is_animating()` to decide
     /// whether to pump another frame immediately or idle.
     is_animating: bool,
-    viewport_mouse_move_listeners: Vec<crate::ui::MouseMoveHandlerProp>,
-    viewport_mouse_up_listeners: Vec<ViewportMouseUpListener>,
+    viewport_pointer_move_listeners: Vec<crate::ui::PointerMoveHandlerProp>,
+    viewport_pointer_up_listeners: Vec<ViewportPointerUpListener>,
     app: Option<Box<dyn App>>,
     cached_rsx: Option<RsxNode>,
     needs_rebuild: bool,
@@ -495,8 +496,8 @@ impl Viewport {
             last_recorded_cursor: None,
             pending_platform_requests: PlatformRequests::default(),
             is_animating: false,
-            viewport_mouse_move_listeners: Vec::new(),
-            viewport_mouse_up_listeners: Vec::new(),
+            viewport_pointer_move_listeners: Vec::new(),
+            viewport_pointer_up_listeners: Vec::new(),
             app: None,
             cached_rsx: None,
             needs_rebuild: true,

@@ -1,12 +1,12 @@
 use super::*;
 
 impl Viewport {
-    fn dispatch_viewport_mouse_move_listeners(&mut self, event: &mut MouseMoveEvent) -> bool {
-        if self.viewport_mouse_move_listeners.is_empty() {
+    fn dispatch_viewport_pointer_move_listeners(&mut self, event: &mut PointerMoveEvent) -> bool {
+        if self.viewport_pointer_move_listeners.is_empty() {
             return false;
         }
         let mut handled = false;
-        for listener in &mut self.viewport_mouse_move_listeners {
+        for listener in &mut self.viewport_pointer_move_listeners {
             listener.call(event);
             handled = true;
             if event.meta.propagation_stopped() {
@@ -16,19 +16,19 @@ impl Viewport {
         handled
     }
 
-    fn dispatch_viewport_mouse_up_listeners(&mut self, event: &mut MouseUpEvent) -> bool {
-        if self.viewport_mouse_up_listeners.is_empty() {
+    fn dispatch_viewport_pointer_up_listeners(&mut self, event: &mut PointerUpEvent) -> bool {
+        if self.viewport_pointer_up_listeners.is_empty() {
             return false;
         }
         let mut handled = false;
         let mut remove_ids = Vec::new();
-        for listener in &mut self.viewport_mouse_up_listeners {
+        for listener in &mut self.viewport_pointer_up_listeners {
             match listener {
-                ViewportMouseUpListener::Persistent(handler) => {
+                ViewportPointerUpListener::Persistent(handler) => {
                     handler.call(event);
                     handled = true;
                 }
-                ViewportMouseUpListener::Until(handler) => {
+                ViewportPointerUpListener::Until(handler) => {
                     handled = true;
                     if handler.call(event) {
                         remove_ids.push(handler.id());
@@ -40,32 +40,36 @@ impl Viewport {
             }
         }
         if !remove_ids.is_empty() {
-            self.viewport_mouse_up_listeners
+            self.viewport_pointer_up_listeners
                 .retain(|listener| !remove_ids.contains(&listener.id()));
         }
         handled
     }
 
-    pub fn dispatch_mouse_down_event(&mut self, button: MouseButton) -> bool {
-        let Some((x, y)) = self.mouse_position_viewport() else {
+    pub fn dispatch_pointer_down_event(&mut self, button: PointerButton) -> bool {
+        let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
         self.input_state.pending_click = None;
         let focus_before = self.focused_node_id();
-        let buttons = self.current_ui_mouse_buttons();
+        let buttons = self.current_ui_pointer_buttons();
         let meta = EventMeta::new(0);
-        let mut event = MouseDownEvent {
+        let mut event = PointerDownEvent {
             meta: meta.clone(),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: x,
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(to_ui_mouse_button(button)),
+                button: Some(to_ui_pointer_button(button)),
                 buttons,
                 modifiers: self.current_key_modifiers(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.5,
+                timestamp: crate::time::Instant::now(),
             },
             viewport: meta.viewport(),
         };
@@ -74,7 +78,7 @@ impl Viewport {
         {
             let mut control = ViewportControl::new(self);
             for root in roots.iter_mut().rev() {
-                if crate::view::base_component::dispatch_mouse_down_from_hit_test(
+                if crate::view::base_component::dispatch_pointer_down_from_hit_test(
                     root.as_mut(),
                     &mut event,
                     &mut control,
@@ -129,8 +133,8 @@ impl Viewport {
         handled
     }
 
-    pub fn dispatch_mouse_up_event(&mut self, button: MouseButton) -> bool {
-        let Some((x, y)) = self.mouse_position_viewport() else {
+    pub fn dispatch_pointer_up_event(&mut self, button: PointerButton) -> bool {
+        let Some((x, y)) = self.pointer_position_viewport() else {
             self.input_state.pointer_capture_node_id = None;
             let changed = Self::cancel_pointer_interactions(&mut self.scene.ui_roots);
             if changed {
@@ -138,20 +142,24 @@ impl Viewport {
             }
             return false;
         };
-        let buttons = self.current_ui_mouse_buttons();
+        let buttons = self.current_ui_pointer_buttons();
         let meta = EventMeta::new(0);
-        let mut event = MouseUpEvent {
+        let mut event = PointerUpEvent {
             meta: meta.clone(),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: x,
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(to_ui_mouse_button(button)),
+                button: Some(to_ui_pointer_button(button)),
                 buttons,
                 modifiers: self.current_key_modifiers(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.5,
+                timestamp: crate::time::Instant::now(),
             },
             viewport: meta.viewport(),
         };
@@ -161,7 +169,7 @@ impl Viewport {
             let mut control = ViewportControl::new(self);
             if let Some(target_id) = control.viewport.pointer_capture_node_id() {
                 for root in roots.iter_mut().rev() {
-                    if crate::view::base_component::dispatch_mouse_up_to_target(
+                    if crate::view::base_component::dispatch_pointer_up_to_target(
                         root.as_mut(),
                         target_id,
                         &mut event,
@@ -174,7 +182,7 @@ impl Viewport {
                 control.viewport.set_pointer_capture_node_id(None);
             } else {
                 for root in roots.iter_mut().rev() {
-                    if crate::view::base_component::dispatch_mouse_up_from_hit_test(
+                    if crate::view::base_component::dispatch_pointer_up_from_hit_test(
                         root.as_mut(),
                         &mut event,
                         &mut control,
@@ -185,7 +193,7 @@ impl Viewport {
                 }
             }
         }
-        let listener_handled = self.dispatch_viewport_mouse_up_listeners(&mut event);
+        let listener_handled = self.dispatch_viewport_pointer_up_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
         self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
@@ -196,8 +204,8 @@ impl Viewport {
         handled || listener_handled
     }
 
-    pub fn dispatch_mouse_move_event(&mut self) -> bool {
-        let Some((x, y)) = self.mouse_position_viewport() else {
+    pub fn dispatch_pointer_move_event(&mut self) -> bool {
+        let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
         let redraw_requested_before = self.redraw_requested;
@@ -211,11 +219,11 @@ impl Viewport {
             &mut self.input_state.hovered_node_id,
             hover_target,
         );
-        let buttons = self.current_ui_mouse_buttons();
+        let buttons = self.current_ui_pointer_buttons();
         let meta = EventMeta::new(0);
-        let mut event = MouseMoveEvent {
+        let mut event = PointerMoveEvent {
             meta: meta.clone(),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: x,
                 viewport_y: y,
                 local_x: 0.0,
@@ -225,6 +233,10 @@ impl Viewport {
                 button: None,
                 buttons,
                 modifiers: self.current_key_modifiers(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
             },
             viewport: meta.viewport(),
         };
@@ -233,7 +245,7 @@ impl Viewport {
             let mut control = ViewportControl::new(self);
             if let Some(target_id) = control.viewport.pointer_capture_node_id() {
                 for root in roots.iter_mut().rev() {
-                    if crate::view::base_component::dispatch_mouse_move_to_target(
+                    if crate::view::base_component::dispatch_pointer_move_to_target(
                         root.as_mut(),
                         target_id,
                         &mut event,
@@ -248,7 +260,7 @@ impl Viewport {
                 }
             } else {
                 for root in roots.iter_mut().rev() {
-                    if crate::view::base_component::dispatch_mouse_move_from_hit_test(
+                    if crate::view::base_component::dispatch_pointer_move_from_hit_test(
                         root.as_mut(),
                         &mut event,
                         &mut control,
@@ -259,7 +271,7 @@ impl Viewport {
                 }
             }
         }
-        let listener_handled = self.dispatch_viewport_mouse_move_listeners(&mut event);
+        let listener_handled = self.dispatch_viewport_pointer_move_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
         self.scene.ui_roots = roots;
         self.apply_viewport_listener_actions(pending_actions);
@@ -271,8 +283,8 @@ impl Viewport {
         handled || hover_changed || hover_event_dispatched || listener_handled
     }
 
-    pub fn dispatch_click_event(&mut self, button: MouseButton) -> bool {
-        let Some((x, y)) = self.mouse_position_viewport() else {
+    pub fn dispatch_click_event(&mut self, button: PointerButton) -> bool {
+        let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
         let Some(pending_click) = self.input_state.pending_click.take() else {
@@ -281,7 +293,7 @@ impl Viewport {
         if pending_click.button != button {
             return false;
         }
-        let buttons = self.current_ui_mouse_buttons();
+        let buttons = self.current_ui_pointer_buttons();
         let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let hit_target = roots
             .iter()
@@ -294,16 +306,20 @@ impl Viewport {
         }
         let mut event = ClickEvent {
             meta: EventMeta::new(0),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: x,
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(to_ui_mouse_button(button)),
+                button: Some(to_ui_pointer_button(button)),
                 buttons,
                 modifiers: self.current_key_modifiers(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
             },
         };
         let mut handled = false;
@@ -330,8 +346,8 @@ impl Viewport {
         handled
     }
 
-    pub fn dispatch_mouse_wheel_event(&mut self, delta_x: f32, delta_y: f32) -> bool {
-        let Some((x, y)) = self.mouse_position_viewport() else {
+    pub fn dispatch_pointer_wheel_event(&mut self, delta_x: f32, delta_y: f32) -> bool {
+        let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
         let mut pending_scroll_track: Option<(TrackTarget, (f32, f32), (f32, f32))> = None;
@@ -654,32 +670,32 @@ impl Viewport {
         handled
     }
 
-    /// Dispatch a platform-neutral mouse event.
+    /// Dispatch a platform-neutral pointer event.
     ///
     /// Canonical entry point for backends (winit, web, headless). Internally
-    /// forwards to the legacy primitive-argument `dispatch_mouse_*` methods;
+    /// forwards to the legacy primitive-argument `dispatch_pointer_*` methods;
     /// those remain public for now so component tests and existing callers
     /// keep working. New backend code should only ever see this method.
-    pub fn dispatch_platform_mouse_event(&mut self, event: &PlatformMouseEvent) -> bool {
+    pub fn dispatch_platform_pointer_event(&mut self, event: &PlatformPointerEvent) -> bool {
         match event.kind {
-            PlatformMouseEventKind::Down(button) => {
-                self.dispatch_mouse_down_event(mouse_button_from_platform(button))
+            PlatformPointerEventKind::Down(button) => {
+                self.dispatch_pointer_down_event(pointer_button_from_platform(button))
             }
-            PlatformMouseEventKind::Up(button) => {
-                self.dispatch_mouse_up_event(mouse_button_from_platform(button))
+            PlatformPointerEventKind::Up(button) => {
+                self.dispatch_pointer_up_event(pointer_button_from_platform(button))
             }
-            PlatformMouseEventKind::Move { x, y } => {
-                self.set_mouse_position_viewport(x, y);
-                self.dispatch_mouse_move_event()
+            PlatformPointerEventKind::Move { x, y } => {
+                self.set_pointer_position_viewport(x, y);
+                self.dispatch_pointer_move_event()
             }
-            PlatformMouseEventKind::Click(button) => {
-                self.dispatch_click_event(mouse_button_from_platform(button))
+            PlatformPointerEventKind::Click(button) => {
+                self.dispatch_click_event(pointer_button_from_platform(button))
             }
         }
     }
 
     pub fn dispatch_platform_wheel_event(&mut self, event: &PlatformWheelEvent) -> bool {
-        self.dispatch_mouse_wheel_event(event.delta_x, event.delta_y)
+        self.dispatch_pointer_wheel_event(event.delta_x, event.delta_y)
     }
 
     pub fn dispatch_platform_key_event(&mut self, event: &PlatformKeyEvent) -> bool {
@@ -702,13 +718,13 @@ impl Viewport {
         self.dispatch_ime_preedit_event(event.text.clone(), cursor)
     }
 
-    fn current_ui_mouse_buttons(&self) -> UiMouseButtons {
-        UiMouseButtons {
-            left: self.is_mouse_button_pressed(MouseButton::Left),
-            right: self.is_mouse_button_pressed(MouseButton::Right),
-            middle: self.is_mouse_button_pressed(MouseButton::Middle),
-            back: self.is_mouse_button_pressed(MouseButton::Back),
-            forward: self.is_mouse_button_pressed(MouseButton::Forward),
+    fn current_ui_pointer_buttons(&self) -> UiPointerButtons {
+        UiPointerButtons {
+            left: self.is_pointer_button_pressed(PointerButton::Left),
+            right: self.is_pointer_button_pressed(PointerButton::Right),
+            middle: self.is_pointer_button_pressed(PointerButton::Middle),
+            back: self.is_pointer_button_pressed(PointerButton::Back),
+            forward: self.is_pointer_button_pressed(PointerButton::Forward),
         }
     }
 
@@ -800,41 +816,41 @@ impl Viewport {
     }
 }
 
-/// Convert a platform-neutral mouse button into the viewport-internal
-/// `MouseButton` enum. Kept as a free function (rather than `From`) so the
+/// Convert a platform-neutral pointer button into the viewport-internal
+/// `PointerButton` enum. Kept as a free function (rather than `From`) so the
 /// viewport owns the mapping without leaking its internal type into the
 /// platform crate.
-fn mouse_button_from_platform(button: PlatformMouseButton) -> MouseButton {
+fn pointer_button_from_platform(button: PlatformPointerButton) -> PointerButton {
     match button {
-        PlatformMouseButton::Left => MouseButton::Left,
-        PlatformMouseButton::Right => MouseButton::Right,
-        PlatformMouseButton::Middle => MouseButton::Middle,
-        PlatformMouseButton::Back => MouseButton::Back,
-        PlatformMouseButton::Forward => MouseButton::Forward,
-        PlatformMouseButton::Other(code) => MouseButton::Other(code),
+        PlatformPointerButton::Left => PointerButton::Left,
+        PlatformPointerButton::Right => PointerButton::Right,
+        PlatformPointerButton::Middle => PointerButton::Middle,
+        PlatformPointerButton::Back => PointerButton::Back,
+        PlatformPointerButton::Forward => PointerButton::Forward,
+        PlatformPointerButton::Other(code) => PointerButton::Other(code),
     }
 }
 
 impl Viewport {
-    pub fn has_viewport_mouse_listeners(&self) -> bool {
-        !self.viewport_mouse_move_listeners.is_empty()
-            || !self.viewport_mouse_up_listeners.is_empty()
+    pub fn has_viewport_pointer_listeners(&self) -> bool {
+        !self.viewport_pointer_move_listeners.is_empty()
+            || !self.viewport_pointer_up_listeners.is_empty()
     }
 
     fn apply_viewport_listener_actions(&mut self, actions: Vec<ViewportListenerAction>) {
         let mut selection_changed = false;
         for action in actions {
             match action {
-                ViewportListenerAction::AddMouseMoveListener(handler) => {
-                    self.viewport_mouse_move_listeners.push(handler);
+                ViewportListenerAction::AddPointerMoveListener(handler) => {
+                    self.viewport_pointer_move_listeners.push(handler);
                 }
-                ViewportListenerAction::AddMouseUpListener(handler) => {
-                    self.viewport_mouse_up_listeners
-                        .push(ViewportMouseUpListener::Persistent(handler));
+                ViewportListenerAction::AddPointerUpListener(handler) => {
+                    self.viewport_pointer_up_listeners
+                        .push(ViewportPointerUpListener::Persistent(handler));
                 }
-                ViewportListenerAction::AddMouseUpListenerUntil(handler) => {
-                    self.viewport_mouse_up_listeners
-                        .push(ViewportMouseUpListener::Until(handler));
+                ViewportListenerAction::AddPointerUpListenerUntil(handler) => {
+                    self.viewport_pointer_up_listeners
+                        .push(ViewportPointerUpListener::Until(handler));
                 }
                 ViewportListenerAction::SetFocus(node_id) => {
                     self.set_focused_node_id(node_id);
@@ -878,9 +894,9 @@ impl Viewport {
     }
 
     fn remove_viewport_listener(&mut self, handle: ViewportListenerHandle) {
-        self.viewport_mouse_move_listeners
+        self.viewport_pointer_move_listeners
             .retain(|listener| listener.id() != handle.0);
-        self.viewport_mouse_up_listeners
+        self.viewport_pointer_up_listeners
             .retain(|listener| listener.id() != handle.0);
     }
 
@@ -892,12 +908,12 @@ impl Viewport {
         &self.input_state.selects
     }
 
-    pub fn set_mouse_position_viewport(&mut self, x: f32, y: f32) {
-        self.input_state.mouse_position_viewport = Some((x, y));
+    pub fn set_pointer_position_viewport(&mut self, x: f32, y: f32) {
+        self.input_state.pointer_position_viewport = Some((x, y));
     }
 
-    pub fn clear_mouse_position_viewport(&mut self) {
-        self.input_state.mouse_position_viewport = None;
+    pub fn clear_pointer_position_viewport(&mut self) {
+        self.input_state.pointer_position_viewport = None;
         self.input_state.pointer_capture_node_id = None;
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
             &mut self.scene.ui_roots,
@@ -910,24 +926,24 @@ impl Viewport {
         }
     }
 
-    pub fn mouse_position_viewport(&self) -> Option<(f32, f32)> {
-        self.input_state.mouse_position_viewport
+    pub fn pointer_position_viewport(&self) -> Option<(f32, f32)> {
+        self.input_state.pointer_position_viewport
     }
 
-    pub fn set_mouse_button_pressed(&mut self, button: MouseButton, pressed: bool) {
+    pub fn set_pointer_button_pressed(&mut self, button: PointerButton, pressed: bool) {
         if pressed {
-            self.input_state.pressed_mouse_buttons.insert(button);
+            self.input_state.pressed_pointer_buttons.insert(button);
         } else {
-            self.input_state.pressed_mouse_buttons.remove(&button);
+            self.input_state.pressed_pointer_buttons.remove(&button);
         }
     }
 
-    pub fn is_mouse_button_pressed(&self, button: MouseButton) -> bool {
-        self.input_state.pressed_mouse_buttons.contains(&button)
+    pub fn is_pointer_button_pressed(&self, button: PointerButton) -> bool {
+        self.input_state.pressed_pointer_buttons.contains(&button)
     }
 
-    pub fn pressed_mouse_buttons(&self) -> impl Iterator<Item = MouseButton> + '_ {
-        self.input_state.pressed_mouse_buttons.iter().copied()
+    pub fn pressed_pointer_buttons(&self) -> impl Iterator<Item = PointerButton> + '_ {
+        self.input_state.pressed_pointer_buttons.iter().copied()
     }
 
     pub fn set_key_pressed(&mut self, key: impl Into<String>, pressed: bool) {
@@ -953,8 +969,8 @@ impl Viewport {
         let previous_hovered_node_id = self.input_state.hovered_node_id;
         self.input_state = InputState::default();
         self.input_state.hovered_node_id = previous_hovered_node_id;
-        self.viewport_mouse_move_listeners.clear();
-        self.viewport_mouse_up_listeners.clear();
+        self.viewport_pointer_move_listeners.clear();
+        self.viewport_pointer_up_listeners.clear();
         self.dispatched_focus_node_id = None;
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
             &mut self.scene.ui_roots,

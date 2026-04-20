@@ -225,19 +225,19 @@ impl Element {
                 .is_some_and(|thumb| thumb.contains(local_x, local_y))
     }
 
-    fn handle_scrollbar_mouse_down(
+    fn handle_scrollbar_pointer_down(
         &mut self,
-        event: &MouseDownEvent,
+        event: &PointerDownEvent,
         control: &mut ViewportControl<'_>,
     ) -> bool {
-        if event.mouse.button != Some(UiMouseButton::Left) {
+        if event.pointer.button != Some(UiPointerButton::Left) {
             return false;
         }
-        if !self.is_scrollbar_hit(event.mouse.local_x, event.mouse.local_y) {
+        if !self.is_scrollbar_hit(event.pointer.local_x, event.pointer.local_y) {
             return false;
         }
-        let local_x = event.mouse.local_x;
-        let local_y = event.mouse.local_y;
+        let local_x = event.pointer.local_x;
+        let local_y = event.pointer.local_y;
         let (inner_x, inner_y) = self.local_inner_origin();
         let geometry = self.scrollbar_geometry(inner_x, inner_y);
 
@@ -315,9 +315,9 @@ impl Element {
         false
     }
 
-    fn handle_scrollbar_mouse_move(
+    fn handle_scrollbar_pointer_move(
         &mut self,
-        event: &MouseMoveEvent,
+        event: &PointerMoveEvent,
         control: &mut ViewportControl<'_>,
     ) -> bool {
         if let Some(drag) = self.scrollbar_drag {
@@ -334,11 +334,11 @@ impl Element {
                 drag.grab_offset = match drag.axis {
                     ScrollbarAxis::Vertical => geometry
                         .vertical_thumb
-                        .map(|thumb| (event.mouse.local_y - thumb.y).clamp(0.0, thumb.height))
+                        .map(|thumb| (event.pointer.local_y - thumb.y).clamp(0.0, thumb.height))
                         .unwrap_or(drag.grab_offset),
                     ScrollbarAxis::Horizontal => geometry
                         .horizontal_thumb
-                        .map(|thumb| (event.mouse.local_x - thumb.x).clamp(0.0, thumb.width))
+                        .map(|thumb| (event.pointer.local_x - thumb.x).clamp(0.0, thumb.width))
                         .unwrap_or(drag.grab_offset),
                 };
                 drag.reanchor_on_first_move = false;
@@ -346,8 +346,8 @@ impl Element {
             }
             let changed = self.update_scroll_from_drag(
                 drag.axis,
-                event.mouse.local_x,
-                event.mouse.local_y,
+                event.pointer.local_x,
+                event.pointer.local_y,
                 drag.grab_offset,
             );
             if changed {
@@ -361,8 +361,8 @@ impl Element {
         }
         let (inner_x, inner_y) = self.local_inner_origin();
         let geometry = self.scrollbar_geometry(inner_x, inner_y);
-        let local_x = event.mouse.local_x;
-        let local_y = event.mouse.local_y;
+        let local_x = event.pointer.local_x;
+        let local_y = event.pointer.local_y;
         if geometry
             .vertical_thumb
             .is_some_and(|thumb| thumb.contains(local_x, local_y))
@@ -376,12 +376,12 @@ impl Element {
         false
     }
 
-    fn handle_scrollbar_mouse_up(
+    fn handle_scrollbar_pointer_up(
         &mut self,
-        event: &MouseUpEvent,
+        event: &PointerUpEvent,
         control: &mut ViewportControl<'_>,
     ) -> bool {
-        if event.mouse.button != Some(UiMouseButton::Left) {
+        if event.pointer.button != Some(UiPointerButton::Left) {
             return false;
         }
         if self.scrollbar_drag.take().is_some() {
@@ -389,7 +389,7 @@ impl Element {
             self.note_scrollbar_interaction();
             return true;
         }
-        if self.is_scrollbar_hit(event.mouse.local_x, event.mouse.local_y) {
+        if self.is_scrollbar_hit(event.pointer.local_x, event.pointer.local_y) {
             self.note_scrollbar_interaction();
             return true;
         }
@@ -551,39 +551,39 @@ impl Element {
         ctx.into_state()
     }
 
-    pub fn on_mouse_down<F>(&mut self, handler: F)
+    pub fn on_pointer_down<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseDownEvent, &mut ViewportControl<'_>) + 'static,
+        F: FnMut(&mut PointerDownEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).mouse_down.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).pointer_down.push(Box::new(handler));
     }
 
-    pub fn on_mouse_up<F>(&mut self, handler: F)
+    pub fn on_pointer_up<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseUpEvent, &mut ViewportControl<'_>) + 'static,
+        F: FnMut(&mut PointerUpEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).mouse_up.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).pointer_up.push(Box::new(handler));
     }
 
-    pub fn on_mouse_move<F>(&mut self, handler: F)
+    pub fn on_pointer_move<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseMoveEvent, &mut ViewportControl<'_>) + 'static,
+        F: FnMut(&mut PointerMoveEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).mouse_move.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).pointer_move.push(Box::new(handler));
     }
 
-    pub fn on_mouse_enter<F>(&mut self, handler: F)
+    pub fn on_pointer_enter<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseEnterEvent) + 'static,
+        F: FnMut(&mut PointerEnterEvent) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).mouse_enter.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).pointer_enter.push(Box::new(handler));
     }
 
-    pub fn on_mouse_leave<F>(&mut self, handler: F)
+    pub fn on_pointer_leave<F>(&mut self, handler: F)
     where
-        F: FnMut(&mut MouseLeaveEvent) + 'static,
+        F: FnMut(&mut PointerLeaveEvent) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).mouse_leave.push(Box::new(handler));
+        self.event_handlers.get_or_insert_with(Default::default).pointer_leave.push(Box::new(handler));
     }
 
     pub fn on_click<F>(&mut self, handler: F)

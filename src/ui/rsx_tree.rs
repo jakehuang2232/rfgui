@@ -6,8 +6,8 @@ use crate::FontSize;
 use crate::TextAlign;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
-    MouseDownHandlerProp, MouseEnterHandlerProp, MouseLeaveHandlerProp, MouseMoveHandlerProp,
-    MouseUpHandlerProp, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp, TextChangeHandlerProp,
+    PointerDownHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp, PointerMoveHandlerProp,
+    PointerUpHandlerProp, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp, TextChangeHandlerProp,
 };
 use std::any::{Any, TypeId};
 use std::fmt;
@@ -381,11 +381,11 @@ pub enum PropValue {
     F64(f64),
     FontSize(FontSize),
     String(String),
-    OnMouseDown(MouseDownHandlerProp),
-    OnMouseUp(MouseUpHandlerProp),
-    OnMouseMove(MouseMoveHandlerProp),
-    OnMouseEnter(MouseEnterHandlerProp),
-    OnMouseLeave(MouseLeaveHandlerProp),
+    OnPointerDown(PointerDownHandlerProp),
+    OnPointerUp(PointerUpHandlerProp),
+    OnPointerMove(PointerMoveHandlerProp),
+    OnPointerEnter(PointerEnterHandlerProp),
+    OnPointerLeave(PointerLeaveHandlerProp),
     OnClick(ClickHandlerProp),
     OnKeyDown(KeyDownHandlerProp),
     OnKeyUp(KeyUpHandlerProp),
@@ -460,33 +460,33 @@ impl From<String> for PropValue {
     }
 }
 
-impl From<MouseDownHandlerProp> for PropValue {
-    fn from(value: MouseDownHandlerProp) -> Self {
-        PropValue::OnMouseDown(value)
+impl From<PointerDownHandlerProp> for PropValue {
+    fn from(value: PointerDownHandlerProp) -> Self {
+        PropValue::OnPointerDown(value)
     }
 }
 
-impl From<MouseUpHandlerProp> for PropValue {
-    fn from(value: MouseUpHandlerProp) -> Self {
-        PropValue::OnMouseUp(value)
+impl From<PointerUpHandlerProp> for PropValue {
+    fn from(value: PointerUpHandlerProp) -> Self {
+        PropValue::OnPointerUp(value)
     }
 }
 
-impl From<MouseMoveHandlerProp> for PropValue {
-    fn from(value: MouseMoveHandlerProp) -> Self {
-        PropValue::OnMouseMove(value)
+impl From<PointerMoveHandlerProp> for PropValue {
+    fn from(value: PointerMoveHandlerProp) -> Self {
+        PropValue::OnPointerMove(value)
     }
 }
 
-impl From<MouseEnterHandlerProp> for PropValue {
-    fn from(value: MouseEnterHandlerProp) -> Self {
-        PropValue::OnMouseEnter(value)
+impl From<PointerEnterHandlerProp> for PropValue {
+    fn from(value: PointerEnterHandlerProp) -> Self {
+        PropValue::OnPointerEnter(value)
     }
 }
 
-impl From<MouseLeaveHandlerProp> for PropValue {
-    fn from(value: MouseLeaveHandlerProp) -> Self {
-        PropValue::OnMouseLeave(value)
+impl From<PointerLeaveHandlerProp> for PropValue {
+    fn from(value: PointerLeaveHandlerProp) -> Self {
+        PropValue::OnPointerLeave(value)
     }
 }
 
@@ -604,33 +604,33 @@ impl IntoPropValue for String {
     }
 }
 
-impl IntoPropValue for MouseDownHandlerProp {
+impl IntoPropValue for PointerDownHandlerProp {
     fn into_prop_value(self) -> PropValue {
-        PropValue::OnMouseDown(self)
+        PropValue::OnPointerDown(self)
     }
 }
 
-impl IntoPropValue for MouseUpHandlerProp {
+impl IntoPropValue for PointerUpHandlerProp {
     fn into_prop_value(self) -> PropValue {
-        PropValue::OnMouseUp(self)
+        PropValue::OnPointerUp(self)
     }
 }
 
-impl IntoPropValue for MouseMoveHandlerProp {
+impl IntoPropValue for PointerMoveHandlerProp {
     fn into_prop_value(self) -> PropValue {
-        PropValue::OnMouseMove(self)
+        PropValue::OnPointerMove(self)
     }
 }
 
-impl IntoPropValue for MouseEnterHandlerProp {
+impl IntoPropValue for PointerEnterHandlerProp {
     fn into_prop_value(self) -> PropValue {
-        PropValue::OnMouseEnter(self)
+        PropValue::OnPointerEnter(self)
     }
 }
 
-impl IntoPropValue for MouseLeaveHandlerProp {
+impl IntoPropValue for PointerLeaveHandlerProp {
     fn into_prop_value(self) -> PropValue {
-        PropValue::OnMouseLeave(self)
+        PropValue::OnPointerLeave(self)
     }
 }
 
@@ -725,47 +725,47 @@ impl FromPropValue for FontSize {
     }
 }
 
-impl FromPropValue for MouseDownHandlerProp {
+impl FromPropValue for PointerDownHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
-            PropValue::OnMouseDown(v) => Ok(v),
-            _ => Err("expected mouse down handler value".to_string()),
+            PropValue::OnPointerDown(v) => Ok(v),
+            _ => Err("expected pointer down handler value".to_string()),
         }
     }
 }
 
-impl FromPropValue for MouseUpHandlerProp {
+impl FromPropValue for PointerUpHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
-            PropValue::OnMouseUp(v) => Ok(v),
-            _ => Err("expected mouse up handler value".to_string()),
+            PropValue::OnPointerUp(v) => Ok(v),
+            _ => Err("expected pointer up handler value".to_string()),
         }
     }
 }
 
-impl FromPropValue for MouseMoveHandlerProp {
+impl FromPropValue for PointerMoveHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
-            PropValue::OnMouseMove(v) => Ok(v),
-            _ => Err("expected mouse move handler value".to_string()),
+            PropValue::OnPointerMove(v) => Ok(v),
+            _ => Err("expected pointer move handler value".to_string()),
         }
     }
 }
 
-impl FromPropValue for MouseEnterHandlerProp {
+impl FromPropValue for PointerEnterHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
-            PropValue::OnMouseEnter(v) => Ok(v),
-            _ => Err("expected mouse enter handler value".to_string()),
+            PropValue::OnPointerEnter(v) => Ok(v),
+            _ => Err("expected pointer enter handler value".to_string()),
         }
     }
 }
 
-impl FromPropValue for MouseLeaveHandlerProp {
+impl FromPropValue for PointerLeaveHandlerProp {
     fn from_prop_value(value: PropValue) -> Result<Self, String> {
         match value {
-            PropValue::OnMouseLeave(v) => Ok(v),
-            _ => Err("expected mouse leave handler value".to_string()),
+            PropValue::OnPointerLeave(v) => Ok(v),
+            _ => Err("expected pointer leave handler value".to_string()),
         }
     }
 }

@@ -15,7 +15,7 @@ mod tests {
         Window,
     };
     use rfgui::ui::{
-        EventMeta, MouseButton as UiMouseButton, MouseEventData, PropValue, RsxElementNode,
+        EventMeta, PointerButton as UiPointerButton, PointerEventData, PropValue, RsxElementNode,
         RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, global_state,
         rsx, take_state_dirty,
     };
@@ -80,16 +80,20 @@ mod tests {
         let mut control = rfgui::view::ViewportControl::new(&mut viewport);
         let mut click = rfgui::ui::ClickEvent {
             meta: EventMeta::new(0),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: 8.0,
                 viewport_y: 8.0,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(UiMouseButton::Left),
-                buttons: rfgui::ui::MouseButtons::default(),
+                button: Some(UiPointerButton::Left),
+                buttons: rfgui::ui::PointerButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: rfgui::platform::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: rfgui::time::Instant::now(),
             },
         };
 
@@ -282,16 +286,20 @@ mod tests {
         let mut control = rfgui::view::ViewportControl::new(viewport);
         let mut click = rfgui::ui::ClickEvent {
             meta: EventMeta::new(0),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: x,
                 viewport_y: y,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(UiMouseButton::Left),
-                buttons: rfgui::ui::MouseButtons::default(),
+                button: Some(UiPointerButton::Left),
+                buttons: rfgui::ui::PointerButtons::default(),
                 modifiers: rfgui::ui::KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: rfgui::platform::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: rfgui::time::Instant::now(),
             },
         };
 

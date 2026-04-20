@@ -1,6 +1,6 @@
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent,
     RsxNode, ViewportHandle, component, use_viewport,
 };
 use crate::rfgui::view::viewport::ViewportControl;
@@ -596,17 +596,17 @@ impl Layoutable for ParticleCanvas {
 }
 
 impl EventTarget for ParticleCanvas {
-    fn dispatch_mouse_move(
+    fn dispatch_pointer_move(
         &mut self,
-        event: &mut MouseMoveEvent,
+        event: &mut PointerMoveEvent,
         _control: &mut ViewportControl<'_>,
     ) {
         let w = self.layout_w;
         let h = self.layout_h;
         if w > 0.0 && h > 0.0 {
-            let nx = (event.mouse.local_x / w).clamp(0.0, 1.0);
-            let ny = (event.mouse.local_y / h).clamp(0.0, 1.0);
-            let boost = event.mouse.buttons.left;
+            let nx = (event.pointer.local_x / w).clamp(0.0, 1.0);
+            let ny = (event.pointer.local_y / h).clamp(0.0, 1.0);
+            let boost = event.pointer.buttons.left;
             PARTICLE_SYSTEM.with(|sys| {
                 let mut s = sys.borrow_mut();
                 s.set_attractor(Some((nx, ny)));
@@ -615,22 +615,22 @@ impl EventTarget for ParticleCanvas {
         }
     }
 
-    fn dispatch_mouse_down(
+    fn dispatch_pointer_down(
         &mut self,
-        event: &mut MouseDownEvent,
+        event: &mut PointerDownEvent,
         _control: &mut ViewportControl<'_>,
     ) {
-        if event.mouse.button == Some(MouseButton::Left) {
+        if event.pointer.button == Some(PointerButton::Left) {
             PARTICLE_SYSTEM.with(|sys| sys.borrow_mut().set_mass_boost(true));
         }
     }
 
-    fn dispatch_mouse_up(
+    fn dispatch_pointer_up(
         &mut self,
-        event: &mut MouseUpEvent,
+        event: &mut PointerUpEvent,
         _control: &mut ViewportControl<'_>,
     ) {
-        if event.mouse.button == Some(MouseButton::Left) {
+        if event.pointer.button == Some(PointerButton::Left) {
             PARTICLE_SYSTEM.with(|sys| sys.borrow_mut().set_mass_boost(false));
         }
     }

@@ -7,8 +7,8 @@ use crate::transition::{
 };
 use crate::transition::{ChannelId, TrackKey, TrackTarget};
 use crate::ui::{
-    BlurEvent, ClickEvent, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyUpEvent, MouseDownEvent,
-    MouseEnterEvent, MouseLeaveEvent, MouseMoveEvent, MouseUpEvent, TextInputEvent,
+    BlurEvent, ClickEvent, FocusEvent, ImePreeditEvent, KeyDownEvent, KeyUpEvent, PointerDownEvent,
+    PointerEnterEvent, PointerLeaveEvent, PointerMoveEvent, PointerUpEvent, TextInputEvent,
 };
 use crate::view::viewport::ViewportControl;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -640,60 +640,60 @@ pub fn hit_test_roots(
     fallback
 }
 
-pub fn dispatch_mouse_down_from_hit_test(
+pub fn dispatch_pointer_down_from_hit_test(
     root: &mut dyn ElementTrait,
-    event: &mut MouseDownEvent,
+    event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
+    let Some(target_id) = hit_test(root, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
-    dispatch_mouse_down_bubble(root, target_id, event, control)
+    dispatch_pointer_down_bubble(root, target_id, event, control)
 }
 
-pub fn dispatch_mouse_up_from_hit_test(
+pub fn dispatch_pointer_up_from_hit_test(
     root: &mut dyn ElementTrait,
-    event: &mut MouseUpEvent,
+    event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
+    let Some(target_id) = hit_test(root, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
-    dispatch_mouse_up_bubble(root, target_id, event, control)
+    dispatch_pointer_up_bubble(root, target_id, event, control)
 }
 
-pub(crate) fn dispatch_mouse_up_to_target(
+pub(crate) fn dispatch_pointer_up_to_target(
     root: &mut dyn ElementTrait,
     target_id: u64,
-    event: &mut MouseUpEvent,
+    event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
     event.meta.set_target_id(target_id);
-    dispatch_mouse_up_bubble(root, target_id, event, control)
+    dispatch_pointer_up_bubble(root, target_id, event, control)
 }
 
-pub fn dispatch_mouse_move_from_hit_test(
+pub fn dispatch_pointer_move_from_hit_test(
     root: &mut dyn ElementTrait,
-    event: &mut MouseMoveEvent,
+    event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
+    let Some(target_id) = hit_test(root, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
-    dispatch_mouse_move_bubble(root, target_id, event, control)
+    dispatch_pointer_move_bubble(root, target_id, event, control)
 }
 
-pub(crate) fn dispatch_mouse_move_to_target(
+pub(crate) fn dispatch_pointer_move_to_target(
     root: &mut dyn ElementTrait,
     target_id: u64,
-    event: &mut MouseMoveEvent,
+    event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
     event.meta.set_target_id(target_id);
-    dispatch_mouse_move_bubble(root, target_id, event, control)
+    dispatch_pointer_move_bubble(root, target_id, event, control)
 }
 
 pub fn dispatch_click_from_hit_test(
@@ -701,7 +701,7 @@ pub fn dispatch_click_from_hit_test(
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
-    let Some(target_id) = hit_test(root, event.mouse.viewport_x, event.mouse.viewport_y) else {
+    let Some(target_id) = hit_test(root, event.pointer.viewport_x, event.pointer.viewport_y) else {
         return false;
     };
     event.meta.set_target_id(target_id);
@@ -1124,17 +1124,17 @@ pub(crate) fn hover_path_for_target(
     Vec::new()
 }
 
-fn dispatch_mouse_enter_to_target(node: &mut dyn ElementTrait, target_id: u64) -> bool {
+fn dispatch_pointer_enter_to_target(node: &mut dyn ElementTrait, target_id: u64) -> bool {
     if node.id() == target_id {
-        let mut event = MouseEnterEvent {
+        let mut event = PointerEnterEvent {
             meta: crate::ui::EventMeta::new(target_id),
         };
-        node.dispatch_mouse_enter(&mut event);
+        node.dispatch_pointer_enter(&mut event);
         return true;
     }
     if let Some(children) = node.children_mut() {
         for child in children.iter_mut() {
-            if dispatch_mouse_enter_to_target(child.as_mut(), target_id) {
+            if dispatch_pointer_enter_to_target(child.as_mut(), target_id) {
                 return true;
             }
         }
@@ -1142,17 +1142,17 @@ fn dispatch_mouse_enter_to_target(node: &mut dyn ElementTrait, target_id: u64) -
     false
 }
 
-fn dispatch_mouse_leave_to_target(node: &mut dyn ElementTrait, target_id: u64) -> bool {
+fn dispatch_pointer_leave_to_target(node: &mut dyn ElementTrait, target_id: u64) -> bool {
     if node.id() == target_id {
-        let mut event = MouseLeaveEvent {
+        let mut event = PointerLeaveEvent {
             meta: crate::ui::EventMeta::new(target_id),
         };
-        node.dispatch_mouse_leave(&mut event);
+        node.dispatch_pointer_leave(&mut event);
         return true;
     }
     if let Some(children) = node.children_mut() {
         for child in children.iter_mut() {
-            if dispatch_mouse_leave_to_target(child.as_mut(), target_id) {
+            if dispatch_pointer_leave_to_target(child.as_mut(), target_id) {
                 return true;
             }
         }
@@ -1184,7 +1184,7 @@ pub(crate) fn dispatch_hover_transition(
 
     for &node_id in previous_path[common_prefix_len..].iter().rev() {
         for root in roots.iter_mut() {
-            if dispatch_mouse_leave_to_target(root.as_mut(), node_id) {
+            if dispatch_pointer_leave_to_target(root.as_mut(), node_id) {
                 dispatched = true;
                 break;
             }
@@ -1193,7 +1193,7 @@ pub(crate) fn dispatch_hover_transition(
 
     for &node_id in &next_path[common_prefix_len..] {
         for root in roots.iter_mut() {
-            if dispatch_mouse_enter_to_target(root.as_mut(), node_id) {
+            if dispatch_pointer_enter_to_target(root.as_mut(), node_id) {
                 dispatched = true;
                 break;
             }
@@ -1271,10 +1271,10 @@ pub(crate) fn dispatch_blur_bubble(
     dispatch_blur_impl(root, target_id, event, control)
 }
 
-fn dispatch_mouse_down_bubble(
+fn dispatch_pointer_down_bubble(
     node: &mut dyn ElementTrait,
     target_id: u64,
-    event: &mut MouseDownEvent,
+    event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
     fn local_point(
@@ -1298,7 +1298,7 @@ fn dispatch_mouse_down_bubble(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_mouse_down_bubble(child.as_mut(), target_id, event, control) {
+                if dispatch_pointer_down_bubble(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -1314,21 +1314,21 @@ fn dispatch_mouse_down_bubble(
     let (local_x, local_y) = local_point(
         node,
         &snapshot,
-        event.mouse.viewport_x,
-        event.mouse.viewport_y,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
     );
-    event.mouse.local_x = local_x;
-    event.mouse.local_y = local_y;
-    event.mouse.current_target_width = snapshot.width;
-    event.mouse.current_target_height = snapshot.height;
-    node.dispatch_mouse_down(event, control);
+    event.pointer.local_x = local_x;
+    event.pointer.local_y = local_y;
+    event.pointer.current_target_width = snapshot.width;
+    event.pointer.current_target_height = snapshot.height;
+    node.dispatch_pointer_down(event, control);
     true
 }
 
-fn dispatch_mouse_up_bubble(
+fn dispatch_pointer_up_bubble(
     node: &mut dyn ElementTrait,
     target_id: u64,
-    event: &mut MouseUpEvent,
+    event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
     fn local_point(
@@ -1352,7 +1352,7 @@ fn dispatch_mouse_up_bubble(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_mouse_up_bubble(child.as_mut(), target_id, event, control) {
+                if dispatch_pointer_up_bubble(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -1368,21 +1368,21 @@ fn dispatch_mouse_up_bubble(
     let (local_x, local_y) = local_point(
         node,
         &snapshot,
-        event.mouse.viewport_x,
-        event.mouse.viewport_y,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
     );
-    event.mouse.local_x = local_x;
-    event.mouse.local_y = local_y;
-    event.mouse.current_target_width = snapshot.width;
-    event.mouse.current_target_height = snapshot.height;
-    node.dispatch_mouse_up(event, control);
+    event.pointer.local_x = local_x;
+    event.pointer.local_y = local_y;
+    event.pointer.current_target_width = snapshot.width;
+    event.pointer.current_target_height = snapshot.height;
+    node.dispatch_pointer_up(event, control);
     true
 }
 
-fn dispatch_mouse_move_bubble(
+fn dispatch_pointer_move_bubble(
     node: &mut dyn ElementTrait,
     target_id: u64,
-    event: &mut MouseMoveEvent,
+    event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
     fn local_point(
@@ -1406,7 +1406,7 @@ fn dispatch_mouse_move_bubble(
     if !found {
         if let Some(children) = node.children_mut() {
             for child in children.iter_mut().rev() {
-                if dispatch_mouse_move_bubble(child.as_mut(), target_id, event, control) {
+                if dispatch_pointer_move_bubble(child.as_mut(), target_id, event, control) {
                     found = true;
                     break;
                 }
@@ -1422,14 +1422,14 @@ fn dispatch_mouse_move_bubble(
     let (local_x, local_y) = local_point(
         node,
         &snapshot,
-        event.mouse.viewport_x,
-        event.mouse.viewport_y,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
     );
-    event.mouse.local_x = local_x;
-    event.mouse.local_y = local_y;
-    event.mouse.current_target_width = snapshot.width;
-    event.mouse.current_target_height = snapshot.height;
-    node.dispatch_mouse_move(event, control);
+    event.pointer.local_x = local_x;
+    event.pointer.local_y = local_y;
+    event.pointer.current_target_width = snapshot.width;
+    event.pointer.current_target_height = snapshot.height;
+    node.dispatch_pointer_move(event, control);
     true
 }
 
@@ -1476,13 +1476,13 @@ fn dispatch_click_bubble(
     let (local_x, local_y) = local_point(
         node,
         &snapshot,
-        event.mouse.viewport_x,
-        event.mouse.viewport_y,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
     );
-    event.mouse.local_x = local_x;
-    event.mouse.local_y = local_y;
-    event.mouse.current_target_width = snapshot.width;
-    event.mouse.current_target_height = snapshot.height;
+    event.pointer.local_x = local_x;
+    event.pointer.local_y = local_y;
+    event.pointer.current_target_width = snapshot.width;
+    event.pointer.current_target_height = snapshot.height;
     node.dispatch_click(event, control);
     true
 }
@@ -1914,26 +1914,26 @@ macro_rules! forward_event_target {
         }
     };
     (@dispatch $field:ident) => {
-        fn dispatch_mouse_down(
+        fn dispatch_pointer_down(
             &mut self,
-            event: &mut $crate::ui::MouseDownEvent,
+            event: &mut $crate::ui::PointerDownEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
         ) {
-            self.$field.dispatch_mouse_down(event, control);
+            self.$field.dispatch_pointer_down(event, control);
         }
-        fn dispatch_mouse_up(
+        fn dispatch_pointer_up(
             &mut self,
-            event: &mut $crate::ui::MouseUpEvent,
+            event: &mut $crate::ui::PointerUpEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
         ) {
-            self.$field.dispatch_mouse_up(event, control);
+            self.$field.dispatch_pointer_up(event, control);
         }
-        fn dispatch_mouse_move(
+        fn dispatch_pointer_move(
             &mut self,
-            event: &mut $crate::ui::MouseMoveEvent,
+            event: &mut $crate::ui::PointerMoveEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
         ) {
-            self.$field.dispatch_mouse_move(event, control);
+            self.$field.dispatch_pointer_move(event, control);
         }
         fn dispatch_click(
             &mut self,
@@ -1972,11 +1972,11 @@ macro_rules! forward_event_target {
         }
     };
     (@state_and_requests $field:ident) => {
-        fn dispatch_mouse_enter(&mut self, event: &mut $crate::ui::MouseEnterEvent) {
-            self.$field.dispatch_mouse_enter(event);
+        fn dispatch_pointer_enter(&mut self, event: &mut $crate::ui::PointerEnterEvent) {
+            self.$field.dispatch_pointer_enter(event);
         }
-        fn dispatch_mouse_leave(&mut self, event: &mut $crate::ui::MouseLeaveEvent) {
-            self.$field.dispatch_mouse_leave(event);
+        fn dispatch_pointer_leave(&mut self, event: &mut $crate::ui::PointerLeaveEvent) {
+            self.$field.dispatch_pointer_leave(event);
         }
         fn cancel_pointer_interaction(&mut self) -> bool {
             self.$field.cancel_pointer_interaction()
@@ -2025,7 +2025,7 @@ pub(crate) use forward_event_target;
 #[cfg(test)]
 mod tests {
     use super::{
-        dispatch_click_from_hit_test, dispatch_hover_transition, dispatch_mouse_down_from_hit_test,
+        dispatch_click_from_hit_test, dispatch_hover_transition, dispatch_pointer_down_from_hit_test,
         hit_test,
     };
     use crate::style::{
@@ -2033,8 +2033,8 @@ mod tests {
         Transform, TransformOrigin, Translate,
     };
     use crate::ui::{
-        ClickEvent, EventMeta, KeyModifiers, MouseButton, MouseButtons, MouseDownEvent,
-        MouseEventData,
+        ClickEvent, EventMeta, KeyModifiers, PointerButton, PointerButtons, PointerDownEvent,
+        PointerEventData,
     };
     use crate::view::base_component::{
         Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
@@ -2398,16 +2398,20 @@ mod tests {
         let mut control = ViewportControl::new(&mut viewport);
         let mut click_child = ClickEvent {
             meta: EventMeta::new(0),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: 115.0,
                 viewport_y: 15.0,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: MouseButtons::default(),
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
                 modifiers: KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
             },
         };
         assert!(dispatch_click_from_hit_test(
@@ -2420,16 +2424,20 @@ mod tests {
 
         let mut click_outside = ClickEvent {
             meta: EventMeta::new(0),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: 145.0,
                 viewport_y: 15.0,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: MouseButtons::default(),
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
                 modifiers: KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
             },
         };
         let _ = dispatch_click_from_hit_test(&mut root, &mut click_outside, &mut control);
@@ -2444,23 +2452,23 @@ mod tests {
         let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
         let root_id = root.id();
         let root_order = order.clone();
-        root.on_mouse_enter(move |_event| root_order.borrow_mut().push("root-enter"));
+        root.on_pointer_enter(move |_event| root_order.borrow_mut().push("root-enter"));
         let root_order = order.clone();
-        root.on_mouse_leave(move |_event| root_order.borrow_mut().push("root-leave"));
+        root.on_pointer_leave(move |_event| root_order.borrow_mut().push("root-leave"));
 
         let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
         let parent_id = parent.id();
         let parent_order = order.clone();
-        parent.on_mouse_enter(move |_event| parent_order.borrow_mut().push("parent-enter"));
+        parent.on_pointer_enter(move |_event| parent_order.borrow_mut().push("parent-enter"));
         let parent_order = order.clone();
-        parent.on_mouse_leave(move |_event| parent_order.borrow_mut().push("parent-leave"));
+        parent.on_pointer_leave(move |_event| parent_order.borrow_mut().push("parent-leave"));
 
         let mut child = Element::new(0.0, 0.0, 60.0, 60.0);
         let child_id = child.id();
         let child_order = order.clone();
-        child.on_mouse_enter(move |_event| child_order.borrow_mut().push("child-enter"));
+        child.on_pointer_enter(move |_event| child_order.borrow_mut().push("child-enter"));
         let child_order = order.clone();
-        child.on_mouse_leave(move |_event| child_order.borrow_mut().push("child-leave"));
+        child.on_pointer_leave(move |_event| child_order.borrow_mut().push("child-leave"));
 
         parent.add_child(Box::new(child));
         root.add_child(Box::new(parent));
@@ -2546,16 +2554,20 @@ mod tests {
         let mut control = ViewportControl::new(&mut viewport);
         let mut click = ClickEvent {
             meta: EventMeta::new(0),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: 115.0,
                 viewport_y: 60.0,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: MouseButtons::default(),
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
                 modifiers: KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
             },
         };
 
@@ -2607,23 +2619,27 @@ mod tests {
         let mut viewport = Viewport::new();
         let meta = EventMeta::new(0);
         let mut control = ViewportControl::new(&mut viewport);
-        let mut down = MouseDownEvent {
+        let mut down = PointerDownEvent {
             meta: meta.clone(),
-            mouse: MouseEventData {
+            pointer: PointerEventData {
                 viewport_x: 115.0,
                 viewport_y: 60.0,
                 local_x: 0.0,
                 local_y: 0.0,
                 current_target_width: 0.0,
                 current_target_height: 0.0,
-                button: Some(MouseButton::Left),
-                buttons: MouseButtons::default(),
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
                 modifiers: KeyModifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
             },
             viewport: meta.viewport(),
         };
 
-        let handled = dispatch_mouse_down_from_hit_test(&mut root, &mut down, &mut control);
+        let handled = dispatch_pointer_down_from_hit_test(&mut root, &mut down, &mut control);
         assert!(handled);
         assert!(down.meta.keep_focus_requested());
     }

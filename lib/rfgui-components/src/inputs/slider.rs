@@ -1,7 +1,7 @@
 use crate::use_theme;
 
 use rfgui::ui::{
-    Binding, RsxComponent, RsxNode, on_mouse_down, on_mouse_move, on_mouse_up,
+    Binding, RsxComponent, RsxNode, on_pointer_down, on_pointer_move, on_pointer_up,
     props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
@@ -68,10 +68,10 @@ impl RsxComponent<SliderProps> for Slider {
         } else {
             let binding = value_binding.clone();
             let dragging_binding = dragging_binding.clone();
-            Some(on_mouse_down(move |event| {
+            Some(on_pointer_down(move |event| {
                 let next = value_from_drag_position(
-                    event.mouse.local_x,
-                    event.mouse.current_target_width,
+                    event.pointer.local_x,
+                    event.pointer.current_target_width,
                     HORIZONTAL_PADDING,
                     min,
                     max,
@@ -89,14 +89,14 @@ impl RsxComponent<SliderProps> for Slider {
         } else {
             let binding = value_binding.clone();
             let dragging_binding = dragging_binding.clone();
-            Some(on_mouse_move(move |event| {
-                if !dragging_binding.get() || !event.mouse.buttons.left {
+            Some(on_pointer_move(move |event| {
+                if !dragging_binding.get() || !event.pointer.buttons.left {
                     return;
                 }
 
                 let next = value_from_drag_position(
-                    event.mouse.local_x,
-                    event.mouse.current_target_width,
+                    event.pointer.local_x,
+                    event.pointer.current_target_width,
                     HORIZONTAL_PADDING,
                     min,
                     max,
@@ -111,7 +111,7 @@ impl RsxComponent<SliderProps> for Slider {
             None
         } else {
             let dragging_binding = dragging_binding.clone();
-            Some(on_mouse_up(move |_event| {
+            Some(on_pointer_up(move |_event| {
                 dragging_binding.set(false);
             }))
         };
@@ -148,9 +148,9 @@ impl RsxComponent<SliderProps> for Slider {
                         slider_theme.frame_background.clone()
                     },
                 }}
-                on_mouse_down={mouse_down}
-                on_mouse_move={mouse_move}
-                on_mouse_up={mouse_up}
+                on_pointer_down={mouse_down}
+                on_pointer_move={mouse_move}
+                on_pointer_up={mouse_up}
                 >
                     <Element style={{
                         position: Position::absolute()

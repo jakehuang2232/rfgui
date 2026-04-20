@@ -1,12 +1,12 @@
 use super::*;
 
 #[derive(Clone)]
-pub(super) enum ViewportMouseUpListener {
-    Persistent(crate::ui::MouseUpHandlerProp),
-    Until(MouseUpUntilHandler),
+pub(super) enum ViewportPointerUpListener {
+    Persistent(crate::ui::PointerUpHandlerProp),
+    Until(PointerUpUntilHandler),
 }
 
-impl ViewportMouseUpListener {
+impl ViewportPointerUpListener {
     pub(super) fn id(&self) -> u64 {
         match self {
             Self::Persistent(handler) => handler.id(),
@@ -16,7 +16,7 @@ impl ViewportMouseUpListener {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseButton {
+pub enum PointerButton {
     Left,
     Right,
     Middle,
@@ -56,15 +56,15 @@ pub(super) struct InputState {
     pub selects: Vec<u64>,
     pub pointer_capture_node_id: Option<u64>,
     pub hovered_node_id: Option<u64>,
-    pub mouse_position_viewport: Option<(f32, f32)>,
+    pub pointer_position_viewport: Option<(f32, f32)>,
     pub pending_click: Option<PendingClick>,
-    pub pressed_mouse_buttons: FxHashSet<MouseButton>,
+    pub pressed_pointer_buttons: FxHashSet<PointerButton>,
     pub pressed_keys: FxHashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PendingClick {
-    pub button: MouseButton,
+    pub button: PointerButton,
     pub target_id: u64,
     pub viewport_x: f32,
     pub viewport_y: f32,
@@ -72,7 +72,7 @@ pub(super) struct PendingClick {
 
 pub(super) fn is_valid_click_candidate(
     pending_click: PendingClick,
-    button: MouseButton,
+    button: PointerButton,
     hit_target: Option<u64>,
     up_x: f32,
     up_y: f32,
@@ -92,14 +92,14 @@ pub(super) fn is_valid_click_candidate(
     ) <= CLICK_MAX_TRAVEL_SQ
 }
 
-pub(super) fn to_ui_mouse_button(button: MouseButton) -> crate::ui::MouseButton {
+pub(super) fn to_ui_pointer_button(button: PointerButton) -> crate::ui::PointerButton {
     match button {
-        MouseButton::Left => crate::ui::MouseButton::Left,
-        MouseButton::Right => crate::ui::MouseButton::Right,
-        MouseButton::Middle => crate::ui::MouseButton::Middle,
-        MouseButton::Back => crate::ui::MouseButton::Back,
-        MouseButton::Forward => crate::ui::MouseButton::Forward,
-        MouseButton::Other(v) => crate::ui::MouseButton::Other(v),
+        PointerButton::Left => crate::ui::PointerButton::Left,
+        PointerButton::Right => crate::ui::PointerButton::Right,
+        PointerButton::Middle => crate::ui::PointerButton::Middle,
+        PointerButton::Back => crate::ui::PointerButton::Back,
+        PointerButton::Forward => crate::ui::PointerButton::Forward,
+        PointerButton::Other(v) => crate::ui::PointerButton::Other(v),
     }
 }
 

@@ -826,38 +826,38 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                                     Transition::new(TransitionProperty::All, theme.motion.duration.fast).ease_in_out(),
                                 ],
                             }}
-                            on_mouse_enter={move |_| {
+                            on_pointer_enter={move |_| {
                                 transform_enter.set("transform target: mouse enter".to_string());
                             }}
-                            on_mouse_leave={move |_| {
+                            on_pointer_leave={move |_| {
                                 transform_leave.set("transform target: mouse leave".to_string());
                             }}
-                            on_mouse_move={move |event| {
+                            on_pointer_move={move |event| {
                                 transform_move.set(format!(
                                     "transform target: move local=({:.1}, {:.1})",
-                                    event.mouse.local_x,
-                                    event.mouse.local_y
+                                    event.pointer.local_x,
+                                    event.pointer.local_y
                                 ));
                             }}
-                            on_mouse_down={move |event| {
+                            on_pointer_down={move |event| {
                                 transform_down.set(format!(
                                     "transform target: mouse down local=({:.1}, {:.1})",
-                                    event.mouse.local_x,
-                                    event.mouse.local_y
+                                    event.pointer.local_x,
+                                    event.pointer.local_y
                                 ));
                             }}
-                            on_mouse_up={move |event| {
+                            on_pointer_up={move |event| {
                                 transform_up.set(format!(
                                     "transform target: mouse up local=({:.1}, {:.1})",
-                                    event.mouse.local_x,
-                                    event.mouse.local_y
+                                    event.pointer.local_x,
+                                    event.pointer.local_y
                                 ));
                             }}
                             on_click={move |event| {
                                 transform_click.set(format!(
                                     "transform target: click local=({:.1}, {:.1})",
-                                    event.mouse.local_x,
-                                    event.mouse.local_y
+                                    event.pointer.local_x,
+                                    event.pointer.local_y
                                 ));
                             }}
                         >

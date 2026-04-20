@@ -23,9 +23,9 @@ use rfgui::SurfaceFormatPreference;
 use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::web_backend::{CanvasCursorSink, InMemoryClipboard};
 use rfgui::platform::{
-    Clipboard, CursorSink, PlatformImePreedit, PlatformKeyEvent, PlatformMouseButton,
-    PlatformMouseEvent, PlatformMouseEventKind, PlatformServices, PlatformTextInput,
-    PlatformWheelEvent, RedrawRequester,
+    Clipboard, CursorSink, PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton,
+    PlatformPointerEvent, PlatformPointerEventKind, PlatformServices, PlatformTextInput,
+    PlatformWheelEvent, PointerType, RedrawRequester,
 };
 use rfgui::ui::run_due_timers;
 use rfgui::view::viewport::{RenderFrameResult, Viewport};
@@ -38,7 +38,7 @@ use web_sys::{HtmlCanvasElement, window};
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{
-    ElementState, Ime, KeyEvent, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
+    ElementState, Ime, KeyEvent, PointerButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey, PhysicalKey};
@@ -123,7 +123,7 @@ impl Runner {
             viewport.set_msaa_sample_count(1);
             viewport.set_scale_factor(scale);
             viewport.set_size(physical_size.0, physical_size.1);
-            viewport.set_surface_format_preference(SurfaceFormatPreference::PreferNonSrgb);
+            viewport.set_surface_format_preference(SurfaceFormatPreference::PreferSrgb);
             if let Some(color) = clear_color {
                 viewport.set_clear_color(Box::new(color));
             }
@@ -502,13 +502,16 @@ impl ApplicationHandler for Runner {
                     .map(|v| v.physical_to_logical_point(position.x as f32, position.y as f32))
                     .unwrap_or((position.x as f32, position.y as f32));
                 self.last_mouse_logical = Some(logical);
-                let move_event = PlatformMouseEvent {
-                    kind: PlatformMouseEventKind::Move {
+                let move_event = PlatformPointerEvent {
+                    kind: PlatformPointerEventKind::Move {
                         x: logical.0,
                         y: logical.1,
                     },
+                    pointer_id: 0,
+                    pointer_type: PointerType::Mouse,
+                    pressure: 0.0,
                 };
-                let ev = AppEvent::Mouse(move_event);
+                let ev = AppEvent::Pointer(move_event);
                 let mut vp = self.viewport.borrow_mut();
                 if let Some(viewport) = vp.as_mut() {
                     let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
@@ -520,13 +523,13 @@ impl ApplicationHandler for Runner {
                         cursor: cursor_sink,
                         redraw: &self.redraw,
                     });
-                    let _ = viewport.dispatch_platform_mouse_event(&move_event);
+                    let _ = viewport.dispatch_platform_pointer_event(&move_event);
                 }
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor_in_window = false;
                 if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
-                    viewport.clear_mouse_position_viewport();
+                    viewport.clear_pointer_position_viewport();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -538,13 +541,19 @@ impl ApplicationHandler for Runner {
                     let mut vp = self.viewport.borrow_mut();
                     if let Some(viewport) = vp.as_mut() {
                         viewport
-                            .set_mouse_button_pressed(platform_button_to_viewport(mapped), pressed);
+                            .set_pointer_button_pressed(platform_button_to_viewport(mapped), pressed);
                         let kind = if pressed {
-                            PlatformMouseEventKind::Down(mapped)
+                            PlatformPointerEventKind::Down(mapped)
                         } else {
-                            PlatformMouseEventKind::Up(mapped)
+                            PlatformPointerEventKind::Up(mapped)
                         };
-                        let ev = AppEvent::Mouse(PlatformMouseEvent { kind });
+                        let pressure = if pressed { 0.5 } else { 0.0 };
+                        let ev = AppEvent::Pointer(PlatformPointerEvent {
+                            kind,
+                            pointer_id: 0,
+                            pointer_type: PointerType::Mouse,
+                            pressure,
+                        });
                         let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
                             Some(sink) => sink,
                             None => &mut NoopCursorSink,
@@ -554,12 +563,20 @@ impl ApplicationHandler for Runner {
                             cursor: cursor_sink,
                             redraw: &self.redraw,
                         });
-                        let _ = viewport.dispatch_platform_mouse_event(&PlatformMouseEvent { kind });
+                        let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
+                            kind,
+                            pointer_id: 0,
+                            pointer_type: PointerType::Mouse,
+                            pressure,
+                        });
                         if !pressed {
-                            let click = PlatformMouseEvent {
-                                kind: PlatformMouseEventKind::Click(mapped),
+                            let click = PlatformPointerEvent {
+                                kind: PlatformPointerEventKind::Click(mapped),
+                                pointer_id: 0,
+                                pointer_type: PointerType::Mouse,
+                                pressure: 0.0,
                             };
-                            let click_ev = AppEvent::Mouse(click);
+                            let click_ev = AppEvent::Pointer(click);
                             let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
                                 Some(sink) => sink,
                                 None => &mut NoopCursorSink,
@@ -569,7 +586,7 @@ impl ApplicationHandler for Runner {
                                 cursor: cursor_sink,
                                 redraw: &self.redraw,
                             });
-                            let _ = viewport.dispatch_platform_mouse_event(&click);
+                            let _ = viewport.dispatch_platform_pointer_event(&click);
                         }
                     }
                 }
@@ -788,27 +805,27 @@ fn hide_boot_overlay() {
     }
 }
 
-fn winit_button_to_platform(button: WinitMouseButton) -> Option<PlatformMouseButton> {
+fn winit_button_to_platform(button: WinitMouseButton) -> Option<PlatformPointerButton> {
     Some(match button {
-        WinitMouseButton::Left => PlatformMouseButton::Left,
-        WinitMouseButton::Right => PlatformMouseButton::Right,
-        WinitMouseButton::Middle => PlatformMouseButton::Middle,
-        WinitMouseButton::Back => PlatformMouseButton::Back,
-        WinitMouseButton::Forward => PlatformMouseButton::Forward,
-        WinitMouseButton::Other(code) => PlatformMouseButton::Other(code),
+        WinitMouseButton::Left => PlatformPointerButton::Left,
+        WinitMouseButton::Right => PlatformPointerButton::Right,
+        WinitMouseButton::Middle => PlatformPointerButton::Middle,
+        WinitMouseButton::Back => PlatformPointerButton::Back,
+        WinitMouseButton::Forward => PlatformPointerButton::Forward,
+        WinitMouseButton::Other(code) => PlatformPointerButton::Other(code),
     })
 }
 
 fn platform_button_to_viewport(
-    button: PlatformMouseButton,
-) -> rfgui::view::viewport::MouseButton {
-    use rfgui::view::viewport::MouseButton as Vb;
+    button: PlatformPointerButton,
+) -> rfgui::view::viewport::PointerButton {
+    use rfgui::view::viewport::PointerButton as Vb;
     match button {
-        PlatformMouseButton::Left => Vb::Left,
-        PlatformMouseButton::Right => Vb::Right,
-        PlatformMouseButton::Middle => Vb::Middle,
-        PlatformMouseButton::Back => Vb::Back,
-        PlatformMouseButton::Forward => Vb::Forward,
-        PlatformMouseButton::Other(code) => Vb::Other(code),
+        PlatformPointerButton::Left => Vb::Left,
+        PlatformPointerButton::Right => Vb::Right,
+        PlatformPointerButton::Middle => Vb::Middle,
+        PlatformPointerButton::Back => Vb::Back,
+        PlatformPointerButton::Forward => Vb::Forward,
+        PlatformPointerButton::Other(code) => Vb::Other(code),
     }
 }

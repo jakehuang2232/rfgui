@@ -772,25 +772,25 @@ fn convert_container_element(
             "padding_bottom" => element.set_padding_bottom(as_f32(value, key)?),
             "opacity" => element.set_opacity(as_f32(value, key)?),
             "style" => {}
-            "on_mouse_down" => {
+            "on_pointer_down" => {
                 let handler = as_mouse_down_handler(value, key)?;
-                element.on_mouse_down(move |event, _control| handler.call(event));
+                element.on_pointer_down(move |event, _control| handler.call(event));
             }
-            "on_mouse_up" => {
+            "on_pointer_up" => {
                 let handler = as_mouse_up_handler(value, key)?;
-                element.on_mouse_up(move |event, _control| handler.call(event));
+                element.on_pointer_up(move |event, _control| handler.call(event));
             }
-            "on_mouse_move" => {
+            "on_pointer_move" => {
                 let handler = as_mouse_move_handler(value, key)?;
-                element.on_mouse_move(move |event, _control| handler.call(event));
+                element.on_pointer_move(move |event, _control| handler.call(event));
             }
-            "on_mouse_enter" => {
+            "on_pointer_enter" => {
                 let handler = as_mouse_enter_handler(value, key)?;
-                element.on_mouse_enter(move |event| handler.call(event));
+                element.on_pointer_enter(move |event| handler.call(event));
             }
-            "on_mouse_leave" => {
+            "on_pointer_leave" => {
                 let handler = as_mouse_leave_handler(value, key)?;
-                element.on_mouse_leave(move |event| handler.call(event));
+                element.on_pointer_leave(move |event| handler.call(event));
             }
             "on_click" => {
                 let handler = as_click_handler(value, key)?;
@@ -1817,50 +1817,50 @@ fn as_text_style(value: &PropValue, key: &str) -> Result<Style, String> {
 fn as_mouse_down_handler(
     value: &PropValue,
     key: &str,
-) -> Result<crate::ui::MouseDownHandlerProp, String> {
+) -> Result<crate::ui::PointerDownHandlerProp, String> {
     match value {
-        PropValue::OnMouseDown(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects mouse down handler value")),
+        PropValue::OnPointerDown(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects pointer down handler value")),
     }
 }
 
 fn as_mouse_up_handler(
     value: &PropValue,
     key: &str,
-) -> Result<crate::ui::MouseUpHandlerProp, String> {
+) -> Result<crate::ui::PointerUpHandlerProp, String> {
     match value {
-        PropValue::OnMouseUp(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects mouse up handler value")),
+        PropValue::OnPointerUp(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects pointer up handler value")),
     }
 }
 
 fn as_mouse_move_handler(
     value: &PropValue,
     key: &str,
-) -> Result<crate::ui::MouseMoveHandlerProp, String> {
+) -> Result<crate::ui::PointerMoveHandlerProp, String> {
     match value {
-        PropValue::OnMouseMove(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects mouse move handler value")),
+        PropValue::OnPointerMove(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects pointer move handler value")),
     }
 }
 
 fn as_mouse_enter_handler(
     value: &PropValue,
     key: &str,
-) -> Result<crate::ui::MouseEnterHandlerProp, String> {
+) -> Result<crate::ui::PointerEnterHandlerProp, String> {
     match value {
-        PropValue::OnMouseEnter(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects mouse enter handler value")),
+        PropValue::OnPointerEnter(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects pointer enter handler value")),
     }
 }
 
 fn as_mouse_leave_handler(
     value: &PropValue,
     key: &str,
-) -> Result<crate::ui::MouseLeaveHandlerProp, String> {
+) -> Result<crate::ui::PointerLeaveHandlerProp, String> {
     match value {
-        PropValue::OnMouseLeave(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects mouse leave handler value")),
+        PropValue::OnPointerLeave(v) => Ok(v.clone()),
+        _ => Err(format!("prop `{key}` expects pointer leave handler value")),
     }
 }
 

@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::use_theme;
 use rfgui::ClipMode::Viewport;
 use rfgui::ui::{
-    BlurHandlerProp, FocusHandlerProp, MouseButton, MouseDownHandlerProp,
-    RsxComponent, RsxNode, ViewportListenerHandle, on_mouse_down, props, rsx, use_state,
+    BlurHandlerProp, FocusHandlerProp, PointerButton, PointerDownHandlerProp,
+    RsxComponent, RsxNode, ViewportListenerHandle, on_pointer_down, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{
@@ -350,15 +350,15 @@ fn WindowView(
         .and_then(|style| style.background)
         .unwrap_or_else(|| color_like_to_color(theme.color.layer.surface.as_ref()));
 
-    let title_down: MouseDownHandlerProp = {
+    let title_down: PointerDownHandlerProp = {
         let interaction = interaction.binding();
         let position_state = position_state.binding();
         let current_position = (x, y);
         let on_move = on_move.clone();
         let controlled = position.is_some();
         let viewport_listeners = viewport_listeners.binding();
-        on_mouse_down(move |event| {
-            if !draggable || event.mouse.button != Some(MouseButton::Left) {
+        on_pointer_down(move |event| {
+            if !draggable || event.pointer.button != Some(PointerButton::Left) {
                 return;
             }
             event
@@ -366,8 +366,8 @@ fn WindowView(
                 .set_focus(Some(event.meta.current_target_id()));
             let (start_x, start_y) = current_position;
             interaction.set(WindowInteraction::Dragging {
-                start_mouse_x: event.mouse.viewport_x,
-                start_mouse_y: event.mouse.viewport_y,
+                start_mouse_x: event.pointer.viewport_x,
+                start_mouse_y: event.pointer.viewport_y,
                 start_x,
                 start_y,
             });
@@ -382,7 +382,7 @@ fn WindowView(
             let position_for_move = position_state.clone();
             let on_move_for_move = on_move.clone();
             let move_listener =
-                event.viewport.add_mouse_move_listener(
+                event.viewport.add_pointer_move_listener(
                     move |move_event| match interaction_for_move.get() {
                         WindowInteraction::Dragging {
                             start_mouse_x,
@@ -390,8 +390,8 @@ fn WindowView(
                             start_x,
                             start_y,
                         } => {
-                            let next_x = start_x + (move_event.mouse.viewport_x - start_mouse_x);
-                            let next_y = start_y + (move_event.mouse.viewport_y - start_mouse_y);
+                            let next_x = start_x + (move_event.pointer.viewport_x - start_mouse_x);
+                            let next_y = start_y + (move_event.pointer.viewport_y - start_mouse_y);
                             if !controlled {
                                 position_for_move.set((next_x, next_y));
                             }
@@ -406,8 +406,8 @@ fn WindowView(
                 );
             let interaction_for_up = interaction.clone();
             let viewport_listeners_for_up = viewport_listeners.clone();
-            let up_listener = event.viewport.add_mouse_up_listener_until(move |up_event| {
-                if up_event.mouse.button != Some(MouseButton::Left) {
+            let up_listener = event.viewport.add_pointer_up_listener_until(move |up_event| {
+                if up_event.pointer.button != Some(PointerButton::Left) {
                     return false;
                 }
                 up_event.viewport.remove_listener(move_listener);
@@ -433,8 +433,8 @@ fn WindowView(
         let controlled = position.is_some();
         let on_resize = on_resize.clone();
         let viewport_listeners = viewport_listeners.binding();
-        on_mouse_down(move |event| {
-            if event.mouse.button != Some(MouseButton::Left) {
+        on_pointer_down(move |event| {
+            if event.pointer.button != Some(PointerButton::Left) {
                 return;
             }
             event
@@ -445,8 +445,8 @@ fn WindowView(
             let (start_width, start_height) = size.get();
             interaction.set(WindowInteraction::Resizing {
                 edge,
-                start_mouse_x: event.mouse.viewport_x,
-                start_mouse_y: event.mouse.viewport_y,
+                start_mouse_x: event.pointer.viewport_x,
+                start_mouse_y: event.pointer.viewport_y,
                 start_x,
                 start_y,
                 start_width,
@@ -464,7 +464,7 @@ fn WindowView(
             let position_for_move = position_state.clone();
             let on_move_for_move = on_move.clone();
             let on_resize_for_move = on_resize.clone();
-            let move_listener = event.viewport.add_mouse_move_listener(move |move_event| {
+            let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
                 if let WindowInteraction::Resizing {
                     edge,
                     start_mouse_x,
@@ -475,8 +475,8 @@ fn WindowView(
                     start_height,
                 } = interaction_for_move.get()
                 {
-                    let dx = move_event.mouse.viewport_x - start_mouse_x;
-                    let dy = move_event.mouse.viewport_y - start_mouse_y;
+                    let dx = move_event.pointer.viewport_x - start_mouse_x;
+                    let dy = move_event.pointer.viewport_y - start_mouse_y;
 
                     let mut next_x = start_x;
                     let mut next_y = start_y;
@@ -543,8 +543,8 @@ fn WindowView(
             });
             let interaction_for_up = interaction.clone();
             let viewport_listeners_for_up = viewport_listeners.clone();
-            let up_listener = event.viewport.add_mouse_up_listener_until(move |up_event| {
-                if up_event.mouse.button != Some(MouseButton::Left) {
+            let up_listener = event.viewport.add_pointer_up_listener_until(move |up_event| {
+                if up_event.pointer.button != Some(PointerButton::Left) {
                     return false;
                 }
                 up_event.viewport.remove_listener(move_listener);
@@ -602,7 +602,7 @@ fn WindowView(
                     background: title_bar_background,
                     border_radius: BorderRadius::uniform(Length::px(0.0)).top(theme.radius.lg),
                 }}
-                on_mouse_down={title_down}
+                on_pointer_down={title_down}
             >
                 <Text style={{ color: title_text_color, font_weight: title_text_weight }}>{title}</Text>
             </Element>
@@ -629,7 +629,7 @@ fn WindowView(
                     width: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::EwResize,
                 }}
-                on_mouse_down={resize_left_down}
+                on_pointer_down={resize_left_down}
             />
             <Element
                 style={{
@@ -641,7 +641,7 @@ fn WindowView(
                     width: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::EwResize,
                 }}
-                on_mouse_down={resize_right_down}
+                on_pointer_down={resize_right_down}
             />
             <Element
                 style={{
@@ -653,7 +653,7 @@ fn WindowView(
                     height: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::NsResize,
                 }}
-                on_mouse_down={resize_top_down}
+                on_pointer_down={resize_top_down}
             />
             <Element
                 style={{
@@ -665,7 +665,7 @@ fn WindowView(
                     height: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::NsResize,
                 }}
-                on_mouse_down={resize_bottom_down}
+                on_pointer_down={resize_bottom_down}
             />
             <Element
                 style={{
@@ -677,7 +677,7 @@ fn WindowView(
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NwseResize,
                 }}
-                on_mouse_down={resize_top_left_down}
+                on_pointer_down={resize_top_left_down}
             />
             <Element
                 style={{
@@ -689,7 +689,7 @@ fn WindowView(
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NeswResize,
                 }}
-                on_mouse_down={resize_top_right_down}
+                on_pointer_down={resize_top_right_down}
             />
             <Element
                 style={{
@@ -701,7 +701,7 @@ fn WindowView(
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NeswResize,
                 }}
-                on_mouse_down={resize_bottom_left_down}
+                on_pointer_down={resize_bottom_left_down}
             />
             <Element
                 style={{
@@ -713,7 +713,7 @@ fn WindowView(
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NwseResize,
                 }}
-                on_mouse_down={resize_bottom_right_down}
+                on_pointer_down={resize_bottom_right_down}
             />
         </Element>
     }
