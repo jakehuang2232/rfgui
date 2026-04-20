@@ -28,7 +28,7 @@ use crate::transition::{
 };
 use crate::ui::{
     BlurEvent, ClickEvent, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent, KeyDownEvent,
-    KeyEventData, KeyModifiers, KeyUpEvent, Patch, PointerButtons as UiPointerButtons,
+    KeyEventData, KeyUpEvent, Patch, PointerButtons as UiPointerButtons,
     PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler,
     PropValue, RsxNode, TextInputEvent, ViewportListenerAction, ViewportListenerHandle,
     peek_state_dirty, reconcile, take_state_dirty,
@@ -84,7 +84,7 @@ pub use self::input::{PointerButton, ViewportDebugOptions};
 use self::transitions_tick::TransitionHostAdapter;
 use crate::app::App;
 use crate::platform::{
-    PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent,
+    Modifiers, PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent,
     PlatformPointerEventKind, PlatformRequests, PlatformTextInput, PlatformWheelEvent,
     PointerType,
 };

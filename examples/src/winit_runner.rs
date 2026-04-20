@@ -20,6 +20,7 @@ use rfgui::platform::{
     PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent, PlatformPointerEventKind,
     PlatformServices, PlatformTextInput, PlatformWheelEvent, PointerType,
 };
+use smol_str::SmolStr;
 use rfgui::ui::{next_timer_deadline, run_due_timers};
 use rfgui::view::viewport::{RenderFrameResult, Viewport};
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use winit::event::{
     MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey, PhysicalKey};
+use crate::winit_key_map::{physical_key_to_rf, winit_modifiers_to_rf};
 use winit::window::{Window, WindowId};
 
 /// Run an `App` until the user closes the window.
@@ -134,17 +135,30 @@ impl Runner {
 
 
     fn handle_keyboard(&mut self, event: KeyEvent) {
-        let key_str = key_to_string(&event.logical_key);
-        let code_str = physical_key_to_string(&event.physical_key);
+        // Snapshot ingest time first — winit does not carry a hardware event
+        // timestamp, so we record the earliest moment the runner observes the
+        // event. Taken before any decode work so queued events keep ordering.
+        let timestamp = rfgui::time::Instant::now();
         let pressed = matches!(event.state, ElementState::Pressed);
-        if let Some(viewport) = self.viewport.as_mut() {
-            viewport.set_key_pressed(key_str.clone(), pressed);
-        }
+        let rf_key = physical_key_to_rf(&event.physical_key);
+        let characters: Option<SmolStr> = event
+            .text
+            .as_ref()
+            .filter(|t| !t.is_empty())
+            .map(|t| SmolStr::new(t.as_str()));
+        let modifiers = self
+            .viewport
+            .as_ref()
+            .map(|v| v.modifiers())
+            .unwrap_or_default();
         let platform_event = PlatformKeyEvent {
-            key: key_str,
-            code: code_str,
+            key: rf_key,
+            characters,
+            modifiers,
             repeat: event.repeat,
+            is_composing: self.ime_composing,
             pressed,
+            timestamp,
         };
         let app_event = AppEvent::Key(platform_event.clone());
         if let Some(viewport) = self.viewport.as_mut() {
@@ -548,6 +562,11 @@ impl ApplicationHandler for Runner {
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(mods) => {
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.set_modifiers(winit_modifiers_to_rf(mods.state()));
+                }
+            }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
@@ -666,62 +685,6 @@ impl ApplicationHandler for Runner {
     }
 }
 
-/// Serialize a winit logical key into the canonical string used by
-/// `PlatformKeyEvent::key`. Named keys map to their DOM-style names
-/// ("Enter", "ArrowLeft", "Backspace", …); character keys pass through as
-/// their text.
-fn key_to_string(key: &Key) -> String {
-    match key {
-        Key::Character(c) => c.to_string(),
-        Key::Named(named) => named_key_to_string(*named).to_string(),
-        Key::Unidentified(_) => String::from("Unidentified"),
-        Key::Dead(_) => String::from("Dead"),
-    }
-}
-
-fn named_key_to_string(key: NamedKey) -> &'static str {
-    match key {
-        NamedKey::Enter => "Enter",
-        NamedKey::Tab => "Tab",
-        NamedKey::Space => " ",
-        NamedKey::Backspace => "Backspace",
-        NamedKey::Delete => "Delete",
-        NamedKey::Escape => "Escape",
-        NamedKey::ArrowLeft => "ArrowLeft",
-        NamedKey::ArrowRight => "ArrowRight",
-        NamedKey::ArrowUp => "ArrowUp",
-        NamedKey::ArrowDown => "ArrowDown",
-        NamedKey::Home => "Home",
-        NamedKey::End => "End",
-        NamedKey::PageUp => "PageUp",
-        NamedKey::PageDown => "PageDown",
-        NamedKey::Shift => "Shift",
-        NamedKey::Control => "Control",
-        NamedKey::Alt => "Alt",
-        NamedKey::Super => "Meta",
-        NamedKey::CapsLock => "CapsLock",
-        NamedKey::F1 => "F1",
-        NamedKey::F2 => "F2",
-        NamedKey::F3 => "F3",
-        NamedKey::F4 => "F4",
-        NamedKey::F5 => "F5",
-        NamedKey::F6 => "F6",
-        NamedKey::F7 => "F7",
-        NamedKey::F8 => "F8",
-        NamedKey::F9 => "F9",
-        NamedKey::F10 => "F10",
-        NamedKey::F11 => "F11",
-        NamedKey::F12 => "F12",
-        _ => "Unidentified",
-    }
-}
-
-fn physical_key_to_string(key: &PhysicalKey) -> String {
-    match key {
-        PhysicalKey::Code(code) => format!("{code:?}"),
-        PhysicalKey::Unidentified(_) => String::from("Unidentified"),
-    }
-}
 
 /// Toggle the macOS native window drop-shadow.
 ///
@@ -759,10 +722,7 @@ fn should_dispatch_text(viewport: &Viewport, text: &str) -> bool {
     if ch.is_control() {
         return false;
     }
-    let has_alt = viewport.is_key_pressed("Alt");
-    let has_ctrl = viewport.is_key_pressed("Control");
-    let has_meta = viewport.is_key_pressed("Meta") || viewport.is_key_pressed("Super");
-    !(has_alt || has_ctrl || has_meta)
+    !viewport.modifiers().any()
 }
 
 /// Map winit's `DeviceEvent::Button` numeric code onto the platform enum

@@ -144,19 +144,19 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
     let pseudo_key_down = {
         let open_binding = open_binding.clone();
         KeyDownHandlerProp::new(move |event| {
-            let key = event.key.key.as_str();
-            let code = event.key.code.as_str();
-            if key_matches(key, code, "Escape") {
+            use rfgui::platform::Key;
+            let key = event.key.key;
+            if key == Key::Escape {
                 event.meta.viewport().set_focus(None);
                 event.meta.stop_propagation();
                 return;
             }
-            if key_matches(key, code, "Enter") {
+            if key == Key::Enter || key == Key::NumberPadEnter {
                 open_binding.set(!open_binding.get());
                 event.meta.stop_propagation();
                 return;
             }
-            if key_matches(key, code, "Tab") {
+            if key == Key::Tab {
                 open_binding.set(false);
             }
         })
@@ -391,8 +391,3 @@ where
     panic!("Select prop `to_value` is required when ValueType is not String");
 }
 
-fn key_matches(key: &str, code: &str, token: &str) -> bool {
-    key.eq_ignore_ascii_case(token)
-        || key == format!("Named({token})")
-        || code == format!("Code({token})")
-}

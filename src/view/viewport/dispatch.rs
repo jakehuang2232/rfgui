@@ -457,18 +457,13 @@ impl Viewport {
         best_match.map(|(root_index, handler_id, _)| (root_index, handler_id))
     }
 
-    pub fn dispatch_key_down_event(&mut self, key: String, code: String, repeat: bool) -> bool {
+    pub fn dispatch_key_down_event(&mut self, data: KeyEventData) -> bool {
         let Some(target_id) = self.focused_node_id() else {
             return false;
         };
         let mut event = KeyDownEvent {
             meta: EventMeta::new(target_id),
-            key: KeyEventData {
-                key,
-                code,
-                repeat,
-                modifiers: self.current_key_modifiers(),
-            },
+            key: data,
         };
         let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
@@ -495,18 +490,13 @@ impl Viewport {
         handled
     }
 
-    pub fn dispatch_key_up_event(&mut self, key: String, code: String, repeat: bool) -> bool {
+    pub fn dispatch_key_up_event(&mut self, data: KeyEventData) -> bool {
         let Some(target_id) = self.focused_node_id() else {
             return false;
         };
         let mut event = KeyUpEvent {
             meta: EventMeta::new(target_id),
-            key: KeyEventData {
-                key,
-                code,
-                repeat,
-                modifiers: self.current_key_modifiers(),
-            },
+            key: data,
         };
         let mut roots = std::mem::take(&mut self.scene.ui_roots);
         let mut handled = false;
@@ -699,10 +689,18 @@ impl Viewport {
     }
 
     pub fn dispatch_platform_key_event(&mut self, event: &PlatformKeyEvent) -> bool {
+        let data = KeyEventData {
+            key: event.key,
+            characters: event.characters.clone(),
+            modifiers: event.modifiers,
+            repeat: event.repeat,
+            is_composing: event.is_composing,
+            timestamp: event.timestamp,
+        };
         if event.pressed {
-            self.dispatch_key_down_event(event.key.clone(), event.code.clone(), event.repeat)
+            self.dispatch_key_down_event(data)
         } else {
-            self.dispatch_key_up_event(event.key.clone(), event.code.clone(), event.repeat)
+            self.dispatch_key_up_event(data)
         }
     }
 
@@ -740,25 +738,19 @@ impl Viewport {
         None
     }
 
-    fn current_key_modifiers(&self) -> KeyModifiers {
-        KeyModifiers {
-            alt: self.is_key_pressed("Named(Alt)")
-                || self.is_key_pressed("Named(AltGraph)")
-                || self.is_key_pressed("Code(AltLeft)")
-                || self.is_key_pressed("Code(AltRight)"),
-            ctrl: self.is_key_pressed("Named(Control)")
-                || self.is_key_pressed("Code(ControlLeft)")
-                || self.is_key_pressed("Code(ControlRight)"),
-            shift: self.is_key_pressed("Named(Shift)")
-                || self.is_key_pressed("Code(ShiftLeft)")
-                || self.is_key_pressed("Code(ShiftRight)"),
-            meta: self.is_key_pressed("Named(Super)")
-                || self.is_key_pressed("Named(Meta)")
-                || self.is_key_pressed("Code(SuperLeft)")
-                || self.is_key_pressed("Code(SuperRight)")
-                || self.is_key_pressed("Code(MetaLeft)")
-                || self.is_key_pressed("Code(MetaRight)"),
-        }
+    fn current_key_modifiers(&self) -> Modifiers {
+        self.input_state.modifiers
+    }
+
+    /// Update the live modifier state. Backends call this on
+    /// `WindowEvent::ModifiersChanged` (winit) or `keydown`/`keyup` (web)
+    /// so pointer and key events can be tagged with the current set.
+    pub fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.input_state.modifiers = modifiers;
+    }
+
+    pub fn modifiers(&self) -> Modifiers {
+        self.input_state.modifiers
     }
 
     pub(super) fn sync_focus_dispatch(&mut self) {

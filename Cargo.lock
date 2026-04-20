@@ -317,6 +317,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "borsh"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfd1e3f8955a5d7de9fab72fc8373fade9fb8a703968cb200ae3dc6cf08e185a"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+]
+
+[[package]]
 name = "built"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -803,6 +813,7 @@ dependencies = [
  "rfgui",
  "rfgui-components",
  "rlsf",
+ "smol_str 0.3.6",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -2475,6 +2486,7 @@ name = "rfgui"
 version = "0.1.0-alpha.5"
 dependencies = [
  "arboard",
+ "bitflags 2.11.0",
  "bytemuck",
  "cocoa",
  "cosmic-text",
@@ -2488,6 +2500,7 @@ dependencies = [
  "resvg",
  "rfgui-rsx",
  "rustc-hash 2.1.2",
+ "smol_str 0.3.6",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -2809,6 +2822,10 @@ name = "smol_str"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4aaa7368fcf4852a4c2dd92df0cace6a71f2091ca0a23391ce7f3a31833f1523"
+dependencies = [
+ "borsh",
+ "serde_core",
+]
 
 [[package]]
 name = "spirv"
