@@ -171,6 +171,13 @@ pub struct TextArea {
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<LayoutPlacement>,
     source_text_range: Option<Range<usize>>,
+    // 軌 A #7: per-prop explicit-tracking flags. See Text for the
+    // cascade semantics. TextArea's setter surface is narrower
+    // (no font_weight / text_wrap), so only 4 flags.
+    font_family_explicit: bool,
+    font_size_explicit: bool,
+    color_explicit: bool,
+    cursor_explicit: bool,
 }
 
 thread_local! {
@@ -203,15 +210,6 @@ fn return_pooled_glyph_buffer(buffer: GlyphBuffer) {
 struct VisualLine {
     start_char: usize,
     end_char: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TextAreaCursorSnapshot {
-    cursor_char: usize,
-    selection_anchor_char: Option<usize>,
-    selection_focus_char: Option<usize>,
-    scroll_y: f32,
-    is_focused: bool,
 }
 
 impl TextArea {
@@ -319,6 +317,10 @@ impl TextArea {
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
             source_text_range: None,
+            font_family_explicit: false,
+            font_size_explicit: false,
+            color_explicit: false,
+            cursor_explicit: false,
         };
         text_area.set_text(content);
         text_area
@@ -452,30 +454,6 @@ impl TextArea {
         self.read_only = read_only;
     }
 
-    fn cursor_snapshot(&self) -> TextAreaCursorSnapshot {
-        TextAreaCursorSnapshot {
-            cursor_char: self.cursor_char,
-            selection_anchor_char: self.selection_anchor_char,
-            selection_focus_char: self.selection_focus_char,
-            scroll_y: self.scroll_y,
-            is_focused: self.is_focused,
-        }
-    }
-
-    fn apply_cursor_snapshot(&mut self, snapshot: TextAreaCursorSnapshot) {
-        self.cursor_char = snapshot.cursor_char.min(self.content.chars().count());
-        self.selection_anchor_char = snapshot
-            .selection_anchor_char
-            .map(|idx| idx.min(self.content.chars().count()));
-        self.selection_focus_char = snapshot
-            .selection_focus_char
-            .map(|idx| idx.min(self.content.chars().count()));
-        self.scroll_y = snapshot.scroll_y.clamp(0.0, self.max_scroll_y());
-        self.is_focused = snapshot.is_focused;
-        self.cached_ime_cursor_rect = None;
-        self.reset_caret_blink();
-    }
-
     pub fn bind_text(&mut self, binding: Binding<String>) {
         self.text_binding = Some(binding);
         self.sync_bound_text();
@@ -519,6 +497,42 @@ impl TextArea {
     {
         self.on_render_handler = Some(crate::ui::TextAreaRenderHandlerProp::new(handler));
         self.mark_projection_tree_dirty();
+    }
+
+    /// Track 1 #10: incremental replace of the on_change handler list
+    /// with a single prop-driven handler. Wipes existing entries so
+    /// user-authored `on_change={...}` is not duplicated across
+    /// renders (reconciler emits one Update per prop change).
+    pub(crate) fn replace_on_change_handler(
+        &mut self,
+        handler: crate::ui::TextChangeHandlerProp,
+    ) {
+        self.on_change_handlers.clear();
+        self.on_change_handlers.push(handler);
+    }
+
+    pub(crate) fn replace_on_focus_handler(
+        &mut self,
+        handler: crate::ui::TextAreaFocusHandlerProp,
+    ) {
+        self.on_focus_handlers.clear();
+        self.on_focus_handlers.push(handler);
+    }
+
+    pub(crate) fn replace_on_render_handler(
+        &mut self,
+        handler: crate::ui::TextAreaRenderHandlerProp,
+    ) {
+        self.on_render_handler = Some(handler);
+        self.mark_projection_tree_dirty();
+    }
+
+    pub(crate) fn replace_on_blur_handler(
+        &mut self,
+        handler: crate::ui::BlurHandlerProp,
+    ) {
+        // Forward to inner Element's blur handler list replacement.
+        self.element.replace_on_blur_handler(handler);
     }
 
     fn mark_projection_tree_dirty(&mut self) {
@@ -617,6 +631,7 @@ impl TextArea {
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
+        self.color_explicit = true;
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
     }
 
@@ -647,6 +662,7 @@ impl TextArea {
             self.mark_measure_dirty();
             self.invalidate_glyph_layout();
         }
+        self.font_family_explicit = true;
     }
 
     pub fn set_fonts<I, S>(&mut self, font_families: I)
@@ -665,6 +681,7 @@ impl TextArea {
             self.mark_measure_dirty();
             self.invalidate_glyph_layout();
         }
+        self.font_family_explicit = true;
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
@@ -673,6 +690,7 @@ impl TextArea {
             self.mark_measure_dirty();
             self.invalidate_glyph_layout();
         }
+        self.font_size_explicit = true;
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
@@ -700,6 +718,91 @@ impl TextArea {
         let mut style = Style::new();
         style.set_cursor(cursor);
         self.element.apply_style(style);
+        self.cursor_explicit = true;
+    }
+
+    /// Track 1 #10 (正規): incremental replay of cold-path `style`
+    /// fan-out on `<TextArea>`. Mirrors the style-handling block in
+    /// `convert_text_area_element` (width/height/color/selection
+    /// background) and resets explicit flags so removed declarations
+    /// re-pick the ancestor cascade.
+    pub(crate) fn apply_style_incremental(
+        &mut self,
+        style: Option<&Style>,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) {
+        use crate::style::{ParsedValue, PropertyId};
+
+        // Track 1 #10: do NOT pre-reset explicit flags (mirror the
+        // `Text::apply_style_incremental` fix). Values sourced from
+        // non-style props must survive a style-prop re-apply.
+
+        let mut style_width: Option<Length> = None;
+        let mut style_height: Option<Length> = None;
+        if let Some(style) = style {
+            if let Some(value) = style.get(PropertyId::Width) {
+                style_width = match value {
+                    ParsedValue::Length(l) => Some(*l),
+                    _ => None,
+                };
+            }
+            if let Some(value) = style.get(PropertyId::Height) {
+                style_height = match value {
+                    ParsedValue::Length(l) => Some(*l),
+                    _ => None,
+                };
+            }
+            if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+                self.set_color(color.clone());
+            }
+            if let Some(selection) = style.selection()
+                && let Some(background) = selection.background_color()
+            {
+                self.set_selection_background_color(background.clone());
+            }
+        }
+
+        self.apply_inherited(inherited);
+        self.set_style_width(style_width);
+        self.set_style_height(style_height);
+    }
+
+    /// 軌 A #7: apply ancestor-derived inherited cascade to props the
+    /// author didn't set explicitly. Returns `true` if anything
+    /// changed. See `Text::apply_inherited` for the full contract.
+    pub(crate) fn apply_inherited(
+        &mut self,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> bool {
+        let mut changed = false;
+        if !self.font_family_explicit && !inherited.font_families.is_empty()
+            && self.font_families != inherited.font_families
+        {
+            self.font_families = inherited.font_families.clone();
+            self.mark_measure_dirty();
+            self.invalidate_glyph_layout();
+            changed = true;
+        }
+        if !self.font_size_explicit && let Some(fs) = inherited.font_size
+            && (self.font_size - fs).abs() > f32::EPSILON
+        {
+            self.font_size = fs;
+            self.mark_measure_dirty();
+            self.invalidate_glyph_layout();
+            changed = true;
+        }
+        if !self.color_explicit && let Some(color) = &inherited.color {
+            self.color = Box::new(color.clone());
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
+            changed = true;
+        }
+        if !self.cursor_explicit && let Some(cursor) = inherited.cursor {
+            let mut style = Style::new();
+            style.set_cursor(cursor);
+            self.element.apply_style(style);
+            changed = true;
+        }
+        changed
     }
 
     fn sync_size_from_style(
@@ -2746,17 +2849,7 @@ impl ElementTrait for TextArea {
         self
     }
 
-    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        Some(Box::new(self.cursor_snapshot()))
-    }
-
-    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
-        let Some(snapshot) = snapshot.downcast_ref::<TextAreaCursorSnapshot>() else {
-            return false;
-        };
-        self.apply_cursor_snapshot(*snapshot);
-        true
-    }
+    // Phase B: snapshot_state / restore_state removed (see ElementTrait def).
 
     fn promotion_node_info(&self) -> PromotionNodeInfo {
         PromotionNodeInfo {

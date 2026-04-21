@@ -768,6 +768,12 @@ impl Element {
         self.mark_paint_dirty();
     }
 
+    /// Crate-visible read for the incremental-commit tests (M4 #7).
+    #[cfg(test)]
+    pub(crate) fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
     pub fn set_padding(&mut self, value: f32) {
         let value = value.max(0.0);
         self.padding = EdgeInsets {
@@ -834,6 +840,30 @@ impl Element {
         let base = std::mem::take(&mut self.parsed_style);
         self.parsed_style = base + style;
         self.recompute_style();
+    }
+
+    /// Non-additive counterpart of [`apply_style`]: swaps `parsed_style`
+    /// outright with `style`. Declarations present before but absent in
+    /// `style` are dropped (including `hover` / `selection` sub-styles
+    /// if the incoming `style` does not set them).
+    ///
+    /// `recompute_style` snapshots the previous `computed_style` *before*
+    /// rebuilding, so transition collection keeps the correct old→new
+    /// diff. Layout-transition baselines and hover state flags live on
+    /// `Element` (not `parsed_style`) and are preserved.
+    pub fn replace_style(&mut self, style: Style) {
+        self.parsed_style = style;
+        self.recompute_style();
+    }
+
+    /// Crate-visible read of the authored declaration map.
+    ///
+    /// Originally added for the M4 #1 incremental-commit tests in
+    /// `view::viewport`; M6 cascade reconstruction reads it at
+    /// production time from `renderer_adapter::inherited_text_style_at_parent`
+    /// to replay each ancestor's text-cascading props.
+    pub(crate) fn parsed_style(&self) -> &Style {
+        &self.parsed_style
     }
 
     pub fn set_intrinsic_size_as_percent_base(&mut self, enabled: bool) {

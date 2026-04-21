@@ -643,6 +643,16 @@ impl Element {
         self.event_handlers.get_or_insert_with(Default::default).blur.push(Box::new(handler));
     }
 
+    /// Track 1 #10: incremental swap of the blur handler list.
+    /// Clears the existing list so a re-emitted user `on_blur={...}`
+    /// prop doesn't accumulate duplicate handlers across renders.
+    pub(crate) fn replace_on_blur_handler(&mut self, handler: crate::ui::BlurHandlerProp) {
+        eprintln!("[element] replace_on_blur_handler called");
+        let list = &mut self.event_handlers.get_or_insert_with(Default::default).blur;
+        list.clear();
+        list.push(Box::new(move |event, _control| handler.call(event)));
+    }
+
     pub fn on_ime_commit<F>(&mut self, handler: F)
     where
         F: FnMut(&mut crate::ui::ImeCommitEvent, &mut ViewportControl<'_>) + 'static,
@@ -751,6 +761,116 @@ impl Element {
             .get_or_insert_with(Default::default)
             .paste
             .push(Box::new(handler));
+    }
+
+    /// Clear the per-event handler list matching a canonical RSX prop
+    /// name (`on_pointer_down`, `on_click`, …). Returns `true` if the
+    /// prop name maps to a known event bucket (even if that bucket was
+    /// already empty); `false` if the prop name isn't an event handler
+    /// prop.
+    ///
+    /// M4 #4 uses this to make `fiber_work` incremental updates safe:
+    /// the cold convert path calls `on_*` setters which *push* into the
+    /// Vec, so an incremental re-convert without a prior clear would
+    /// duplicate handlers. Now the fiber_work dispatch path calls
+    /// `clear_rsx_event_handler` then re-assigns, yielding replace
+    /// semantics (RSX authors one handler per event per element).
+    pub fn clear_rsx_event_handler(&mut self, prop: &str) -> bool {
+        let Some(handlers) = self.event_handlers.as_deref_mut() else {
+            // No handlers allocated yet — still return true for
+            // recognised prop names so the caller can treat "cleared"
+            // and "never installed" uniformly.
+            return matches!(
+                prop,
+                "on_pointer_down"
+                    | "on_pointer_up"
+                    | "on_pointer_move"
+                    | "on_pointer_enter"
+                    | "on_pointer_leave"
+                    | "on_click"
+                    | "on_context_menu"
+                    | "on_wheel"
+                    | "on_key_down"
+                    | "on_key_up"
+                    | "on_focus"
+                    | "on_blur"
+                    | "on_ime_commit"
+                    | "on_ime_enabled"
+                    | "on_ime_disabled"
+                    | "on_drag_start"
+                    | "on_drag_over"
+                    | "on_drag_leave"
+                    | "on_drop"
+                    | "on_drag_end"
+                    | "on_copy"
+                    | "on_cut"
+                    | "on_paste"
+            );
+        };
+        match prop {
+            "on_pointer_down" => handlers.pointer_down.clear(),
+            "on_pointer_up" => handlers.pointer_up.clear(),
+            "on_pointer_move" => handlers.pointer_move.clear(),
+            "on_pointer_enter" => handlers.pointer_enter.clear(),
+            "on_pointer_leave" => handlers.pointer_leave.clear(),
+            "on_click" => handlers.click.clear(),
+            "on_context_menu" => handlers.context_menu.clear(),
+            "on_wheel" => handlers.wheel.clear(),
+            "on_key_down" => handlers.key_down.clear(),
+            "on_key_up" => handlers.key_up.clear(),
+            "on_focus" => handlers.focus.clear(),
+            "on_blur" => handlers.blur.clear(),
+            "on_ime_commit" => handlers.ime_commit.clear(),
+            "on_ime_enabled" => handlers.ime_enabled.clear(),
+            "on_ime_disabled" => handlers.ime_disabled.clear(),
+            "on_drag_start" => handlers.drag_start.clear(),
+            "on_drag_over" => handlers.drag_over.clear(),
+            "on_drag_leave" => handlers.drag_leave.clear(),
+            "on_drop" => handlers.drop.clear(),
+            "on_drag_end" => handlers.drag_end.clear(),
+            "on_copy" => handlers.copy.clear(),
+            "on_cut" => handlers.cut.clear(),
+            "on_paste" => handlers.paste.clear(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Test helper: count handlers registered for a given RSX event
+    /// prop. Returns `0` for unknown names and when no handlers have
+    /// been allocated. Used by M4 #4 tests to assert the incremental
+    /// replace semantics (len stays 1, not N) across re-renders.
+    #[cfg(test)]
+    pub(crate) fn rsx_event_handler_count(&self, prop: &str) -> usize {
+        let Some(handlers) = self.event_handlers.as_deref() else {
+            return 0;
+        };
+        match prop {
+            "on_pointer_down" => handlers.pointer_down.len(),
+            "on_pointer_up" => handlers.pointer_up.len(),
+            "on_pointer_move" => handlers.pointer_move.len(),
+            "on_pointer_enter" => handlers.pointer_enter.len(),
+            "on_pointer_leave" => handlers.pointer_leave.len(),
+            "on_click" => handlers.click.len(),
+            "on_context_menu" => handlers.context_menu.len(),
+            "on_wheel" => handlers.wheel.len(),
+            "on_key_down" => handlers.key_down.len(),
+            "on_key_up" => handlers.key_up.len(),
+            "on_focus" => handlers.focus.len(),
+            "on_blur" => handlers.blur.len(),
+            "on_ime_commit" => handlers.ime_commit.len(),
+            "on_ime_enabled" => handlers.ime_enabled.len(),
+            "on_ime_disabled" => handlers.ime_disabled.len(),
+            "on_drag_start" => handlers.drag_start.len(),
+            "on_drag_over" => handlers.drag_over.len(),
+            "on_drag_leave" => handlers.drag_leave.len(),
+            "on_drop" => handlers.drop.len(),
+            "on_drag_end" => handlers.drag_end.len(),
+            "on_copy" => handlers.copy.len(),
+            "on_cut" => handlers.cut.len(),
+            "on_paste" => handlers.paste.len(),
+            _ => 0,
+        }
     }
 
     pub fn stable_id(&self) -> u64 {

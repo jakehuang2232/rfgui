@@ -1,6 +1,7 @@
 //! Public UI authoring APIs for RSX components, events, state, and rendering.
 
 mod component;
+mod context;
 mod event;
 mod node_id;
 mod reconciler;
@@ -11,6 +12,7 @@ mod state;
 mod use_viewport;
 
 pub use component::*;
+pub use context::{provide_context, use_context, use_context_expect};
 pub use event::*;
 pub use node_id::{EventTarget, NodeId, Rect};
 pub use reconciler::*;

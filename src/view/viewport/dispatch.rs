@@ -1330,6 +1330,10 @@ impl Viewport {
         target_id: NodeId,
         related: Option<NodeId>,
     ) -> bool {
+        eprintln!(
+            "[dispatch] blur target_id={:?} related={:?}",
+            target_id, related
+        );
         let reason = self.input_state.pending_focus_reason;
         let mut meta = EventMeta::new(target_id);
         meta.set_related_target(related.map(crate::ui::EventTarget::bare));
@@ -1357,6 +1361,7 @@ impl Viewport {
         self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
+        eprintln!("[dispatch] blur handled={}", handled);
         if handled {
             self.request_redraw();
         }

@@ -181,20 +181,24 @@ pub fn rsx_to_elements_lossy_with_context(
 }
 
 #[derive(Clone, Debug, Default)]
-struct InheritedTextStyle {
-    font_families: Vec<String>,
-    font_size: Option<f32>,
-    root_font_size: f32,
-    viewport_width: f32,
-    viewport_height: f32,
-    font_weight: Option<u16>,
-    color: Option<Color>,
-    cursor: Option<Cursor>,
-    text_wrap: Option<TextWrap>,
+pub(crate) struct InheritedTextStyle {
+    pub(crate) font_families: Vec<String>,
+    pub(crate) font_size: Option<f32>,
+    pub(crate) root_font_size: f32,
+    pub(crate) viewport_width: f32,
+    pub(crate) viewport_height: f32,
+    pub(crate) font_weight: Option<u16>,
+    pub(crate) color: Option<Color>,
+    pub(crate) cursor: Option<Cursor>,
+    pub(crate) text_wrap: Option<TextWrap>,
 }
 
 impl InheritedTextStyle {
-    fn from_viewport_style(style: &Style, viewport_width: f32, viewport_height: f32) -> Self {
+    pub(crate) fn from_viewport_style(
+        style: &Style,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Self {
         let default_root_font_size = 16.0;
         let root_font_size = resolve_font_size_from_style(
             style,
@@ -232,6 +236,41 @@ impl InheritedTextStyle {
         }
         inherited
     }
+
+    /// Mutate `self` with the text-cascading declarations authored in
+    /// an Element's `style` prop. Mirrors the merge previously inlined
+    /// in `build_container_element_shell`; pulled out so the
+    /// incremental-commit path can replay the same cascade walking
+    /// the arena parent chain (M6).
+    ///
+    /// Keep synchronised with `from_viewport_style` above — those two
+    /// are the only places the cascade's property list is enumerated.
+    pub(crate) fn merge_style(&mut self, style: &Style) {
+        if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
+            self.font_families = font_family.as_slice().to_vec();
+        }
+        if let Some(font_size) = resolve_font_size_from_style(
+            style,
+            self.font_size.unwrap_or(self.root_font_size),
+            self.root_font_size,
+            self.viewport_width,
+            self.viewport_height,
+        ) {
+            self.font_size = Some(font_size);
+        }
+        if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
+            self.font_weight = Some(font_weight.value());
+        }
+        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+            self.color = Some(color.to_color());
+        }
+        if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
+            self.cursor = Some(*cursor);
+        }
+        if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
+            self.text_wrap = Some(*text_wrap);
+        }
+    }
 }
 
 pub struct ViewportRenderBackend<'a> {
@@ -248,7 +287,7 @@ struct RenderedGlobalKeyEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct GlobalNodePath {
+pub(crate) struct GlobalNodePath {
     key: GlobalKey,
     local_path: Vec<u64>,
 }
@@ -348,6 +387,15 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
         match patch {
             Patch::ReplaceRoot(node) => {
                 *root_node = node.clone();
+            }
+            Patch::ReplaceAllRoots(_) | Patch::ReorderRoots(_) => {
+                // Emitted only by `reconcile_multi`; the legacy
+                // UiRuntime `apply_patches` path is single-root and
+                // never sees them.
+                return Err(
+                    "multi-root patches are not supported in legacy UiRuntime apply_patch path"
+                        .to_string(),
+                );
             }
             Patch::ReplaceNode { path, node } => {
                 let target = Self::node_mut_by_path(root_node, path)?;
@@ -633,21 +681,11 @@ fn convert_node(
                 stable_node_id_from_parts("TextNode", path, global_path.as_ref()),
                 text.content.clone(),
             );
-            if !inherited_text_style.font_families.is_empty() {
-                text_node.set_fonts(inherited_text_style.font_families.clone());
-            }
-            if let Some(font_size) = inherited_text_style.font_size {
-                text_node.set_font_size(font_size);
-            }
-            if let Some(font_weight) = inherited_text_style.font_weight {
-                text_node.set_font_weight(font_weight);
-            }
-            if let Some(color) = inherited_text_style.color {
-                text_node.set_color(color);
-            }
-            if let Some(cursor) = inherited_text_style.cursor {
-                text_node.set_cursor(cursor);
-            }
+            // 軌 A #7: a bare text leaf has no explicit style. Route
+            // all inherited props through `apply_inherited` so the
+            // per-prop explicit flags stay `false` — future ancestor
+            // style changes will re-cascade into this node.
+            text_node.apply_inherited(inherited_text_style);
             Ok(Box::new(text_node))
         }
         RsxNode::Fragment(_) => Err("fragment must be flattened before conversion".to_string()),
@@ -724,32 +762,7 @@ fn build_container_element_shell(
     for (key, value) in node.props.iter() {
         if *key == "style" {
             let style = as_element_style(value, key)?;
-            if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
-                child_inherited_text_style.font_families = font_family.as_slice().to_vec();
-            }
-            if let Some(font_size) = resolve_font_size_from_style(
-                &style,
-                child_inherited_text_style
-                    .font_size
-                    .unwrap_or(child_inherited_text_style.root_font_size),
-                child_inherited_text_style.root_font_size,
-                child_inherited_text_style.viewport_width,
-                child_inherited_text_style.viewport_height,
-            ) {
-                child_inherited_text_style.font_size = Some(font_size);
-            }
-            if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
-                child_inherited_text_style.font_weight = Some(font_weight.value());
-            }
-            if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-                child_inherited_text_style.color = Some(color.to_color());
-            }
-            if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
-                child_inherited_text_style.cursor = Some(*cursor);
-            }
-            if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
-                child_inherited_text_style.text_wrap = Some(*text_wrap);
-            }
+            child_inherited_text_style.merge_style(&style);
             user_style = user_style + style;
             has_user_style = true;
         }
@@ -777,104 +790,20 @@ fn build_container_element_shell(
             "padding_bottom" => element.set_padding_bottom(as_f32(value, key)?),
             "opacity" => element.set_opacity(as_f32(value, key)?),
             "style" => {}
-            "on_pointer_down" => {
-                let handler = as_mouse_down_handler(value, key)?;
-                element.on_pointer_down(move |event, _control| handler.call(event));
-            }
-            "on_pointer_up" => {
-                let handler = as_mouse_up_handler(value, key)?;
-                element.on_pointer_up(move |event, _control| handler.call(event));
-            }
-            "on_pointer_move" => {
-                let handler = as_mouse_move_handler(value, key)?;
-                element.on_pointer_move(move |event, _control| handler.call(event));
-            }
-            "on_pointer_enter" => {
-                let handler = as_mouse_enter_handler(value, key)?;
-                element.on_pointer_enter(move |event| handler.call(event));
-            }
-            "on_pointer_leave" => {
-                let handler = as_mouse_leave_handler(value, key)?;
-                element.on_pointer_leave(move |event| handler.call(event));
-            }
-            "on_click" => {
-                let handler = as_click_handler(value, key)?;
-                element.on_click(move |event, _control| handler.call(event));
-            }
-            "on_context_menu" => {
-                let handler = as_context_menu_handler(value, key)?;
-                element.on_context_menu(move |event, _control| handler.call(event));
-            }
-            "on_wheel" => {
-                let handler = as_wheel_handler(value, key)?;
-                element.on_wheel(move |event, _control| handler.call(event));
-            }
-            "on_key_down" => {
-                let handler = as_key_down_handler(value, key)?;
-                element.on_key_down(move |event, _control| handler.call(event));
-            }
-            "on_key_up" => {
-                let handler = as_key_up_handler(value, key)?;
-                element.on_key_up(move |event, _control| handler.call(event));
-            }
-            "on_focus" => {
-                let handler = as_focus_handler(value, key)?;
-                element.on_focus(move |event, _control| handler.call(event));
-            }
-            "on_blur" => {
-                let handler = as_blur_handler(value, key)?;
-                element.on_blur(move |event, _control| handler.call(event));
-            }
-            "on_ime_commit" => {
-                let handler = as_ime_commit_handler(value, key)?;
-                element.on_ime_commit(move |event, _control| handler.call(event));
-            }
-            "on_ime_enabled" => {
-                let handler = as_ime_enabled_handler(value, key)?;
-                element.on_ime_enabled(move |event, _control| handler.call(event));
-            }
-            "on_ime_disabled" => {
-                let handler = as_ime_disabled_handler(value, key)?;
-                element.on_ime_disabled(move |event, _control| handler.call(event));
-            }
-            "on_drag_start" => {
-                let handler = as_drag_start_handler(value, key)?;
-                element.on_drag_start(move |event, _control| handler.call(event));
-            }
-            "on_drag_over" => {
-                let handler = as_drag_over_handler(value, key)?;
-                element.on_drag_over(move |event, _control| handler.call(event));
-            }
-            "on_drag_leave" => {
-                let handler = as_drag_leave_handler(value, key)?;
-                element.on_drag_leave(move |event, _control| handler.call(event));
-            }
-            "on_drop" => {
-                let handler = as_drop_handler(value, key)?;
-                element.on_drop(move |event, _control| handler.call(event));
-            }
-            "on_drag_end" => {
-                let handler = as_drag_end_handler(value, key)?;
-                element.on_drag_end(move |event, _control| handler.call(event));
-            }
-            "on_copy" => {
-                let handler = as_copy_handler(value, key)?;
-                element.on_copy(move |event, _control| handler.call(event));
-            }
-            "on_cut" => {
-                let handler = as_cut_handler(value, key)?;
-                element.on_cut(move |event, _control| handler.call(event));
-            }
-            "on_paste" => {
-                let handler = as_paste_handler(value, key)?;
-                element.on_paste(move |event, _control| handler.call(event));
-            }
-            _ => {
-                return Err(format!(
-                    "unknown prop `{}` on <{}>",
-                    key,
-                    element_display_name(node)
-                ));
+            other => {
+                // Handler props (23 `on_*` keys) are handled by the
+                // shared dispatcher so `fiber_work` can reuse the same
+                // decode path. Returns Ok(false) iff `other` isn't a
+                // known handler key.
+                if try_assign_event_handler_prop(&mut element, other, value)? {
+                    // handled
+                } else {
+                    return Err(format!(
+                        "unknown prop `{}` on <{}>",
+                        key,
+                        element_display_name(node)
+                    ));
+                }
             }
         }
     }
@@ -987,12 +916,6 @@ fn convert_text_element(
     let mut style: Option<Style> = None;
     let mut width: Option<f32> = None;
     let mut height: Option<f32> = None;
-    let mut has_explicit_font = false;
-    let mut has_explicit_font_size = false;
-    let mut has_explicit_font_weight = false;
-    let mut has_explicit_color = false;
-    let mut has_explicit_cursor = false;
-    let mut has_explicit_text_wrap = false;
 
     for (key, value) in node.props.iter() {
         if *key == "key" {
@@ -1011,7 +934,6 @@ fn convert_text_element(
                     inherited_text_style.viewport_width,
                     inherited_text_style.viewport_height,
                 )?);
-                has_explicit_font_size = true;
             }
             "line_height" => text.set_line_height(as_f32(value, key)?),
             "align" => {
@@ -1019,7 +941,6 @@ fn convert_text_element(
             }
             "font" => {
                 text.set_font(as_string(value, key)?);
-                has_explicit_font = true;
             }
             "opacity" => text.set_opacity(as_f32(value, key)?),
             _ => return Err(format!("unknown prop `{}` on <Text>", key,)),
@@ -1033,56 +954,36 @@ fn convert_text_element(
         if let Some(value) = style.get(PropertyId::Height) {
             height = length_from_parsed_value(value, "Text style.height")?;
         }
-        if !has_explicit_font_size
-            && let Some(font_size) = resolve_font_size_from_style(
-                style,
-                inherited_text_style
-                    .font_size
-                    .unwrap_or(inherited_text_style.root_font_size),
-                inherited_text_style.root_font_size,
-                inherited_text_style.viewport_width,
-                inherited_text_style.viewport_height,
-            )
-        {
+        if let Some(font_size) = resolve_font_size_from_style(
+            style,
+            inherited_text_style
+                .font_size
+                .unwrap_or(inherited_text_style.root_font_size),
+            inherited_text_style.root_font_size,
+            inherited_text_style.viewport_width,
+            inherited_text_style.viewport_height,
+        ) {
             text.set_font_size(font_size);
-            has_explicit_font_size = true;
         }
         if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
             text.set_font_weight(font_weight.value());
-            has_explicit_font_weight = true;
         }
         if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
             text.set_color(color.clone());
-            has_explicit_color = true;
         }
         if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
             text.set_cursor(*cursor);
-            has_explicit_cursor = true;
         }
         if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
             text.set_text_wrap(*text_wrap);
-            has_explicit_text_wrap = true;
         }
     }
 
-    if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
-        text.set_fonts(inherited_text_style.font_families.clone());
-    }
-    if !has_explicit_font_size && let Some(font_size) = inherited_text_style.font_size {
-        text.set_font_size(font_size);
-    }
-    if !has_explicit_font_weight && let Some(font_weight) = inherited_text_style.font_weight {
-        text.set_font_weight(font_weight);
-    }
-    if !has_explicit_color && let Some(color) = inherited_text_style.color {
-        text.set_color(color);
-    }
-    if !has_explicit_cursor && let Some(cursor) = inherited_text_style.cursor {
-        text.set_cursor(cursor);
-    }
-    if !has_explicit_text_wrap && let Some(text_wrap) = inherited_text_style.text_wrap {
-        text.set_text_wrap(text_wrap);
-    }
+    // 軌 A #7: the explicit setters above now flip per-prop flags
+    // on `Text`. `apply_inherited` consults those flags and only
+    // writes props the author didn't author. Replaces the 6-block
+    // `has_explicit_*` fan-out.
+    text.apply_inherited(inherited_text_style);
     if let Some(width) = width {
         text.set_width(width);
     } else {
@@ -1102,7 +1003,10 @@ fn convert_text_element(
     Ok(Box::new(text))
 }
 
-fn length_from_parsed_value(value: &ParsedValue, context: &str) -> Result<Option<f32>, String> {
+pub(crate) fn length_from_parsed_value(
+    value: &ParsedValue,
+    context: &str,
+) -> Result<Option<f32>, String> {
     match value {
         ParsedValue::Length(Length::Px(v)) => Ok(Some(*v)),
         ParsedValue::Length(Length::Zero) => Ok(Some(0.0)),
@@ -1131,7 +1035,7 @@ fn size_length_from_parsed_value(
     }
 }
 
-fn resolve_font_size_from_style(
+pub(crate) fn resolve_font_size_from_style(
     style: &Style,
     parent_font_size: f32,
     root_font_size: f32,
@@ -1205,9 +1109,6 @@ fn convert_text_area_element(
     let mut source_text_start: Option<usize> = None;
     let mut source_text_end: Option<usize> = None;
     let mut projection_nodes: Vec<(std::ops::Range<usize>, Box<dyn ElementTrait>)> = Vec::new();
-    let mut has_explicit_font = false;
-    let mut has_explicit_font_size = false;
-    let mut has_explicit_color = false;
 
     for (key, value) in node.props.iter() {
         if *key == "key" {
@@ -1253,11 +1154,9 @@ fn convert_text_area_element(
                     inherited_text_style.viewport_width,
                     inherited_text_style.viewport_height,
                 )?);
-                has_explicit_font_size = true;
             }
             "font" => {
                 text_area.set_font(as_string(value, key)?);
-                has_explicit_font = true;
             }
             "opacity" => text_area.set_opacity(as_f32(value, key)?),
             "multiline" => text_area.set_multiline(as_bool(value, key)?),
@@ -1288,7 +1187,6 @@ fn convert_text_area_element(
         }
         if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
             text_area.set_color(color.clone());
-            has_explicit_color = true;
         }
         if let Some(selection) = style.selection()
             && let Some(background) = selection.background_color()
@@ -1298,18 +1196,9 @@ fn convert_text_area_element(
     }
 
     text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
-    if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
-        text_area.set_fonts(inherited_text_style.font_families.clone());
-    }
-    if !has_explicit_font_size && let Some(font_size) = inherited_text_style.font_size {
-        text_area.set_font_size(font_size);
-    }
-    if !has_explicit_color && let Some(color) = inherited_text_style.color {
-        text_area.set_color(color);
-    }
-    if let Some(cursor) = inherited_text_style.cursor {
-        text_area.set_cursor(cursor);
-    }
+    // 軌 A #7: explicit setters flip per-prop flags; `apply_inherited`
+    // only writes props the author didn't author.
+    text_area.apply_inherited(inherited_text_style);
     text_area.set_style_width(width);
     text_area.set_style_height(height);
 
@@ -1707,9 +1596,6 @@ fn convert_text_area_element_desc(
     let mut source_text_start: Option<usize> = None;
     let mut source_text_end: Option<usize> = None;
     let mut projection_descs: Vec<(std::ops::Range<usize>, ElementDescriptor)> = Vec::new();
-    let mut has_explicit_font = false;
-    let mut has_explicit_font_size = false;
-    let mut has_explicit_color = false;
 
     for (key, value) in node.props.iter() {
         if *key == "key" {
@@ -1745,11 +1631,9 @@ fn convert_text_area_element_desc(
                     inherited_text_style.viewport_width,
                     inherited_text_style.viewport_height,
                 )?);
-                has_explicit_font_size = true;
             }
             "font" => {
                 text_area.set_font(as_string(value, key)?);
-                has_explicit_font = true;
             }
             "opacity" => text_area.set_opacity(as_f32(value, key)?),
             "multiline" => text_area.set_multiline(as_bool(value, key)?),
@@ -1776,7 +1660,6 @@ fn convert_text_area_element_desc(
         }
         if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
             text_area.set_color(color.clone());
-            has_explicit_color = true;
         }
         if let Some(selection) = style.selection()
             && let Some(background) = selection.background_color()
@@ -1786,18 +1669,9 @@ fn convert_text_area_element_desc(
     }
 
     text_area.set_position(x.unwrap_or(0.0), y.unwrap_or(0.0));
-    if !has_explicit_font && !inherited_text_style.font_families.is_empty() {
-        text_area.set_fonts(inherited_text_style.font_families.clone());
-    }
-    if !has_explicit_font_size && let Some(font_size) = inherited_text_style.font_size {
-        text_area.set_font_size(font_size);
-    }
-    if !has_explicit_color && let Some(color) = inherited_text_style.color {
-        text_area.set_color(color);
-    }
-    if let Some(cursor) = inherited_text_style.cursor {
-        text_area.set_cursor(cursor);
-    }
+    // 軌 A #7: explicit setters flip per-prop flags; `apply_inherited`
+    // only writes props the author didn't author.
+    text_area.apply_inherited(inherited_text_style);
     text_area.set_style_width(width);
     text_area.set_style_height(height);
 
@@ -1879,7 +1753,7 @@ fn convert_text_area_element_desc(
     })
 }
 
-fn convert_image_slot_desc(
+pub(crate) fn convert_image_slot_desc(
     value: &PropValue,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
@@ -2334,7 +2208,7 @@ fn identity_token_from_node_identity(identity: &RsxNodeIdentity, fallback_ordina
     hash
 }
 
-fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
+pub(crate) fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
     match value {
         PropValue::I64(v) => Ok(*v as f32),
         PropValue::F64(v) => Ok(*v as f32),
@@ -2342,7 +2216,7 @@ fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
     }
 }
 
-fn as_font_size_px(
+pub(crate) fn as_font_size_px(
     value: &PropValue,
     key: &str,
     parent_font_size: f32,
@@ -2363,18 +2237,18 @@ fn as_font_size_px(
     }
 }
 
-fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
+pub(crate) fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
     match value {
         PropValue::String(v) => Ok(v.as_str()),
         _ => Err(format!("prop `{key}` expects string value")),
     }
 }
 
-fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
+pub(crate) fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
     Ok(as_string(value, key)?.to_string())
 }
 
-fn as_text_align(value: &PropValue, key: &str) -> Result<crate::TextAlign, String> {
+pub(crate) fn as_text_align(value: &PropValue, key: &str) -> Result<crate::TextAlign, String> {
     match value {
         PropValue::TextAlign(v) => Ok(*v),
         _ => Err(format!("prop `{key}` expects TextAlign value")),
@@ -2413,17 +2287,162 @@ fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
     }
 }
 
-fn as_element_style(value: &PropValue, key: &str) -> Result<Style, String> {
+pub(crate) fn as_element_style(value: &PropValue, key: &str) -> Result<Style, String> {
     ElementStylePropSchema::from_prop_value(value.clone())
         .map(|style| style.to_style())
         .map_err(|_| format!("prop `{key}` expects ElementStylePropSchema value"))
 }
 
-fn as_text_style(value: &PropValue, key: &str) -> Result<Style, String> {
+pub(crate) fn as_text_style(value: &PropValue, key: &str) -> Result<Style, String> {
     TextStylePropSchema::from_prop_value(value.clone())
         .map(|style| style.to_style())
         .map_err(|_| format!("prop `{key}` expects TextStylePropSchema value"))
 }
+
+/// Dispatch a single `on_*` handler prop to the matching `Element`
+/// setter. Returns `Ok(true)` if `key` is one of the 23 RSX handler
+/// prop names and the handler was installed; `Ok(false)` if `key`
+/// isn't a handler prop (caller should continue its own dispatch);
+/// `Err` on decode failure (wrong `PropValue` variant).
+///
+/// Callers:
+/// - cold convert path in this file (replaces the big inline match
+///   arms in `convert_element`)
+/// - `fiber_work::apply_update_to_element` for the M4 #4 incremental
+///   handler path (pairs with `Element::clear_rsx_event_handler` for
+///   replace semantics)
+pub(crate) fn try_assign_event_handler_prop(
+    element: &mut crate::view::base_component::Element,
+    key: &str,
+    value: &PropValue,
+) -> Result<bool, String> {
+    match key {
+        "on_pointer_down" => {
+            let handler = as_mouse_down_handler(value, key)?;
+            element.on_pointer_down(move |event, _control| handler.call(event));
+        }
+        "on_pointer_up" => {
+            let handler = as_mouse_up_handler(value, key)?;
+            element.on_pointer_up(move |event, _control| handler.call(event));
+        }
+        "on_pointer_move" => {
+            let handler = as_mouse_move_handler(value, key)?;
+            element.on_pointer_move(move |event, _control| handler.call(event));
+        }
+        "on_pointer_enter" => {
+            let handler = as_mouse_enter_handler(value, key)?;
+            element.on_pointer_enter(move |event| handler.call(event));
+        }
+        "on_pointer_leave" => {
+            let handler = as_mouse_leave_handler(value, key)?;
+            element.on_pointer_leave(move |event| handler.call(event));
+        }
+        "on_click" => {
+            let handler = as_click_handler(value, key)?;
+            element.on_click(move |event, _control| handler.call(event));
+        }
+        "on_context_menu" => {
+            let handler = as_context_menu_handler(value, key)?;
+            element.on_context_menu(move |event, _control| handler.call(event));
+        }
+        "on_wheel" => {
+            let handler = as_wheel_handler(value, key)?;
+            element.on_wheel(move |event, _control| handler.call(event));
+        }
+        "on_key_down" => {
+            let handler = as_key_down_handler(value, key)?;
+            element.on_key_down(move |event, _control| handler.call(event));
+        }
+        "on_key_up" => {
+            let handler = as_key_up_handler(value, key)?;
+            element.on_key_up(move |event, _control| handler.call(event));
+        }
+        "on_focus" => {
+            let handler = as_focus_handler(value, key)?;
+            element.on_focus(move |event, _control| handler.call(event));
+        }
+        "on_blur" => {
+            let handler = as_blur_handler(value, key)?;
+            eprintln!("[adapter] try_assign on_blur handler installed on Element");
+            element.on_blur(move |event, _control| handler.call(event));
+        }
+        "on_ime_commit" => {
+            let handler = as_ime_commit_handler(value, key)?;
+            element.on_ime_commit(move |event, _control| handler.call(event));
+        }
+        "on_ime_enabled" => {
+            let handler = as_ime_enabled_handler(value, key)?;
+            element.on_ime_enabled(move |event, _control| handler.call(event));
+        }
+        "on_ime_disabled" => {
+            let handler = as_ime_disabled_handler(value, key)?;
+            element.on_ime_disabled(move |event, _control| handler.call(event));
+        }
+        "on_drag_start" => {
+            let handler = as_drag_start_handler(value, key)?;
+            element.on_drag_start(move |event, _control| handler.call(event));
+        }
+        "on_drag_over" => {
+            let handler = as_drag_over_handler(value, key)?;
+            element.on_drag_over(move |event, _control| handler.call(event));
+        }
+        "on_drag_leave" => {
+            let handler = as_drag_leave_handler(value, key)?;
+            element.on_drag_leave(move |event, _control| handler.call(event));
+        }
+        "on_drop" => {
+            let handler = as_drop_handler(value, key)?;
+            element.on_drop(move |event, _control| handler.call(event));
+        }
+        "on_drag_end" => {
+            let handler = as_drag_end_handler(value, key)?;
+            element.on_drag_end(move |event, _control| handler.call(event));
+        }
+        "on_copy" => {
+            let handler = as_copy_handler(value, key)?;
+            element.on_copy(move |event, _control| handler.call(event));
+        }
+        "on_cut" => {
+            let handler = as_cut_handler(value, key)?;
+            element.on_cut(move |event, _control| handler.call(event));
+        }
+        "on_paste" => {
+            let handler = as_paste_handler(value, key)?;
+            element.on_paste(move |event, _control| handler.call(event));
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// `&'static str` table of the 23 RSX event handler prop names. Used
+/// by the incremental fiber_work whitelist gate so every `on_*` prop
+/// that the cold path recognises is also committable incrementally.
+pub(crate) const RSX_EVENT_HANDLER_PROPS: &[&str] = &[
+    "on_pointer_down",
+    "on_pointer_up",
+    "on_pointer_move",
+    "on_pointer_enter",
+    "on_pointer_leave",
+    "on_click",
+    "on_context_menu",
+    "on_wheel",
+    "on_key_down",
+    "on_key_up",
+    "on_focus",
+    "on_blur",
+    "on_ime_commit",
+    "on_ime_enabled",
+    "on_ime_disabled",
+    "on_drag_start",
+    "on_drag_over",
+    "on_drag_leave",
+    "on_drop",
+    "on_drag_end",
+    "on_copy",
+    "on_cut",
+    "on_paste",
+];
 
 fn as_mouse_down_handler(
     value: &PropValue,
@@ -2788,6 +2807,68 @@ pub fn rsx_to_descriptors_scoped_with_context(
         return Err(errors.join("; "));
     }
     Ok(out)
+}
+
+/// M6 cascade: build descriptors for `root` using an already-computed
+/// `InheritedTextStyle`. Sibling of
+/// `rsx_to_descriptors_scoped_with_context` for callers that don't
+/// start from the viewport root — the incremental-commit path in
+/// `fiber_work` uses this after reconstructing the cascade at the
+/// arena parent of a newly-authored child.
+pub(crate) fn rsx_to_descriptors_with_inherited(
+    root: &RsxNode,
+    scope: &[u64],
+    inherited: &InheritedTextStyle,
+) -> Result<Vec<ElementDescriptor>, String> {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut path: Vec<u64> = scope.to_vec();
+    let global_path = current_global_node_path(root, None);
+    append_nodes_with_path_desc(root, &mut out, &mut path, global_path, inherited, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    Ok(out)
+}
+
+/// M6 cascade: rebuild the `InheritedTextStyle` that the cold-path
+/// converter would see at `parent_key`. Walks the arena parent chain
+/// root→parent and replays each Element ancestor's `parsed_style`
+/// through `InheritedTextStyle::merge_style`, matching exactly what
+/// `build_container_element_shell` does during cold convert.
+///
+/// Non-Element ancestors (Text, TextArea, user hosts) contribute no
+/// cascading style — the cold path treats them as leaves in the
+/// cascade accumulation loop — so they're skipped here.
+pub(crate) fn inherited_text_style_at_parent(
+    arena: &NodeArena,
+    parent_key: NodeKey,
+    viewport_style: &Style,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> InheritedTextStyle {
+    // Collect ancestor chain parent→root, then reverse to walk root→parent.
+    let mut chain: Vec<NodeKey> = Vec::new();
+    let mut cursor = Some(parent_key);
+    while let Some(k) = cursor {
+        chain.push(k);
+        cursor = arena.get(k).and_then(|node| node.parent);
+    }
+    chain.reverse();
+
+    let mut inherited =
+        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
+    for key in chain {
+        let Some(node) = arena.get(key) else { continue };
+        if let Some(el) = node
+            .element
+            .as_any()
+            .downcast_ref::<crate::view::base_component::Element>()
+        {
+            inherited.merge_style(el.parsed_style());
+        }
+    }
+    inherited
 }
 
 fn append_nodes_with_path_desc(
