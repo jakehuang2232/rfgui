@@ -72,14 +72,14 @@ impl Viewport {
             },
             viewport: meta.viewport(),
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_pointer_down_from_hit_test(
-                    &mut arena,
+                    &arena,
                     root_key,
                     &mut event,
                     &mut control,
@@ -89,7 +89,7 @@ impl Viewport {
                 }
             }
         }
-        self.scene.node_arena = arena;
+        event.meta.detach_dispatch_ctx();
         if handled {
             self.input_state.pending_click = Some(PendingClick {
                 button,
@@ -144,10 +144,8 @@ impl Viewport {
     pub fn dispatch_pointer_up_event(&mut self, button: PointerButton) -> bool {
         let Some((x, y)) = self.pointer_position_viewport() else {
             self.input_state.pointer_capture_node_id = None;
-            let mut arena = std::mem::take(&mut self.scene.node_arena);
             let root_keys = self.scene.ui_root_keys.clone();
-            let changed = Self::cancel_pointer_interactions(&mut arena, &root_keys);
-            self.scene.node_arena = arena;
+            let changed = Self::cancel_pointer_interactions(&self.scene.node_arena, &root_keys);
             if changed {
                 self.request_redraw();
             }
@@ -178,15 +176,15 @@ impl Viewport {
             },
             viewport: meta.viewport(),
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             if let Some(target_id) = control.viewport.pointer_capture_node_id() {
                 for &root_key in root_keys.iter().rev() {
                     if crate::view::base_component::dispatch_pointer_up_to_target(
-                        &mut arena,
+                        &arena,
                         root_key,
                         target_id,
                         &mut event,
@@ -200,7 +198,7 @@ impl Viewport {
             } else {
                 for &root_key in root_keys.iter().rev() {
                     if crate::view::base_component::dispatch_pointer_up_from_hit_test(
-                        &mut arena,
+                        &arena,
                         root_key,
                         &mut event,
                         &mut control,
@@ -211,9 +209,9 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let listener_handled = self.dispatch_viewport_pointer_up_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled || listener_handled {
@@ -233,12 +231,11 @@ impl Viewport {
             return self.handle_drag_move(x, y);
         }
         let redraw_requested_before = self.redraw_requested;
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let hover_target = root_keys
             .iter()
             .rev()
-            .find_map(|&root_key| crate::view::base_component::hit_test(&arena, root_key, x, y));
+            .find_map(|&root_key| crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y));
         let buttons = self.current_ui_pointer_buttons();
         let pointer_data = PointerEventData {
             viewport_x: x,
@@ -254,7 +251,7 @@ impl Viewport {
             timestamp: crate::time::Instant::now(),
         };
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
-            &mut arena,
+            &self.scene.node_arena,
             &root_keys,
             &mut self.input_state.hovered_node_id,
             hover_target,
@@ -268,11 +265,12 @@ impl Viewport {
         };
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             if let Some(target_id) = control.viewport.pointer_capture_node_id() {
                 for &root_key in root_keys.iter().rev() {
                     if crate::view::base_component::dispatch_pointer_move_to_target(
-                        &mut arena,
+                        &arena,
                         root_key,
                         target_id,
                         &mut event,
@@ -288,7 +286,7 @@ impl Viewport {
             } else {
                 for &root_key in root_keys.iter().rev() {
                     if crate::view::base_component::dispatch_pointer_move_from_hit_test(
-                        &mut arena,
+                        &arena,
                         root_key,
                         &mut event,
                         &mut control,
@@ -299,9 +297,9 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let listener_handled = self.dispatch_viewport_pointer_move_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         let redraw_requested_during_event = !redraw_requested_before && self.redraw_requested;
@@ -323,15 +321,13 @@ impl Viewport {
             return false;
         }
         let buttons = self.current_ui_pointer_buttons();
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let hit_target = root_keys
             .iter()
             .rev()
-            .find_map(|&root_key| crate::view::base_component::hit_test(&arena, root_key, x, y));
+            .find_map(|&root_key| crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y));
         let is_valid_click = is_valid_click_candidate(pending_click, button, hit_target, x, y);
         if !is_valid_click {
-            self.scene.node_arena = arena;
             return false;
         }
         let now = crate::time::Instant::now();
@@ -380,10 +376,11 @@ impl Viewport {
                 pointer,
             };
             {
-                let mut control = ViewportControl::new(self);
+                event.meta.attach_dispatch_ctx(&*self);
+                let (arena, mut control) = self.borrow_for_dispatch();
                 for &root_key in root_keys.iter().rev() {
                     if crate::view::base_component::dispatch_context_menu_to_target(
-                        &mut arena,
+                        &arena,
                         root_key,
                         pending_click.target_id,
                         &mut event,
@@ -394,6 +391,7 @@ impl Viewport {
                     }
                 }
             }
+            event.meta.detach_dispatch_ctx();
             event.meta.take_viewport_listener_actions()
         } else {
             let mut event = ClickEvent {
@@ -402,10 +400,11 @@ impl Viewport {
                 click_count,
             };
             {
-                let mut control = ViewportControl::new(self);
+                event.meta.attach_dispatch_ctx(&*self);
+                let (arena, mut control) = self.borrow_for_dispatch();
                 for &root_key in root_keys.iter().rev() {
                     if crate::view::base_component::dispatch_click_to_target(
-                        &mut arena,
+                        &arena,
                         root_key,
                         pending_click.target_id,
                         &mut event,
@@ -416,9 +415,9 @@ impl Viewport {
                     }
                 }
             }
+            event.meta.detach_dispatch_ctx();
             event.meta.take_viewport_listener_actions()
         };
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -452,7 +451,6 @@ impl Viewport {
         // containers, etc.
         let modifiers = self.current_key_modifiers();
         let now = crate::time::Instant::now();
-        let mut wheel_arena = std::mem::take(&mut self.scene.node_arena);
         let wheel_root_keys = self.scene.ui_root_keys.clone();
         let mut wheel_event = crate::ui::WheelEvent {
             meta: EventMeta::new(NodeId::default()),
@@ -469,10 +467,11 @@ impl Viewport {
         };
         let mut wheel_user_handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            wheel_event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in wheel_root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_wheel_from_hit_test(
-                    &mut wheel_arena,
+                    arena,
                     root_key,
                     &mut wheel_event,
                     &mut control,
@@ -482,8 +481,8 @@ impl Viewport {
                 }
             }
         }
+        wheel_event.meta.detach_dispatch_ctx();
         let wheel_actions = wheel_event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = wheel_arena;
         self.apply_viewport_listener_actions(wheel_actions);
         if wheel_event.meta.default_prevented() {
             if wheel_user_handled {
@@ -492,37 +491,35 @@ impl Viewport {
             return wheel_user_handled;
         }
         let mut pending_scroll_track: Option<(TrackTarget, (f32, f32), (f32, f32))> = None;
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let Some((root_index, target_key)) =
-            Self::find_scroll_handler_at_pointer(&arena, &root_keys, x, y, delta_x, delta_y)
+            Self::find_scroll_handler_at_pointer(&self.scene.node_arena, &root_keys, x, y, delta_x, delta_y)
         else {
-            self.scene.node_arena = arena;
             return false;
         };
         // Cross-frame scroll track keys are u64 stable_ids; resolve once.
-        let target_stable_id = arena
+        let target_stable_id = self.scene.node_arena
             .get(target_key)
             .map(|n| n.element.stable_id())
             .unwrap_or(0);
         if let Some(&root_key) = root_keys.get(root_index) {
             if let Some(from) = crate::view::base_component::get_scroll_offset_by_id(
-                &arena, root_key, target_stable_id,
+                &self.scene.node_arena, root_key, target_stable_id,
             ) {
                 let _ = crate::view::base_component::dispatch_scroll_to_target(
-                    &mut arena,
+                    &self.scene.node_arena,
                     root_key,
                     target_key,
                     delta_x,
                     delta_y,
                 );
                 if let Some(to) = crate::view::base_component::get_scroll_offset_by_id(
-                    &arena,
+                    &self.scene.node_arena,
                     root_key,
                     target_stable_id,
                 ) {
                     let _ = crate::view::base_component::set_scroll_offset_by_id(
-                        &mut arena,
+                        &self.scene.node_arena,
                         root_key,
                         target_stable_id,
                         from,
@@ -534,7 +531,6 @@ impl Viewport {
                 }
             }
         }
-        self.scene.node_arena = arena;
         let mut handled = false;
         if let Some((target_id, from, to)) = pending_scroll_track {
             let transition_spec = self.transitions.scroll_transition;
@@ -613,14 +609,14 @@ impl Viewport {
             meta: EventMeta::new(target_id),
             key: data,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_key_down_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -631,8 +627,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -649,14 +645,14 @@ impl Viewport {
             meta: EventMeta::new(target_id),
             key: data,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_key_up_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -667,8 +663,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -700,14 +696,14 @@ impl Viewport {
             input_type,
             is_composing,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_text_input_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -718,8 +714,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -754,14 +750,14 @@ impl Viewport {
             selection,
             attributes,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_ime_preedit_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -772,8 +768,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -795,14 +791,14 @@ impl Viewport {
             meta: EventMeta::new(target_id),
             text,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_ime_commit_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -813,8 +809,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -831,14 +827,14 @@ impl Viewport {
         let mut event = crate::ui::ImeEnabledEvent {
             meta: EventMeta::new(target_id),
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_ime_enabled_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -849,8 +845,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -868,14 +864,14 @@ impl Viewport {
         let mut event = crate::ui::ImeDisabledEvent {
             meta: EventMeta::new(target_id),
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_ime_disabled_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -886,8 +882,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -908,14 +904,14 @@ impl Viewport {
             meta: EventMeta::new(target_id),
             data: data.clone(),
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_copy_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -926,8 +922,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         // Default action: when a handler ran and did not `prevent_default`,
         // take the first text item from `data` and queue it to the host
@@ -956,14 +952,14 @@ impl Viewport {
             meta: EventMeta::new(target_id),
             data: data.clone(),
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_cut_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -974,8 +970,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         if handled && !event.meta.default_prevented() {
             if let Some(text) = data.text() {
@@ -1001,14 +997,14 @@ impl Viewport {
             meta: EventMeta::new(target_id),
             data,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_paste_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -1019,8 +1015,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         if handled {
             self.request_redraw();
@@ -1045,14 +1041,14 @@ impl Viewport {
             pointer,
             data,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_drag_start_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     source_id,
                     &mut event,
@@ -1063,8 +1059,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         handled
     }
@@ -1083,13 +1079,13 @@ impl Viewport {
             data,
             drop_effect: None,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_drag_over_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -1099,25 +1095,20 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         event.drop_effect
     }
 
     /// Fire [`crate::ui::DragLeaveEvent`] at `target_id`. Non-bubbling.
     fn dispatch_drag_leave_event(&mut self, target_id: NodeId) -> bool {
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
-        let handled = {
-            let mut control = ViewportControl::new(self);
-            crate::view::base_component::dispatch_drag_leave_to_key(
-                &mut arena,
-                target_id,
-                &mut control,
-            )
-        };
-        self.scene.node_arena = arena;
-        handled
+        let (arena, mut control) = self.borrow_for_dispatch();
+        crate::view::base_component::dispatch_drag_leave_to_key(
+            &arena,
+            target_id,
+            &mut control,
+        )
     }
 
     /// Fire [`crate::ui::DropEvent`] at `target_id` with the resolved
@@ -1135,14 +1126,14 @@ impl Viewport {
             data,
             effect,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_drop_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -1153,8 +1144,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         handled
     }
@@ -1171,14 +1162,14 @@ impl Viewport {
             pointer,
             effect,
         };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_drag_end_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     source_id,
                     &mut event,
@@ -1189,8 +1180,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         handled
     }
@@ -1292,14 +1283,14 @@ impl Viewport {
         meta.set_related_target(related.map(crate::ui::EventTarget::bare));
         meta.set_source(crate::ui::EventSource::Synthetic);
         let mut event = FocusEvent { meta, reason };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_focus_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -1310,8 +1301,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -1335,14 +1326,14 @@ impl Viewport {
         meta.set_related_target(related.map(crate::ui::EventTarget::bare));
         meta.set_source(crate::ui::EventSource::Synthetic);
         let mut event = BlurEvent { meta, reason };
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut handled = false;
         {
-            let mut control = ViewportControl::new(self);
+            event.meta.attach_dispatch_ctx(&*self);
+            let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
                 if crate::view::base_component::dispatch_blur_bubble(
-                    &mut arena,
+                    &arena,
                     root_key,
                     target_id,
                     &mut event,
@@ -1353,8 +1344,8 @@ impl Viewport {
                 }
             }
         }
+        event.meta.detach_dispatch_ctx();
         let pending_actions = event.meta.take_viewport_listener_actions();
-        self.scene.node_arena = arena;
         self.apply_viewport_listener_actions(pending_actions);
         self.sync_focus_dispatch();
         if handled {
@@ -1591,15 +1582,14 @@ impl Viewport {
                     self.set_cursor(cursor);
                 }
                 EventCommand::SelectTextRangeAll(target_id) => {
-                    let mut arena = std::mem::take(&mut self.scene.node_arena);
                     let root_keys = self.scene.ui_root_keys.clone();
-                    let stable_id = arena
+                    let stable_id = self.scene.node_arena
                         .get(target_id)
                         .map(|n| n.element.stable_id())
                         .unwrap_or(0);
                     for &root_key in root_keys.iter().rev() {
                         if crate::view::base_component::select_all_text_by_id(
-                            &mut arena,
+                            &self.scene.node_arena,
                             root_key,
                             stable_id,
                         ) {
@@ -1607,22 +1597,20 @@ impl Viewport {
                             break;
                         }
                     }
-                    self.scene.node_arena = arena;
                 }
                 EventCommand::SelectTextRange {
                     target_id,
                     start,
                     end,
                 } => {
-                    let mut arena = std::mem::take(&mut self.scene.node_arena);
                     let root_keys = self.scene.ui_root_keys.clone();
-                    let stable_id = arena
+                    let stable_id = self.scene.node_arena
                         .get(target_id)
                         .map(|n| n.element.stable_id())
                         .unwrap_or(0);
                     for &root_key in root_keys.iter().rev() {
                         if crate::view::base_component::select_text_range_by_id(
-                            &mut arena,
+                            &self.scene.node_arena,
                             root_key,
                             stable_id,
                             start,
@@ -1632,7 +1620,6 @@ impl Viewport {
                             break;
                         }
                     }
-                    self.scene.node_arena = arena;
                 }
                 EventCommand::RemoveListener(handle) => {
                     self.remove_viewport_listener(handle);
@@ -1644,15 +1631,13 @@ impl Viewport {
                     self.set_clipboard_text(text);
                 }
                 EventCommand::ScrollIntoView { target_id, options } => {
-                    let mut arena = std::mem::take(&mut self.scene.node_arena);
                     let root_keys = self.scene.ui_root_keys.clone();
                     let scrolled = crate::view::base_component::scroll_into_view_impl(
-                        &mut arena,
+                        &self.scene.node_arena,
                         &root_keys,
                         target_id,
                         options,
                     );
-                    self.scene.node_arena = arena;
                     if scrolled {
                         self.request_redraw();
                     }
@@ -1736,7 +1721,6 @@ impl Viewport {
         let last_pos = self.input_state.pointer_position_viewport.unwrap_or((0.0, 0.0));
         self.input_state.pointer_position_viewport = None;
         self.input_state.pointer_capture_node_id = None;
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let pointer_data = synthetic_pointer_data(
             last_pos,
@@ -1744,14 +1728,13 @@ impl Viewport {
             self.current_ui_pointer_buttons(),
         );
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
-            &mut arena,
+            &self.scene.node_arena,
             &root_keys,
             &mut self.input_state.hovered_node_id,
             None,
             pointer_data,
         );
-        let pointer_changed = Self::cancel_pointer_interactions(&mut arena, &root_keys);
-        self.scene.node_arena = arena;
+        let pointer_changed = Self::cancel_pointer_interactions(&self.scene.node_arena, &root_keys);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
         }
@@ -1803,7 +1786,6 @@ impl Viewport {
         self.viewport_pointer_move_listeners.clear();
         self.viewport_pointer_up_listeners.clear();
         self.dispatched_focus_node_id = None;
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let pointer_data = synthetic_pointer_data(
             self.input_state.pointer_position_viewport.unwrap_or((0.0, 0.0)),
@@ -1811,14 +1793,13 @@ impl Viewport {
             self.current_ui_pointer_buttons(),
         );
         let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
-            &mut arena,
+            &self.scene.node_arena,
             &root_keys,
             &mut self.input_state.hovered_node_id,
             None,
             pointer_data,
         );
-        let pointer_changed = Self::cancel_pointer_interactions(&mut arena, &root_keys);
-        self.scene.node_arena = arena;
+        let pointer_changed = Self::cancel_pointer_interactions(&self.scene.node_arena, &root_keys);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
         }

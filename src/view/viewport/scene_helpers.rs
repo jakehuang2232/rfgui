@@ -4,7 +4,7 @@ use super::*;
 
 impl Viewport {
     pub(super) fn cancel_pointer_interactions(
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
     ) -> bool {
         let mut changed = false;
@@ -15,7 +15,7 @@ impl Viewport {
     }
 
     pub(super) fn apply_hover_target(
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
         target: Option<crate::view::node_arena::NodeKey>,
     ) -> bool {
@@ -29,7 +29,7 @@ impl Viewport {
     }
 
     pub(super) fn sync_hover_target(
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
         hovered_node_id: &mut Option<crate::view::node_arena::NodeKey>,
         next_target: Option<crate::view::node_arena::NodeKey>,
@@ -48,7 +48,7 @@ impl Viewport {
     }
 
     pub(super) fn sync_hover_visual_only(
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
         hovered_node_id: &mut Option<crate::view::node_arena::NodeKey>,
         next_target: Option<crate::view::node_arena::NodeKey>,

@@ -71,6 +71,22 @@ pub enum RsxNode {
     Element(Rc<RsxElementNode>),
     Text(Rc<RsxTextNode>),
     Fragment(Rc<RsxFragmentNode>),
+    /// React parity P1: deferred user-component description.
+    ///
+    /// No producer emits this variant in P1 — it is plumbing for P2 where
+    /// `rsx-macro` starts emitting `Component` nodes for user components
+    /// and an `unwrap_components` walker invokes `vtable.render` top-down
+    /// before the reconciler sees the tree. Match sites across the crate
+    /// treat this variant as unreachable (panic) since it should never
+    /// survive past `unwrap_components` in normal flow.
+    Component(Rc<crate::ui::ComponentNodeInner>),
+    /// Walker-ancestry context provider node. Emitted by
+    /// [`crate::ui::provide_context_node`]. The walker pushes
+    /// `(type_id, value)` onto `CONTEXT_STACK` before recursing into
+    /// `child`, pops after, and returns the walked child transparently
+    /// — Provider never survives past `unwrap_components`. Match sites
+    /// outside the walker treat this variant as unreachable.
+    Provider(Rc<RsxProviderNode>),
 }
 
 impl RsxNode {
@@ -85,8 +101,52 @@ impl RsxNode {
             (RsxNode::Element(x), RsxNode::Element(y)) => Rc::ptr_eq(x, y),
             (RsxNode::Text(x), RsxNode::Text(y)) => Rc::ptr_eq(x, y),
             (RsxNode::Fragment(x), RsxNode::Fragment(y)) => Rc::ptr_eq(x, y),
+            (RsxNode::Component(x), RsxNode::Component(y)) => Rc::ptr_eq(x, y),
+            (RsxNode::Provider(x), RsxNode::Provider(y)) => Rc::ptr_eq(x, y),
             _ => false,
         }
+    }
+}
+
+/// Walker-ancestry context provider. Carries a type-erased value that the
+/// walker pushes onto `CONTEXT_STACK` for the duration of its `child`
+/// subtree walk. See [`RsxNode::Provider`].
+pub struct RsxProviderNode {
+    pub identity: RsxNodeIdentity,
+    pub type_id: TypeId,
+    /// Type-erased provider value. `Rc<dyn Any>` so cloning the node is
+    /// cheap and the walker can clone-push the same allocation onto
+    /// `CONTEXT_STACK`.
+    pub value: Rc<dyn Any>,
+    pub child: RsxNode,
+}
+
+impl Clone for RsxProviderNode {
+    fn clone(&self) -> Self {
+        Self {
+            identity: self.identity,
+            type_id: self.type_id,
+            value: Rc::clone(&self.value),
+            child: self.child.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for RsxProviderNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RsxProviderNode")
+            .field("type_id", &self.type_id)
+            .field("value_ptr", &Rc::as_ptr(&self.value))
+            .field("child", &self.child)
+            .finish()
+    }
+}
+
+impl PartialEq for RsxProviderNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_id == other.type_id
+            && Rc::ptr_eq(&self.value, &other.value)
+            && self.child == other.child
     }
 }
 
@@ -281,6 +341,8 @@ impl RsxNode {
             Self::Element(node) => &node.identity,
             Self::Text(node) => &node.identity,
             Self::Fragment(node) => &node.identity,
+            Self::Component(node) => &node.identity,
+            Self::Provider(node) => &node.identity,
         }
     }
 
@@ -289,6 +351,15 @@ impl RsxNode {
             Self::Element(node) => Rc::make_mut(node).identity = identity,
             Self::Text(node) => Rc::make_mut(node).identity = identity,
             Self::Fragment(node) => Rc::make_mut(node).identity = identity,
+            // P1: ComponentNodeInner is not Clone (owns boxed props).
+            // Callers reach this only with Rc::strong_count == 1 because
+            // the only P1 producers (none) create the Rc locally.
+            Self::Component(node) => {
+                Rc::get_mut(node)
+                    .expect("Component node identity update requires unique Rc")
+                    .identity = identity;
+            }
+            Self::Provider(node) => Rc::make_mut(node).identity = identity,
         }
     }
 
@@ -330,7 +401,8 @@ impl RsxNode {
         match self {
             Self::Element(node) => Some(&node.children),
             Self::Fragment(node) => Some(&node.children),
-            Self::Text(_) => None,
+            Self::Component(node) => Some(&node.children),
+            Self::Text(_) | Self::Provider(_) => None,
         }
     }
 
@@ -338,14 +410,19 @@ impl RsxNode {
         match self {
             Self::Element(node) => Some(&mut Rc::make_mut(node).children),
             Self::Fragment(node) => Some(&mut Rc::make_mut(node).children),
-            Self::Text(_) => None,
+            Self::Component(node) => Some(
+                &mut Rc::get_mut(node)
+                    .expect("Component node children_mut requires unique Rc")
+                    .children,
+            ),
+            Self::Text(_) | Self::Provider(_) => None,
         }
     }
 
     pub fn tag_descriptor(&self) -> Option<RsxTagDescriptor> {
         match self {
             Self::Element(node) => node.tag_descriptor,
-            Self::Text(_) | Self::Fragment(_) => None,
+            Self::Text(_) | Self::Fragment(_) | Self::Component(_) | Self::Provider(_) => None,
         }
     }
 }

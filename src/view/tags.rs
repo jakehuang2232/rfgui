@@ -435,6 +435,8 @@ fn append_text_area_content_child(out: &mut String, node: &RsxNode) {
             }
         }
         RsxNode::Element(_) => {}
+        RsxNode::Component(_) => {}
+        RsxNode::Provider(_) => {}
     }
 }
 
@@ -811,6 +813,7 @@ macro_rules! impl_rsx_tag_v2_trivial {
             type Props = $props;
             type StrictProps = $props;
             const ACCEPTS_CHILDREN: bool = $accepts;
+            const IS_HOST_TAG: bool = true;
 
             fn into_strict(props: Self::Props) -> Self::StrictProps {
                 props
@@ -824,6 +827,9 @@ macro_rules! impl_rsx_tag_v2_trivial {
                 <$tag as RsxComponent<$props>>::render(props, children)
             }
         }
+
+        impl crate::ui::component::sealed::Sealed for $tag {}
+        impl crate::ui::HostTag for $tag {}
     };
 }
 
@@ -874,6 +880,7 @@ impl crate::ui::RsxTag for Image {
     type Props = __ImagePropsInit;
     type StrictProps = ImagePropSchema;
     const ACCEPTS_CHILDREN: bool = false;
+    const IS_HOST_TAG: bool = true;
 
     fn into_strict(props: Self::Props) -> Self::StrictProps {
         props.into()
@@ -887,6 +894,9 @@ impl crate::ui::RsxTag for Image {
         <Image as RsxComponent<ImagePropSchema>>::render(props, children)
     }
 }
+
+impl crate::ui::component::sealed::Sealed for Image {}
+impl crate::ui::HostTag for Image {}
 
 #[doc(hidden)]
 pub struct __SvgPropsInit {
@@ -930,6 +940,7 @@ impl crate::ui::RsxTag for Svg {
     type Props = __SvgPropsInit;
     type StrictProps = SvgPropSchema;
     const ACCEPTS_CHILDREN: bool = false;
+    const IS_HOST_TAG: bool = true;
 
     fn into_strict(props: Self::Props) -> Self::StrictProps {
         props.into()
@@ -943,6 +954,9 @@ impl crate::ui::RsxTag for Svg {
         <Svg as RsxComponent<SvgPropSchema>>::render(props, children)
     }
 }
+
+impl crate::ui::component::sealed::Sealed for Svg {}
+impl crate::ui::HostTag for Svg {}
 
 fn into_shared_prop_value<T: 'static>(value: T) -> crate::ui::PropValue {
     crate::ui::PropValue::Shared(SharedPropValue::new(Rc::new(value)))

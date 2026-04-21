@@ -12,7 +12,7 @@ pub use theme::*;
 mod tests {
     use crate::{
         Accordion, Button, ButtonVariant, Checkbox, CloseIcon, NumberField, Select, Switch,
-        Window,
+        TreeNode, TreeView, Window,
     };
     use rfgui::ui::{
         EventMeta, NodeId, PointerButton as UiPointerButton, PointerEventData, PropValue,
@@ -376,6 +376,8 @@ mod tests {
             RsxNode::Text(t) => Some(t.content.as_str()),
             RsxNode::Element(el) => el.children.iter().find_map(find_first_text),
             RsxNode::Fragment(f) => f.children.iter().find_map(find_first_text),
+            RsxNode::Component(c) => c.children.iter().find_map(find_first_text),
+            RsxNode::Provider(p) => find_first_text(&p.child),
         }
     }
 
@@ -403,6 +405,12 @@ mod tests {
                     collect_text_nodes(child, out);
                 }
             }
+            RsxNode::Component(component) => {
+                for child in &component.children {
+                    collect_text_nodes(child, out);
+                }
+            }
+            RsxNode::Provider(provider) => collect_text_nodes(&provider.child, out),
         }
     }
 
@@ -428,6 +436,11 @@ mod tests {
                 .children
                 .iter()
                 .find_map(|child| find_first_element_by_tag(child, tag)),
+            RsxNode::Component(component) => component
+                .children
+                .iter()
+                .find_map(|child| find_first_element_by_tag(child, tag)),
+            RsxNode::Provider(provider) => find_first_element_by_tag(&provider.child, tag),
             RsxNode::Text(_) => None,
         }
     }
@@ -612,6 +625,99 @@ mod tests {
         assert_eq!(root.children.len(), 2);
     }
 
+    // React parity P3: provider sets a context via `provide_context` around
+    // its rsx! children. Under P2's lazy pipeline, the child component's
+    // render body runs AFTER the provider's closure returns (and would
+    // normally pop the context). The Component node captures a context
+    // snapshot at rsx! expansion time; the walker re-installs it before
+    // invoking the child's `vtable.render`. This test fails without the
+    // snapshot wiring.
+    // React parity P4: when a conditional branch is NOT selected, the
+    // component in that branch must not have its render body invoked.
+    // Pre-P2 every `<Heavy/>` eagerly ran its render inside the rsx!
+    // expression, so both branches always executed. Post-P2 the
+    // unselected branch never reaches the walker, so its render body
+    // never fires. This test locks in the cost-skip behaviour.
+    #[test]
+    fn conditional_branch_does_not_render_unselected_component() {
+        use rfgui::ui::{component, rsx};
+        use std::cell::Cell;
+
+        thread_local! {
+            static HEAVY_RENDER_CALLS: Cell<u32> = const { Cell::new(0) };
+        }
+
+        #[component]
+        fn Heavy() -> RsxNode {
+            HEAVY_RENDER_CALLS.with(|c| c.set(c.get() + 1));
+            rsx! { <rfgui::view::Text>"heavy"</rfgui::view::Text> }
+        }
+
+        #[component]
+        fn ConditionalParent(show_heavy: bool) -> RsxNode {
+            rsx! {
+                <rfgui::view::Element>
+                    <rfgui::view::Text>"always here"</rfgui::view::Text>
+                    {if show_heavy {
+                        rsx! { <Heavy /> }
+                    } else {
+                        RsxNode::fragment(vec![])
+                    }}
+                </rfgui::view::Element>
+            }
+        }
+
+        // Baseline
+        HEAVY_RENDER_CALLS.with(|c| c.set(0));
+
+        // Branch not taken — Heavy::render must not fire.
+        let _ = rsx! { <ConditionalParent show_heavy={false} /> };
+        let calls_when_false = HEAVY_RENDER_CALLS.with(|c| c.get());
+        assert_eq!(
+            calls_when_false, 0,
+            "Heavy::render ran even though `show_heavy=false` branch skipped"
+        );
+
+        // Branch taken — Heavy::render must fire exactly once.
+        let _ = rsx! { <ConditionalParent show_heavy={true} /> };
+        let calls_when_true = HEAVY_RENDER_CALLS.with(|c| c.get());
+        assert_eq!(
+            calls_when_true, 1,
+            "Heavy::render should run exactly once when branch selected; got {calls_when_true}"
+        );
+    }
+
+    #[test]
+    fn context_crosses_lazy_component_boundary() {
+        use rfgui::ui::{component, provide_context, use_context};
+
+        #[derive(Clone)]
+        struct CtxValue(&'static str);
+
+        #[component]
+        fn CtxConsumer() -> RsxNode {
+            let seen = use_context::<CtxValue>()
+                .map(|v| v.0)
+                .unwrap_or("<none>");
+            rsx! { <rfgui::view::Text>{seen}</rfgui::view::Text> }
+        }
+
+        #[component]
+        fn CtxProvider() -> RsxNode {
+            provide_context(CtxValue("from-provider"), || {
+                rsx! { <CtxConsumer /> }
+            })
+        }
+
+        let tree = rsx! { <CtxProvider /> };
+        let mut texts = Vec::new();
+        collect_text_nodes(&tree, &mut texts);
+        assert!(
+            texts.iter().any(|t| t == "from-provider"),
+            "consumer should read value installed by ancestor provider across lazy boundary; got {texts:?}"
+        );
+    }
+
     #[test]
     fn window_supports_nested_optional_object_props() {
         let tree = rsx! {
@@ -635,6 +741,78 @@ mod tests {
         };
         assert_eq!(root.tag_descriptor, Some(RsxTagDescriptor::of::<Window>()));
         assert!(!root.children.is_empty());
+    }
+
+    fn sample_tree_nodes() -> Vec<TreeNode> {
+        vec![TreeNode::new("root", "Root").with_children(vec![
+            TreeNode::new("child", "Child"),
+        ])]
+    }
+
+    #[test]
+    fn tree_view_renders_element_root() {
+        let tree = rsx! {
+            <TreeView nodes={sample_tree_nodes()} />
+        };
+        let RsxNode::Element(root) = tree else {
+            panic!("TreeView should render element root");
+        };
+        assert_eq!(root.tag_descriptor, Some(RsxTagDescriptor::of::<TreeView>()));
+    }
+
+    #[test]
+    fn tree_view_collapsed_hides_child_labels() {
+        let tree = rsx! {
+            <TreeView nodes={sample_tree_nodes()} />
+        };
+        let mut texts = Vec::new();
+        collect_text_nodes(&tree, &mut texts);
+        assert!(
+            texts.iter().any(|t| t == "Root"),
+            "root label missing: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t == "Child"),
+            "collapsed root should not render Child label: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn tree_view_default_expanded_shows_child_labels() {
+        let tree = rsx! {
+            <TreeView
+                nodes={sample_tree_nodes()}
+                default_expanded_items={vec![String::from("root")]}
+            />
+        };
+        let mut texts = Vec::new();
+        collect_text_nodes(&tree, &mut texts);
+        assert!(texts.iter().any(|t| t == "Root"));
+        assert!(
+            texts.iter().any(|t| t == "Child"),
+            "expanded root should render Child label: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn tree_view_click_toggles_expanded_and_selects() {
+        let expanded = global_state(|| Vec::<String>::new());
+        let selected = global_state(|| Option::<String>::None);
+
+        let tree = rsx! {
+            <TreeView
+                nodes={sample_tree_nodes()}
+                expanded_binding={expanded.binding()}
+                selected_binding={selected.binding()}
+            />
+        };
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &tree);
+        let mut viewport = rfgui::view::Viewport::new();
+        click_once(&mut arena, roots[0], &mut viewport, 16.0, 14.0);
+
+        assert_eq!(selected.get().as_deref(), Some("root"));
+        assert_eq!(expanded.get(), vec![String::from("root")]);
     }
 
     #[test]

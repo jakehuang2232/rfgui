@@ -173,6 +173,7 @@ pub(crate) fn size_spec(theme: &Theme, size: ButtonSize) -> ButtonSizeSpec {
 
 pub struct Button;
 
+#[derive(Clone)]
 #[props]
 pub struct ButtonProps {
     pub variant: Option<ButtonVariant>,
@@ -206,6 +207,7 @@ impl RsxComponent<ButtonProps> for Button {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for Button {
     type Props = __ButtonPropsInit;
     type StrictProps = ButtonProps;

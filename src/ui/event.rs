@@ -7,7 +7,8 @@ use crate::platform::input::{Key, PointerType, WheelDeltaMode, WheelPhase};
 
 /// Re-export so `crate::ui` users don't need a separate platform import.
 pub use crate::platform::input::Modifiers;
-use crate::ui::node_id::{EventTarget, NodeId};
+use crate::ui::node_id::{EventTarget, NodeId, Rect};
+use std::ptr::NonNull;
 use crate::view::base_component::TextAreaRenderString;
 use smol_str::SmolStr;
 use std::cell::RefCell;
@@ -198,8 +199,16 @@ struct EventMetaState {
     /// Monotonic id assigned at construction. Useful for logs, replays, and
     /// correlating an event across layers.
     event_id: u64,
-    target: EventTarget,
-    current_target: EventTarget,
+    // Target / current_target / related_target are kept flat (id + bounds)
+    // instead of as owned `EventTarget`s so the stored state has no
+    // lifetime. The viewport reference lives in `viewport_ptr` below; each
+    // getter re-assembles a lifetime-bound `EventTarget<'_>` on demand.
+    target_id: NodeId,
+    target_bounds: Rect,
+    target_local_bounds: Rect,
+    current_target_id: NodeId,
+    current_target_bounds: Rect,
+    current_target_local_bounds: Rect,
     /// For pair-style events: the "other" node.
     ///
     /// - `PointerEnter` / `PointerLeave`: previously / next-hovered node
@@ -208,7 +217,19 @@ struct EventMetaState {
     ///
     /// `None` when no counterpart exists (e.g. first focus, pointer
     /// entering from outside the window).
-    related_target: Option<EventTarget>,
+    related_target_id: Option<NodeId>,
+    related_target_bounds: Rect,
+    related_target_local_bounds: Rect,
+    /// Raw pointer to the dispatching viewport. Set by the dispatch layer
+    /// on entry and cleared on exit as a second line of defence against
+    /// `meta.clone()` leaks. Used for per-node state accessors
+    /// (hovered / focused).
+    ///
+    /// SAFETY: dereferenced only in `EventTarget` getters, which rebind
+    /// the reference to the borrow lifetime of `&self` on `EventMeta`.
+    /// The target cannot outlive that borrow, so the pointer's pointee
+    /// stays valid for the full lifetime of the returned reference.
+    viewport_ptr: Option<NonNull<crate::view::viewport::Viewport>>,
     /// Ancestor chain from `target` up to the containing root (inclusive of
     /// both ends). Populated by the viewport dispatch layer when it has the
     /// tree available; empty for synthetic events where no path was computed.
@@ -242,9 +263,16 @@ impl Default for EventMetaState {
     fn default() -> Self {
         Self {
             event_id: next_event_id(),
-            target: EventTarget::default(),
-            current_target: EventTarget::default(),
-            related_target: None,
+            target_id: NodeId::default(),
+            target_bounds: Rect::default(),
+            target_local_bounds: Rect::default(),
+            current_target_id: NodeId::default(),
+            current_target_bounds: Rect::default(),
+            current_target_local_bounds: Rect::default(),
+            related_target_id: None,
+            related_target_bounds: Rect::default(),
+            related_target_local_bounds: Rect::default(),
+            viewport_ptr: None,
             path: Rc::new(Vec::new()),
             phase: EventPhase::default(),
             source: EventSource::default(),
@@ -276,8 +304,8 @@ impl fmt::Debug for EventMeta {
         let state = self.state.borrow();
         f.debug_struct("EventMeta")
             .field("event_id", &state.event_id)
-            .field("target", &state.target)
-            .field("current_target", &state.current_target)
+            .field("target_id", &state.target_id)
+            .field("current_target_id", &state.current_target_id)
             .field("phase", &state.phase)
             .field("source", &state.source)
             .field("propagation_stopped", &state.propagation_stopped)
@@ -289,11 +317,10 @@ impl fmt::Debug for EventMeta {
 
 impl EventMeta {
     pub fn new(target_id: NodeId) -> Self {
-        let target = EventTarget::bare(target_id);
         Self {
             state: Rc::new(RefCell::new(EventMetaState {
-                target,
-                current_target: target,
+                target_id,
+                current_target_id: target_id,
                 ..EventMetaState::default()
             })),
         }
@@ -302,61 +329,125 @@ impl EventMeta {
     /// Construct an `EventMeta` seeded with a full [`EventTarget`]
     /// (id + bounds). Prefer this over [`Self::new`] at dispatch sites
     /// that already know the node's geometry.
-    pub fn with_target(target: EventTarget) -> Self {
+    pub fn with_target(target: EventTarget<'_>) -> Self {
         Self {
             state: Rc::new(RefCell::new(EventMetaState {
-                target,
-                current_target: target,
+                target_id: target.id,
+                target_bounds: target.bounds,
+                target_local_bounds: target.local_bounds,
+                current_target_id: target.id,
+                current_target_bounds: target.bounds,
+                current_target_local_bounds: target.local_bounds,
                 ..EventMetaState::default()
             })),
         }
     }
 
     /// Node the event is dispatched to (the hit-test result or focused
-    /// node). Stable for the duration of the dispatch.
-    pub fn target(&self) -> EventTarget {
-        self.state.borrow().target
+    /// node). Stable for the duration of the dispatch. The returned
+    /// `EventTarget<'_>`'s lifetime is bound to `&self`, so callers cannot
+    /// leak it beyond the current handler call.
+    pub fn target(&self) -> EventTarget<'_> {
+        let (id, bounds, local_bounds) = {
+            let s = self.state.borrow();
+            (s.target_id, s.target_bounds, s.target_local_bounds)
+        };
+        self.rebind(EventTarget::snapshot(id, bounds, local_bounds))
     }
 
     /// Node currently processing the event as it bubbles. Changes as the
     /// dispatch walks up ancestors.
-    pub fn current_target(&self) -> EventTarget {
-        self.state.borrow().current_target
+    pub fn current_target(&self) -> EventTarget<'_> {
+        let (id, bounds, local_bounds) = {
+            let s = self.state.borrow();
+            (
+                s.current_target_id,
+                s.current_target_bounds,
+                s.current_target_local_bounds,
+            )
+        };
+        self.rebind(EventTarget::snapshot(id, bounds, local_bounds))
     }
 
     pub fn target_id(&self) -> NodeId {
-        self.state.borrow().target.id
+        self.state.borrow().target_id
     }
 
     pub fn current_target_id(&self) -> NodeId {
-        self.state.borrow().current_target.id
+        self.state.borrow().current_target_id
     }
 
     pub(crate) fn set_target_id(&mut self, target_id: NodeId) {
-        let target = EventTarget::bare(target_id);
         let mut state = self.state.borrow_mut();
-        state.target = target;
-        state.current_target = target;
+        state.target_id = target_id;
+        state.target_bounds = Rect::default();
+        state.target_local_bounds = Rect::default();
+        state.current_target_id = target_id;
+        state.current_target_bounds = Rect::default();
+        state.current_target_local_bounds = Rect::default();
     }
 
     pub(crate) fn set_current_target_id(&mut self, current_target_id: NodeId) {
-        self.state.borrow_mut().current_target.id = current_target_id;
+        self.state.borrow_mut().current_target_id = current_target_id;
     }
 
     /// Replace the `target` (the node that was originally hit). Usually
     /// called once at dispatch start.
     #[allow(dead_code)]
-    pub(crate) fn set_target(&mut self, target: EventTarget) {
+    pub(crate) fn set_target(&mut self, target: EventTarget<'_>) {
         let mut state = self.state.borrow_mut();
-        state.target = target;
-        state.current_target = target;
+        state.target_id = target.id;
+        state.target_bounds = target.bounds;
+        state.target_local_bounds = target.local_bounds;
+        state.current_target_id = target.id;
+        state.current_target_bounds = target.bounds;
+        state.current_target_local_bounds = target.local_bounds;
     }
 
     /// Update the `current_target` as the event bubbles up. Prefer this
     /// over [`Self::set_current_target_id`] so ancestor bounds propagate
     /// into handlers.
-    pub(crate) fn set_current_target(&mut self, current_target: EventTarget) {
-        self.state.borrow_mut().current_target = current_target;
+    pub(crate) fn set_current_target(&mut self, current_target: EventTarget<'_>) {
+        let mut state = self.state.borrow_mut();
+        state.current_target_id = current_target.id;
+        state.current_target_bounds = current_target.bounds;
+        state.current_target_local_bounds = current_target.local_bounds;
+    }
+
+    /// Internal: rebind an `EventTarget` to this meta's stored viewport
+    /// pointer, producing one whose lifetime is the borrow of `&self`.
+    ///
+    /// SAFETY: `viewport_ptr` is set by the dispatch layer on entry to a
+    /// dispatch call and cleared on exit. While set, the pointee is live
+    /// for the full duration of `&self`'s borrow. Returned reference
+    /// therefore cannot outlive the pointee.
+    fn rebind<'a>(&'a self, mut target: EventTarget<'a>) -> EventTarget<'a> {
+        if let Some(ptr) = self.state.borrow().viewport_ptr {
+            // SAFETY: see method doc. Raw ptr is only consumed here.
+            target.viewport = Some(unsafe { ptr.as_ref() });
+        }
+        target
+    }
+
+    /// Install the dispatching viewport on this meta so lazy
+    /// `EventTarget` accessors can walk the tree / read per-node state.
+    /// Arena access goes through `viewport.node_arena()` — single source
+    /// of truth under Approach C.
+    #[allow(dead_code)]
+    pub(crate) fn attach_dispatch_ctx(
+        &mut self,
+        viewport: &crate::view::viewport::Viewport,
+    ) {
+        self.state.borrow_mut().viewport_ptr = Some(NonNull::from(viewport));
+    }
+
+    /// Second line of defence: the dispatch layer calls this on exit so
+    /// even if a handler clones the meta out of scope, `EventTarget`
+    /// accessors return safe defaults afterwards instead of dereferencing
+    /// a possibly-invalidated pointer.
+    #[allow(dead_code)]
+    pub(crate) fn detach_dispatch_ctx(&mut self) {
+        self.state.borrow_mut().viewport_ptr = None;
     }
 
     /// Monotonic identifier assigned at construction. Stable for the
@@ -473,7 +564,7 @@ impl EventMeta {
     }
 
     pub fn request_pointer_capture(&mut self) {
-        let current_target_id = self.state.borrow().current_target.id;
+        let current_target_id = self.state.borrow().current_target_id;
         self.state.borrow_mut().pointer_capture_target_id = Some(current_target_id);
     }
 
@@ -498,15 +589,35 @@ impl EventMeta {
     }
 
     /// Counterpart node for pair-style events (see
-    /// [`EventMetaState::related_target`] for semantics per event).
-    pub fn related_target(&self) -> Option<EventTarget> {
-        self.state.borrow().related_target
+    /// [`EventMetaState::related_target_id`] for semantics per event).
+    pub fn related_target(&self) -> Option<EventTarget<'_>> {
+        let (id, bounds, local_bounds) = {
+            let s = self.state.borrow();
+            (
+                s.related_target_id?,
+                s.related_target_bounds,
+                s.related_target_local_bounds,
+            )
+        };
+        Some(self.rebind(EventTarget::snapshot(id, bounds, local_bounds)))
     }
 
     /// Set the `related_target`. Called by the dispatcher when it knows the
     /// counterpart (previous hover, focus source, …).
-    pub(crate) fn set_related_target(&mut self, related: Option<EventTarget>) {
-        self.state.borrow_mut().related_target = related;
+    pub(crate) fn set_related_target(&mut self, related: Option<EventTarget<'_>>) {
+        let mut state = self.state.borrow_mut();
+        match related {
+            Some(t) => {
+                state.related_target_id = Some(t.id);
+                state.related_target_bounds = t.bounds;
+                state.related_target_local_bounds = t.local_bounds;
+            }
+            None => {
+                state.related_target_id = None;
+                state.related_target_bounds = Rect::default();
+                state.related_target_local_bounds = Rect::default();
+            }
+        }
     }
 
     pub fn viewport(&self) -> EventViewport {

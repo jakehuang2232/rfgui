@@ -455,23 +455,11 @@ impl<T: 'static> PartialEq for GlobalState<T> {
     }
 }
 
-/// 軌 1 #12 fix: run `f` with `build_depth` bumped so any nested `rsx!`
-/// that runs `build_scope` sees itself as non-top-level — skipping the
-/// `live_keys.clear()` and slots-prune that would otherwise wipe the
-/// main render pass's state store.
-///
-/// Needed when user-authored handlers (e.g. TextArea `on_render`)
-/// invoke `rsx!` during layout/place, outside the normal render pass.
-pub fn non_render_scope<R>(f: impl FnOnce() -> R) -> R {
-    STORE.with(|store| {
-        store.borrow_mut().build_depth += 1;
-    });
-    let out = f();
-    STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        store.build_depth = store.build_depth.saturating_sub(1);
-    });
-    out
+/// Current `build_depth` — the number of active `build_scope` frames.
+/// Exposed for the React parity walker (`rsx_scope`) to detect the
+/// outermost scope.
+pub fn current_build_depth() -> usize {
+    STORE.with(|store| store.borrow().build_depth)
 }
 
 pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
@@ -577,6 +565,14 @@ fn current_rsx_key() -> Option<RsxKey> {
 /// same path algorithm as [`render_component`]. Advances parent/root cursors
 /// as a side effect, so this must be called exactly once per component.
 fn next_component_key<T: 'static>() -> ComponentKey {
+    next_component_key_by_type_id(TypeId::of::<T>())
+}
+
+/// Type-id-driven variant for the React parity walker (P2). Identical path
+/// algorithm to [`next_component_key`] but accepts a runtime `TypeId` so a
+/// type-erased `ComponentNodeInner` can compute its own key during the
+/// `unwrap_components` traversal.
+fn next_component_key_by_type_id(type_id: TypeId) -> ComponentKey {
     const KEYED_PATH_MARKER: usize = usize::MAX;
     const GLOBAL_KEYED_PATH_MARKER: usize = usize::MAX - 1;
     let path = CONTEXT.with(|context| {
@@ -612,14 +608,19 @@ fn next_component_key<T: 'static>() -> ComponentKey {
             })
         }
     });
-    ComponentKey {
-        type_id: TypeId::of::<T>(),
-        path,
-    }
+    ComponentKey { type_id, path }
 }
 
 pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
-    let key = next_component_key::<T>();
+    render_component_by_type_id(TypeId::of::<T>(), f)
+}
+
+/// Type-id-driven variant of [`render_component`] for the React parity
+/// walker (P2). The `unwrap_components` walker holds a type-erased
+/// `ComponentNodeInner` — the concrete `T` is lost, so the frame / live
+/// keys / context push machinery is parameterized by `TypeId`.
+pub fn render_component_by_type_id<R>(type_id: TypeId, f: impl FnOnce() -> R) -> R {
+    let key = next_component_key_by_type_id(type_id);
 
     STORE.with(|store| {
         let mut store = store.borrow_mut();
@@ -770,7 +771,13 @@ where
         });
     });
 
-    let node = render(&props);
+    // P2 (React parity): memo cache stores resolved trees (no
+    // `RsxNode::Component` variants). If we cached lazy trees, the cache
+    // hit would `Rc::clone` the Component node, sharing its `Rc` with the
+    // cached copy — the walker later panics on `Rc::try_unwrap`. Unwrap
+    // eagerly inside the memo frame so the component's render subtree
+    // is fully flattened before caching and returning.
+    let node = crate::ui::unwrap_components(render(&props));
 
     CONTEXT.with(|context| {
         let _ = context.borrow_mut().frames.pop();
@@ -1141,6 +1148,42 @@ mod tests {
             })
         });
         assert_eq!(state_after.get(), 7);
+    }
+
+    // 軌 1 #13 regression: host tag `create_element` must not flip
+    // `components_rendered_in_build`, so a `build_scope` that only builds
+    // host tags (e.g. a TextArea `on_render` handler invoking `rsx!`
+    // during layout) exits without pruning the main render's state slots.
+    #[test]
+    fn host_tag_only_build_scope_does_not_prune_user_state() {
+        let state = build_scope(|| {
+            crate::ui::render_component::<u32, _>(|| {
+                let value = use_state(|| 0_i32);
+                value.set(99);
+                value
+            })
+        });
+        assert_eq!(state.get(), 99);
+        let _ = take_state_dirty();
+
+        // Simulate handler-triggered `rsx!` producing only host tags.
+        // Goes through the exact `create_element` path the handler's rsx! hits.
+        let _ = build_scope(|| {
+            crate::ui::create_element::<crate::view::Element>(
+                crate::view::ElementPropSchema::default(),
+                Vec::new(),
+                None,
+            )
+        });
+
+        // Re-render main component — state must survive.
+        let after = build_scope(|| {
+            crate::ui::render_component::<u32, _>(|| {
+                let value = use_state(|| 0_i32);
+                value.get()
+            })
+        });
+        assert_eq!(after, 99);
     }
 
     #[test]

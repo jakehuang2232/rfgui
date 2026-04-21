@@ -10,6 +10,7 @@ use rfgui::{
 
 pub struct Accordion;
 
+#[derive(Clone)]
 #[props]
 pub struct AccordionProps {
     pub title: String,
@@ -33,6 +34,7 @@ impl RsxComponent<AccordionProps> for Accordion {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for Accordion {
     type Props = __AccordionPropsInit;
     type StrictProps = AccordionProps;

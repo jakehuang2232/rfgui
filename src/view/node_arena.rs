@@ -367,6 +367,19 @@ impl NodeArena {
         }
     }
 
+    /// Pre-order walk rooted at `key` that calls `sync_arena` on every
+    /// element. Traversal is external (not recursive inside each element's
+    /// impl) so each element's `sync_arena` only handles its own state.
+    /// Children are re-read from the arena after each call so elements that
+    /// mutate the arena during sync (e.g. TextArea projection rebuild) still
+    /// get their freshly committed subtree walked.
+    pub fn sync_subtree(&mut self, key: NodeKey) {
+        self.with_element_taken(key, |el, arena| el.sync_arena(arena));
+        for child in self.children_of(key) {
+            self.sync_subtree(child);
+        }
+    }
+
     /// Post-order walk rooted at `key` that refreshes
     /// [`Node::cached_subtree_dirty`] on every visited node. Each cache
     /// entry is `element.local_dirty_flags() ∪ union(child.cached_subtree_dirty)`.
@@ -465,6 +478,55 @@ impl NodeArena {
         let mut element = guard.taken.take().expect("guard initialised with element");
         let result = f(&mut element, guard.arena);
         // Re-stash for the guard's Drop to put back.
+        guard.taken = Some(element);
+        drop(guard);
+
+        Some(result)
+    }
+
+    /// Read-side counterpart of [`Self::with_element_taken`] for dispatch
+    /// paths that only need `&NodeArena` inside the callback. Takes
+    /// `&self` so dispatch sites can share-borrow the arena while a
+    /// handler walks the tree (see `EventTarget` lazy accessors).
+    ///
+    /// The element is still swapped in place via the slot's inner
+    /// `RefCell` so the callback receives `&mut Box<dyn ElementTrait>`
+    /// for mutation of element-internal state. Structural mutation
+    /// (insert / remove) remains on the `&mut self` API.
+    pub fn with_element_taken_ref<R>(
+        &self,
+        key: NodeKey,
+        f: impl FnOnce(&mut Box<dyn ElementTrait>, &NodeArena) -> R,
+    ) -> Option<R> {
+        let slot_ref = self.slots.get(key)?;
+        let taken: Box<dyn ElementTrait> = {
+            let mut node = slot_ref.borrow_mut();
+            std::mem::replace(&mut node.element, Box::new(Placeholder))
+        };
+
+        struct Guard<'a> {
+            arena: &'a NodeArena,
+            key: NodeKey,
+            taken: Option<Box<dyn ElementTrait>>,
+        }
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                if let Some(element) = self.taken.take() {
+                    if let Some(cell) = self.arena.slots.get(self.key) {
+                        cell.borrow_mut().element = element;
+                    }
+                }
+            }
+        }
+
+        let mut guard = Guard {
+            arena: self,
+            key,
+            taken: Some(taken),
+        };
+
+        let mut element = guard.taken.take().expect("guard initialised with element");
+        let result = f(&mut element, guard.arena);
         guard.taken = Some(element);
         drop(guard);
 

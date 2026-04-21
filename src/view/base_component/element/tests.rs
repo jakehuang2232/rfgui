@@ -12,7 +12,7 @@ mod tests {
     use super::{
         expand_corner_radii_for_spread, main_axis_start_and_gap, normalize_corner_radii,
         resolve_px_with_base, resolve_signed_px_with_base, Element, ElementTrait, EventTarget,
-        LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+        LayoutConstraints, LayoutPlacement, Layoutable, UiBuildContext,
     };
     use super::super::core::Position as LayoutPosition;
     use rustc_hash::{FxHashMap, FxHashSet};
@@ -21,7 +21,6 @@ mod tests {
     use crate::transition::{LayoutField, VisualField};
     use super::{reset_test_promoted_build_counts, test_promoted_build_count};
     use crate::view::base_component::set_style_field_by_id;
-    use crate::view::node_arena::{NodeArena, NodeKey};
     use crate::view::test_support::{
         child_key, child_snapshot, commit_child, commit_element, measure_and_place,
         new_test_arena, nth_child_snapshot,

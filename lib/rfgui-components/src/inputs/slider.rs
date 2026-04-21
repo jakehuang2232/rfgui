@@ -12,6 +12,7 @@ use rfgui::{
 
 pub struct Slider;
 
+#[derive(Clone)]
 #[props]
 pub struct SliderProps {
     pub value: Option<f64>,
@@ -200,6 +201,7 @@ impl RsxComponent<SliderProps> for Slider {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for Slider {
     type Props = __SliderPropsInit;
     type StrictProps = SliderProps;

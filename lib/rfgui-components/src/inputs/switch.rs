@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 pub struct Switch;
 
+#[derive(Clone)]
 #[props]
 pub struct SwitchProps {
     pub label: String,
@@ -114,6 +115,7 @@ impl RsxComponent<SwitchProps> for Switch {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for Switch {
     type Props = __SwitchPropsInit;
     type StrictProps = SwitchProps;
