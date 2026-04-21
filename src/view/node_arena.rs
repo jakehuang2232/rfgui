@@ -15,6 +15,7 @@
 //! - Future features (a11y tree, devtools inspector, arbitrary
 //!   cross-subtree queries) fall out naturally.
 
+use rustc_hash::FxHashMap;
 use slotmap::SlotMap;
 use std::cell::{Ref, RefCell, RefMut};
 
@@ -147,6 +148,20 @@ pub struct NodeArena {
     /// Top-level nodes (one per RSX root). Kept here rather than on
     /// individual elements so the arena itself is enough to traverse.
     roots: Vec<NodeKey>,
+    /// Secondary index: `ElementTrait::stable_id()` → `NodeKey`. Powers
+    /// the Phase A React-alignment Fiber lookup (`patch_to_fiber_work`
+    /// needs to translate `Patch` paths anchored on stable ids into
+    /// arena keys without a full tree walk).
+    ///
+    /// Invariants:
+    /// - Only non-zero stable_ids are indexed (Placeholder returns 0;
+    ///   legacy stubs may also return 0 — indexing would collide).
+    /// - Updated on `insert` / `insert_with_key` / `remove` /
+    ///   `remove_subtree`. `with_element_taken` leaves the slot's
+    ///   stable_id invariant (placeholder swap-back is transparent).
+    /// - Callers that rebuild an element's identity in place should
+    ///   refresh via [`Self::refresh_stable_id_index`].
+    stable_id_index: FxHashMap<u64, NodeKey>,
 }
 
 impl NodeArena {
@@ -182,7 +197,12 @@ impl NodeArena {
     /// Insert a pre-built `Node`. Prefer [`Self::insert_with_key`] when the
     /// node's own storage needs to reference its key.
     pub fn insert(&mut self, node: Node) -> NodeKey {
-        self.slots.insert(RefCell::new(node))
+        let sid = node.element.stable_id();
+        let key = self.slots.insert(RefCell::new(node));
+        if sid != 0 {
+            self.stable_id_index.insert(sid, key);
+        }
+        key
     }
 
     /// Two-phase init: reserve a key, then let the closure build the node
@@ -192,14 +212,30 @@ impl NodeArena {
     where
         F: FnOnce(NodeKey) -> Node,
     {
-        self.slots.insert_with_key(|k| RefCell::new(f(k)))
+        let key = self.slots.insert_with_key(|k| RefCell::new(f(k)));
+        if let Some(cell) = self.slots.get(key) {
+            let sid = cell.borrow().element.stable_id();
+            if sid != 0 {
+                self.stable_id_index.insert(sid, key);
+            }
+        }
+        key
     }
 
     /// Remove an element and its `Node` wrapper. Does **not** cascade to
     /// children — callers must walk the subtree (use
     /// [`Self::remove_subtree`] for recursive removal).
     pub fn remove(&mut self, key: NodeKey) -> Option<Node> {
-        self.slots.remove(key).map(RefCell::into_inner)
+        let node = self.slots.remove(key).map(RefCell::into_inner)?;
+        let sid = node.element.stable_id();
+        if sid != 0 {
+            // Only clear if the index still points at `key` — a prior
+            // `refresh_stable_id_index` or id collision may have remapped it.
+            if self.stable_id_index.get(&sid).copied() == Some(key) {
+                self.stable_id_index.remove(&sid);
+            }
+        }
+        Some(node)
     }
 
     /// Recursively remove `key` and all descendants. Returns the number of
@@ -211,11 +247,63 @@ impl NodeArena {
         self.collect_subtree_keys(key, &mut to_remove);
         let mut removed = 0;
         for k in to_remove {
-            if self.slots.remove(k).is_some() {
+            if let Some(cell) = self.slots.remove(k) {
+                let sid = cell.borrow().element.stable_id();
+                if sid != 0
+                    && self.stable_id_index.get(&sid).copied() == Some(k)
+                {
+                    self.stable_id_index.remove(&sid);
+                }
                 removed += 1;
             }
         }
         removed
+    }
+
+    /// Look up a node key by its element's `stable_id()`.
+    ///
+    /// Returns `None` when:
+    /// - `id` is 0 (sentinel; never indexed).
+    /// - No node with that stable id is currently in the arena.
+    /// - The stable id has collided and the index currently points at a
+    ///   different slot (callers that care should
+    ///   [`Self::refresh_stable_id_index`] after any operation that may
+    ///   rename stable ids in place).
+    pub fn find_by_stable_id(&self, id: u64) -> Option<NodeKey> {
+        if id == 0 {
+            return None;
+        }
+        let key = *self.stable_id_index.get(&id)?;
+        // Defensive: verify the slot still exists and matches. Stale
+        // index entries should be impossible (insert/remove maintain the
+        // invariant), but a missed refresh after a rare in-place id
+        // change is cheaper to detect here than to debug later.
+        self.slots.get(key).map(|_| key)
+    }
+
+    /// Borrow the full stable-id → NodeKey index. Used by the Phase A
+    /// incremental commit path (`fiber_work`) which wants a
+    /// `&FxHashMap<u64, NodeKey>` to pass into
+    /// [`crate::view::fiber_work::patch_to_fiber_work`].
+    pub(crate) fn stable_id_index(&self) -> &FxHashMap<u64, NodeKey> {
+        &self.stable_id_index
+    }
+
+    /// Full rescan of live slots that rebuilds `stable_id_index` from
+    /// scratch. Use after any bulk mutation that bypasses the normal
+    /// `insert` / `remove` path (e.g. a cold boot replay, or a fallback
+    /// from the incremental-commit path back to a full rebuild).
+    ///
+    /// Non-zero stable ids win by last-write order; duplicates produce a
+    /// single index entry pointing at whichever slot is visited last.
+    pub fn refresh_stable_id_index(&mut self) {
+        self.stable_id_index.clear();
+        for (key, cell) in self.slots.iter() {
+            let sid = cell.borrow().element.stable_id();
+            if sid != 0 {
+                self.stable_id_index.insert(sid, key);
+            }
+        }
     }
 
     fn collect_subtree_keys(&self, key: NodeKey, out: &mut Vec<NodeKey>) {

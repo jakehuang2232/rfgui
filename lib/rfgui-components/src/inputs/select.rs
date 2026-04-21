@@ -133,10 +133,12 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
             event.meta.stop_propagation();
         })
     };
+    eprintln!("[select] render called");
     let pseudo_blur = {
         let open_binding = open_binding.clone();
         let focused_binding = focused_binding.clone();
         BlurHandlerProp::new(move |_| {
+            eprintln!("[select] pseudo_blur FIRED");
             focused_binding.set(false);
             open_binding.set(false);
         })

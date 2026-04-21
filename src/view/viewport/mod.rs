@@ -13,6 +13,8 @@ mod scene_helpers;
 mod transitions_tick;
 #[cfg(any())]
 mod tests;
+#[cfg(test)]
+mod m2_incremental_tests;
 
 use crate::time::Instant;
 use crate::transition::{
@@ -47,7 +49,6 @@ use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderT
 use crate::{
     ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style,
 };
-use std::any::Any;
 
 use std::ops::Sub;
 use std::sync::Arc;
@@ -230,8 +231,13 @@ struct SceneState {
     node_arena: super::node_arena::NodeArena,
     ui_root_keys: Vec<super::node_arena::NodeKey>,
     scroll_offsets: FxHashMap<u64, (f32, f32)>,
-    element_snapshots: FxHashMap<u64, Box<dyn Any>>,
     last_rsx_root: Option<RsxNode>,
+    /// Phase A M1 dark-launch flag for the Fiber-commit (`FiberWork`)
+    /// path. Defaults to `false`; M1 never reads it from `render_rsx`
+    /// (the plumbing is in place but not yet wired). M2 flips the
+    /// switch and compares output against the legacy `apply_patch`
+    /// pipeline.
+    use_incremental_commit: bool,
 }
 
 impl SceneState {
@@ -240,8 +246,17 @@ impl SceneState {
             node_arena: super::node_arena::NodeArena::new(),
             ui_root_keys: Vec::new(),
             scroll_offsets: FxHashMap::default(),
-            element_snapshots: FxHashMap::default(),
             last_rsx_root: None,
+            // M5: flag-on by default. Every failure mode in the
+            // incremental path (non-committable work, translation
+            // None, descriptor build error) is caught in
+            // `render_rsx` and falls through to the legacy
+            // full-rebuild pipeline, so the default-true setting
+            // trades no correctness for reduced per-frame work on
+            // the happy path. Setters (`set_use_incremental_commit`)
+            // still let call sites flip it off for A/B testing or
+            // regression bisection.
+            use_incremental_commit: true,
         }
     }
 }
@@ -515,6 +530,20 @@ impl Viewport {
             needs_rebuild: true,
             ready_dispatched: false,
         }
+    }
+
+    /// Phase A M1 dark-launch switch for the incremental Fiber commit
+    /// path. Off by default. `render_rsx` will continue to use the
+    /// legacy `apply_patch` pipeline regardless until M2 wires the
+    /// flag through the commit site.
+    pub fn set_use_incremental_commit(&mut self, on: bool) {
+        self.scene.use_incremental_commit = on;
+    }
+
+    /// Read the current setting of
+    /// [`Self::set_use_incremental_commit`].
+    pub fn use_incremental_commit(&self) -> bool {
+        self.scene.use_incremental_commit
     }
 
     pub fn set_app(&mut self, app: Box<dyn App>) {

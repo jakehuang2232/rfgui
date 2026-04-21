@@ -83,6 +83,62 @@ impl Svg {
         self.error_slot = slot;
     }
 
+    /// 軌 1 #3: mirror of `Image::replace_loading_slot_incremental`
+    /// for the incremental-commit hot-swap path. See that method for
+    /// the invariant sequence (drain active slot → drop old keys →
+    /// install new keys; `sync_active_slot` re-runs next frame).
+    pub(crate) fn replace_loading_slot_incremental(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        new_keys: Vec<crate::view::node_arena::NodeKey>,
+    ) {
+        self.sync_active_slot(arena, ActiveSlot::None);
+        let old_keys = std::mem::take(&mut self.loading_slot);
+        for key in old_keys {
+            arena.remove_subtree(key);
+        }
+        self.loading_slot = new_keys;
+    }
+
+    pub(crate) fn replace_error_slot_incremental(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        new_keys: Vec<crate::view::node_arena::NodeKey>,
+    ) {
+        self.sync_active_slot(arena, ActiveSlot::None);
+        let old_keys = std::mem::take(&mut self.error_slot);
+        for key in old_keys {
+            arena.remove_subtree(key);
+        }
+        self.error_slot = new_keys;
+    }
+
+    /// Test/debug accessor: count slot keys held in the loading Vec
+    /// when inactive (mirror of `Image::loading_slot_len`).
+    #[cfg(test)]
+    pub(crate) fn loading_slot_len(&self) -> usize {
+        use crate::view::base_component::ElementTrait;
+        if matches!(self.active_slot, ActiveSlot::Loading) {
+            self.element.children().len()
+        } else {
+            self.loading_slot.len()
+        }
+    }
+
+    /// 軌 1 #4: hot-swap the Svg source. Releases the old document +
+    /// any live raster and acquires the new document. The next
+    /// `measure` call will re-resolve the active slot and re-request
+    /// a raster sized to the new document.
+    pub fn set_source(&mut self, source: SvgSource) {
+        release_svg_document(self.source_key);
+        self.source_key = acquire_svg_document(&source);
+        if let Some(raster_key) = self.active_raster_key.take() {
+            release_svg_raster(raster_key);
+        }
+        self.active_raster_size = None;
+        self.last_raster_request_at = None;
+    }
+
     fn document_snapshot(&self) -> SvgDocumentSnapshot {
         snapshot_svg_document(self.source_key).unwrap_or(SvgDocumentSnapshot::Loading)
     }
@@ -230,14 +286,6 @@ impl ElementTrait for Svg {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
-    }
-
-    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        self.element.snapshot_state()
-    }
-
-    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
-        self.element.restore_state(snapshot)
     }
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {

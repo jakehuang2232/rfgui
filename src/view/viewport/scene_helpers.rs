@@ -111,58 +111,13 @@ impl Viewport {
         }
     }
 
-    pub(super) fn save_element_snapshots(
-        arena: &crate::view::node_arena::NodeArena,
-        root_keys: &[crate::view::node_arena::NodeKey],
-        map: &mut FxHashMap<u64, Box<dyn Any>>,
-    ) {
-        fn walk(
-            node: &dyn crate::view::base_component::ElementTrait,
-            arena: &crate::view::node_arena::NodeArena,
-            map: &mut FxHashMap<u64, Box<dyn Any>>,
-        ) {
-            if let Some(snapshot) = node.snapshot_state() {
-                map.insert(node.stable_id(), snapshot);
-            }
-            for child_key in node.children() {
-                if let Some(child_node) = arena.get(*child_key) {
-                    walk(child_node.element.as_ref(), arena, map);
-                }
-            }
-        }
-        for &root_key in root_keys {
-            if let Some(root_node) = arena.get(root_key) {
-                walk(root_node.element.as_ref(), arena, map);
-            }
-        }
-    }
-
-    pub(super) fn restore_element_snapshots(
-        arena: &crate::view::node_arena::NodeArena,
-        root_keys: &[crate::view::node_arena::NodeKey],
-        map: &FxHashMap<u64, Box<dyn Any>>,
-    ) {
-        fn walk(
-            node: &mut dyn crate::view::base_component::ElementTrait,
-            arena: &crate::view::node_arena::NodeArena,
-            map: &FxHashMap<u64, Box<dyn Any>>,
-        ) {
-            if let Some(snapshot) = map.get(&node.stable_id()) {
-                let _ = node.restore_state(snapshot.as_ref());
-            }
-            let child_keys: Vec<crate::view::node_arena::NodeKey> = node.children().to_vec();
-            for child_key in child_keys {
-                if let Some(mut child_node) = arena.get_mut(child_key) {
-                    walk(child_node.element.as_mut(), arena, map);
-                }
-            }
-        }
-        for &root_key in root_keys {
-            if let Some(mut root_node) = arena.get_mut(root_key) {
-                walk(root_node.element.as_mut(), arena, map);
-            }
-        }
-    }
+    // Phase B (軌 1 #1-#6 unlocked): scene-side `save_element_snapshots`
+    // / `restore_element_snapshots` removed. Incremental commit no
+    // longer rebuilds Element instances on every render, so the
+    // host-state save/restore hack has nothing to compensate for on
+    // the happy path. The remaining full-rebuild fallbacks
+    // (Fragment-at-root, multi-descriptor Replace, Text cascade
+    // boundary, em/rem font_size) accept the documented state loss.
 
     pub(super) fn extract_style_prop(props: &[(&'static str, PropValue)]) -> Result<Option<Style>, String> {
         let Some((_, value)) = props.iter().find(|(key, _)| *key == "style") else {
@@ -200,8 +155,19 @@ impl Viewport {
         if !removed.is_empty() || changed.len() != 1 || changed[0].0 != "style" {
             return Ok(false);
         }
-        let old_style = Self::extract_style_prop(old_props)?.unwrap_or_default();
-        let new_style = Self::extract_style_from_value(&changed[0].1)?.unwrap_or_default();
+        // Text/TextArea hosts ship `TextStylePropSchema`-typed style
+        // values that don't round-trip through `ElementStylePropSchema`.
+        // Placement-only optimization only applies to Element hosts;
+        // downgrade schema mismatch to "not placement-only" instead of
+        // propagating the error to `render_rsx`.
+        let Ok(old_style) = Self::extract_style_prop(old_props) else {
+            return Ok(false);
+        };
+        let old_style = old_style.unwrap_or_default();
+        let Ok(new_style) = Self::extract_style_from_value(&changed[0].1) else {
+            return Ok(false);
+        };
+        let new_style = new_style.unwrap_or_default();
         if old_style.clone().without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
             != new_style.clone().without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
         {
@@ -275,7 +241,11 @@ impl Viewport {
             if !Self::is_placement_only_update(&old_element.props, changed, removed)? {
                 return Ok(false);
             }
-            let style = Self::extract_style_from_value(&changed[0].1)?.unwrap_or_default();
+            // Same schema-mismatch guard as in `is_placement_only_update`.
+            let Ok(style) = Self::extract_style_from_value(&changed[0].1) else {
+                return Ok(false);
+            };
+            let style = style.unwrap_or_default();
             let node_id = crate::view::renderer_adapter::rendered_node_id_by_index_path(root, path)?
                 .ok_or_else(|| "target redraw patch resolved to a fragment".to_string())?;
             updates.push((node_id, style));

@@ -11,6 +11,21 @@ use std::rc::Rc;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
     ReplaceRoot(RsxNode),
+    /// Wholesale replace of the entire root set (arity or identity change at
+    /// root level). Apply side clears all arena roots and commits N new ones.
+    /// Only emitted by `reconcile_multi`; always carried on a `RootedPatch`
+    /// with `root_index == 0`.
+    ReplaceAllRoots(Vec<RsxNode>),
+    /// Reorder the arena root set without minting new keys.
+    /// `new_arena_roots[i] == old_arena_roots[mapping[i]]`.
+    /// Emitted by `reconcile_multi` when the new root set is a permutation of
+    /// the old (keyed identity multiset matches but order differs). Apply
+    /// side rearranges `arena.roots` only — NodeKeys stay alive so any
+    /// promoted-layer / Persistent GPU resource cached against them
+    /// survives. Always carried on a `RootedPatch` with `root_index == 0`;
+    /// must be processed before any subsequent per-pair patches in the
+    /// same batch (which are tagged with the *new* root_index).
+    ReorderRoots(Vec<usize>),
     ReplaceNode {
         path: Vec<usize>,
         node: RsxNode,
@@ -40,6 +55,14 @@ pub enum Patch {
         from: usize,
         to: usize,
     },
+}
+
+/// Patch tagged with the arena root index it applies to. Produced by
+/// `reconcile_multi`; dispatcher passes `roots[root_index]` to the translator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RootedPatch {
+    pub root_index: usize,
+    pub patch: Patch,
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +205,95 @@ pub fn reconcile(old: Option<&RsxNode>, new: &RsxNode) -> Vec<Patch> {
     let mut path = Vec::new();
     reconcile_node(old, new, &mut path, &mut patches);
     patches
+}
+
+/// Multi-root reconcile entry point. Each slot in `old` / `new` corresponds to
+/// one arena root. Caller is responsible for normalizing Fragment-at-root by
+/// unpacking its children into this slice.
+///
+/// Semantics:
+/// - `old = None` (cold render) → single `ReplaceAllRoots(new.clone())`.
+/// - Arity mismatch or any per-index root identity mismatch →
+///   `ReplaceAllRoots(new.clone())` (wholesale root-set swap).
+/// - Otherwise per-root reconcile; emitted patches tagged with `root_index = i`.
+pub fn reconcile_multi(old: Option<&[&RsxNode]>, new: &[&RsxNode]) -> Vec<RootedPatch> {
+    let Some(old) = old else {
+        return vec![RootedPatch {
+            root_index: 0,
+            patch: Patch::ReplaceAllRoots(new.iter().map(|n| (*n).clone()).collect()),
+        }];
+    };
+
+    if old.len() != new.len() {
+        return vec![RootedPatch {
+            root_index: 0,
+            patch: Patch::ReplaceAllRoots(new.iter().map(|n| (*n).clone()).collect()),
+        }];
+    }
+
+    // Keyed pairing across the root set. Examples like a window manager
+    // re-order Fragment-at-root children every frame; per-index identity
+    // comparison would mark every index as a mismatch and trigger
+    // ReplaceAllRoots, wiping NodeKeys (and any promoted-layer GPU
+    // resources cached against them). Match by `RsxNodeIdentity` instead,
+    // emit a `ReorderRoots` permutation when the multiset matches but
+    // order differs, and fall back to `ReplaceAllRoots` only when an
+    // identity is genuinely missing.
+    //
+    // Same identity appearing multiple times: pair them in occurrence
+    // order (FIFO), matching the per-position semantics
+    // `reconcile_children` uses for unkeyed siblings.
+    let mut by_identity: FxHashMap<RsxNodeIdentity, std::collections::VecDeque<usize>> =
+        FxHashMap::default();
+    for (i, o) in old.iter().enumerate() {
+        by_identity.entry(o.identity().clone()).or_default().push_back(i);
+    }
+
+    let mut mapping: Vec<usize> = Vec::with_capacity(new.len());
+    for n in new.iter() {
+        let Some(queue) = by_identity.get_mut(&n.identity()) else {
+            return vec![RootedPatch {
+                root_index: 0,
+                patch: Patch::ReplaceAllRoots(new.iter().map(|n| (*n).clone()).collect()),
+            }];
+        };
+        let Some(j) = queue.pop_front() else {
+            return vec![RootedPatch {
+                root_index: 0,
+                patch: Patch::ReplaceAllRoots(new.iter().map(|n| (*n).clone()).collect()),
+            }];
+        };
+        mapping.push(j);
+    }
+
+    let mut out = Vec::new();
+    let is_permutation_identity = mapping.iter().enumerate().all(|(i, j)| i == *j);
+    if !is_permutation_identity {
+        out.push(RootedPatch {
+            root_index: 0,
+            patch: Patch::ReorderRoots(mapping.clone()),
+        });
+    }
+
+    let mut scratch = Vec::new();
+    let mut path = Vec::new();
+    for (new_index, &old_index) in mapping.iter().enumerate() {
+        let o = old[old_index];
+        let n = new[new_index];
+        scratch.clear();
+        path.clear();
+        reconcile_node(o, n, &mut path, &mut scratch);
+        for p in scratch.drain(..) {
+            // Patches reference roots by their *new* (post-reorder)
+            // index, so the dispatcher can rely on `roots[root_index]`
+            // after applying the leading `ReorderRoots` patch.
+            out.push(RootedPatch {
+                root_index: new_index,
+                patch: p,
+            });
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

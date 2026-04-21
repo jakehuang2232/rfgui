@@ -90,28 +90,6 @@ struct FirstLineLayoutCacheEntry {
     fragment: InlineTextFragment,
 }
 
-#[derive(Clone)]
-struct TextMeasurementSnapshot {
-    signature: u64,
-    measure_revision: u64,
-    cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
-    cached_height_for_width: Option<(u64, f32, f32)>,
-    layout_cache: FxHashMap<TextLayoutCacheKey, MeasuredTextLayout>,
-    inline_plan_cache: FxHashMap<InlinePlanCacheKey, InlineTextPlan>,
-    first_line_fragment_cache: FxHashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
-    wrapped_suffix_cache: FxHashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
-    layout_buffer: Option<Arc<GlyphBuffer>>,
-    inline_plan: Option<InlineTextPlan>,
-    last_inline_measure_context: Option<InlineMeasureContext>,
-    dirty_flags: super::DirtyFlags,
-    size: Size,
-    render_size: Size,
-    layout_size: Size,
-    layout_override_width: Option<f32>,
-    layout_override_height: Option<f32>,
-    allow_wrap: bool,
-}
-
 pub struct Text {
     element: Element,
     position: Position,
@@ -146,6 +124,18 @@ pub struct Text {
     last_inline_measure_context: Option<InlineMeasureContext>,
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
+    // 軌 A #7: per-prop "set explicitly by the author?" flags. Flipped
+    // to `true` by the public setters (cold convert and incremental
+    // updates both go through setters, so the flags stay accurate).
+    // `apply_inherited` (the cascade side of this pair) only writes
+    // props whose flag is currently `false`, so explicit authorship
+    // always wins over an ancestor's cascade.
+    font_family_explicit: bool,
+    font_size_explicit: bool,
+    font_weight_explicit: bool,
+    color_explicit: bool,
+    cursor_explicit: bool,
+    text_wrap_explicit: bool,
 }
 
 /// LRU cache with generation-based eviction (à la Skia SkStrikeCache).
@@ -805,21 +795,13 @@ impl Text {
             last_inline_measure_context: None,
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
+            font_family_explicit: false,
+            font_size_explicit: false,
+            font_weight_explicit: false,
+            color_explicit: false,
+            cursor_explicit: false,
+            text_wrap_explicit: false,
         }
-    }
-
-    fn measurement_signature(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.content.hash(&mut hasher);
-        self.font_families.hash(&mut hasher);
-        self.font_size.to_bits().hash(&mut hasher);
-        self.line_height.to_bits().hash(&mut hasher);
-        self.font_weight.hash(&mut hasher);
-        std::mem::discriminant(&self.align).hash(&mut hasher);
-        std::mem::discriminant(&self.text_wrap).hash(&mut hasher);
-        self.auto_width.hash(&mut hasher);
-        self.auto_height.hash(&mut hasher);
-        hasher.finish()
     }
 
     fn clear_layout_caches(&mut self) {
@@ -887,6 +869,7 @@ impl Text {
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
+        self.color_explicit = true;
         self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
     }
 
@@ -903,6 +886,7 @@ impl Text {
             self.font_families = families;
             self.mark_measure_dirty();
         }
+        self.font_family_explicit = true;
     }
 
     pub fn set_fonts<I, S>(&mut self, font_families: I)
@@ -920,6 +904,7 @@ impl Text {
             self.font_families = next;
             self.mark_measure_dirty();
         }
+        self.font_family_explicit = true;
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
@@ -927,6 +912,16 @@ impl Text {
             self.font_size = font_size;
             self.mark_measure_dirty();
         }
+        self.font_size_explicit = true;
+    }
+
+    /// Crate-visible read for the M6 cascade tests; Text resolves
+    /// font_size at convert time from `InheritedTextStyle`, so
+    /// exposing the stored value lets tests assert parent cascade
+    /// reached the Text leaf correctly.
+    #[cfg(test)]
+    pub(crate) fn font_size(&self) -> f32 {
+        self.font_size
     }
 
     pub fn set_line_height(&mut self, line_height: f32) {
@@ -942,6 +937,7 @@ impl Text {
             self.font_weight = clamped;
             self.mark_measure_dirty();
         }
+        self.font_weight_explicit = true;
     }
 
     pub fn set_align(&mut self, align: Align) {
@@ -970,6 +966,7 @@ impl Text {
             self.clear_layout_caches();
             self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
         }
+        self.text_wrap_explicit = true;
     }
 
     pub fn set_auto_width(&mut self, auto: bool) {
@@ -992,6 +989,159 @@ impl Text {
         let mut style = Style::new();
         style.set_cursor(cursor);
         self.element.apply_style(style);
+        self.cursor_explicit = true;
+    }
+
+    /// 軌 1 #8: incremental-path replay of the cold-path `style`
+    /// fan-out. Called by `apply_update_to_text` when a `style` prop
+    /// on a `<Text>` element is updated or removed.
+    ///
+    /// Mirror of `convert_text_element`'s style handling (lines
+    /// ~950-996), with one addition: every author-controllable
+    /// explicit flag is flipped back to `false` before applying the
+    /// new style, so props removed from the declaration are free to
+    /// pick up the ancestor cascade again via `apply_inherited`.
+    ///
+    /// Scope caveat: if a declaration is removed and no inherited
+    /// value exists for it, the prior explicit value sticks (the
+    /// cold path starts from `Text::new` defaults; the incremental
+    /// path cannot cheaply reset to defaults without hardcoding
+    /// them here). Ancestor cascade covers the common case.
+    pub(crate) fn apply_style_incremental(
+        &mut self,
+        style: Option<&Style>,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) {
+        use crate::style::{ParsedValue, PropertyId};
+
+        // Track 1 #10 scope fix: do NOT blanket-reset the per-prop
+        // explicit flags before re-applying. A Text can source the
+        // same prop (e.g. `font_size`) from an independent prop
+        // (`<Text font_size={14} style={{color:...}}>`) — resetting
+        // the flag would cause `apply_inherited` to overwrite the
+        // author's value with the parent cascade on the next style
+        // re-apply (observed: Switch label font-size jumping after
+        // any re-render of its parent scene).
+        //
+        // Consequence: removing a declaration from the style block
+        // won't re-pick the ancestor cascade on its own. Cold-path
+        // rebuild still handles wholesale resets; callers that need
+        // incremental declaration-removal cascade refill must author
+        // an explicit reset value.
+
+        let mut width: Option<f32> = None;
+        let mut height: Option<f32> = None;
+
+        if let Some(style) = style {
+            if let Some(value) = style.get(PropertyId::Width) {
+                width = crate::view::renderer_adapter::length_from_parsed_value(
+                    value,
+                    "Text style.width",
+                )
+                .ok()
+                .flatten();
+            }
+            if let Some(value) = style.get(PropertyId::Height) {
+                height = crate::view::renderer_adapter::length_from_parsed_value(
+                    value,
+                    "Text style.height",
+                )
+                .ok()
+                .flatten();
+            }
+            if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
+                self.set_fonts(font_family.as_slice().iter().cloned());
+            }
+            if let Some(font_size) = crate::view::renderer_adapter::resolve_font_size_from_style(
+                style,
+                inherited
+                    .font_size
+                    .unwrap_or(inherited.root_font_size),
+                inherited.root_font_size,
+                inherited.viewport_width,
+                inherited.viewport_height,
+            ) {
+                self.set_font_size(font_size);
+            }
+            if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
+                self.set_font_weight(font_weight.value());
+            }
+            if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+                self.set_color(color.clone());
+            }
+            if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
+                self.set_cursor(*cursor);
+            }
+            if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
+                self.set_text_wrap(*text_wrap);
+            }
+        }
+
+        self.apply_inherited(inherited);
+
+        if let Some(width) = width {
+            self.set_width(width);
+        } else {
+            self.set_auto_width(true);
+        }
+        if let Some(height) = height {
+            self.set_height(height);
+        } else {
+            self.set_auto_height(true);
+        }
+    }
+
+    /// 軌 A #7: apply an ancestor-derived `InheritedTextStyle` to any
+    /// Text prop that the author didn't set explicitly. Returns
+    /// `true` if any prop changed (so the caller can short-circuit
+    /// redundant dirty-marking). Explicit values — anything the
+    /// author set via a public setter — are preserved.
+    pub(crate) fn apply_inherited(
+        &mut self,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> bool {
+        let mut changed = false;
+        if !self.font_family_explicit && !inherited.font_families.is_empty()
+            && self.font_families != inherited.font_families
+        {
+            self.font_families = inherited.font_families.clone();
+            self.mark_measure_dirty();
+            changed = true;
+        }
+        if !self.font_size_explicit && let Some(fs) = inherited.font_size
+            && (self.font_size - fs).abs() > f32::EPSILON
+        {
+            self.font_size = fs;
+            self.mark_measure_dirty();
+            changed = true;
+        }
+        if !self.font_weight_explicit && let Some(fw) = inherited.font_weight
+            && self.font_weight != fw
+        {
+            self.font_weight = fw;
+            self.mark_measure_dirty();
+            changed = true;
+        }
+        if !self.color_explicit && let Some(color) = &inherited.color {
+            self.color = Box::new(color.clone());
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
+            changed = true;
+        }
+        if !self.text_wrap_explicit && let Some(tw) = inherited.text_wrap
+            && self.text_wrap != tw
+        {
+            self.text_wrap = tw;
+            self.clear_layout_caches();
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+            changed = true;
+        }
+        if !self.cursor_explicit && let Some(cursor) = inherited.cursor {
+            let mut style = Style::new();
+            style.set_cursor(cursor);
+            self.element.apply_style(style);
+            changed = true;
+        }
+        changed
     }
 
     #[cfg(test)]
@@ -1132,56 +1282,7 @@ impl ElementTrait for Text {
         self
     }
 
-    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        Some(Box::new(TextMeasurementSnapshot {
-            signature: self.measurement_signature(),
-            measure_revision: self.measure_revision,
-            cached_intrinsic_layout: self.cached_intrinsic_layout.clone(),
-            cached_height_for_width: self.cached_height_for_width,
-            layout_cache: self.layout_cache.clone(),
-            inline_plan_cache: self.inline_plan_cache.clone(),
-            first_line_fragment_cache: self.first_line_fragment_cache.clone(),
-            wrapped_suffix_cache: self.wrapped_suffix_cache.clone(),
-            layout_buffer: self.layout_buffer.clone(),
-            inline_plan: self.inline_plan.clone(),
-            last_inline_measure_context: self.last_inline_measure_context,
-            dirty_flags: self.dirty_flags,
-            size: self.size,
-            render_size: self.render_size,
-            layout_size: self.layout_size,
-            layout_override_width: self.layout_override_width,
-            layout_override_height: self.layout_override_height,
-            allow_wrap: self.allow_wrap,
-        }))
-    }
-
-    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
-        let Some(snapshot) = snapshot.downcast_ref::<TextMeasurementSnapshot>() else {
-            return false;
-        };
-        if snapshot.signature != self.measurement_signature() {
-            return false;
-        }
-        self.measure_revision = snapshot.measure_revision;
-        self.cached_intrinsic_layout = snapshot.cached_intrinsic_layout.clone();
-        self.cached_height_for_width = snapshot.cached_height_for_width;
-        self.layout_cache = snapshot.layout_cache.clone();
-        self.inline_plan_cache = snapshot.inline_plan_cache.clone();
-        self.first_line_fragment_cache = snapshot.first_line_fragment_cache.clone();
-        self.wrapped_suffix_cache = snapshot.wrapped_suffix_cache.clone();
-        self.layout_buffer = snapshot.layout_buffer.clone();
-        self.inline_plan = snapshot.inline_plan.clone();
-        self.last_inline_measure_context = snapshot.last_inline_measure_context;
-        self.dirty_flags = snapshot.dirty_flags;
-        self.size = snapshot.size;
-        self.render_size = snapshot.render_size;
-        self.layout_size = snapshot.layout_size;
-        self.layout_override_width = snapshot.layout_override_width;
-        self.layout_override_height = snapshot.layout_override_height;
-        self.allow_wrap = snapshot.allow_wrap;
-        self.element.set_size(self.size.width, self.size.height);
-        true
-    }
+    // Phase B: snapshot_state / restore_state removed (see ElementTrait def).
 
     fn promotion_node_info(&self) -> PromotionNodeInfo {
         PromotionNodeInfo {

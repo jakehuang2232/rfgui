@@ -1355,13 +1355,13 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
-    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        None
-    }
-
-    fn restore_state(&mut self, _snapshot: &dyn std::any::Any) -> bool {
-        false
-    }
+    // Phase B: `snapshot_state` / `restore_state` removed. The
+    // host-state save/restore hack lived here so the cold-rebuild
+    // pipeline could re-seed Element-internal state (scroll offset,
+    // hover, layout-transition snapshots, …) on every render. With
+    // the incremental-commit path keeping Element instances alive
+    // across renders, the hack is dead weight on the happy path;
+    // remaining fallback paths accept the documented state loss.
 
     fn intercepts_pointer_at(&self, _viewport_x: f32, _viewport_y: f32) -> bool {
         false
@@ -1570,15 +1570,17 @@ struct FlexItemPlan {
     cross: f32,
 }
 
+/// Snapshot of an Element's "previous frame" visual style. Used by
+/// the style-transition emission path (`collect_style_transition_
+/// requests` / `preserve_transform_transition_baseline`) to compute
+/// from→to deltas. Phase B trimmed the layout/hover/transition fields
+/// — those existed for the now-removed `restore_state` hack.
 #[derive(Clone, Debug)]
 struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
     width: f32,
     height: f32,
-    layout_width: f32,
-    layout_height: f32,
-    is_hovered: bool,
     background_color: Color,
     foreground_color: Color,
     border_top_color: Color,
@@ -1588,24 +1590,6 @@ struct ElementStyleSnapshot {
     box_shadows: Vec<BoxShadow>,
     transform: Transform,
     transform_origin: TransformOrigin,
-    transition_snapshot: Option<TransitionSnapshot>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TransitionSnapshot {
-    has_layout_snapshot: bool,
-    layout_transition_visual_offset_x: f32,
-    layout_transition_visual_offset_y: f32,
-    layout_transition_override_width: Option<f32>,
-    layout_transition_override_height: Option<f32>,
-    layout_transition_target_x: Option<f32>,
-    layout_transition_target_y: Option<f32>,
-    layout_transition_target_width: Option<f32>,
-    layout_transition_target_height: Option<f32>,
-    last_parent_layout_x: f32,
-    last_parent_layout_y: f32,
-    layout_assigned_width: Option<f32>,
-    layout_assigned_height: Option<f32>,
 }
 
 pub struct Element {
@@ -1706,9 +1690,6 @@ impl Element {
             border_radius: self.border_radius,
             width: self.core.size.width,
             height: self.core.size.height,
-            layout_width: self.core.layout_size.width,
-            layout_height: self.core.layout_size.height,
-            is_hovered: self.is_hovered,
             background_color: Color::rgba(bg_r, bg_g, bg_b, bg_a),
             foreground_color: self.foreground_color,
             border_top_color: Color::rgba(bt_r, bt_g, bt_b, bt_a),
@@ -1718,21 +1699,6 @@ impl Element {
             box_shadows: self.box_shadows.clone(),
             transform: self.transform.clone(),
             transform_origin: self.transform_origin,
-            transition_snapshot: Some(TransitionSnapshot {
-                has_layout_snapshot: self.has_layout_snapshot,
-                layout_transition_visual_offset_x: self.layout_transition_visual_offset_x,
-                layout_transition_visual_offset_y: self.layout_transition_visual_offset_y,
-                layout_transition_override_width: self.layout_transition_override_width,
-                layout_transition_override_height: self.layout_transition_override_height,
-                layout_transition_target_x: self.layout_transition_target_x,
-                layout_transition_target_y: self.layout_transition_target_y,
-                layout_transition_target_width: self.layout_transition_target_width,
-                layout_transition_target_height: self.layout_transition_target_height,
-                last_parent_layout_x: self.last_parent_layout_x,
-                last_parent_layout_y: self.last_parent_layout_y,
-                layout_assigned_width: self.layout_assigned_width,
-                layout_assigned_height: self.layout_assigned_height,
-            }),
         }
     }
 
@@ -1977,59 +1943,7 @@ impl ElementTrait for Element {
         self
     }
 
-    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        Some(Box::new(self.capture_style_snapshot()))
-    }
-
-    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
-        let Some(snapshot) = snapshot.downcast_ref::<ElementStyleSnapshot>() else {
-            return false;
-        };
-
-        self.core.set_width(snapshot.width);
-        self.core.set_height(snapshot.height);
-        self.core.layout_size = Size {
-            width: snapshot.layout_width,
-            height: snapshot.layout_height,
-        };
-        self.is_hovered = snapshot.is_hovered;
-        self.opacity = snapshot.opacity;
-        self.border_radius = snapshot.border_radius;
-        self.background_color = Box::new(snapshot.background_color);
-        self.foreground_color = snapshot.foreground_color;
-        self.border_colors.top = Box::new(snapshot.border_top_color);
-        self.border_colors.right = Box::new(snapshot.border_right_color);
-        self.border_colors.bottom = Box::new(snapshot.border_bottom_color);
-        self.border_colors.left = Box::new(snapshot.border_left_color);
-        self.box_shadows = snapshot.box_shadows.clone();
-        self.transform = snapshot.transform.clone();
-        self.transform_origin = snapshot.transform_origin;
-        self.update_resolved_transform();
-        if let Some(transition_snapshot) = snapshot.transition_snapshot {
-            self.has_layout_snapshot = transition_snapshot.has_layout_snapshot;
-            self.layout_transition_visual_offset_x =
-                transition_snapshot.layout_transition_visual_offset_x;
-            self.layout_transition_visual_offset_y =
-                transition_snapshot.layout_transition_visual_offset_y;
-            self.layout_transition_override_width =
-                transition_snapshot.layout_transition_override_width;
-            self.layout_transition_override_height =
-                transition_snapshot.layout_transition_override_height;
-            self.layout_transition_target_x = transition_snapshot.layout_transition_target_x;
-            self.layout_transition_target_y = transition_snapshot.layout_transition_target_y;
-            self.layout_transition_target_width =
-                transition_snapshot.layout_transition_target_width;
-            self.layout_transition_target_height =
-                transition_snapshot.layout_transition_target_height;
-            self.last_parent_layout_x = transition_snapshot.last_parent_layout_x;
-            self.last_parent_layout_y = transition_snapshot.last_parent_layout_y;
-            self.layout_assigned_width = transition_snapshot.layout_assigned_width;
-            self.layout_assigned_height = transition_snapshot.layout_assigned_height;
-        }
-        self.has_style_snapshot = true;
-        self.recompute_style();
-        true
-    }
+    // Phase B: snapshot_state / restore_state removed (see trait def).
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
         let local_x = viewport_x - self.core.layout_position.x;

@@ -63,6 +63,14 @@ impl Image {
         self.sampling = sampling;
     }
 
+    /// 軌 1 #4: hot-swap the image source. Dropping the old
+    /// `ImageHandle` via its `Drop` impl releases the resource entry;
+    /// the next `measure` / `build` call re-snapshots through
+    /// `source_handle.key()` and picks up the new source's state.
+    pub fn set_source(&mut self, source: ImageSource) {
+        self.source_handle = acquire_image_resource(&source);
+    }
+
     pub fn apply_style(&mut self, style: crate::Style) {
         self.element.apply_style(style);
     }
@@ -76,6 +84,58 @@ impl Image {
 
     pub fn set_error_slot(&mut self, slot: Vec<NodeKey>) {
         self.error_slot = slot;
+    }
+
+    /// M4 #3 incremental hot-swap: replace the loading or error slot
+    /// in-place. Called from `fiber_work` when the reconciler surfaces
+    /// a changed `loading` / `error` prop on an `<Image>`.
+    ///
+    /// Sequence (mirrors TextArea projection re-install at
+    /// text_area.rs:551-552):
+    /// 1. Drain any currently-active slot back into its Vec so
+    ///    `Element.children` is empty — otherwise the active subtree
+    ///    would become orphaned when we overwrite the storage Vec.
+    /// 2. Take the old keys out of the target slot and
+    ///    `remove_subtree` each one to free arena storage.
+    /// 3. Install `new_keys` into the slot Vec.
+    /// 4. Let the next `measure`/`build` call re-run `sync_active_slot`
+    ///    using the fresh `ImageSnapshot`.
+    pub(crate) fn replace_loading_slot_incremental(
+        &mut self,
+        arena: &mut NodeArena,
+        new_keys: Vec<NodeKey>,
+    ) {
+        self.sync_active_slot(arena, ActiveSlot::None);
+        let old_keys = std::mem::take(&mut self.loading_slot);
+        for key in old_keys {
+            arena.remove_subtree(key);
+        }
+        self.loading_slot = new_keys;
+    }
+
+    pub(crate) fn replace_error_slot_incremental(
+        &mut self,
+        arena: &mut NodeArena,
+        new_keys: Vec<NodeKey>,
+    ) {
+        self.sync_active_slot(arena, ActiveSlot::None);
+        let old_keys = std::mem::take(&mut self.error_slot);
+        for key in old_keys {
+            arena.remove_subtree(key);
+        }
+        self.error_slot = new_keys;
+    }
+
+    /// Test/debug accessor: count slot keys held in the loading Vec
+    /// when inactive, or `Element.children.len()` when active.
+    #[cfg(test)]
+    pub(crate) fn loading_slot_len(&self) -> usize {
+        use crate::view::base_component::ElementTrait;
+        if matches!(self.active_slot, ActiveSlot::Loading) {
+            self.element.children().len()
+        } else {
+            self.loading_slot.len()
+        }
     }
 
     fn snapshot(&mut self) -> ImageSnapshot {
@@ -171,14 +231,6 @@ impl ElementTrait for Image {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
-    }
-
-    fn snapshot_state(&self) -> Option<Box<dyn std::any::Any>> {
-        self.element.snapshot_state()
-    }
-
-    fn restore_state(&mut self, snapshot: &dyn std::any::Any) -> bool {
-        self.element.restore_state(snapshot)
     }
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {

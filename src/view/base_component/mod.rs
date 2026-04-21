@@ -1650,8 +1650,13 @@ pub(crate) fn dispatch_blur_bubble(
     control: &mut ViewportControl<'_>,
 ) -> bool {
     if !arena.contains_key(target_key) {
+        eprintln!(
+            "[blur_bubble] target {:?} NOT in arena (dead NodeKey)",
+            target_key
+        );
         return false;
     }
+    eprintln!("[blur_bubble] target {:?} alive, dispatching", target_key);
     dispatch_blur_impl(arena, target_key, event, control)
 }
 

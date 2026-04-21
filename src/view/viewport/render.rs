@@ -714,19 +714,192 @@ impl Viewport {
         {
             needs_rebuild = false;
         }
+        // Phase A M2: dark-launched incremental Fiber-commit path.
+        //
+        // Only engaged when ALL of:
+        //   - `set_use_incremental_commit(true)` was called,
+        //   - a previous `last_rsx_root` exists (not a cold start),
+        //   - the full-rebuild path below would otherwise run,
+        //   - we have exactly one arena root (multi-root + fragment
+        //     roots are M3 territory),
+        //   - every reconcile patch translates into a FiberWork that is
+        //     committable under M2's Delete/Move-only setter surface.
+        //
+        // Any failure leaves `needs_rebuild` untouched and falls
+        // through to the legacy full-rebuild path. With the flag OFF
+        // (the default) this whole block is a single `if false`
+        // branch and behaviour is byte-identical to the prior
+        // pipeline.
+        if needs_rebuild
+            && self.scene.use_incremental_commit
+            && self.scene.last_rsx_root.is_some()
+            && !self.scene.ui_root_keys.is_empty()
+        {
+            let previous_root = self.scene.last_rsx_root.as_ref().unwrap();
+            // 軌 1 #4 Fragment-at-root: unpack Fragment root into its
+            // children so `reconcile_multi` sees the same arity that
+            // the arena stores (Fragment root → N arena roots).
+            let old_roots = unpack_root_set(previous_root);
+            let new_roots = unpack_root_set(root);
+            let rooted_patches = crate::ui::reconcile_multi(Some(&old_roots), &new_roots);
+            let descriptor_ctx = crate::view::fiber_work::DescriptorContext {
+                new_rsx_root: root,
+                // 軌 1 #6: pass the previous tree so the translator
+                // can identity-validate parent_path walks for
+                // InsertChild patches.
+                old_rsx_root: Some(previous_root),
+                inherited_style: &self.style,
+                viewport_width: self.logical_width,
+                viewport_height: self.logical_height,
+            };
+            let trace = std::env::var("RFGUI_TRACE_FALLBACK").is_ok();
+            let trace_verbose = std::env::var("RFGUI_TRACE_VERBOSE").is_ok();
+            let trace_filter = std::env::var("RFGUI_TRACE_FILTER").ok();
+            // When RFGUI_TRACE_FILTER=<prop_name> is set, only print
+            // this batch's traces if some patch touches that prop name
+            // (in changed or removed). Keeps the log narrow to one
+            // event type of interest.
+            let matches_filter = |rooted: &[crate::ui::RootedPatch]| -> bool {
+                let Some(needle) = &trace_filter else {
+                    return true;
+                };
+                rooted.iter().any(|rp| match &rp.patch {
+                    crate::ui::Patch::UpdateElementProps { changed, removed, .. } => {
+                        changed.iter().any(|(k, _)| *k == needle.as_str())
+                            || removed.iter().any(|k| *k == needle.as_str())
+                    }
+                    _ => false,
+                })
+            };
+            let trace_scope_enabled = trace && matches_filter(&rooted_patches);
+            if trace_verbose && trace_scope_enabled {
+                eprintln!(
+                    "[trace] rooted_patches={} old_roots={} new_roots={} ui_root_keys={}",
+                    rooted_patches.len(),
+                    old_roots.len(),
+                    new_roots.len(),
+                    self.scene.ui_root_keys.len(),
+                );
+                for (i, rp) in rooted_patches.iter().enumerate() {
+                    let name = match &rp.patch {
+                        crate::ui::Patch::ReplaceRoot(_) => "ReplaceRoot",
+                        crate::ui::Patch::ReplaceAllRoots(v) => {
+                            eprintln!("[trace]   #{i} root={} ReplaceAllRoots(n={})", rp.root_index, v.len());
+                            continue;
+                        }
+                        crate::ui::Patch::ReorderRoots(m) => {
+                            eprintln!("[trace]   #{i} root={} ReorderRoots({:?})", rp.root_index, m);
+                            continue;
+                        }
+                        crate::ui::Patch::ReplaceNode { path, .. } => {
+                            eprintln!("[trace]   #{i} root={} ReplaceNode path={:?}", rp.root_index, path);
+                            continue;
+                        }
+                        crate::ui::Patch::UpdateElementProps { path, changed, removed } => {
+                            let ck: Vec<&str> = changed.iter().map(|(k, _)| *k).collect();
+                            eprintln!(
+                                "[trace]   #{i} root={} UpdateProps path={:?} changed={:?} removed={:?}",
+                                rp.root_index, path, ck, removed
+                            );
+                            continue;
+                        }
+                        crate::ui::Patch::SetText { path, .. } => {
+                            eprintln!("[trace]   #{i} root={} SetText path={:?}", rp.root_index, path);
+                            continue;
+                        }
+                        crate::ui::Patch::InsertChild { parent_path, index, .. } => {
+                            eprintln!("[trace]   #{i} root={} InsertChild parent={:?} idx={}", rp.root_index, parent_path, index);
+                            continue;
+                        }
+                        crate::ui::Patch::RemoveChild { parent_path, index } => {
+                            eprintln!("[trace]   #{i} root={} RemoveChild parent={:?} idx={}", rp.root_index, parent_path, index);
+                            continue;
+                        }
+                        crate::ui::Patch::MoveChild { parent_path, from, to } => {
+                            eprintln!("[trace]   #{i} root={} MoveChild parent={:?} from={} to={}", rp.root_index, parent_path, from, to);
+                            continue;
+                        }
+                    };
+                    eprintln!("[trace]   #{i} root={} {name}", rp.root_index);
+                }
+            }
+            let translated = crate::view::fiber_work::translate_rooted_patches_all_or_nothing(
+                rooted_patches,
+                self.scene.node_arena.stable_id_index(),
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+                &old_roots,
+                &new_roots,
+                Some(&descriptor_ctx),
+            );
+            if translated.is_none() && trace_scope_enabled {
+                eprintln!("[trace] FALLBACK: translate_rooted returned None (some patch not translatable)");
+            }
+            if let Some(works) = translated {
+                let non_committable: Vec<&str> = works
+                    .iter()
+                    .filter(|w| !w.is_committable(&self.scene.node_arena))
+                    .map(|w| match w {
+                        crate::view::fiber_work::FiberWork::Create { .. } => "Create",
+                        crate::view::fiber_work::FiberWork::CreateMany { .. } => "CreateMany",
+                        crate::view::fiber_work::FiberWork::Update { .. } => "Update",
+                        crate::view::fiber_work::FiberWork::SetText { .. } => "SetText",
+                        crate::view::fiber_work::FiberWork::Move { .. } => "Move",
+                        crate::view::fiber_work::FiberWork::Delete { .. } => "Delete",
+                        crate::view::fiber_work::FiberWork::ReplaceRoot { .. } => "ReplaceRoot",
+                        crate::view::fiber_work::FiberWork::ReplaceNode { .. } => "ReplaceNode",
+                        crate::view::fiber_work::FiberWork::ReorderRoots { .. } => "ReorderRoots",
+                    })
+                    .collect();
+                if trace_scope_enabled && !non_committable.is_empty() {
+                    eprintln!("[trace] FALLBACK: non-committable works: {:?}", non_committable);
+                    for w in &works {
+                        if !w.is_committable(&self.scene.node_arena) {
+                            if let crate::view::fiber_work::FiberWork::Update { changed, removed, .. } = w {
+                                let ck: Vec<&str> = changed.iter().map(|(k, _)| *k).collect();
+                                eprintln!(
+                                    "[trace]   Update changed={:?} removed={:?}",
+                                    ck, removed
+                                );
+                            }
+                        }
+                    }
+                }
+                if non_committable.is_empty() {
+                    let apply_ctx = crate::view::fiber_work::ApplyContext {
+                        viewport_style: &self.style,
+                        viewport_width: self.logical_width,
+                        viewport_height: self.logical_height,
+                    };
+                    crate::view::fiber_work::apply_fiber_works(
+                        &mut self.scene.node_arena,
+                        apply_ctx,
+                        works,
+                    );
+                    // Keep the arena roots view in lockstep: ReplaceRoot
+                    // mints a new root NodeKey, so always refresh from
+                    // the arena after a committed batch.
+                    let refreshed_roots = self.scene.node_arena.roots().to_vec();
+                    self.scene.ui_root_keys = refreshed_roots;
+                    self.scene.last_rsx_root = Some(root.clone());
+                    needs_rebuild = false;
+                }
+            }
+        }
         if needs_rebuild {
+            // Only print COLD REBUILD when the incremental path actually
+            // had a batch this frame (otherwise cold = first render, not
+            // a regression). Scoped trace via RFGUI_TRACE_FILTER handled
+            // above — reuse `trace_scope_enabled` when available.
+            if std::env::var("RFGUI_TRACE_FALLBACK").is_ok() {
+                eprintln!("[trace] COLD REBUILD firing (NodeKeys will be re-minted)");
+            }
             // Clear and save current scroll states
             self.scene.scroll_offsets.clear();
             Self::save_scroll_states(
                 &self.scene.node_arena,
                 &self.scene.ui_root_keys,
                 &mut self.scene.scroll_offsets,
-            );
-            self.scene.element_snapshots.clear();
-            Self::save_element_snapshots(
-                &self.scene.node_arena,
-                &self.scene.ui_root_keys,
-                &mut self.scene.element_snapshots,
             );
             let layout_snapshots =
                 crate::view::base_component::collect_layout_transition_snapshots(
@@ -778,11 +951,6 @@ impl Viewport {
                 &self.scene.node_arena,
                 &self.scene.ui_root_keys,
                 &self.scene.scroll_offsets,
-            );
-            Self::restore_element_snapshots(
-                &self.scene.node_arena,
-                &self.scene.ui_root_keys,
-                &self.scene.element_snapshots,
             );
             {
                 let mut arena = std::mem::take(&mut self.scene.node_arena);
@@ -1136,5 +1304,15 @@ impl Viewport {
             submit_ms,
             present_ms,
         }
+    }
+}
+
+/// Flatten a Fragment-at-root into its children so multi-root reconcile
+/// sees the same arity as the arena (Fragment root → N arena roots).
+/// Non-Fragment roots pass through as a single-element slice.
+fn unpack_root_set(root: &crate::ui::RsxNode) -> Vec<&crate::ui::RsxNode> {
+    match root {
+        crate::ui::RsxNode::Fragment(frag) => frag.children.iter().collect(),
+        other => vec![other],
     }
 }
