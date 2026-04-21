@@ -32,11 +32,10 @@
 use rustc_hash::FxHashMap;
 
 use crate::style::Style;
-use crate::ui::{FromPropValue, Patch, PropValue, RsxElementNode, RsxNode};
+use crate::ui::{Patch, PropValue, RsxElementNode, RsxNode};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{
-    ElementDescriptor, arena_insert_child, arena_remove_child,
-    commit_descriptor_tree, resolve_path,
+    ElementDescriptor, arena_insert_child, arena_remove_child, commit_descriptor_tree, resolve_path,
 };
 
 /// Context needed to translate descriptor-producing patches
@@ -60,53 +59,6 @@ pub struct ApplyContext<'a> {
     pub viewport_style: &'a Style,
     pub viewport_width: f32,
     pub viewport_height: f32,
-}
-
-/// Track 1 #10 (正規 refactor): per-prop apply context passed through
-/// `ApplyPropUpdate`. Unified signature so `#[props]`-generated
-/// dispatchers and hand-written custom arms share shape. Borrow what
-/// you need; ignore the rest.
-///
-/// `arena` is `&NodeArena` (not `&mut`) for the common incremental
-/// setter surface. Props that need to commit arena children (Image /
-/// Svg slot hot-swap) take `&mut NodeArena` via a separate host arm
-/// until the wrapper plumbing lands — they stay on `custom_update` for
-/// now.
-pub struct ApplyPropContext<'a> {
-    pub arena: &'a NodeArena,
-    pub self_key: NodeKey,
-    pub viewport_style: &'a Style,
-    pub viewport_width: f32,
-    pub viewport_height: f32,
-}
-
-/// Track 1 #10: host-level prop dispatcher. Implementors receive a
-/// stream of `(name, value)` pairs (changed props) and `(name,)`
-/// (removed props) from `apply_update_work`. The default impl for
-/// each host routes through a `#[props]`-generated match table for
-/// trivial props plus a hand-written arm for context-aware props
-/// (`style`, `font_size` em/rem, `source` RAII, `loading` / `error`
-/// slot commit).
-pub trait ApplyPropUpdate {
-    /// Apply a single changed prop. Returns `Err` only for genuinely
-    /// unknown props (caller logs + skips without falling back).
-    fn apply_prop_update(
-        &mut self,
-        ctx: &ApplyPropContext<'_>,
-        name: &'static str,
-        value: PropValue,
-    ) -> Result<(), UpdateFailure>;
-
-    /// Apply a single removed prop (reset to the cold-path default).
-    /// Default impl returns `CannotResetProp` — hosts override for the
-    /// props whose removal semantics they want to model.
-    fn apply_prop_remove(
-        &mut self,
-        _ctx: &ApplyPropContext<'_>,
-        name: &'static str,
-    ) -> Result<(), UpdateFailure> {
-        Err(UpdateFailure::CannotResetProp(name))
-    }
 }
 
 pub struct DescriptorContext<'a> {
@@ -142,22 +94,11 @@ pub struct DescriptorContext<'a> {
 /// rebuild on any irregular patch shape.
 /// Count this node's flattened arena-leaf descendants. Fragments are
 /// transparent — they contribute the sum of their children. Element /
+/// Count this node's flattened arena-leaf descendants. Fragments are
+/// transparent — they contribute the sum of their children. Element /
 /// Text nodes contribute exactly one leaf. Used by `rsx_to_arena_path`
 /// to skip Fragment indices that reconciler paths retain but the arena
 /// flattens away.
-fn rsx_node_kind(n: &RsxNode) -> String {
-    match n {
-        RsxNode::Element(e) => {
-            let tag = e.tag;
-            let nc = e.children.len();
-            let props: Vec<&str> = e.props.iter().map(|(k, _)| *k).collect();
-            format!("Element<{tag}> children={nc} props={props:?}")
-        }
-        RsxNode::Text(t) => format!("Text({:?})", t.content),
-        RsxNode::Fragment(f) => format!("Fragment(n={})", f.children.len()),
-    }
-}
-
 fn count_arena_leaves(node: &RsxNode) -> usize {
     match node {
         RsxNode::Fragment(frag) => frag.children.iter().map(count_arena_leaves).sum(),
@@ -325,9 +266,7 @@ pub enum FiberWork {
     /// multiple. All old root subtrees are dropped and the new
     /// descriptors committed as roots in order; `ui_root_keys` is
     /// refreshed by the apply caller from `arena.roots()` after.
-    ReplaceRoot {
-        descriptors: Vec<ElementDescriptor>,
-    },
+    ReplaceRoot { descriptors: Vec<ElementDescriptor> },
     /// Wholesale replace the `index`-th child of `parent` with N
     /// freshly-built descriptors (N >= 1; Fragment new-node yields
     /// multiple). Emitted when the reconciler's mid-tree identity
@@ -356,9 +295,7 @@ pub enum FiberWork {
     /// Emitted when `reconcile_multi` detects that the new root set is a
     /// permutation of the old (e.g. window-manager Z-order swap on a
     /// Fragment-at-root scene).
-    ReorderRoots {
-        mapping: Vec<usize>,
-    },
+    ReorderRoots { mapping: Vec<usize> },
 }
 
 // ---------------------------------------------------------------------------
@@ -435,13 +372,12 @@ pub fn patch_to_fiber_work_with_rsx(
                 ctx.viewport_width,
                 ctx.viewport_height,
             );
-            let descriptors =
-                crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
-                    &new_node,
-                    &[],
-                    &inherited,
-                )
-                .ok()?;
+            let descriptors = crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
+                &new_node,
+                &[],
+                &inherited,
+            )
+            .ok()?;
             // 軌 1 #5: Fragment root → N descriptors. Empty result
             // (e.g. an empty Fragment) is rejected — apply would
             // leave the arena root-less which the dispatch loop
@@ -483,7 +419,10 @@ pub fn patch_to_fiber_work_with_rsx(
             }
             Some(FiberWork::ReplaceRoot { descriptors: all })
         }
-        Patch::ReplaceNode { path, node: new_node } => {
+        Patch::ReplaceNode {
+            path,
+            node: new_node,
+        } => {
             let ctx = ctx?;
             // Non-empty path: reconciler emits ReplaceRoot for path==[].
             if path.is_empty() {
@@ -502,13 +441,12 @@ pub fn patch_to_fiber_work_with_rsx(
                 ctx.viewport_width,
                 ctx.viewport_height,
             );
-            let descriptors =
-                crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
-                    &new_node,
-                    &[],
-                    &inherited,
-                )
-                .ok()?;
+            let descriptors = crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
+                &new_node,
+                &[],
+                &inherited,
+            )
+            .ok()?;
             // 軌 1 #5: Fragment new-node → N descriptors at the
             // replaced slot. Empty result rejected (same rationale
             // as ReplaceRoot).
@@ -564,7 +502,6 @@ pub fn patch_to_fiber_work_with_rsx(
             index,
             node: _new_node,
         } => {
-            let trace_ic = std::env::var("RFGUI_TRACE_FALLBACK").is_ok();
             // M5 #5/#6: build a descriptor for the freshly-inserted
             // child via the cold-path converter.
             //
@@ -572,32 +509,14 @@ pub fn patch_to_fiber_work_with_rsx(
             // that don't have a NEW rsx root on hand (unit tests, the
             // convenience wrapper `patches_to_fiber_works`) thus keep
             // the pre-M5 behaviour.
-            let ctx = match ctx {
-                Some(c) => c,
-                None => {
-                    if trace_ic { eprintln!("[trace]     InsertChild FAIL: ctx=None"); }
-                    return None;
-                }
-            };
+            let ctx = ctx?;
 
             // 1) Resolve the arena parent. parent_path is rsx-space
             //    from the reconciler; translate via `arena_path_for`
             //    so Fragment mid-tree parents land on the right arena
             //    key.
-            let parent_arena_path = match arena_path_for(&parent_path) {
-                Some(p) => p,
-                None => {
-                    if trace_ic { eprintln!("[trace]     InsertChild FAIL: arena_path_for({:?}) = None", parent_path); }
-                    return None;
-                }
-            };
-            let parent_key = match resolve_path(arena, root, &parent_arena_path) {
-                Some(k) => k,
-                None => {
-                    if trace_ic { eprintln!("[trace]     InsertChild FAIL: resolve_path(arena={:?}) = None", parent_arena_path); }
-                    return None;
-                }
-            };
+            let parent_arena_path = arena_path_for(&parent_path)?;
+            let parent_key = resolve_path(arena, root, &parent_arena_path)?;
 
             // 2) Walk the NEW rsx tree along the SAME OLD rsx-space
             //    path to find the parent node. 軌 1 #6: when an
@@ -619,54 +538,13 @@ pub fn patch_to_fiber_work_with_rsx(
             let walk_old_root: Option<&RsxNode> = per_root_old_rsx.or(ctx.old_rsx_root);
             let walk_new_root: &RsxNode = per_root_new_rsx.unwrap_or(ctx.new_rsx_root);
             let new_parent_rsx = match walk_old_root {
-                Some(old) => {
-                    let walked = walk_rsx_by_index_path_validated(old, walk_new_root, &parent_path);
-                    if walked.is_none() && trace_ic {
-                        eprintln!(
-                            "[trace]     InsertChild FAIL: walk_rsx_validated None. OLD root identity={:?} NEW root identity={:?} path={:?}",
-                            old.identity(), walk_new_root.identity(), parent_path
-                        );
-                        let mut on = old;
-                        let mut nn = walk_new_root;
-                        for (s, &i) in parent_path.iter().enumerate() {
-                            let oc = on.children();
-                            let nc = nn.children();
-                            eprintln!(
-                                "[trace]       step {s}: idx={i} old_children={:?} new_children={:?}",
-                                oc.map(|c| c.len()), nc.map(|c| c.len())
-                            );
-                            let (Some(ocs), Some(ncs)) = (oc, nc) else { break };
-                            let (Some(oc2), Some(nc2)) = (ocs.get(i), ncs.get(i)) else { break };
-                            eprintln!(
-                                "[trace]       step {s} identity: old={:?} new={:?} match={}",
-                                oc2.identity(), nc2.identity(), oc2.identity() == nc2.identity()
-                            );
-                            on = oc2;
-                            nn = nc2;
-                        }
-                    }
-                    walked?
-                }
+                Some(old) => walk_rsx_by_index_path_validated(old, walk_new_root, &parent_path)?,
                 None => walk_rsx_by_index_path(walk_new_root, &parent_path)?,
             };
 
             // 3) Fish out the freshly-authored child at the NEW index.
-            let kids = match new_parent_rsx.children() {
-                Some(c) => c,
-                None => {
-                    if trace_ic { eprintln!("[trace]     InsertChild FAIL: new_parent_rsx.children()=None index={index}"); }
-                    return None;
-                }
-            };
-            let child_rsx = match kids.get(index) {
-                Some(c) => c,
-                None => {
-                    if trace_ic {
-                        eprintln!("[trace]     InsertChild FAIL: NEW kids.get({index})=None (len={})", kids.len());
-                    }
-                    return None;
-                }
-            };
+            let kids = new_parent_rsx.children()?;
+            let child_rsx = kids.get(index)?;
 
             // 4) Reuse the cold-path converter. M6 cascade: rebuild
             //    the `InheritedTextStyle` at the arena parent by
@@ -683,19 +561,12 @@ pub fn patch_to_fiber_work_with_rsx(
                 ctx.viewport_width,
                 ctx.viewport_height,
             );
-            let mut descriptors = match crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
+            let mut descriptors = crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
                 child_rsx,
                 &[],
                 &inherited,
-            ) {
-                Ok(d) => d,
-                Err(e) => {
-                    if trace_ic {
-                        eprintln!("[trace]     InsertChild FAIL: rsx_to_descriptors err={e:?}");
-                    }
-                    return None;
-                }
-            };
+            )
+            .ok()?;
 
             // 5) Single-descriptor case → Create. Multi-descriptor
             //    (Fragment expansion) → 軌 1 #5 CreateMany, inserted
@@ -802,24 +673,6 @@ pub fn translate_rooted_patches_all_or_nothing(
     new_roots: &[&RsxNode],
     ctx: Option<&DescriptorContext<'_>>,
 ) -> Option<Vec<FiberWork>> {
-    let trace = std::env::var("RFGUI_TRACE_FALLBACK").is_ok();
-    let trace_filter: Option<String> = std::env::var("RFGUI_TRACE_FILTER").ok();
-    // Batch-level scope: if any patch in the batch mentions the filter
-    // prop, print FAILED trace for ALL patches in this batch — failing
-    // patches that don't match the filter can still trigger the
-    // all-or-nothing cold-rebuild that wipes the filter-relevant
-    // NodeKey, so the user needs to see the actual culprit.
-    let batch_scope_active = trace
-        && match &trace_filter {
-            Some(needle) => patches.iter().any(|rp| match &rp.patch {
-                Patch::UpdateElementProps { changed, removed, .. } => {
-                    changed.iter().any(|(k, _)| *k == needle.as_str())
-                        || removed.iter().any(|k| *k == needle.as_str())
-                }
-                _ => false,
-            }),
-            None => true,
-        };
     let mut out = Vec::with_capacity(patches.len());
     // Reconciler emits patches keyed by *new* root_index. When a
     // ReorderRoots patch leads the batch, subsequent patches reference
@@ -842,38 +695,6 @@ pub fn translate_rooted_patches_all_or_nothing(
                 *roots.get(resolved_index)?
             }
         };
-        let patch_name: &'static str = match &rp.patch {
-            Patch::ReplaceRoot(_) => "ReplaceRoot",
-            Patch::ReplaceAllRoots(_) => "ReplaceAllRoots",
-            Patch::ReorderRoots(_) => "ReorderRoots",
-            Patch::ReplaceNode { .. } => "ReplaceNode",
-            Patch::UpdateElementProps { .. } => "UpdateElementProps",
-            Patch::SetText { .. } => "SetText",
-            Patch::InsertChild { .. } => "InsertChild",
-            Patch::RemoveChild { .. } => "RemoveChild",
-            Patch::MoveChild { .. } => "MoveChild",
-        };
-        let patch_scope_trace = batch_scope_active;
-        let dbg_changed: Option<Vec<&str>> = match &rp.patch {
-            Patch::UpdateElementProps { changed, .. } => {
-                Some(changed.iter().map(|(k, _)| *k).collect())
-            }
-            _ => None,
-        };
-        let dbg_removed: Option<Vec<&str>> = match &rp.patch {
-            Patch::UpdateElementProps { removed, .. } => Some(removed.clone()),
-            _ => None,
-        };
-        let dbg_path: Option<Vec<usize>> = match &rp.patch {
-            Patch::UpdateElementProps { path, .. }
-            | Patch::SetText { path, .. }
-            | Patch::ReplaceNode { path, .. } => Some(path.clone()),
-            Patch::InsertChild { parent_path, .. }
-            | Patch::RemoveChild { parent_path, .. }
-            | Patch::MoveChild { parent_path, .. } => Some(parent_path.clone()),
-            _ => None,
-        };
-        let root_idx = rp.root_index;
         // Rewrite patch paths from rsx-space (reconciler emits paths
         // through Fragment nodes) to arena-space (Fragment children
         // are flattened into the parent's arena child list). Without
@@ -921,17 +742,8 @@ pub fn translate_rooted_patches_all_or_nothing(
             continue;
         }
         let translated_patch = rp.patch;
-        // Snapshot arena-aligned path BEFORE move into patch_to_fiber_work
-        // so we can dump a walk trace on failure.
-        let translated_arena_path: Option<Vec<usize>> = match &translated_patch {
-            Patch::UpdateElementProps { path, .. }
-            | Patch::SetText { path, .. }
-            | Patch::ReplaceNode { path, .. } => Some(path.clone()),
-            Patch::InsertChild { parent_path, .. }
-            | Patch::RemoveChild { parent_path, .. }
-            | Patch::MoveChild { parent_path, .. } => Some(parent_path.clone()),
-            _ => None,
-        };
+        // Keep a copy for the per-patch ReplaceNode fallback path below.
+        let patch_snapshot = translated_patch.clone();
         match patch_to_fiber_work_with_rsx(
             translated_patch,
             id_to_key,
@@ -943,62 +755,23 @@ pub fn translate_rooted_patches_all_or_nothing(
         ) {
             Some(work) => out.push(work),
             None => {
-                if patch_scope_trace {
-                    eprintln!(
-                        "[trace] patch_to_fiber_work FAILED: {patch_name} root={root_idx} rsx_path={:?} arena_path={:?} changed={:?} removed={:?}",
-                        dbg_path, translated_arena_path, dbg_changed, dbg_removed
-                    );
-                }
-                if patch_scope_trace
-                    && let Some(arena_path) = translated_arena_path.clone()
+                // Per-patch fallback: convert to `ReplaceNode` at the
+                // failing subtree. Keeps other roots / siblings on the
+                // incremental path; only the one subtree rebuilds.
+                if let Some(fallback) =
+                    fallback_replace_node_patch(&patch_snapshot, per_root_new_rsx)
+                    && let Some(work) = patch_to_fiber_work_with_rsx(
+                        fallback,
+                        id_to_key,
+                        arena,
+                        root,
+                        ctx,
+                        per_root_old_rsx,
+                        per_root_new_rsx,
+                    )
                 {
-                    let mut cur = root;
-                    eprintln!(
-                        "[trace]     arena walk from root {:?} (children={}):",
-                        cur,
-                        arena.children_of(cur).len(),
-                    );
-                    for (i, &idx) in arena_path.iter().enumerate() {
-                        let kids = arena.children_of(cur);
-                        if idx >= kids.len() {
-                            eprintln!(
-                                "[trace]     step {i}: idx={idx} OUT OF BOUNDS (children={})",
-                                kids.len()
-                            );
-                            break;
-                        }
-                        cur = kids[idx];
-                        let next_kids = arena.children_of(cur).len();
-                        eprintln!("[trace]     step {i}: idx={idx} -> {cur:?} (children={next_kids})");
-                    }
-                }
-                if patch_scope_trace
-                    && let (Some(rsx_path), Some(old_rsx)) = (&dbg_path, per_root_old_rsx)
-                {
-                    let mut n = old_rsx;
-                    eprintln!("[trace]     rsx walk: root={}", rsx_node_kind(n));
-                    for (i, &idx) in rsx_path.iter().enumerate() {
-                        match n.children() {
-                            Some(ch) if idx < ch.len() => {
-                                n = &ch[idx];
-                                eprintln!("[trace]     step {i}: idx={idx} -> {}", rsx_node_kind(n));
-                            }
-                            Some(ch) => {
-                                eprintln!(
-                                    "[trace]     step {i}: idx={idx} rsx OUT (children={})",
-                                    ch.len()
-                                );
-                                break;
-                            }
-                            None => {
-                                eprintln!(
-                                    "[trace]     step {i}: idx={idx} rsx NODE HAS NO CHILDREN ({})",
-                                    rsx_node_kind(n)
-                                );
-                                break;
-                            }
-                        }
-                    }
+                    out.push(work);
+                    continue;
                 }
                 return None;
             }
@@ -1007,91 +780,41 @@ pub fn translate_rooted_patches_all_or_nothing(
     Some(out)
 }
 
-/// Whitelist of prop keys the M3 incremental Update path supports.
-///
-/// Any Update work carrying a key outside this set falls back to the
-/// full-rebuild pipeline. Kept as a single source of truth so the
-/// gate-side `is_committable` check and the apply-side dispatch agree.
-///
-/// Routing:
-/// - `Element` accepts: `style`, `opacity`
-/// - `Text` accepts: `style`, `font_size`, `line_height`, `align`, `opacity`
-/// - `TextArea` accepts: `font_size`, `opacity`
-///
-/// Anything else (event handlers, Image `loading`/`error`, `font`,
-/// `font_weight`, padding variants, …) is deliberately excluded so
-/// M3 can ship a small, auditable surface. M4+ extends it.
-pub(crate) const M3_UPDATE_PROP_WHITELIST: &[&str] = &[
-    "style",
-    "font_size",
-    "line_height",
-    "align",
-    "opacity",
-    // M4 #3 + 軌 1 #3: Image/Svg slot hot-swap. `loading` / `error`
-    // prop values are `RsxNode` subtrees; the apply side tears down
-    // the old slot and re-commits.
-    "loading",
-    "error",
-    // 軌 1 #2: context-free Element props. Pure setter fan-out, no
-    // inherited cascade involvement.
-    "anchor",
-    "padding",
-    "padding_x",
-    "padding_y",
-    "padding_left",
-    "padding_right",
-    "padding_top",
-    "padding_bottom",
-    // 軌 1 #2: Image / Svg context-free props.
-    "fit",
-    "sampling",
-    // 軌 1 #4: Image / Svg source hot-swap. The apply side drops the
-    // old resource handle (RAII for Image; explicit release for Svg)
-    // and acquires the new one. Measurement re-runs on the next
-    // frame via the element's existing snapshot path.
-    "source",
-    // 軌 1 #10: TextArea-specific typed handlers. Not in
-    // RSX_EVENT_HANDLER_PROPS (those are DOM-standard events);
-    // `on_change` / `on_render` carry typed `TextChangeHandlerProp` /
-    // `TextAreaRenderHandlerProp`. Apply via
-    // `text_area.replace_on_change_handler` etc.
-    "on_change",
-    "on_render",
-];
-
-/// Does `prop` name a reconciler-visible event handler prop (`on_*`)?
-/// M4 #4 accepts these into the incremental update path: the apply
-/// side clears the existing handler list for the event and re-installs
-/// the new handler via the shared
-/// `renderer_adapter::try_assign_event_handler_prop` dispatcher.
-fn is_event_handler_prop(prop: &str) -> bool {
-    crate::view::renderer_adapter::RSX_EVENT_HANDLER_PROPS.contains(&prop)
+fn fallback_replace_node_patch(patch: &Patch, per_root_new_rsx: Option<&RsxNode>) -> Option<Patch> {
+    let new_root = per_root_new_rsx?;
+    let path: Vec<usize> = match patch {
+        Patch::UpdateElementProps { path, .. } | Patch::SetText { path, .. } => path.clone(),
+        Patch::InsertChild { parent_path, .. }
+        | Patch::RemoveChild { parent_path, .. }
+        | Patch::MoveChild { parent_path, .. } => parent_path.clone(),
+        _ => return None,
+    };
+    let node = walk_rsx_by_index_path(new_root, &path)?.clone();
+    Some(Patch::ReplaceNode { path, node })
 }
 
-/// Props whose **removal** (appearing in a patch's `removed` list) has
-/// a known reset path in the incremental setter surface. M4 #1 adds
-/// `style` only: a missing `style` prop means "reset `parsed_style` to
-/// `Style::new()`", wired through `Element::replace_style`. Other
-/// removals (opacity, font_size, …) still fall back to the full
-/// rebuild until their context-free defaults land.
-pub(crate) const M4_REMOVE_PROP_WHITELIST: &[&str] = &[
-    "style",
-    "opacity",
-    // 軌 1 #2: removing an Element's anchor / padding prop resets to
-    // the cold-path default (None / 0.0). Context-free — no cascade.
-    "anchor",
-    "padding",
-    "padding_x",
-    "padding_y",
-    "padding_left",
-    "padding_right",
-    "padding_top",
-    "padding_bottom",
-    // 軌 1 #2: Image / Svg default back to Contain / Linear when the
-    // prop is removed.
-    "fit",
-    "sampling",
-];
+/// 軌 1 #11: per-prop apply outcome reported by `ElementTrait::apply_prop`.
+/// Hosts return one of these for each `(name, value)` pair they're
+/// asked to apply. fiber_work aggregates: any `NeedsCascade` triggers
+/// `recascade_text_subtree` after the element is back in its slot;
+/// `UnknownProp` / `DecodeFailed` log + continue (never promote to
+/// cold rebuild).
+#[derive(Debug, Clone)]
+pub enum PropApplyOutcome {
+    /// Prop applied; no further action.
+    Applied,
+    /// Prop applied; descendants need text-style recascade after the
+    /// element is returned to its arena slot.
+    NeedsCascade,
+    /// Host doesn't recognise this prop name. Caller logs and skips.
+    UnknownProp,
+    /// Host recognises the prop but couldn't decode the `PropValue`
+    /// to its expected shape. Caller logs and skips.
+    DecodeFailed(&'static str),
+    /// `reset_prop` only: this host can't reset the named prop without
+    /// a full rebuild. Caller logs and skips.
+    CannotReset(&'static str),
+}
 
 /// Why an incremental Update or SetText couldn't be applied. Surfaced
 /// from `apply_update_work` / `apply_set_text_work` so the gate can
@@ -1099,20 +822,6 @@ pub(crate) const M4_REMOVE_PROP_WHITELIST: &[&str] = &[
 /// partially mutated (all failures are detected pre-apply).
 #[derive(Debug, Clone)]
 pub enum UpdateFailure {
-    /// A prop key is not in the M3 whitelist (event handlers, Image
-    /// loading/error, inherited-context font props, etc).
-    UnsupportedProp(&'static str),
-    /// A whitelisted prop isn't supported on the element variant
-    /// currently attached to the arena key (e.g. `line_height` on an
-    /// Element host, or `style` on a TextArea).
-    UnsupportedOnElementType {
-        prop: &'static str,
-        type_name: &'static str,
-    },
-    /// A prop-removal (`removed` list) has no reset path in the M3
-    /// setter surface — we can't undo an explicit value back to its
-    /// inherited-context default without rerunning the full conversion.
-    CannotResetProp(&'static str),
     /// SetText target isn't a Text or TextArea node.
     SetTextOnNonTextTarget,
     /// Target NodeKey vanished from the arena (stale work batch).
@@ -1121,69 +830,26 @@ pub enum UpdateFailure {
 
 impl FiberWork {
     /// Whether this work unit is safe to commit under the current
-    /// incremental setter surface (M3), **given the arena state** so
-    /// per-variant whitelist narrowing can consult the target element
-    /// type.
+    /// incremental setter surface, **given the arena state** so
+    /// per-variant checks can consult the target element type.
     ///
-    /// M3 rules:
-    /// - `Delete` / `Move`: always committable (inherited from M2).
+    /// Rules:
+    /// - `Delete` / `Move` / `Create` / `CreateMany` / `ReplaceRoot`
+    ///   / `ReplaceNode` / `ReorderRoots`: always committable.
     /// - `SetText`: committable iff the target (after the
     ///   text-child-to-host remap done in `patch_to_fiber_work`) is
     ///   an arena node whose element downcasts to `Text` or
     ///   `TextArea`.
-    /// - `Update`: committable iff
-    ///     * `removed` is empty (no reset-to-default helper yet), AND
-    ///     * every changed key lives in `M3_UPDATE_PROP_WHITELIST`, AND
-    ///     * every changed key is supported on the target element type
-    ///       (e.g. `line_height` only applies on `Text`; `style` on
-    ///       `Element` but not on `Text`/`TextArea` which lack an
-    ///       `apply_style` hook).
-    /// - `Create`: never committable in M3 (descriptor context
-    ///   threading is M4+).
-    ///
-    /// The arena-aware form exists so the gate in `render_rsx` can
-    /// reject mismatches *before* `apply_fiber_works` runs, avoiding
-    /// a silent drop when the apply-side rejects a whitelisted-but-
-    /// unsupported combo.
+    /// - `Update`: committable iff the target NodeKey still exists.
+    ///   Unknown / unsupported props are logged and skipped on the
+    ///   apply side (`apply_update_to_*` `_` arms emit
+    ///   `[fiber_work] Update skipped prop ...`), so a single
+    ///   unrecognised key no longer forces a full cold rebuild.
     pub fn is_committable(&self, arena: &NodeArena) -> bool {
         match self {
             FiberWork::Delete { .. } | FiberWork::Move { .. } => true,
             FiberWork::SetText { key, .. } => target_is_text_like(arena, *key),
-            FiberWork::Update {
-                key,
-                changed,
-                removed,
-            } => {
-                let target_kind = classify_target(arena, *key);
-                // 軌 A #7: the M6 "style update changes cascading
-                // decl → fallback" boundary is gone. Cascade changes
-                // now trigger `recascade_text_subtree` on the apply
-                // side, which walks Text/TextArea descendants and
-                // re-applies inherited props via their `apply_inherited`
-                // hooks (per-prop explicit flags preserve author
-                // overrides).
-                let changed_ok = changed.iter().all(|(prop, _value)| {
-                    if is_event_handler_prop(prop) {
-                        // Track 1 #10: DOM-standard event handlers
-                        // (on_click/on_focus/on_blur/etc.) commit on
-                        // Element AND TextArea (TextArea forwards to
-                        // its inner Element).
-                        matches!(target_kind, TargetKind::Element | TargetKind::TextArea)
-                    } else {
-                        M3_UPDATE_PROP_WHITELIST.contains(prop)
-                            && prop_supported_on_target(prop, target_kind)
-                    }
-                });
-                let removed_ok = removed.iter().all(|prop| {
-                    if is_event_handler_prop(prop) {
-                        matches!(target_kind, TargetKind::Element | TargetKind::TextArea)
-                    } else {
-                        M4_REMOVE_PROP_WHITELIST.contains(prop)
-                            && prop_supported_on_target(prop, target_kind)
-                    }
-                });
-                changed_ok && removed_ok
-            }
+            FiberWork::Update { key, .. } => arena.get(*key).is_some(),
             FiberWork::Create { .. } => true,
             // Wholesale subtree replacement — always committable once
             // the descriptor has been built. The descriptor carries the
@@ -1198,13 +864,6 @@ impl FiberWork {
         }
     }
 
-    /// Back-compat alias used by existing call sites. Kept so the M2
-    /// commit-gate callers in `render_rsx` stay source-compatible while
-    /// M3 broadens the surface. New code should prefer
-    /// [`FiberWork::is_committable`].
-    pub fn is_m2_committable(&self, arena: &NodeArena) -> bool {
-        self.is_committable(arena)
-    }
 }
 
 /// PropertyIds that cascade into descendant text nodes (font_family,
@@ -1242,7 +901,9 @@ fn element_parsed_style_has_text_cascading_decl(arena: &NodeArena, key: NodeKey)
         return false;
     };
     let style = el.parsed_style();
-    TEXT_CASCADING_PROPS.iter().any(|pid| style.get(*pid).is_some())
+    TEXT_CASCADING_PROPS
+        .iter()
+        .any(|pid| style.get(*pid).is_some())
 }
 
 /// Would applying `new_value` as the `style` prop of the Element at
@@ -1298,11 +959,7 @@ pub(crate) fn recascade_text_subtree(
     use crate::view::base_component::{Text, TextArea};
     use crate::view::renderer_adapter::inherited_text_style_at_parent;
 
-    fn walk(
-        arena: &mut NodeArena,
-        ctx: ApplyContext<'_>,
-        key: NodeKey,
-    ) {
+    fn walk(arena: &mut NodeArena, ctx: ApplyContext<'_>, key: NodeKey) {
         // Compute inherited cascade at this node's arena parent — the
         // helper walks the ancestor chain replaying each Element's
         // `parsed_style` through `InheritedTextStyle::merge_style`.
@@ -1378,63 +1035,6 @@ fn target_is_text_like(arena: &NodeArena, key: NodeKey) -> bool {
         classify_target(arena, key),
         TargetKind::Text | TargetKind::TextArea
     )
-}
-
-fn prop_supported_on_target(prop: &str, kind: TargetKind) -> bool {
-    match (prop, kind) {
-        // Element hosts: style, opacity, plus the 軌 1 #2 context-free
-        // setter surface (anchor, padding*). `font_size` / `line_height`
-        // / `align` still fall back — they land on Element parsed_style
-        // via the cold-path cascade.
-        ("style", TargetKind::Element)
-        | ("opacity", TargetKind::Element)
-        | ("anchor", TargetKind::Element)
-        | ("padding", TargetKind::Element)
-        | ("padding_x", TargetKind::Element)
-        | ("padding_y", TargetKind::Element)
-        | ("padding_left", TargetKind::Element)
-        | ("padding_right", TargetKind::Element)
-        | ("padding_top", TargetKind::Element)
-        | ("padding_bottom", TargetKind::Element) => true,
-        // Text hosts: all five whitelisted props. 軌 1 #8: `style` now
-        // routes through `Text::apply_style_incremental`, which mirrors
-        // the cold-path fan-out (font/font_size/font_weight/color/
-        // cursor/text_wrap/width/height) and resets explicit flags so
-        // removed declarations pick the ancestor cascade back up.
-        ("style", TargetKind::Text) => true,
-        ("font_size", TargetKind::Text) => true,
-        ("line_height", TargetKind::Text) => true,
-        ("align", TargetKind::Text) => true,
-        ("opacity", TargetKind::Text) => true,
-        // TextArea hosts: style + event handlers (軌 1 #10) now route
-        // through TextArea::apply_style_incremental and the
-        // `replace_on_*_handler` setters added in M2. Typed handler
-        // props live on PropValue::On{Change,Focus,Render}; BlurHandler
-        // is a DOM-standard event but TextArea wraps forwarding.
-        ("style", TargetKind::TextArea) => true,
-        ("font_size", TargetKind::TextArea) => true,
-        ("opacity", TargetKind::TextArea) => true,
-        ("on_change", TargetKind::TextArea) => true,
-        ("on_focus", TargetKind::TextArea) => true,
-        ("on_blur", TargetKind::TextArea) => true,
-        ("on_render", TargetKind::TextArea) => true,
-        // M4 #3 + 軌 1 #2/#3/#4: Image context-free setter surface.
-        ("style", TargetKind::Image) => true,
-        ("loading", TargetKind::Image) => true,
-        ("error", TargetKind::Image) => true,
-        ("fit", TargetKind::Image) => true,
-        ("sampling", TargetKind::Image) => true,
-        ("source", TargetKind::Image) => true,
-        // 軌 1 #3/#4: Svg now exposes the same slot + source hot-swap
-        // surface as Image (mirroring the cold-path props).
-        ("style", TargetKind::Svg) => true,
-        ("loading", TargetKind::Svg) => true,
-        ("error", TargetKind::Svg) => true,
-        ("fit", TargetKind::Svg) => true,
-        ("sampling", TargetKind::Svg) => true,
-        ("source", TargetKind::Svg) => true,
-        _ => false,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,8 +1133,7 @@ pub fn apply_fiber_works(arena: &mut NodeArena, ctx: ApplyContext<'_>, works: Ve
             FiberWork::ReorderRoots { mapping } => {
                 // 軌 1 #4: pure permutation. `new_roots[i] = old_roots[mapping[i]]`.
                 let old_roots = arena.roots().to_vec();
-                let new_roots: Vec<NodeKey> =
-                    mapping.into_iter().map(|j| old_roots[j]).collect();
+                let new_roots: Vec<NodeKey> = mapping.into_iter().map(|j| old_roots[j]).collect();
                 arena.set_roots(new_roots);
             }
             FiberWork::CreateMany {
@@ -1571,21 +1170,11 @@ pub fn apply_fiber_works(arena: &mut NodeArena, ctx: ApplyContext<'_>, works: Ve
     }
 }
 
-/// Apply a whitelisted prop-diff to the element at `key`.
-///
-/// Pre-conditions (already verified by [`FiberWork::is_committable`]
-/// at the gate):
-/// - every key in `changed` is in [`M3_UPDATE_PROP_WHITELIST`]
-/// - `removed` is empty
-///
-/// The function is still defensive (returns `UpdateFailure` instead
-/// of asserting) so a future caller that bypasses the gate doesn't
-/// silently drop updates or panic.
-///
-/// Uses `arena.with_element_taken` to get exclusive `&mut dyn
-/// ElementTrait` access, then tries downcasts in order
-/// `Text` → `TextArea` → `Element`. The variant determines which
-/// props are acceptable; mismatches return `UnsupportedOnElementType`.
+/// Apply a prop-diff to the element at `key` via host-owned dispatch
+/// (軌 1 #11). Each host implements `ElementTrait::apply_prop` /
+/// `reset_prop`; this function only handles the cross-cutting
+/// concerns (target liveness, ancestor text-cascade detection,
+/// recascade after commit).
 fn apply_update_work(
     arena: &mut NodeArena,
     ctx: ApplyContext<'_>,
@@ -1593,32 +1182,14 @@ fn apply_update_work(
     changed: Vec<(&'static str, PropValue)>,
     removed: Vec<&'static str>,
 ) -> Result<(), UpdateFailure> {
-    use crate::view::base_component::{Element, Text, TextArea};
-
-    // Defensive re-check: these should already be filtered at the
-    // gate, but `apply_update_work` is `pub(crate)`-reachable and we
-    // don't want to mutate the arena on a malformed batch.
-    for (prop_key, _) in &changed {
-        if !M3_UPDATE_PROP_WHITELIST.contains(prop_key) && !is_event_handler_prop(prop_key) {
-            return Err(UpdateFailure::UnsupportedProp(prop_key));
-        }
-    }
-    for prop in &removed {
-        if !M4_REMOVE_PROP_WHITELIST.contains(prop) && !is_event_handler_prop(prop) {
-            return Err(UpdateFailure::CannotResetProp(prop));
-        }
-    }
-
-    // Snapshot a handle so we can detect MissingTarget without a
-    // separate arena.get() (the element is taken below).
     if arena.get(key).is_none() {
         return Err(UpdateFailure::MissingTarget);
     }
 
     // 軌 A #7: decide whether this update will change an ancestor's
-    // text-cascading decl. We detect *before* taking the element
-    // (the helpers need a read-only borrow) and re-cascade *after*
-    // the element is back in its slot.
+    // text-cascading decl. Detected *before* taking the element (the
+    // helpers need a read-only borrow) and recascaded *after* the
+    // element is back in its slot.
     let mut cascade_dirty = false;
     let is_element_target = matches!(classify_target(arena, key), TargetKind::Element);
     if is_element_target && arena_has_descendants(arena, key) {
@@ -1630,9 +1201,7 @@ fn apply_update_work(
         }
         if !cascade_dirty {
             for prop in &removed {
-                if *prop == "style"
-                    && element_parsed_style_has_text_cascading_decl(arena, key)
-                {
+                if *prop == "style" && element_parsed_style_has_text_cascading_decl(arena, key) {
                     cascade_dirty = true;
                     break;
                 }
@@ -1640,385 +1209,41 @@ fn apply_update_work(
         }
     }
 
-    let mut result: Result<(), UpdateFailure> = Ok(());
     arena.with_element_taken(key, |element, arena_ref| {
-        use crate::view::base_component::{Image, Svg};
-        // Downcast precedence: Text / TextArea / Image / Svg before
-        // the generic Element fallback. `as_any_mut` returns the
-        // concrete component (not the inner `Element`), so Image/Svg's
-        // wrapped Element won't be mistaken for a plain Element host.
-        if let Some(image) = element.as_any_mut().downcast_mut::<Image>() {
-            result = apply_update_to_image(image, arena_ref, &changed);
-            if result.is_ok() {
-                result = apply_remove_to_image(image, &removed);
+        for (name, value) in changed {
+            match element.apply_prop(arena_ref, key, &ctx, name, value) {
+                PropApplyOutcome::Applied => {}
+                PropApplyOutcome::NeedsCascade => {
+                    cascade_dirty = true;
+                }
+                PropApplyOutcome::UnknownProp => {
+                    eprintln!("[fiber_work] Update skipped unknown prop {name:?}");
+                }
+                PropApplyOutcome::DecodeFailed(p) => {
+                    eprintln!("[fiber_work] Update skipped prop {p:?} (decode failed)");
+                }
+                PropApplyOutcome::CannotReset(_) => unreachable!("apply_prop never returns CannotReset"),
             }
-        } else if let Some(svg) = element.as_any_mut().downcast_mut::<Svg>() {
-            result = apply_update_to_svg(svg, arena_ref, &changed);
-            if result.is_ok() {
-                result = apply_remove_to_svg(svg, &removed);
+        }
+        for name in removed {
+            match element.reset_prop(arena_ref, key, &ctx, name) {
+                PropApplyOutcome::Applied => {}
+                PropApplyOutcome::NeedsCascade => {
+                    cascade_dirty = true;
+                }
+                PropApplyOutcome::CannotReset(p) => {
+                    eprintln!("[fiber_work] Reset skipped prop {p:?} (no reset path)");
+                }
+                PropApplyOutcome::UnknownProp | PropApplyOutcome::DecodeFailed(_) => {
+                    eprintln!("[fiber_work] Reset skipped unknown prop {name:?}");
+                }
             }
-        } else if let Some(text) = element.as_any_mut().downcast_mut::<Text>() {
-            result = apply_update_to_text(text, arena_ref, key, ctx, &changed);
-            if result.is_ok() {
-                result = apply_remove_to_text(text, arena_ref, key, ctx, &removed);
-            }
-        } else if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
-            result = apply_update_to_text_area(text_area, arena_ref, key, ctx, &changed);
-            if result.is_ok() {
-                result = apply_remove_to_text_area(text_area, &removed);
-            }
-        } else if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
-            result = apply_update_to_element(el, &changed);
-            if result.is_ok() {
-                result = apply_remove_to_element(el, &removed);
-            }
-        } else {
-            // Unknown host type (Image/Svg/user components). None of
-            // the whitelisted props are supported on those in M3 —
-            // Image/Svg route their sources through props the
-            // whitelist deliberately excludes.
-            result = Err(UpdateFailure::UnsupportedOnElementType {
-                prop: changed
-                    .first()
-                    .map(|(k, _)| *k)
-                    .or_else(|| removed.first().copied())
-                    .unwrap_or(""),
-                type_name: "<non-text, non-element host>",
-            });
         }
     });
     // 軌 A #7: recascade after the element is back in its slot —
     // the walker relies on ancestor chain being intact.
-    if result.is_ok() && cascade_dirty {
+    if cascade_dirty {
         recascade_text_subtree(arena, ctx, key);
-    }
-    result
-}
-
-/// Process a `removed` prop list against an Element host. Accepted
-/// keys: `style` (M4 #1, resets `parsed_style` to `Style::new()` via
-/// `replace_style`), `opacity` (M4 #7, resets to the documented
-/// default of 1.0), and any of the 23 `on_*` event handler props
-/// (M4 #4, clears the corresponding handler Vec).
-fn apply_remove_to_element(
-    element: &mut crate::view::base_component::Element,
-    removed: &[&'static str],
-) -> Result<(), UpdateFailure> {
-    use crate::style::Style;
-    for prop in removed {
-        match *prop {
-            "style" => {
-                element.replace_style(Style::new());
-            }
-            "opacity" => {
-                element.set_opacity(1.0);
-            }
-            // 軌 1 #2: removed context-free props reset to cold-path
-            // defaults (no prop ⇒ setter never called ⇒ struct default).
-            "anchor" => {
-                element.set_anchor_name(None);
-            }
-            "padding" => element.set_padding(0.0),
-            "padding_x" => element.set_padding_x(0.0),
-            "padding_y" => element.set_padding_y(0.0),
-            "padding_left" => element.set_padding_left(0.0),
-            "padding_right" => element.set_padding_right(0.0),
-            "padding_top" => element.set_padding_top(0.0),
-            "padding_bottom" => element.set_padding_bottom(0.0),
-            other if is_event_handler_prop(other) => {
-                element.clear_rsx_event_handler(other);
-            }
-            _ => {
-                return Err(UpdateFailure::CannotResetProp(prop));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// M4 #3: Image slot hot-swap dispatcher. For each changed prop:
-/// - `loading` / `error`: re-parse the incoming `PropValue` via
-///   `convert_image_slot_desc`, commit the new descriptor tree under
-///   the Image's arena key, and call
-///   `replace_loading_slot_incremental` / `replace_error_slot_incremental`
-///   which drains any currently-active slot back to storage, removes
-///   the old slot subtree, and installs the new keys.
-///
-/// Uses `&[]` scope + `None` global path + a viewport-default
-/// `InheritedTextStyle` for the new slot's stable-id path. This
-/// approximation is consistent with the M5.0 InsertChild trade-off
-/// and sufficient for the slot's visible behaviour (text style on
-/// loading/error overlays is rarely inherited; M6 cascade can be
-/// threaded later if needed).
-fn apply_update_to_image(
-    image: &mut crate::view::base_component::Image,
-    arena: &mut NodeArena,
-    changed: &[(&'static str, PropValue)],
-) -> Result<(), UpdateFailure> {
-    use crate::view::renderer_adapter::{
-        InheritedTextStyle, commit_descriptor_tree, convert_image_slot_desc,
-    };
-    use crate::view::{ImageSource};
-
-    let inherited = InheritedTextStyle::default();
-    for (key, value) in changed {
-        match *key {
-            // 軌 1 #4: source hot-swap. Dropping the old `ImageHandle`
-            // via RAII releases the old resource entry.
-            "source" => {
-                let source = ImageSource::from_prop_value(value.clone())
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                image.set_source(source);
-            }
-            "style" => {
-                // Track 1 #10: Image uses ElementStylePropSchema.
-                // Forward the decoded Style to the inner Element's
-                // `apply_style` for width/height/color/etc.
-                let style = crate::view::renderer_adapter::as_element_style(value, key)
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                image.apply_style(style);
-            }
-            "loading" | "error" => {
-                let descriptors =
-                    convert_image_slot_desc(value, &[], None, &inherited, *key)
-                        .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                // Image slot descriptors always return exactly one
-                // wrapper (see `convert_image_slot_desc`); guard anyway
-                // so a future refactor that yields N doesn't silently
-                // truncate.
-                let mut new_keys: Vec<crate::view::node_arena::NodeKey> =
-                    Vec::with_capacity(descriptors.len());
-                // Commit descriptors parented to the Image's arena
-                // node (its NodeKey is the parent for the slot
-                // subtree). We need the Image's own NodeKey here —
-                // but `with_element_taken` has already removed the
-                // Image element from its slot, leaving the arena
-                // parent pointer untouched. The apply caller owns the
-                // `key`, so commit_descriptor_tree with None parent
-                // would make these roots. Instead we use the
-                // Image-side slot method that takes a Vec of
-                // already-committed keys; commit them parented to
-                // the *existing* children insertion parent. Since
-                // `commit_descriptor_tree(arena, None, …)` returns a
-                // key without parent, and we want the parent = Image,
-                // we'll set the parent manually.
-                for desc in descriptors {
-                    let new_key = commit_descriptor_tree(arena, None, desc);
-                    new_keys.push(new_key);
-                }
-                // The Image's own NodeKey isn't directly reachable
-                // here because `with_element_taken` has taken it out
-                // of the arena temporarily. `arena_ref` passed in is
-                // the live arena sans the taken element; we can still
-                // find the Image's parent by the `key` param from
-                // `apply_update_work`. But that key isn't threaded to
-                // this helper. Solution: `replace_*_slot_incremental`
-                // internally takes the arena and only touches the
-                // Image's own fields + descendants, so parenting is
-                // deferred — we pass raw new keys and the Image will
-                // attach them through `sync_active_slot` on the next
-                // frame via `replace_children(arena, …)`. That path
-                // sets parent pointers via `arena.set_parent(...)`.
-                match *key {
-                    "loading" => image.replace_loading_slot_incremental(arena, new_keys),
-                    "error" => image.replace_error_slot_incremental(arena, new_keys),
-                    _ => unreachable!(),
-                }
-            }
-            other => {
-                // Track 1 #10: trivial props (`fit`, `sampling`) route
-                // through the `#[props(host = Image)]`-generated
-                // dispatcher. Unknown prop → Err.
-                let ctx = crate::view::fiber_work::ApplyPropContext {
-                    arena,
-                    self_key: crate::view::node_arena::NodeKey::default(),
-                    viewport_style: &crate::Style::new(),
-                    viewport_width: 0.0,
-                    viewport_height: 0.0,
-                };
-                match crate::view::tags::__ImagePropSchema_apply_update_generated(
-                    image, &ctx, other, value.clone(),
-                )? {
-                    true => {}
-                    false => {
-                        // `custom_update` list matched — but all custom
-                        // Image props are handled above. Reaching here
-                        // would mean the list is out of sync.
-                        return Err(UpdateFailure::UnsupportedOnElementType {
-                            prop: other,
-                            type_name: "Image (custom_update mismatch)",
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// 軌 1 #2: Image removed-prop dispatch. `fit` / `sampling` reset to
-/// the cold-path defaults (`Contain` / `Linear`); `loading` / `error`
-/// / `source` removals are still full-rebuild territory (the first
-/// two would need a "clear active slot" pathway the apply side
-/// doesn't model yet; source removal isn't semantically meaningful —
-/// Image requires a source).
-fn apply_remove_to_image(
-    image: &mut crate::view::base_component::Image,
-    removed: &[&'static str],
-) -> Result<(), UpdateFailure> {
-    use crate::view::{ImageFit, ImageSampling};
-    for prop in removed {
-        match *prop {
-            "fit" => image.set_fit(ImageFit::Contain),
-            "sampling" => image.set_sampling(ImageSampling::Linear),
-            _ => {
-                return Err(UpdateFailure::CannotResetProp(prop));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// 軌 1 #3/#4: Svg apply-update dispatcher — parallel to
-/// `apply_update_to_image`. Handles the same prop set: fit, sampling,
-/// source, and the two slot hot-swap props.
-fn apply_update_to_svg(
-    svg: &mut crate::view::base_component::Svg,
-    arena: &mut NodeArena,
-    changed: &[(&'static str, PropValue)],
-) -> Result<(), UpdateFailure> {
-    use crate::view::renderer_adapter::{
-        InheritedTextStyle, commit_descriptor_tree, convert_image_slot_desc,
-    };
-    use crate::view::SvgSource;
-
-    let inherited = InheritedTextStyle::default();
-    for (key, value) in changed {
-        match *key {
-            "source" => {
-                let source = SvgSource::from_prop_value(value.clone())
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                svg.set_source(source);
-            }
-            "style" => {
-                let style = crate::view::renderer_adapter::as_element_style(value, key)
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                svg.apply_style(style);
-            }
-            "loading" | "error" => {
-                // `convert_image_slot_desc` is shared with Image —
-                // Svg reuses the Image-slot converter (same wrapper
-                // semantics for loading/error overlays).
-                let descriptors = convert_image_slot_desc(value, &[], None, &inherited, *key)
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                let mut new_keys: Vec<NodeKey> = Vec::with_capacity(descriptors.len());
-                for desc in descriptors {
-                    let new_key = commit_descriptor_tree(arena, None, desc);
-                    new_keys.push(new_key);
-                }
-                match *key {
-                    "loading" => svg.replace_loading_slot_incremental(arena, new_keys),
-                    "error" => svg.replace_error_slot_incremental(arena, new_keys),
-                    _ => unreachable!(),
-                }
-            }
-            other => {
-                let ctx = crate::view::fiber_work::ApplyPropContext {
-                    arena,
-                    self_key: crate::view::node_arena::NodeKey::default(),
-                    viewport_style: &crate::Style::new(),
-                    viewport_width: 0.0,
-                    viewport_height: 0.0,
-                };
-                match crate::view::tags::__SvgPropSchema_apply_update_generated(
-                    svg, &ctx, other, value.clone(),
-                )? {
-                    true => {}
-                    false => {
-                        return Err(UpdateFailure::UnsupportedOnElementType {
-                            prop: other,
-                            type_name: "Svg (custom_update mismatch)",
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn apply_remove_to_svg(
-    svg: &mut crate::view::base_component::Svg,
-    removed: &[&'static str],
-) -> Result<(), UpdateFailure> {
-    use crate::view::{ImageFit, ImageSampling};
-    for prop in removed {
-        match *prop {
-            "fit" => svg.set_fit(ImageFit::Contain),
-            "sampling" => svg.set_sampling(ImageSampling::Linear),
-            _ => {
-                return Err(UpdateFailure::CannotResetProp(prop));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// M4 #7: Text-host removed-prop dispatch. Only `opacity` is
-/// context-free enough to reset incrementally (default 1.0). Anything
-/// else errors so the gate falls back to the full-rebuild pipeline.
-fn apply_remove_to_text(
-    text: &mut crate::view::base_component::Text,
-    arena: &NodeArena,
-    self_key: NodeKey,
-    ctx: ApplyContext<'_>,
-    removed: &[&'static str],
-) -> Result<(), UpdateFailure> {
-    use crate::view::renderer_adapter::inherited_text_style_at_parent;
-    for prop in removed {
-        match *prop {
-            "opacity" => text.set_opacity(1.0),
-            "style" => {
-                // 軌 1 #8: `style` prop removed entirely. Reset every
-                // explicit flag and replay the ancestor cascade so
-                // all formerly-authored props fall back to inherited
-                // values (or Text defaults where inherited is None).
-                let inherited = match arena.parent_of(self_key) {
-                    Some(p) => inherited_text_style_at_parent(
-                        arena,
-                        p,
-                        ctx.viewport_style,
-                        ctx.viewport_width,
-                        ctx.viewport_height,
-                    ),
-                    None => crate::view::renderer_adapter::InheritedTextStyle::from_viewport_style(
-                        ctx.viewport_style,
-                        ctx.viewport_width,
-                        ctx.viewport_height,
-                    ),
-                };
-                text.apply_style_incremental(None, &inherited);
-            }
-            _ => {
-                return Err(UpdateFailure::CannotResetProp(prop));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// M4 #7: TextArea-host removed-prop dispatch. See `apply_remove_to_text`.
-fn apply_remove_to_text_area(
-    text_area: &mut crate::view::base_component::TextArea,
-    removed: &[&'static str],
-) -> Result<(), UpdateFailure> {
-    for prop in removed {
-        match *prop {
-            "opacity" => text_area.set_opacity(1.0),
-            _ => {
-                return Err(UpdateFailure::CannotResetProp(prop));
-            }
-        }
     }
     Ok(())
 }
@@ -2031,13 +1256,11 @@ fn apply_remove_to_text_area(
 /// The `Em`/`Rem`/`Percent`/`Vw`/`Vh` variants now resolve correctly
 /// in the incremental path — previously they fell back to a full
 /// rebuild because the apply side had no inherited context.
-fn resolve_font_size_px_with_inherited(
+pub(crate) fn resolve_font_size_px_with_inherited(
     value: &PropValue,
     inherited: &crate::view::renderer_adapter::InheritedTextStyle,
 ) -> Option<f32> {
-    let parent_font_size = inherited
-        .font_size
-        .unwrap_or(inherited.root_font_size);
+    let parent_font_size = inherited.font_size.unwrap_or(inherited.root_font_size);
     match value {
         PropValue::I64(v) => Some((*v as f32).max(0.0)),
         PropValue::F64(v) => Some((*v as f32).max(0.0)),
@@ -2051,260 +1274,6 @@ fn resolve_font_size_px_with_inherited(
     }
 }
 
-fn apply_update_to_element(
-    element: &mut crate::view::base_component::Element,
-    changed: &[(&'static str, PropValue)],
-) -> Result<(), UpdateFailure> {
-    use crate::view::renderer_adapter::{as_element_style, as_f32, try_assign_event_handler_prop};
-    for (key, value) in changed {
-        match *key {
-            "style" => {
-                let style =
-                    as_element_style(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                // M4 #1: use non-additive `replace_style` so declarations
-                // dropped between renders actually clear. The cold
-                // renderer_adapter build path still uses `apply_style`
-                // because it layers base + user styles from scratch.
-                element.replace_style(style);
-            }
-            "opacity" => {
-                let value = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_opacity(value);
-            }
-            // 軌 1 #2: context-free padding / anchor setters. Values
-            // decode via the same `as_f32` / string helpers the cold
-            // path uses, so parse errors here mirror cold-path errors.
-            "padding" => {
-                let v = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_padding(v);
-            }
-            "padding_x" => {
-                let v = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_padding_x(v);
-            }
-            "padding_y" => {
-                let v = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_padding_y(v);
-            }
-            "padding_left" => {
-                let v = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_padding_left(v);
-            }
-            "padding_right" => {
-                let v = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_padding_right(v);
-            }
-            "padding_top" => {
-                let v = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_padding_top(v);
-            }
-            "padding_bottom" => {
-                let v = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_padding_bottom(v);
-            }
-            "anchor" => {
-                let name = crate::view::renderer_adapter::as_owned_string(value, key)
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                element.set_anchor_name(Some(crate::AnchorName::new(name)));
-            }
-            other if is_event_handler_prop(other) => {
-                // M4 #4: replace semantics for RSX event handlers.
-                // Cold path `on_*` setters push into a Vec, so the
-                // incremental path must clear first to avoid stacking
-                // duplicates on every prop change. `try_assign_event_
-                // handler_prop` reuses the shared cold-path dispatcher
-                // so the decode/wiring logic has a single source.
-                element.clear_rsx_event_handler(other);
-                match try_assign_event_handler_prop(element, other, value) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        // `is_event_handler_prop` just returned true
-                        // for this key, so the dispatcher must know
-                        // it. If we ever get here the two tables have
-                        // drifted — surface as UnsupportedProp.
-                        return Err(UpdateFailure::UnsupportedProp(other));
-                    }
-                    Err(_) => {
-                        return Err(UpdateFailure::UnsupportedProp(other));
-                    }
-                }
-            }
-            _ => {
-                return Err(UpdateFailure::UnsupportedOnElementType {
-                    prop: key,
-                    type_name: "Element",
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn apply_update_to_text(
-    text: &mut crate::view::base_component::Text,
-    arena: &NodeArena,
-    self_key: NodeKey,
-    ctx: ApplyContext<'_>,
-    changed: &[(&'static str, PropValue)],
-) -> Result<(), UpdateFailure> {
-    use crate::view::renderer_adapter::{as_f32, as_text_align, inherited_text_style_at_parent};
-    // 軌 A #9: rebuild the inherited cascade at the Text's arena
-    // parent. Built lazily — only the `font_size` arm needs it.
-    let inherited = std::cell::OnceCell::new();
-    let resolve_inherited = || {
-        inherited.get_or_init(|| {
-            let parent = arena.parent_of(self_key);
-            match parent {
-                Some(p) => inherited_text_style_at_parent(
-                    arena,
-                    p,
-                    ctx.viewport_style,
-                    ctx.viewport_width,
-                    ctx.viewport_height,
-                ),
-                None => crate::view::renderer_adapter::InheritedTextStyle::from_viewport_style(
-                    ctx.viewport_style,
-                    ctx.viewport_width,
-                    ctx.viewport_height,
-                ),
-            }
-        })
-    };
-    for (key, value) in changed {
-        match *key {
-            "style" => {
-                // 軌 1 #8: replay the cold-path style fan-out on the
-                // live Text. Explicit flags are reset first so any
-                // declaration dropped from the new style is free to
-                // re-pick the ancestor cascade.
-                let style = crate::view::renderer_adapter::as_text_style(value, key)
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text.apply_style_incremental(Some(&style), resolve_inherited());
-            }
-            "font_size" => {
-                let px = match resolve_font_size_px_with_inherited(value, resolve_inherited()) {
-                    Some(px) => px,
-                    None => {
-                        return Err(UpdateFailure::UnsupportedOnElementType {
-                            prop: "font_size",
-                            type_name: "Text (font_size value malformed)",
-                        });
-                    }
-                };
-                text.set_font_size(px);
-            }
-            "line_height" => {
-                let value = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text.set_line_height(value);
-            }
-            "align" => {
-                let align =
-                    as_text_align(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text.set_text_align(align);
-            }
-            "opacity" => {
-                let value = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text.set_opacity(value);
-            }
-            _ => {
-                return Err(UpdateFailure::UnsupportedOnElementType {
-                    prop: key,
-                    type_name: "Text",
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn apply_update_to_text_area(
-    text_area: &mut crate::view::base_component::TextArea,
-    arena: &NodeArena,
-    self_key: NodeKey,
-    ctx: ApplyContext<'_>,
-    changed: &[(&'static str, PropValue)],
-) -> Result<(), UpdateFailure> {
-    use crate::view::renderer_adapter::{as_f32, inherited_text_style_at_parent};
-    let inherited = std::cell::OnceCell::new();
-    let resolve_inherited = || {
-        inherited.get_or_init(|| {
-            let parent = arena.parent_of(self_key);
-            match parent {
-                Some(p) => inherited_text_style_at_parent(
-                    arena,
-                    p,
-                    ctx.viewport_style,
-                    ctx.viewport_width,
-                    ctx.viewport_height,
-                ),
-                None => crate::view::renderer_adapter::InheritedTextStyle::from_viewport_style(
-                    ctx.viewport_style,
-                    ctx.viewport_width,
-                    ctx.viewport_height,
-                ),
-            }
-        })
-    };
-    for (key, value) in changed {
-        match *key {
-            "style" => {
-                // Track 1 #10: replay cold-path style fan-out (width/
-                // height/color/selection). Mirrors Text `style` arm.
-                let style = crate::view::renderer_adapter::as_element_style(value, key)
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text_area.apply_style_incremental(Some(&style), resolve_inherited());
-            }
-            "font_size" => {
-                let px = match resolve_font_size_px_with_inherited(value, resolve_inherited()) {
-                    Some(px) => px,
-                    None => {
-                        return Err(UpdateFailure::UnsupportedOnElementType {
-                            prop: "font_size",
-                            type_name: "TextArea (font_size value malformed)",
-                        });
-                    }
-                };
-                text_area.set_font_size(px);
-            }
-            "opacity" => {
-                let value = as_f32(value, key).map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text_area.set_opacity(value);
-            }
-            "on_change" => {
-                let handler = crate::ui::TextChangeHandlerProp::from_prop_value(value.clone())
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                // Replace existing change handlers (reconciler emits
-                // one per user-authored `on_change={...}`).
-                text_area.replace_on_change_handler(handler);
-            }
-            "on_focus" => {
-                let handler = crate::ui::TextAreaFocusHandlerProp::from_prop_value(value.clone())
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text_area.replace_on_focus_handler(handler);
-            }
-            "on_render" => {
-                let handler = crate::ui::TextAreaRenderHandlerProp::from_prop_value(value.clone())
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text_area.replace_on_render_handler(handler);
-            }
-            "on_blur" => {
-                // TextArea forwards `on_blur` to its inner Element
-                // via `text_area.on_blur(F)`. For incremental swap we
-                // replace the element's blur handler list.
-                let handler = crate::ui::BlurHandlerProp::from_prop_value(value.clone())
-                    .map_err(|_| UpdateFailure::UnsupportedProp(key))?;
-                text_area.replace_on_blur_handler(handler);
-            }
-            _ => {
-                return Err(UpdateFailure::UnsupportedOnElementType {
-                    prop: key,
-                    type_name: "TextArea",
-                });
-            }
-        }
-    }
-    Ok(())
-}
 
 /// Apply a `Patch::SetText` to a Text or TextArea host at `key`.
 ///
@@ -2354,13 +1323,7 @@ fn apply_set_text_work(
 /// Out-of-range or missing `key` is a silent no-op — consistent with
 /// the other arena_* helpers, so a stale FiberWork batch doesn't panic
 /// the host.
-fn arena_move_child(
-    arena: &mut NodeArena,
-    parent: NodeKey,
-    key: NodeKey,
-    from: usize,
-    to: usize,
-) {
+fn arena_move_child(arena: &mut NodeArena, parent: NodeKey, key: NodeKey, from: usize, to: usize) {
     let mut children = arena.children_of(parent);
     if from >= children.len() {
         return;
@@ -2447,12 +1410,7 @@ mod tests {
             _a: &mut NodeArena,
         ) {
         }
-        fn place(
-            &mut self,
-            _p: crate::view::base_component::LayoutPlacement,
-            _a: &mut NodeArena,
-        ) {
-        }
+        fn place(&mut self, _p: crate::view::base_component::LayoutPlacement, _a: &mut NodeArena) {}
         fn measured_size(&self) -> (f32, f32) {
             (0.0, 0.0)
         }
@@ -2709,11 +1667,9 @@ mod tests {
         // Install a taller slot; the old wrapper subtree must be
         // removed and the new one committed, keeping the Vec length
         // at 1.
-        let loading_b = RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
-            .with_child(RsxNode::tagged(
-                "Element",
-                RsxTagDescriptor::of::<Element>(),
-            ));
+        let loading_b = RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>()).with_child(
+            RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>()),
+        );
         apply_fiber_works(
             &mut arena,
             test_apply_ctx(),

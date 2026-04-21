@@ -271,6 +271,97 @@ impl ElementTrait for Image {
     fn clear_local_dirty_flags(&mut self, flags: super::DirtyFlags) {
         self.element.clear_local_dirty_flags(flags);
     }
+
+    fn apply_prop(
+        &mut self,
+        arena: &mut NodeArena,
+        _self_key: NodeKey,
+        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+        value: crate::ui::PropValue,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::ui::FromPropValue;
+        use crate::view::fiber_work::PropApplyOutcome;
+        use crate::view::renderer_adapter::{
+            InheritedTextStyle, as_element_style, commit_descriptor_tree,
+            convert_image_slot_desc,
+        };
+
+        match name {
+            // 軌 1 #4: source hot-swap. Dropping the old `ImageHandle`
+            // via RAII releases the old resource entry.
+            "source" => {
+                let Ok(source) = ImageSource::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_source(source);
+                PropApplyOutcome::Applied
+            }
+            "style" => {
+                // Image uses ElementStylePropSchema; forward the
+                // decoded Style to the inner Element.
+                let Ok(style) = as_element_style(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.apply_style(style);
+                PropApplyOutcome::Applied
+            }
+            "loading" | "error" => {
+                let inherited = InheritedTextStyle::default();
+                let Ok(descriptors) = convert_image_slot_desc(&value, &[], None, &inherited, name)
+                else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                let mut new_keys: Vec<NodeKey> = Vec::with_capacity(descriptors.len());
+                for desc in descriptors {
+                    let new_key = commit_descriptor_tree(arena, None, desc);
+                    new_keys.push(new_key);
+                }
+                match name {
+                    "loading" => self.replace_loading_slot_incremental(arena, new_keys),
+                    "error" => self.replace_error_slot_incremental(arena, new_keys),
+                    _ => unreachable!(),
+                }
+                PropApplyOutcome::Applied
+            }
+            "fit" => {
+                let Ok(fit) = ImageFit::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_fit(fit);
+                PropApplyOutcome::Applied
+            }
+            "sampling" => {
+                let Ok(sampling) = ImageSampling::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_sampling(sampling);
+                PropApplyOutcome::Applied
+            }
+            _ => PropApplyOutcome::UnknownProp,
+        }
+    }
+
+    fn reset_prop(
+        &mut self,
+        _arena: &mut NodeArena,
+        _self_key: NodeKey,
+        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::view::fiber_work::PropApplyOutcome;
+        match name {
+            "fit" => {
+                self.set_fit(ImageFit::Contain);
+                PropApplyOutcome::Applied
+            }
+            "sampling" => {
+                self.set_sampling(ImageSampling::Linear);
+                PropApplyOutcome::Applied
+            }
+            _ => PropApplyOutcome::CannotReset(name),
+        }
+    }
 }
 
 impl EventTarget for Image {

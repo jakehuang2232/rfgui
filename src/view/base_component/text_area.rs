@@ -2900,6 +2900,115 @@ impl ElementTrait for TextArea {
     fn clear_local_dirty_flags(&mut self, flags: super::DirtyFlags) {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
+
+    fn apply_prop(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
+        ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+        value: crate::ui::PropValue,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::ui::FromPropValue;
+        use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
+        use crate::view::renderer_adapter::{
+            InheritedTextStyle, as_element_style, as_f32, inherited_text_style_at_parent,
+        };
+
+        let resolve_inherited = || -> InheritedTextStyle {
+            match arena.parent_of(self_key) {
+                Some(p) => inherited_text_style_at_parent(
+                    arena,
+                    p,
+                    ctx.viewport_style,
+                    ctx.viewport_width,
+                    ctx.viewport_height,
+                ),
+                None => InheritedTextStyle::from_viewport_style(
+                    ctx.viewport_style,
+                    ctx.viewport_width,
+                    ctx.viewport_height,
+                ),
+            }
+        };
+
+        match name {
+            "style" => {
+                let Ok(style) = as_element_style(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                let inherited = resolve_inherited();
+                self.apply_style_incremental(Some(&style), &inherited);
+                PropApplyOutcome::Applied
+            }
+            "font_size" => {
+                let inherited = resolve_inherited();
+                let Some(px) = resolve_font_size_px_with_inherited(&value, &inherited) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_font_size(px);
+                PropApplyOutcome::Applied
+            }
+            "opacity" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_opacity(v);
+                PropApplyOutcome::Applied
+            }
+            "on_change" => {
+                let Ok(handler) = crate::ui::TextChangeHandlerProp::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.replace_on_change_handler(handler);
+                PropApplyOutcome::Applied
+            }
+            "on_focus" => {
+                let Ok(handler) = crate::ui::TextAreaFocusHandlerProp::from_prop_value(value)
+                else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.replace_on_focus_handler(handler);
+                PropApplyOutcome::Applied
+            }
+            "on_render" => {
+                let Ok(handler) = crate::ui::TextAreaRenderHandlerProp::from_prop_value(value)
+                else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.replace_on_render_handler(handler);
+                PropApplyOutcome::Applied
+            }
+            "on_blur" => {
+                // TextArea forwards on_blur to its inner Element via
+                // `text_area.on_blur(F)`. For incremental swap we
+                // replace the element's blur handler list.
+                let Ok(handler) = crate::ui::BlurHandlerProp::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.replace_on_blur_handler(handler);
+                PropApplyOutcome::Applied
+            }
+            _ => PropApplyOutcome::UnknownProp,
+        }
+    }
+
+    fn reset_prop(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::view::fiber_work::PropApplyOutcome;
+        match name {
+            "opacity" => {
+                self.set_opacity(1.0);
+                PropApplyOutcome::Applied
+            }
+            _ => PropApplyOutcome::CannotReset(name),
+        }
+    }
 }
 
 impl EventTarget for TextArea {

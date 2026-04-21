@@ -647,7 +647,6 @@ impl Element {
     /// Clears the existing list so a re-emitted user `on_blur={...}`
     /// prop doesn't accumulate duplicate handlers across renders.
     pub(crate) fn replace_on_blur_handler(&mut self, handler: crate::ui::BlurHandlerProp) {
-        eprintln!("[element] replace_on_blur_handler called");
         let list = &mut self.event_handlers.get_or_insert_with(Default::default).blur;
         list.clear();
         list.push(Box::new(move |event, _control| handler.call(event)));

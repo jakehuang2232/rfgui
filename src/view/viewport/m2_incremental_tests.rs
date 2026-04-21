@@ -285,8 +285,8 @@ fn incremental_commit_applies_style_update_preserves_node_key() {
     );
 }
 
-/// font_size update on a Text leaf commits as `FiberWork::Update`
-/// with the `font_size` prop whitelisted. NodeKey must survive.
+/// font_size update on a Text leaf commits as `FiberWork::Update`.
+/// NodeKey must survive.
 ///
 /// Uses numeric f64 directly so the prop lands as `PropValue::F64`
 /// (the M3 Text font_size branch only handles numeric; `FontSize`-

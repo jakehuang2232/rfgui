@@ -1335,6 +1335,124 @@ impl ElementTrait for Text {
     fn clear_local_dirty_flags(&mut self, flags: super::DirtyFlags) {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
+
+    fn apply_prop(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
+        ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+        value: crate::ui::PropValue,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
+        use crate::view::renderer_adapter::{
+            InheritedTextStyle, as_f32, as_text_align, as_text_style,
+            inherited_text_style_at_parent,
+        };
+
+        let resolve_inherited = || -> InheritedTextStyle {
+            match arena.parent_of(self_key) {
+                Some(p) => inherited_text_style_at_parent(
+                    arena,
+                    p,
+                    ctx.viewport_style,
+                    ctx.viewport_width,
+                    ctx.viewport_height,
+                ),
+                None => InheritedTextStyle::from_viewport_style(
+                    ctx.viewport_style,
+                    ctx.viewport_width,
+                    ctx.viewport_height,
+                ),
+            }
+        };
+
+        match name {
+            "style" => {
+                // 軌 1 #8: replay cold-path style fan-out on the live
+                // Text. Explicit flags are preserved (M3) so any
+                // declaration dropped from the new style picks up the
+                // ancestor cascade rather than re-resetting.
+                let Ok(style) = as_text_style(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                let inherited = resolve_inherited();
+                self.apply_style_incremental(Some(&style), &inherited);
+                PropApplyOutcome::Applied
+            }
+            "font_size" => {
+                let inherited = resolve_inherited();
+                let Some(px) = resolve_font_size_px_with_inherited(&value, &inherited) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_font_size(px);
+                PropApplyOutcome::Applied
+            }
+            "line_height" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_line_height(v);
+                PropApplyOutcome::Applied
+            }
+            "align" => {
+                let Ok(align) = as_text_align(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_text_align(align);
+                PropApplyOutcome::Applied
+            }
+            "opacity" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_opacity(v);
+                PropApplyOutcome::Applied
+            }
+            _ => PropApplyOutcome::UnknownProp,
+        }
+    }
+
+    fn reset_prop(
+        &mut self,
+        arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
+        ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::view::fiber_work::PropApplyOutcome;
+        use crate::view::renderer_adapter::{InheritedTextStyle, inherited_text_style_at_parent};
+
+        match name {
+            "opacity" => {
+                self.set_opacity(1.0);
+                PropApplyOutcome::Applied
+            }
+            "style" => {
+                // 軌 1 #8: `style` removed entirely. Reset every
+                // explicit flag and replay ancestor cascade so all
+                // formerly-authored props fall back to inherited
+                // values (or Text defaults where inherited is None).
+                let inherited = match arena.parent_of(self_key) {
+                    Some(p) => inherited_text_style_at_parent(
+                        arena,
+                        p,
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                    None => InheritedTextStyle::from_viewport_style(
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                };
+                self.apply_style_incremental(None, &inherited);
+                PropApplyOutcome::Applied
+            }
+            _ => PropApplyOutcome::CannotReset(name),
+        }
+    }
 }
 
 impl EventTarget for Text {
