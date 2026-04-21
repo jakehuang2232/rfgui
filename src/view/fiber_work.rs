@@ -117,27 +117,11 @@ fn count_arena_leaves(node: &RsxNode) -> usize {
 /// (Elements) by emitting a final arena step and stopping; terminates
 /// on Fragment targets without emitting a final step (Fragment has no
 /// arena presence of its own).
-/// Sentinel rsx tag for TextArea's projection child: lives in the rsx
-/// tree but never commits as an arena child. Any patch whose rsx path
-/// descends into one of these is a no-op on the arena side.
-const ARENA_INVISIBLE_TAGS: &[&str] = &["__rfgui_text_area_projection"];
-
-fn is_arena_invisible_host(n: &RsxNode) -> bool {
-    match n {
-        RsxNode::Element(e) => ARENA_INVISIBLE_TAGS.contains(&e.tag),
-        _ => false,
-    }
-}
-
+///
 /// Resolution of an rsx-space path against the arena-flattened tree.
 pub(crate) enum ArenaPathResolution {
     /// Path resolves to an arena node at this index chain.
     Arena(Vec<usize>),
-    /// Path descends through a host whose children don't commit to the
-    /// arena (TextArea projection, future: Image/Svg slot rsx targets).
-    /// The patch has no arena target; translator should drop it as a
-    /// no-op without aborting the batch.
-    NoArenaTarget,
     /// Path is malformed (out of bounds / hits a childless node
     /// prematurely).
     Invalid,
@@ -158,9 +142,6 @@ pub(crate) fn rsx_to_arena_path(root: &RsxNode, rsx_path: &[usize]) -> ArenaPath
             offset += count_arena_leaves(child);
         }
         let target = &children[rsx_idx];
-        if is_arena_invisible_host(target) {
-            return ArenaPathResolution::NoArenaTarget;
-        }
         match target {
             RsxNode::Fragment(_) => {
                 // Fragment is arena-transparent: stay at the same
@@ -356,8 +337,7 @@ pub fn patch_to_fiber_work_with_rsx(
             None => Some(rsx_path.to_vec()),
             Some(old) => match rsx_to_arena_path(old, rsx_path) {
                 ArenaPathResolution::Arena(p) => Some(p),
-                // NoArenaTarget / Invalid: caller falls back.
-                _ => None,
+                ArenaPathResolution::Invalid => None,
             },
         }
     };
@@ -722,25 +702,6 @@ pub fn translate_rooted_patches_all_or_nothing(
         // (`patch_to_fiber_work_with_rsx`) needs the rsx-space path
         // for NEW-tree walks (InsertChild) and internally maps
         // rsx → arena via `rsx_to_arena_path` for `resolve_path`.
-        // Pre-scan only so we can drop patches whose target lives in
-        // an arena-absent subtree (TextArea projection) as no-ops.
-        let rsx_path_for_check: Option<&[usize]> = match &rp.patch {
-            Patch::UpdateElementProps { path, .. }
-            | Patch::SetText { path, .. }
-            | Patch::ReplaceNode { path, .. } => Some(path.as_slice()),
-            Patch::InsertChild { parent_path, .. }
-            | Patch::RemoveChild { parent_path, .. }
-            | Patch::MoveChild { parent_path, .. } => Some(parent_path.as_slice()),
-            _ => None,
-        };
-        if let (Some(rsx_path), Some(old)) = (rsx_path_for_check, per_root_old_rsx)
-            && matches!(
-                rsx_to_arena_path(old, rsx_path),
-                ArenaPathResolution::NoArenaTarget
-            )
-        {
-            continue;
-        }
         let translated_patch = rp.patch;
         // Keep a copy for the per-patch ReplaceNode fallback path below.
         let patch_snapshot = translated_patch.clone();

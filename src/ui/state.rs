@@ -455,6 +455,25 @@ impl<T: 'static> PartialEq for GlobalState<T> {
     }
 }
 
+/// 軌 1 #12 fix: run `f` with `build_depth` bumped so any nested `rsx!`
+/// that runs `build_scope` sees itself as non-top-level — skipping the
+/// `live_keys.clear()` and slots-prune that would otherwise wipe the
+/// main render pass's state store.
+///
+/// Needed when user-authored handlers (e.g. TextArea `on_render`)
+/// invoke `rsx!` during layout/place, outside the normal render pass.
+pub fn non_render_scope<R>(f: impl FnOnce() -> R) -> R {
+    STORE.with(|store| {
+        store.borrow_mut().build_depth += 1;
+    });
+    let out = f();
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        store.build_depth = store.build_depth.saturating_sub(1);
+    });
+    out
+}
+
 pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
