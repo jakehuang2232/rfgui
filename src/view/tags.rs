@@ -204,10 +204,7 @@ pub struct BorderStylePropSchema {
 }
 
 
-#[props(
-    host = crate::view::base_component::Text,
-    custom_update = [style, align, font_size, line_height, font, opacity]
-)]
+#[props]
 pub struct TextPropSchema {
     pub style: Option<TextStylePropSchema>,
     pub align: Option<TextAlign>,
@@ -237,10 +234,7 @@ pub struct TextAreaPropSchema {
     pub max_length: Option<i64>,
 }
 
-#[props(
-    host = crate::view::base_component::Image,
-    custom_update = [source, style, loading, error]
-)]
+#[props]
 pub struct ImagePropSchema {
     pub source: ImageSource,
     pub style: Option<ElementStylePropSchema>,
@@ -250,10 +244,7 @@ pub struct ImagePropSchema {
     pub error: Option<RsxNode>,
 }
 
-#[props(
-    host = crate::view::base_component::Svg,
-    custom_update = [source, style, loading, error]
-)]
+#[props]
 pub struct SvgPropSchema {
     pub source: SvgSource,
     pub style: Option<ElementStylePropSchema>,

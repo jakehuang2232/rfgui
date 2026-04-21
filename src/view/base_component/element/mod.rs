@@ -1434,6 +1434,37 @@ pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
     /// Set the legacy u64 parent id. Default is a no-op for leaf elements
     /// that have no parent tracking.
     fn set_parent_id(&mut self, _parent_id: Option<u64>) {}
+
+    /// 軌 1 #11: dispatch a single changed prop to this host. Each host
+    /// owns its own prop registry — fiber_work routes `(name, value)`
+    /// pairs straight here without per-host helper functions.
+    ///
+    /// Default impl returns `UnknownProp` so leaf hosts that genuinely
+    /// don't accept any incremental prop are no-ops; the caller logs
+    /// and continues without falling back to cold rebuild.
+    fn apply_prop(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        _name: &'static str,
+        _value: crate::ui::PropValue,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        crate::view::fiber_work::PropApplyOutcome::UnknownProp
+    }
+
+    /// 軌 1 #11: reset a removed prop to its cold-path default. Hosts
+    /// only override for props whose removal semantics they actually
+    /// model; the default `CannotReset` is a soft no-op (caller logs).
+    fn reset_prop(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        crate::view::fiber_work::PropApplyOutcome::CannotReset(name)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2182,6 +2213,164 @@ impl ElementTrait for Element {
 
     fn set_parent_id(&mut self, parent_id: Option<u64>) {
         self.core.parent_id = parent_id;
+    }
+
+    fn apply_prop(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+        value: crate::ui::PropValue,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::view::fiber_work::PropApplyOutcome;
+        use crate::view::renderer_adapter::{
+            as_element_style, as_f32, as_owned_string, try_assign_event_handler_prop,
+        };
+
+        match name {
+            "style" => {
+                let Ok(style) = as_element_style(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                // M4 #1: non-additive `replace_style` so dropped
+                // declarations clear. Cold path uses `apply_style`
+                // (layered base + user) and is unaffected.
+                self.replace_style(style);
+                PropApplyOutcome::Applied
+            }
+            "opacity" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_opacity(v);
+                PropApplyOutcome::Applied
+            }
+            "padding" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_padding(v);
+                PropApplyOutcome::Applied
+            }
+            "padding_x" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_padding_x(v);
+                PropApplyOutcome::Applied
+            }
+            "padding_y" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_padding_y(v);
+                PropApplyOutcome::Applied
+            }
+            "padding_left" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_padding_left(v);
+                PropApplyOutcome::Applied
+            }
+            "padding_right" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_padding_right(v);
+                PropApplyOutcome::Applied
+            }
+            "padding_top" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_padding_top(v);
+                PropApplyOutcome::Applied
+            }
+            "padding_bottom" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_padding_bottom(v);
+                PropApplyOutcome::Applied
+            }
+            "anchor" => {
+                let Ok(name_str) = as_owned_string(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_anchor_name(Some(crate::AnchorName::new(name_str)));
+                PropApplyOutcome::Applied
+            }
+            other if crate::view::renderer_adapter::RSX_EVENT_HANDLER_PROPS.contains(&other) => {
+                // M4 #4: replace semantics for RSX event handlers.
+                // Cold-path setters push onto a Vec; clear first to
+                // avoid stacking duplicates across renders.
+                self.clear_rsx_event_handler(other);
+                match try_assign_event_handler_prop(self, other, &value) {
+                    Ok(true) => PropApplyOutcome::Applied,
+                    Ok(false) | Err(_) => PropApplyOutcome::DecodeFailed(other),
+                }
+            }
+            _ => PropApplyOutcome::UnknownProp,
+        }
+    }
+
+    fn reset_prop(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        name: &'static str,
+    ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::view::fiber_work::PropApplyOutcome;
+        match name {
+            "style" => {
+                self.replace_style(Style::new());
+                PropApplyOutcome::Applied
+            }
+            "opacity" => {
+                self.set_opacity(1.0);
+                PropApplyOutcome::Applied
+            }
+            "anchor" => {
+                self.set_anchor_name(None);
+                PropApplyOutcome::Applied
+            }
+            "padding" => {
+                self.set_padding(0.0);
+                PropApplyOutcome::Applied
+            }
+            "padding_x" => {
+                self.set_padding_x(0.0);
+                PropApplyOutcome::Applied
+            }
+            "padding_y" => {
+                self.set_padding_y(0.0);
+                PropApplyOutcome::Applied
+            }
+            "padding_left" => {
+                self.set_padding_left(0.0);
+                PropApplyOutcome::Applied
+            }
+            "padding_right" => {
+                self.set_padding_right(0.0);
+                PropApplyOutcome::Applied
+            }
+            "padding_top" => {
+                self.set_padding_top(0.0);
+                PropApplyOutcome::Applied
+            }
+            "padding_bottom" => {
+                self.set_padding_bottom(0.0);
+                PropApplyOutcome::Applied
+            }
+            other if crate::view::renderer_adapter::RSX_EVENT_HANDLER_PROPS.contains(&other) => {
+                self.clear_rsx_event_handler(other);
+                PropApplyOutcome::Applied
+            }
+            _ => PropApplyOutcome::CannotReset(name),
+        }
     }
 }
 

@@ -1723,9 +1723,6 @@ fn convert_text_area_element_desc(
                         .into_iter()
                         .map(|(range, desc)| {
                             let key = commit_descriptor_tree(arena, Some(text_area_key), desc);
-                            // Stamp the source range onto every nested
-                            // TextArea inside the freshly-committed
-                            // subtree.
                             crate::view::base_component::apply_source_range_to_subtree(
                                 arena,
                                 key,
@@ -2363,7 +2360,6 @@ pub(crate) fn try_assign_event_handler_prop(
         }
         "on_blur" => {
             let handler = as_blur_handler(value, key)?;
-            eprintln!("[adapter] try_assign on_blur handler installed on Element");
             element.on_blur(move |event, _control| handler.call(event));
         }
         "on_ime_commit" => {

@@ -914,7 +914,10 @@ fn should_dispatch_text(viewport: &Viewport, text: &str) -> bool {
     if ch.is_control() {
         return false;
     }
-    !viewport.modifiers().any()
+    // Shift is a text-producing modifier (uppercase, symbols); only
+    // Ctrl/Alt/Meta combos should suppress typing.
+    let m = viewport.modifiers();
+    !(m.ctrl() || m.alt() || m.meta())
 }
 
 /// Map winit's `DeviceEvent::Button` numeric code onto the platform enum

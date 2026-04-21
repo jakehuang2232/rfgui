@@ -70,63 +70,17 @@ pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn props(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input_struct = syn::parse_macro_input!(item as ItemStruct);
-    let attrs = match syn::parse::<PropsAttrs>(attr) {
-        Ok(a) => a,
-        Err(err) => return err.to_compile_error().into(),
-    };
-    expand_prop(input_struct, attrs).into()
-}
-
-/// Track 1 #10: attrs accepted by `#[props(...)]`:
-/// - `host = <Path>` — concrete host type the generated dispatcher
-///   mutates. When present, the macro emits
-///   `__<Schema>_apply_update_generated` which calls `host.set_<field>(
-///   <T>::from_prop_value(value)?)` for each non-custom field.
-/// - `custom_update = [field, field, ...]` — fields whose incremental
-///   apply path is hand-written on the host (typically context-aware
-///   props: `style` / `font_size` em-rem / `source` RAII / `loading`
-///   / `error` slot commit). The dispatcher returns `Ok(false)` for
-///   these so the host wrapper takes over.
-#[derive(Default)]
-struct PropsAttrs {
-    host: Option<Path>,
-    custom_update: Vec<Ident>,
-}
-
-impl Parse for PropsAttrs {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let mut out = PropsAttrs::default();
-        if input.is_empty() {
-            return Ok(out);
-        }
-        loop {
-            let key: Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            if key == "host" {
-                out.host = Some(input.parse()?);
-            } else if key == "custom_update" {
-                let content;
-                syn::bracketed!(content in input);
-                let items: Punctuated<Ident, Token![,]> =
-                    Punctuated::parse_terminated(&content)?;
-                out.custom_update = items.into_iter().collect();
-            } else {
-                return Err(syn::Error::new(
-                    key.span(),
-                    format!("unknown #[props] attr `{key}`; expected `host` or `custom_update`"),
-                ));
-            }
-            if input.is_empty() {
-                break;
-            }
-            input.parse::<Token![,]>()?;
-            if input.is_empty() {
-                break;
-            }
-        }
-        Ok(out)
+    if !attr.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[props] takes no arguments (軌 1 #11: host= / custom_update= removed — \
+             dispatch now lives on the host via ElementTrait::apply_prop)",
+        )
+        .to_compile_error()
+        .into();
     }
+    let input_struct = syn::parse_macro_input!(item as ItemStruct);
+    expand_prop(input_struct).into()
 }
 
 #[derive(Clone)]
@@ -584,7 +538,7 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
     }
 }
 
-fn expand_prop(input_struct: ItemStruct, attrs: PropsAttrs) -> proc_macro2::TokenStream {
+fn expand_prop(input_struct: ItemStruct) -> proc_macro2::TokenStream {
     let struct_ident = &input_struct.ident;
     let init_ident = format_ident!("__{}Init", struct_ident);
     let generics = &input_struct.generics;
@@ -607,9 +561,6 @@ fn expand_prop(input_struct: ItemStruct, attrs: PropsAttrs) -> proc_macro2::Toke
     let mut init_default_fields = Vec::new();
     let mut from_init_fields = Vec::new();
     let mut all_optional = true;
-    // Track 1 #10 dispatcher arms.
-    let mut update_arms: Vec<proc_macro2::TokenStream> = Vec::new();
-    let mut remove_arms: Vec<proc_macro2::TokenStream> = Vec::new();
     for field in fields {
         let field_ident = match &field.ident {
             Some(ident) => ident,
@@ -656,37 +607,6 @@ fn expand_prop(input_struct: ItemStruct, attrs: PropsAttrs) -> proc_macro2::Toke
                 )),
             });
         }
-        // Dispatcher arm. Match literal prop name (= field ident str).
-        // Custom fields bail with `Ok(false)` so the host wrapper
-        // handles them. Non-custom fields decode via FromPropValue
-        // and call the convention setter `set_<field>`.
-        let field_name_lit = field_ident.to_string();
-        let setter_ident = format_ident!("set_{}", field_ident);
-        let is_custom = attrs.custom_update.iter().any(|i| i == field_ident);
-        if is_custom {
-            update_arms.push(quote! {
-                #field_name_lit => Ok(false),
-            });
-            remove_arms.push(quote! {
-                #field_name_lit => Ok(false),
-            });
-        } else {
-            update_arms.push(quote! {
-                #field_name_lit => {
-                    let decoded: #init_inner =
-                        <#init_inner as ::rfgui::ui::FromPropValue>::from_prop_value(value)
-                            .map_err(|_| ::rfgui::view::fiber_work::UpdateFailure::UnsupportedProp(#field_name_lit))?;
-                    host.#setter_ident(decoded);
-                    Ok(true)
-                }
-            });
-            remove_arms.push(quote! {
-                #field_name_lit => {
-                    host.#setter_ident(::core::default::Default::default());
-                    Ok(true)
-                }
-            });
-        }
     }
 
     let optional_default_impl = if all_optional {
@@ -696,40 +616,6 @@ fn expand_prop(input_struct: ItemStruct, attrs: PropsAttrs) -> proc_macro2::Toke
                     Self {
                         #(#default_fields)*
                     }
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    // Track 1 #10: optional dispatcher fn when `host = <Path>` attr
-    // is provided. Emits a free fn the host wrapper calls to cover
-    // trivial (setter-shaped) props, leaving custom_update fields for
-    // the wrapper's match arm.
-    let dispatcher_impl = if let Some(host_path) = &attrs.host {
-        let generated_update_ident =
-            format_ident!("__{}_apply_update_generated", struct_ident);
-        // Track 1 #10: remove dispatcher is emitted but gated behind
-        // a separate fn so types that don't `impl Default` still
-        // compile. Hosts wanting reset call it explicitly.
-        let _ = &remove_arms;
-        quote! {
-            /// Generated by `#[props(host = ...)]`. Dispatches a single
-            /// changed prop to the host's `set_<field>` setter via
-            /// `FromPropValue`. Returns `Ok(true)` when applied,
-            /// `Ok(false)` when the field is listed in `custom_update`
-            /// (caller handles), `Err` when the prop name is unknown.
-            #[allow(non_snake_case)]
-            pub fn #generated_update_ident(
-                host: &mut #host_path,
-                _ctx: &::rfgui::view::fiber_work::ApplyPropContext<'_>,
-                name: &'static str,
-                value: ::rfgui::ui::PropValue,
-            ) -> ::core::result::Result<bool, ::rfgui::view::fiber_work::UpdateFailure> {
-                match name {
-                    #(#update_arms)*
-                    _ => Err(::rfgui::view::fiber_work::UpdateFailure::UnsupportedProp(name)),
                 }
             }
         }
@@ -762,8 +648,6 @@ fn expand_prop(input_struct: ItemStruct, attrs: PropsAttrs) -> proc_macro2::Toke
         }
 
         #optional_default_impl
-
-        #dispatcher_impl
     }
 }
 
