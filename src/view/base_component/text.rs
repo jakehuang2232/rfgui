@@ -13,7 +13,7 @@ use cosmic_text::{Align, Buffer as GlyphBuffer, Hinting, ShapeLine, Wrap};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use crate::time::Instant;
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, InlineMeasureContext,
