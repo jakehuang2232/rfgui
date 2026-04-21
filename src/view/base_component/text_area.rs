@@ -171,6 +171,12 @@ pub struct TextArea {
     dirty_flags: super::DirtyFlags,
     last_layout_placement: Option<LayoutPlacement>,
     source_text_range: Option<Range<usize>>,
+    /// 軌 1 #12: captured once the TextArea has been committed into the
+    /// arena (cold `post_commit` or `apply_prop` path). `rebuild_render_nodes`
+    /// uses it so handler-driven projection subtrees are parented to us
+    /// (without this they would commit as detached arena roots and miss
+    /// sibling walks for hit-test / events).
+    self_node_key: Option<crate::view::node_arena::NodeKey>,
     // 軌 A #7: per-prop explicit-tracking flags. See Text for the
     // cascade semantics. TextArea's setter surface is narrower
     // (no font_weight / text_wrap), so only 4 flags.
@@ -317,6 +323,7 @@ impl TextArea {
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
             source_text_range: None,
+            self_node_key: None,
             font_family_explicit: false,
             font_size_explicit: false,
             color_explicit: false,
@@ -575,6 +582,13 @@ impl TextArea {
                 .map(|projection| projection.range.clone())
                 .collect(),
         );
+    }
+
+    /// 軌 1 #12: adapter / apply_prop reports this TextArea's arena
+    /// NodeKey so handler-driven projection rebuilds can parent
+    /// subtrees to us.
+    pub fn set_self_node_key(&mut self, key: crate::view::node_arena::NodeKey) {
+        self.self_node_key = Some(key);
     }
 
     pub fn source_text_range(&self) -> Option<Range<usize>> {
@@ -1723,7 +1737,16 @@ impl TextArea {
         };
 
         let mut render_string = TextAreaRenderString::new(self.content.clone());
-        handler.call(&mut render_string);
+        // 軌 1 #12 fix: handler may invoke `rsx!` which enters
+        // `build_scope`. Called during layout/place (outside the main
+        // render pass), that scope would start at depth 0, clear
+        // `live_keys`, and prune all other components' use_state
+        // slots after Element's `create_element` flips
+        // `components_rendered_in_build=true`. Wrap in `non_render_scope`
+        // so handler's nested scope is treated as non-top-level.
+        crate::ui::non_render_scope(|| {
+            handler.call(&mut render_string);
+        });
 
         let projections = normalize_text_area_render_projections(
             self.content.as_str(),
@@ -1743,7 +1766,7 @@ impl TextArea {
         // rebuilds we commit as arena-only detached roots (parent=None);
         // they still live inside the arena and get cleaned up by the
         // drain above on the next rebuild.
-        let parent_key: Option<crate::view::node_arena::NodeKey> = None;
+        let parent_key: Option<crate::view::node_arena::NodeKey> = self.self_node_key;
 
         let mut next_nodes: Vec<TextAreaProjectionNode> = Vec::with_capacity(projections.len());
         let mut next_fragments = Vec::new();
@@ -2915,6 +2938,10 @@ impl ElementTrait for TextArea {
             InheritedTextStyle, as_element_style, as_f32, inherited_text_style_at_parent,
         };
 
+        // 軌 1 #12: stash self NodeKey so handler-driven projection
+        // rebuilds can parent subtrees to us.
+        self.self_node_key = Some(self_key);
+
         let resolve_inherited = || -> InheritedTextStyle {
             match arena.parent_of(self_key) {
                 Some(p) => inherited_text_style_at_parent(
@@ -2987,6 +3014,78 @@ impl ElementTrait for TextArea {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 self.replace_on_blur_handler(handler);
+                PropApplyOutcome::Applied
+            }
+            "content" => {
+                let Ok(s) = String::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_text(s);
+                PropApplyOutcome::Applied
+            }
+            "binding" => {
+                let Ok(bound) = crate::ui::Binding::<String>::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_text(bound.get());
+                self.bind_text(bound);
+                PropApplyOutcome::Applied
+            }
+            "placeholder" => {
+                let Ok(s) = String::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_placeholder(s);
+                PropApplyOutcome::Applied
+            }
+            "font" => {
+                let Ok(s) = String::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_font(s);
+                PropApplyOutcome::Applied
+            }
+            "multiline" => {
+                let Ok(v) = bool::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_multiline(v);
+                PropApplyOutcome::Applied
+            }
+            "read_only" => {
+                let Ok(v) = bool::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_read_only(v);
+                PropApplyOutcome::Applied
+            }
+            "max_length" => {
+                let v = match &value {
+                    crate::ui::PropValue::I64(i) => *i as usize,
+                    crate::ui::PropValue::F64(f) => (*f).max(0.0) as usize,
+                    _ => return PropApplyOutcome::DecodeFailed(name),
+                };
+                self.set_max_length(Some(v));
+                PropApplyOutcome::Applied
+            }
+            "x" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_position(v, self.position.y);
+                PropApplyOutcome::Applied
+            }
+            "y" => {
+                let Ok(v) = as_f32(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_position(self.position.x, v);
+                PropApplyOutcome::Applied
+            }
+            "source_text_start" | "source_text_end" => {
+                // Nested projection TextArea prop — cold path sets
+                // `source_text_range`; incremental path is a no-op since
+                // projection re-anchoring happens through `rebuild_render_nodes`.
                 PropApplyOutcome::Applied
             }
             _ => PropApplyOutcome::UnknownProp,
@@ -4231,6 +4330,14 @@ mod tests {
         let mut arena = crate::view::node_arena::NodeArena::new();
         let mut descs = descs;
         let key = commit_descriptor_tree(&mut arena, None, descs.remove(0));
+        // 軌 1 #12: projection subtree commit is deferred until
+        // `rebuild_projection_tree_if_dirty` runs (normally driven by
+        // `place()`). Trigger it explicitly for the test.
+        arena.with_element_taken(key, |element, arena_ref| {
+            if let Some(ta) = element.as_any_mut().downcast_mut::<TextArea>() {
+                ta.rebuild_projection_tree_if_dirty(arena_ref);
+            }
+        });
         let node = arena.get(key).unwrap();
         let area = node.element.as_any().downcast_ref::<TextArea>().expect("host textarea");
         assert_eq!(area.render_nodes.len(), 1);

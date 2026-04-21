@@ -20,8 +20,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-const TEXT_AREA_PROJECTION_TAG: &str = "__rfgui_text_area_projection";
-
 /// The built-in container host tag.
 pub struct Element;
 /// The built-in single-line or wrapped text host tag.
@@ -416,18 +414,13 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         {
             node = node.with_prop("max_length", max_length);
         }
+        // 軌 1 #12: on_render handler passed straight through as prop
+        // and executed by the TextArea host against its own content in
+        // `rebuild_projection_tree_if_dirty`. No projection RSX
+        // children are emitted here — projection subtrees are fully
+        // owned by the TextArea, invisible to the reconciler.
         if let Some(handler) = props.on_render {
-            let mut render_string = crate::view::base_component::TextAreaRenderString::new(
-                resolved_content.unwrap_or_default(),
-            );
-            handler.call(&mut render_string);
-            for projection in render_string.projections() {
-                let projection_node = RsxNode::element(TEXT_AREA_PROJECTION_TAG)
-                    .with_prop("source_text_start", projection.range.start as i64)
-                    .with_prop("source_text_end", projection.range.end as i64)
-                    .with_child(projection.node.clone());
-                node = node.with_child(projection_node);
-            }
+            node = node.with_prop("on_render", handler);
         }
         node
     }

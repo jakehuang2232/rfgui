@@ -15,12 +15,10 @@ use crate::view::{
     ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, SvgSource, TextStylePropSchema,
 };
 use crate::{
-    AnchorName, Color, Cursor, Layout, Length, ParsedValue, Position, PropertyId, TextWrap,
+    AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap,
 };
 use std::any::TypeId;
 use std::sync::{Arc, OnceLock, RwLock};
-
-const TEXT_AREA_PROJECTION_TAG: &str = "__rfgui_text_area_projection";
 
 pub type ElementFactory =
     Arc<dyn Fn(&RsxElementNode, &[u64]) -> Result<Box<dyn ElementTrait>, String> + Send + Sync>;
@@ -1108,8 +1106,6 @@ fn convert_text_area_element(
     let mut height: Option<Length> = None;
     let mut source_text_start: Option<usize> = None;
     let mut source_text_end: Option<usize> = None;
-    let mut projection_nodes: Vec<(std::ops::Range<usize>, Box<dyn ElementTrait>)> = Vec::new();
-
     for (key, value) in node.props.iter() {
         if *key == "key" {
             continue;
@@ -1127,6 +1123,13 @@ fn convert_text_area_element(
             "on_change" => {
                 let handler = as_text_change_handler(value, key)?;
                 text_area.on_change(move |event| handler.call(event));
+            }
+            "on_render" => {
+                let handler = match value {
+                    PropValue::OnTextAreaRender(v) => v.clone(),
+                    _ => return Err(format!("prop `{key}` expects text area render handler value")),
+                };
+                text_area.replace_on_render_handler(handler);
             }
             "content" => {
                 text_content = as_owned_string(value, key)?;
@@ -1202,14 +1205,8 @@ fn convert_text_area_element(
     text_area.set_style_width(width);
     text_area.set_style_height(height);
 
-    for (child_index, child) in node.children.iter().enumerate() {
-        if let Some(projection) =
-            convert_text_area_projection_child(child, path, child_index, inherited_text_style)?
-        {
-            projection_nodes.push(projection);
-            continue;
-        }
-        if binding.is_none() && text_content.is_empty() {
+    if binding.is_none() && text_content.is_empty() {
+        for child in node.children.iter() {
             match child {
                 RsxNode::Text(content) => text_content.push_str(&content.content),
                 RsxNode::Fragment(fragment) => {
@@ -1231,136 +1228,12 @@ fn convert_text_area_element(
     if let Some(bound) = binding {
         text_area.bind_text(bound);
     }
-    // Legacy path: projection_nodes produced here are boxed trees with
-    // no arena handle. Drop them; the arena-backed descriptor path
-    // (`convert_text_area_element_desc`) is the active route used by
-    // `convert_node_desc`.
-    drop(projection_nodes);
     if !placeholder.is_empty() {
         text_area.set_placeholder(placeholder);
     }
     Ok(Box::new(text_area))
 }
 
-#[allow(dead_code)]
-fn convert_text_area_projection_child(
-    node: &RsxNode,
-    path: &[u64],
-    child_index: usize,
-    inherited_text_style: &InheritedTextStyle,
-) -> Result<Option<(std::ops::Range<usize>, Box<dyn ElementTrait>)>, String> {
-    let RsxNode::Element(element) = node else {
-        return Ok(None);
-    };
-    if element.tag != TEXT_AREA_PROJECTION_TAG {
-        return Ok(None);
-    }
-
-    let mut start = None;
-    let mut end = None;
-    for (key, value) in element.props.iter() {
-        match *key {
-            "source_text_start" => start = as_usize(value, key)?,
-            "source_text_end" => end = as_usize(value, key)?,
-            _ => {
-                return Err(format!(
-                    "unknown prop `{}` on <{}>",
-                    key, TEXT_AREA_PROJECTION_TAG
-                ));
-            }
-        }
-    }
-
-    let (Some(start), Some(end)) = (start, end) else {
-        return Err(
-            "TextArea projection child requires source_text_start/source_text_end".to_string(),
-        );
-    };
-
-    let fragment = RsxNode::fragment(element.children.clone());
-    let scope = [path, &[0x5458_5052, child_index as u64]].concat();
-    let mut children = rsx_to_elements_scoped_with_context(
-        &fragment,
-        &scope,
-        &projection_inherited_style_from_context(inherited_text_style),
-        0.0,
-        0.0,
-    )?;
-    let mut root = wrap_projection_children_for_adapter(path, child_index, &mut children)?;
-    apply_text_source_range_to_projection(root.as_mut(), start..end);
-    Ok(Some((start..end, root)))
-}
-
-fn projection_inherited_style_from_context(inherited_text_style: &InheritedTextStyle) -> Style {
-    let mut style = Style::new();
-    if !inherited_text_style.font_families.is_empty() {
-        style.insert(
-            PropertyId::FontFamily,
-            ParsedValue::FontFamily(crate::FontFamily::new(
-                inherited_text_style.font_families.clone(),
-            )),
-        );
-    }
-    if let Some(font_size) = inherited_text_style.font_size {
-        style.insert(
-            PropertyId::FontSize,
-            ParsedValue::FontSize(crate::FontSize::px(font_size)),
-        );
-    }
-    if let Some(color) = inherited_text_style.color {
-        style.insert(PropertyId::Color, ParsedValue::Color(color.into()));
-    }
-    style
-}
-
-#[allow(dead_code)]
-fn wrap_projection_children_for_adapter(
-    path: &[u64],
-    child_index: usize,
-    children: &mut Vec<Box<dyn ElementTrait>>,
-) -> Result<Box<dyn ElementTrait>, String> {
-    if children.is_empty() {
-        return Err("projection produced no elements".to_string());
-    }
-    if children.len() == 1 {
-        return Ok(children.remove(0));
-    }
-
-    let wrapper_id = stable_node_id_from_parts(
-        "TextAreaProjectionWrapper",
-        &[path, &[0x5458_5057, child_index as u64]].concat(),
-        None,
-    );
-    let mut wrapper = Element::new_with_id(wrapper_id, 0.0, 0.0, 0.0, 0.0);
-    wrapper.set_intrinsic_size_as_percent_base(false);
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Layout,
-        ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Auto);
-    style.insert(PropertyId::Height, ParsedValue::Auto);
-    wrapper.apply_style(style);
-    // Approach-C: legacy boxed wrapper cannot attach arena-tracked
-    // children. The real tree is committed via the descriptor pipeline
-    // elsewhere; here we just drop the orphan boxes.
-    drop(children.drain(..).collect::<Vec<_>>());
-    Ok(Box::new(wrapper))
-}
-
-#[allow(dead_code)]
-fn apply_text_source_range_to_projection(
-    node: &mut dyn ElementTrait,
-    range: std::ops::Range<usize>,
-) {
-    if let Some(text_area) = node.as_any_mut().downcast_mut::<TextArea>() {
-        text_area.set_source_text_range(Some(range.clone()));
-    }
-    // Approach-C: children are NodeKeys into the arena, which this
-    // boxed-tree helper has no access to. The descriptor-based
-    // projection builder (next task) walks the tree via the arena.
-    let _ = node.children_mut();
-}
 
 fn convert_image_element(
     node: &RsxElementNode,
@@ -1490,86 +1363,6 @@ fn convert_svg_element(
     Ok(Box::new(svg))
 }
 
-fn convert_text_area_projection_child_desc(
-    node: &RsxNode,
-    path: &[u64],
-    child_index: usize,
-    inherited_text_style: &InheritedTextStyle,
-) -> Result<Option<(std::ops::Range<usize>, ElementDescriptor)>, String> {
-    let RsxNode::Element(element) = node else {
-        return Ok(None);
-    };
-    if element.tag != TEXT_AREA_PROJECTION_TAG {
-        return Ok(None);
-    }
-
-    let mut start = None;
-    let mut end = None;
-    for (key, value) in element.props.iter() {
-        match *key {
-            "source_text_start" => start = as_usize(value, key)?,
-            "source_text_end" => end = as_usize(value, key)?,
-            _ => {
-                return Err(format!(
-                    "unknown prop `{}` on <{}>",
-                    key, TEXT_AREA_PROJECTION_TAG
-                ));
-            }
-        }
-    }
-
-    let (Some(start), Some(end)) = (start, end) else {
-        return Err(
-            "TextArea projection child requires source_text_start/source_text_end".to_string(),
-        );
-    };
-
-    let fragment = RsxNode::fragment(element.children.clone());
-    let scope = [path, &[0x5458_5052, child_index as u64]].concat();
-    let mut children = rsx_to_descriptors_scoped_with_context(
-        &fragment,
-        &scope,
-        &projection_inherited_style_from_context(inherited_text_style),
-        0.0,
-        0.0,
-    )?;
-    let desc = wrap_projection_children_for_adapter_desc(path, child_index, &mut children)?;
-    Ok(Some((start..end, desc)))
-}
-
-fn wrap_projection_children_for_adapter_desc(
-    path: &[u64],
-    child_index: usize,
-    children: &mut Vec<ElementDescriptor>,
-) -> Result<ElementDescriptor, String> {
-    if children.is_empty() {
-        return Err("projection produced no elements".to_string());
-    }
-    if children.len() == 1 {
-        return Ok(children.remove(0));
-    }
-    let wrapper_id = stable_node_id_from_parts(
-        "TextAreaProjectionWrapper",
-        &[path, &[0x5458_5057, child_index as u64]].concat(),
-        None,
-    );
-    let mut wrapper = Element::new_with_id(wrapper_id, 0.0, 0.0, 0.0, 0.0);
-    wrapper.set_intrinsic_size_as_percent_base(false);
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Layout,
-        ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Auto);
-    style.insert(PropertyId::Height, ParsedValue::Auto);
-    wrapper.apply_style(style);
-    Ok(ElementDescriptor {
-        element: Box::new(wrapper) as Box<dyn ElementTrait>,
-        children: std::mem::take(children),
-        post_commit: None,
-    })
-}
-
 fn convert_text_area_element_desc(
     node: &RsxElementNode,
     path: &[u64],
@@ -1595,7 +1388,6 @@ fn convert_text_area_element_desc(
     let mut height: Option<Length> = None;
     let mut source_text_start: Option<usize> = None;
     let mut source_text_end: Option<usize> = None;
-    let mut projection_descs: Vec<(std::ops::Range<usize>, ElementDescriptor)> = Vec::new();
 
     for (key, value) in node.props.iter() {
         if *key == "key" {
@@ -1614,6 +1406,13 @@ fn convert_text_area_element_desc(
             "on_change" => {
                 let handler = as_text_change_handler(value, key)?;
                 text_area.on_change(move |event| handler.call(event));
+            }
+            "on_render" => {
+                let handler = match value {
+                    PropValue::OnTextAreaRender(v) => v.clone(),
+                    _ => return Err(format!("prop `{key}` expects text area render handler value")),
+                };
+                text_area.replace_on_render_handler(handler);
             }
             "content" => text_content = as_owned_string(value, key)?,
             "placeholder" => placeholder = as_owned_string(value, key)?,
@@ -1675,17 +1474,8 @@ fn convert_text_area_element_desc(
     text_area.set_style_width(width);
     text_area.set_style_height(height);
 
-    for (child_index, child) in node.children.iter().enumerate() {
-        if let Some(projection) = convert_text_area_projection_child_desc(
-            child,
-            path,
-            child_index,
-            inherited_text_style,
-        )? {
-            projection_descs.push(projection);
-            continue;
-        }
-        if binding.is_none() && text_content.is_empty() {
+    if binding.is_none() && text_content.is_empty() {
+        for child in node.children.iter() {
             match child {
                 RsxNode::Text(content) => text_content.push_str(&content.content),
                 RsxNode::Fragment(fragment) => {
@@ -1710,38 +1500,17 @@ fn convert_text_area_element_desc(
         text_area.set_placeholder(placeholder);
     }
 
+    // 軌 1 #12: capture self NodeKey so `rebuild_render_nodes` can parent
+    // projection subtrees to us on the next `place()`. Projection commit
+    // itself is deferred — handler runs lazily once dirty.
     let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> =
-        if projection_descs.is_empty() {
-            None
-        } else {
-            Some(Box::new(
-                move |arena: &mut NodeArena, text_area_key: NodeKey| {
-                    let projections: Vec<(
-                        std::ops::Range<usize>,
-                        NodeKey,
-                    )> = projection_descs
-                        .into_iter()
-                        .map(|(range, desc)| {
-                            let key = commit_descriptor_tree(arena, Some(text_area_key), desc);
-                            crate::view::base_component::apply_source_range_to_subtree(
-                                arena,
-                                key,
-                                range.clone(),
-                            );
-                            (range, key)
-                        })
-                        .collect();
-                    arena.with_element_taken(text_area_key, |element, arena_ref| {
-                        if let Some(ta) = element
-                            .as_any_mut()
-                            .downcast_mut::<TextArea>()
-                        {
-                            ta.set_render_projection_nodes(arena_ref, projections);
-                        }
-                    });
-                },
-            ))
-        };
+        Some(Box::new(|arena: &mut NodeArena, text_area_key: NodeKey| {
+            arena.with_element_taken(text_area_key, |element, _arena_ref| {
+                if let Some(ta) = element.as_any_mut().downcast_mut::<TextArea>() {
+                    ta.set_self_node_key(text_area_key);
+                }
+            });
+        }));
 
     Ok(ElementDescriptor {
         element: Box::new(text_area) as Box<dyn ElementTrait>,
