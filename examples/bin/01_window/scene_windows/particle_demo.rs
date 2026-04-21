@@ -600,7 +600,7 @@ impl EventTarget for ParticleCanvas {
         &mut self,
         event: &mut PointerMoveEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::rfgui::view::node_arena::NodeArena,
+        _arena: &crate::rfgui::view::node_arena::NodeArena,
         _self_key: crate::rfgui::view::node_arena::NodeKey,
     ) {
         let w = self.layout_w;
@@ -621,7 +621,7 @@ impl EventTarget for ParticleCanvas {
         &mut self,
         event: &mut PointerDownEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::rfgui::view::node_arena::NodeArena,
+        _arena: &crate::rfgui::view::node_arena::NodeArena,
         _self_key: crate::rfgui::view::node_arena::NodeKey,
     ) {
         if event.pointer.button == Some(PointerButton::Left) {
@@ -633,7 +633,7 @@ impl EventTarget for ParticleCanvas {
         &mut self,
         event: &mut PointerUpEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::rfgui::view::node_arena::NodeArena,
+        _arena: &crate::rfgui::view::node_arena::NodeArena,
         _self_key: crate::rfgui::view::node_arena::NodeKey,
     ) {
         if event.pointer.button == Some(PointerButton::Left) {

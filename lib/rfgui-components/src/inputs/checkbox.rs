@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 pub struct Checkbox;
 
+#[derive(Clone)]
 #[props]
 pub struct CheckboxProps {
     pub label: String,
@@ -110,6 +111,7 @@ impl RsxComponent<CheckboxProps> for Checkbox {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for Checkbox {
     type Props = __CheckboxPropsInit;
     type StrictProps = CheckboxProps;

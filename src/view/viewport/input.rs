@@ -82,6 +82,7 @@ pub(super) struct InputState {
 pub struct DragState {
     pub source_id: crate::view::node_arena::NodeKey,
     pub data: crate::ui::DataTransfer,
+    #[allow(dead_code)]
     pub effect_allowed: crate::ui::DragEffect,
     /// Node most recently entered by `DragOver`. Used to fire a
     /// `DragLeave` on target transitions.

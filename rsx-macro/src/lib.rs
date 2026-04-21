@@ -28,7 +28,7 @@ pub fn rsx(input: TokenStream) -> TokenStream {
     };
 
     quote! {
-        ::rfgui::ui::build_scope(|| {
+        ::rfgui::ui::rsx_scope(|| {
             #body
         })
     }
@@ -64,6 +64,19 @@ impl Parse for MultipleNodes {
 
 #[proc_macro_attribute]
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Two accepted forms:
+    //   1. `#[component] fn Foo(...) -> RsxNode { ... }`
+    //      — generates the whole component (struct + RsxComponent + RsxTag +
+    //        vtable + ComponentTag).
+    //   2. `#[component] impl RsxTag for Foo { ... }`
+    //      — user authored `struct Foo` + `impl RsxComponent<FooProps>`
+    //        themselves. We augment the RsxTag impl with the vtable override
+    //        and emit the shims + `impl ComponentTag`. Enables lazy render
+    //        for hand-written components without rewriting them as a fn.
+    let item2: proc_macro2::TokenStream = item.clone().into();
+    if let Ok(input_impl) = syn::parse2::<syn::ItemImpl>(item2) {
+        return expand_component_impl(input_impl).into();
+    }
     let input_fn = syn::parse_macro_input!(item as ItemFn);
     expand_component(input_fn).into()
 }
@@ -723,8 +736,159 @@ fn is_none_expr(expr: &Expr) -> bool {
     }
 }
 
+/// Key used to match an rsx closing tag against its opening tag. Compares
+/// by path segment idents only, stripping `PathArguments` (generics,
+/// parenthesized args). Allows the React-style close form:
+///
+/// ```ignore
+/// <Provider::<Ctx> value={v}>
+///     ...
+/// </Provider>            // generics may be omitted on close
+/// ```
+///
+/// `<Foo>` still rejects `</Bar>` (idents differ), and `<mod::Foo>`
+/// rejects `</Foo>` (segment paths differ).
 fn path_key(path: &Path) -> String {
-    path.to_token_stream().to_string().replace(' ', "")
+    path.segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// True if the path carries any generic / parenthesized arguments on any
+/// segment. Used to decide whether a close tag needs generics-aware
+/// PhantomData emission or whether it's a bare-ident form that must
+/// borrow generics from the open tag.
+fn close_tag_has_args(path: &Path) -> bool {
+    path.segments
+        .iter()
+        .any(|seg| !matches!(seg.arguments, syn::PathArguments::None))
+}
+
+fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStream {
+    // Validate that this is `impl <...> RsxTag for T`.
+    let trait_ok = input_impl
+        .trait_
+        .as_ref()
+        .map(|(_, path, _)| {
+            let last = path.segments.last().map(|s| s.ident.to_string());
+            last.as_deref() == Some("RsxTag")
+        })
+        .unwrap_or(false);
+    if !trait_ok {
+        return syn::Error::new(
+            input_impl.impl_token.span,
+            "#[component] on an impl block only supports `impl RsxTag for T` \
+             (use `#[component] fn Name(...)` for the fn-style authoring form)",
+        )
+        .to_compile_error();
+    }
+
+    // Locate `type StrictProps = <X>;` so we know what concrete type the
+    // vtable shims cast into.
+    let mut strict_props_ty: Option<syn::Type> = None;
+    for item in &input_impl.items {
+        if let syn::ImplItem::Type(ty_item) = item
+            && ty_item.ident == "StrictProps"
+        {
+            strict_props_ty = Some(ty_item.ty.clone());
+            break;
+        }
+    }
+    let Some(strict_props_ty) = strict_props_ty else {
+        return syn::Error::new(
+            input_impl.impl_token.span,
+            "#[component] on `impl RsxTag` requires `type StrictProps = <PropsType>;` \
+             to know which concrete type to box",
+        )
+        .to_compile_error();
+    };
+
+    // Self type that the impl is for, plus generics for re-emission on the
+    // sibling `impl $Self { shims }` / `impl ComponentTag for $Self` blocks.
+    let self_ty = input_impl.self_ty.clone();
+    let generics = input_impl.generics.clone();
+    let (impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
+
+    // Warn / error if `fn component_vtable` is already present — we inject
+    // our own below, and duplicate-method would conflict.
+    let mut has_vtable_fn = false;
+    for item in &input_impl.items {
+        if let syn::ImplItem::Fn(f) = item
+            && f.sig.ident == "component_vtable"
+        {
+            has_vtable_fn = true;
+            break;
+        }
+    }
+    if !has_vtable_fn {
+        let vtable_fn: syn::ImplItemFn = parse_quote! {
+            fn component_vtable() -> ::core::option::Option<&'static ::rfgui::ui::ComponentVTable> {
+                ::core::option::Option::Some(
+                    <Self as ::rfgui::ui::ComponentTag>::VTABLE,
+                )
+            }
+        };
+        input_impl.items.push(syn::ImplItem::Fn(vtable_fn));
+    }
+
+    // Short type-name literal for `ComponentVTable::type_name`. Uses the
+    // token stream of `self_ty` with whitespace stripped — good enough for
+    // debug output; matches existing behaviour of `stringify!(#comp_name)`
+    // in the fn-form expansion.
+    let type_name_str = quote!(#self_ty).to_string().replace(' ', "");
+
+    quote! {
+        #input_impl
+
+        // P2/P5: compile-time type-erased dispatch shims. Mono per T.
+        #[allow(non_snake_case, dead_code)]
+        impl #impl_generics #self_ty #where_clause {
+            #[doc(hidden)]
+            unsafe fn __rsx_vtable_render_shim(
+                props: ::core::ptr::NonNull<()>,
+                children: ::std::vec::Vec<::rfgui::ui::RsxNode>,
+            ) -> ::rfgui::ui::RsxNode {
+                let boxed: ::std::boxed::Box<#strict_props_ty> = unsafe {
+                    ::std::boxed::Box::from_raw(props.as_ptr().cast())
+                };
+                <#self_ty as ::rfgui::ui::RsxComponent<#strict_props_ty>>::render(*boxed, children)
+            }
+
+            #[doc(hidden)]
+            unsafe fn __rsx_vtable_drop_props_shim(props: ::core::ptr::NonNull<()>) {
+                drop(unsafe {
+                    ::std::boxed::Box::from_raw(props.as_ptr().cast::<#strict_props_ty>())
+                });
+            }
+
+            #[doc(hidden)]
+            unsafe fn __rsx_vtable_clone_props_shim(
+                props: ::core::ptr::NonNull<()>,
+            ) -> ::core::ptr::NonNull<()> {
+                let source: &#strict_props_ty = unsafe {
+                    &*props.as_ptr().cast::<#strict_props_ty>()
+                };
+                let cloned = <#strict_props_ty as ::core::clone::Clone>::clone(source);
+                let boxed = ::std::boxed::Box::new(cloned);
+                let raw = ::std::boxed::Box::into_raw(boxed);
+                ::core::ptr::NonNull::new(raw.cast())
+                    .expect("Box::into_raw returns non-null")
+            }
+        }
+
+        impl #impl_generics ::rfgui::ui::ComponentTag for #self_ty #where_clause {
+            const VTABLE: &'static ::rfgui::ui::ComponentVTable =
+                &::rfgui::ui::ComponentVTable {
+                    render: <#self_ty>::__rsx_vtable_render_shim,
+                    drop_props: <#self_ty>::__rsx_vtable_drop_props_shim,
+                    clone_props: <#self_ty>::__rsx_vtable_clone_props_shim,
+                    props_eq: ::core::option::Option::None,
+                    type_name: #type_name_str,
+                };
+        }
+    }
 }
 
 fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
@@ -850,6 +1014,11 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     quote! {
         #component_struct_tokens
 
+        // React parity P2: Props must be `Clone` so the `unwrap_components`
+        // walker can handle shared `Rc<ComponentNodeInner>` (e.g. when the
+        // caller extracts a subtree into a variable and embeds it in two
+        // places, or when the memo cache replays a prior render).
+        #[derive(::core::clone::Clone)]
         #vis struct #props_name #fn_generics {
             #(#prop_fields,)*
         }
@@ -898,6 +1067,61 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             ) -> ::rfgui::ui::RsxNode {
                 <#comp_name #ty_generics as ::rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(props, children)
             }
+
+            fn component_vtable() -> ::core::option::Option<&'static ::rfgui::ui::ComponentVTable> {
+                ::core::option::Option::Some(
+                    <Self as ::rfgui::ui::ComponentTag>::VTABLE,
+                )
+            }
+        }
+
+        // React parity P0: compile-time type-erased dispatch shims.
+        // Dead code until P2 wires the `RsxNode::Component` deferred path.
+        // Each shim is monomorphized per concrete component type, so the
+        // unsafe cast back to `#props_name` is always well-typed.
+        #[allow(non_snake_case, dead_code)]
+        impl #impl_generics #comp_name #ty_generics #where_clause {
+            #[doc(hidden)]
+            unsafe fn __rsx_vtable_render_shim(
+                props: ::core::ptr::NonNull<()>,
+                children: ::std::vec::Vec<::rfgui::ui::RsxNode>,
+            ) -> ::rfgui::ui::RsxNode {
+                let boxed: ::std::boxed::Box<#props_name #ty_generics> =
+                    unsafe { ::std::boxed::Box::from_raw(props.as_ptr().cast()) };
+                <#comp_name #ty_generics as ::rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(*boxed, children)
+            }
+
+            #[doc(hidden)]
+            unsafe fn __rsx_vtable_drop_props_shim(props: ::core::ptr::NonNull<()>) {
+                drop(unsafe {
+                    ::std::boxed::Box::from_raw(props.as_ptr().cast::<#props_name #ty_generics>())
+                });
+            }
+
+            #[doc(hidden)]
+            unsafe fn __rsx_vtable_clone_props_shim(
+                props: ::core::ptr::NonNull<()>,
+            ) -> ::core::ptr::NonNull<()> {
+                let source: &#props_name #ty_generics = unsafe {
+                    &*props.as_ptr().cast::<#props_name #ty_generics>()
+                };
+                let cloned = <#props_name #ty_generics as ::core::clone::Clone>::clone(source);
+                let boxed = ::std::boxed::Box::new(cloned);
+                let raw = ::std::boxed::Box::into_raw(boxed);
+                ::core::ptr::NonNull::new(raw.cast())
+                    .expect("Box::into_raw returns non-null")
+            }
+        }
+
+        impl #impl_generics ::rfgui::ui::ComponentTag for #comp_name #ty_generics #where_clause {
+            const VTABLE: &'static ::rfgui::ui::ComponentVTable =
+                &::rfgui::ui::ComponentVTable {
+                    render: <Self>::__rsx_vtable_render_shim,
+                    drop_props: <Self>::__rsx_vtable_drop_props_shim,
+                    clone_props: <Self>::__rsx_vtable_clone_props_shim,
+                    props_eq: ::core::option::Option::None,
+                    type_name: ::core::stringify!(#comp_name),
+                };
         }
 
         #[allow(non_snake_case)]
@@ -933,7 +1157,6 @@ fn expand_child_append(child: &Child) -> proc_macro2::TokenStream {
 
 fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     let tag = &element.tag;
-    let close_tag = &element.close_tag;
     let has_children = !element.children.is_empty();
     let child_appends = element.children.iter().map(expand_child_append);
 
@@ -971,10 +1194,23 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
         quote! { ::std::vec::Vec::new() }
     };
 
+    // `PhantomData::<#close_tag>` nudges rustc / rust-analyzer to resolve
+    // the closing-tag name (enables hover, goto-def, and unused-import
+    // warnings on the close ident). When the user drops generics on close
+    // (`<Provider::<Ctx>>...</Provider>`), the bare `Provider` path no
+    // longer type-checks; fall back to the open tag in that case. Close
+    // tag ident still carries its own span for mismatch diagnostics
+    // emitted during parse.
+    let close_phantom_tag = if close_tag_has_args(&element.close_tag) {
+        element.close_tag.clone()
+    } else {
+        element.tag.clone()
+    };
+
     quote! {
         {
             #(#diagnostics)*
-            let _ = ::core::marker::PhantomData::<#close_tag>;
+            let _ = ::core::marker::PhantomData::<#close_phantom_tag>;
             #children_schema_check
             ::rfgui::ui::__rsx_create_element::<#tag, _>(
                 |__init: &mut <#tag as ::rfgui::ui::RsxTag>::Props| {
@@ -1173,6 +1409,26 @@ fn expand_object_entry_assignment(
 mod tests {
     use super::{MultipleNodes, ObjectValueExpr, PropValueExpr, expand_node};
     use quote::ToTokens;
+
+    #[test]
+    fn close_tag_may_omit_generics_on_open() {
+        // React-parity: `<Provider::<T>>…</Provider>` must parse. Close tag
+        // path key compares idents only; PhantomData fallback uses open
+        // tag when close has no args.
+        syn::parse_str::<MultipleNodes>(
+            r#"<Provider::<Ctx> value={v}><Child/></Provider>"#,
+        )
+        .expect("bare close tag should match generic open tag");
+    }
+
+    #[test]
+    fn close_tag_ident_mismatch_still_rejected() {
+        // Stripping generics must not loosen ident comparison.
+        let result = syn::parse_str::<MultipleNodes>(
+            r#"<Provider::<Ctx> value={v}><Child/></Consumer>"#,
+        );
+        assert!(result.is_err(), "close ident mismatch should still fail");
+    }
 
     #[test]
     fn recovers_incomplete_prop_before_self_closing_tag_end() {

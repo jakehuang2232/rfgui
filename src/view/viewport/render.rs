@@ -21,6 +21,12 @@ impl Viewport {
             percent_base_width: Some(self.logical_width),
             percent_base_height: Some(self.logical_height),
         };
+        // Flush deferred arena mutations (e.g. TextArea projection subtree
+        // commits queued by imperative setters between frames). Must run
+        // before measure so layout sees the current projection state.
+        for &root_key in &root_keys {
+            arena.sync_subtree(root_key);
+        }
         // Refresh the per-node subtree-dirty cache once at the top of the
         // measure pass so every Element::measure / place can read
         // subtree_dirty_flags via an O(1) cache lookup instead of walking

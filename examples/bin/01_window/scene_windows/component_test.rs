@@ -3,8 +3,9 @@ use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{Angle, Layout, Length, Padding, Rotate, Transform};
 use crate::rfgui_components::{
     Button, ButtonColor, ButtonSize, ButtonVariant, Checkbox, CloseIcon, DeleteIcon, EditIcon,
-    FavoriteIcon, FormatBoldIcon, FormatItalicIcon, FormatUnderlinedIcon, IconButton, NumberField,
-    SaveIcon, Select, SendIcon, Slider, Switch, Theme, ToggleButton,
+    FavoriteIcon, FormatAlignCenterIcon, FormatAlignLeftIcon, FormatAlignRightIcon, FormatBoldIcon,
+    FormatItalicIcon, FormatUnderlinedIcon, IconButton, NumberField, SaveIcon, Select, SendIcon,
+    Slider, Switch, Theme, ToggleButton, ToggleButtonGroup, TreeNode, TreeView,
 };
 use rfgui::Repeat::Infinite;
 use rfgui::{Animation, Animator, FillMode, Keyframe, ScrollDirection};
@@ -37,10 +38,58 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
     let int_number = use_state(|| 0);
     let float_number = use_state(|| 0.0);
 
+    let tree_expanded = use_state(|| vec![String::from("src"), String::from("layout")]);
+    let tree_selected = use_state(|| Some(String::from("tree_view.rs")));
+    let folder = |id: &str, label: &str, children: Vec<TreeNode>| {
+        TreeNode::new(id, label)
+            .with_icon("folder")
+            .with_expanded_icon("folder_open")
+            .with_children(children)
+    };
+    let file = |id: &str, label: &str, icon: &str| {
+        TreeNode::new(id, label).with_icon(icon)
+    };
+    let tree_nodes = vec![
+        folder(
+            "src",
+            "src/",
+            vec![
+                folder(
+                    "inputs",
+                    "inputs/",
+                    vec![
+                        file("button.rs", "button.rs", "code"),
+                        file("checkbox.rs", "checkbox.rs", "code"),
+                        file("select.rs", "select.rs", "code"),
+                    ],
+                ),
+                folder(
+                    "layout",
+                    "layout/",
+                    vec![
+                        file("accordion.rs", "accordion.rs", "code"),
+                        file("tree_view.rs", "tree_view.rs", "code"),
+                        file("window.rs", "window.rs", "code"),
+                    ],
+                ),
+                file("lib.rs", "lib.rs", "code"),
+                file("theme.rs", "theme.rs", "palette"),
+            ],
+        ),
+        folder(
+            "examples",
+            "examples/",
+            vec![
+                file("readme", "README.md", "description").with_disabled(true),
+            ],
+        ),
+    ];
+
     let bold = use_state(|| false);
     let italic = use_state(|| true);
     let underline = use_state(|| false);
     let favorite = use_state(|| false);
+    let align = use_state(|| Some(String::from("center")));
 
     let bold_toggle = {
         let bold = bold.clone();
@@ -195,6 +244,31 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
                         bold.get(), italic.get(), underline.get(), favorite.get()
                     )}
                 </Text>
+
+                <Text style={{ color: theme.color.text.secondary.clone() }}>ToggleButtonGroup (exclusive, via context)</Text>
+                <Element style={{
+                    width: Length::percent(100.0),
+                    layout: Layout::flow().row().wrap(),
+                    gap: theme.spacing.md,
+                    align: rfgui::Align::Start,
+                }}>
+                    <ToggleButtonGroup value={align.binding()}>
+                        <ToggleButton value="left"><FormatAlignLeftIcon /></ToggleButton>
+                        <ToggleButton value="center"><FormatAlignCenterIcon /></ToggleButton>
+                        <ToggleButton value="right"><FormatAlignRightIcon /></ToggleButton>
+                    </ToggleButtonGroup>
+                    <ToggleButtonGroup
+                        value={align.binding()}
+                        orientation="vertical"
+                    >
+                        <ToggleButton value="left"><FormatAlignLeftIcon /></ToggleButton>
+                        <ToggleButton value="center"><FormatAlignCenterIcon /></ToggleButton>
+                        <ToggleButton value="right"><FormatAlignRightIcon /></ToggleButton>
+                    </ToggleButtonGroup>
+                </Element>
+                <Text style={{ color: theme.color.text.secondary.clone() }}>
+                    {format!("align = {:?}", align.get())}
+                </Text>
             </Accordion>
             <Accordion title="Number Field">
                 <NumberField::<i32>
@@ -258,6 +332,20 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
                         }} />
                     </Element>
                 </Element>
+            </Accordion>
+            <Accordion title="Tree View">
+                <TreeView
+                    nodes={tree_nodes}
+                    expanded_binding={tree_expanded.binding()}
+                    selected_binding={tree_selected.binding()}
+                />
+                <Text style={{ color: theme.color.text.secondary.clone() }}>
+                    {format!(
+                        "expanded={:?} selected={:?}",
+                        tree_expanded.get(),
+                        tree_selected.get()
+                    )}
+                </Text>
             </Accordion>
             <Checkbox
                 label="Enable flag"

@@ -1024,6 +1024,11 @@ impl FlexProps {
 }
 
 pub trait Layoutable {
+    /// Per-frame flush for deferred arena mutations (e.g. projection subtree
+    /// commits queued by imperative setters). Runs before measure. Default
+    /// noop. Override when the element owns arena state that external setters
+    /// cannot commit directly.
+    fn sync_arena(&mut self, _arena: &mut crate::view::node_arena::NodeArena) {}
     fn measure(
         &mut self,
         constraints: LayoutConstraints,
@@ -1106,7 +1111,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut PointerDownEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1114,7 +1119,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut PointerUpEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1122,21 +1127,21 @@ pub trait EventTarget {
         &mut self,
         _event: &mut PointerMoveEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
     fn dispatch_pointer_enter(
         &mut self,
         _event: &mut PointerEnterEvent,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
     fn dispatch_pointer_leave(
         &mut self,
         _event: &mut PointerLeaveEvent,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1144,7 +1149,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut ClickEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1152,7 +1157,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::ContextMenuEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1160,7 +1165,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::WheelEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1168,7 +1173,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut KeyDownEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1176,7 +1181,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut KeyUpEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1184,7 +1189,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::TextInputEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1192,7 +1197,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::ImePreeditEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1200,7 +1205,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut FocusEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1208,7 +1213,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut BlurEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1216,7 +1221,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::ImeCommitEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1224,7 +1229,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::ImeEnabledEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1232,7 +1237,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::ImeDisabledEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1240,7 +1245,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::DragStartEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1248,7 +1253,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::DragOverEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1256,7 +1261,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::DragLeaveEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1264,7 +1269,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::DropEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1272,7 +1277,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::DragEndEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1280,7 +1285,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::CopyEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1288,7 +1293,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::CutEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -1296,7 +1301,7 @@ pub trait EventTarget {
         &mut self,
         _event: &mut crate::ui::PasteEvent,
         _control: &mut ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
@@ -2385,6 +2390,7 @@ impl Element {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn debug_transform(&self) -> &Transform {
         &self.transform
     }

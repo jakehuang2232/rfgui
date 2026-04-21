@@ -6,6 +6,7 @@ mod select;
 mod slider;
 mod switch;
 mod toggle_button;
+pub(crate) mod toggle_button_group;
 
 pub use button::*;
 pub use checkbox::*;
@@ -15,3 +16,4 @@ pub use select::*;
 pub use slider::*;
 pub use switch::*;
 pub use toggle_button::*;
+pub use toggle_button_group::*;

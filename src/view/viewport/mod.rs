@@ -698,4 +698,50 @@ impl Viewport {
         self.input_state.pointer_capture_node_id
     }
 
+    /// Node the pointer is currently hovering, if any. Used by
+    /// [`crate::ui::EventTarget::state`] to report hover state back to
+    /// handlers.
+    pub fn hovered_node_id(&self) -> Option<crate::view::node_arena::NodeKey> {
+        self.input_state.hovered_node_id
+    }
+
+    /// Shared read access to the node arena. Used by
+    /// [`crate::ui::EventTarget`] lazy accessors (parent / ancestors /
+    /// contains / state) to walk the tree without going through
+    /// `ViewportControl`.
+    pub fn node_arena(&self) -> &crate::view::node_arena::NodeArena {
+        &self.scene.node_arena
+    }
+
+    /// Split the viewport into shared access to the arena and a
+    /// [`ViewportControl`] holding `&mut self`. Used at every dispatch
+    /// entry so bubble functions can walk `&NodeArena` while handlers
+    /// mutate non-arena state (input / transitions / gpu / …) via
+    /// `ViewportControl`.
+    ///
+    /// # Safety invariant
+    ///
+    /// `ViewportControl` must never touch `scene.node_arena` during a
+    /// dispatch. Every current `ViewportControl` method mutates only
+    /// disjoint fields (`input_state`, `transitions`, `redraw_requested`,
+    /// `clipboard_fallback`, `debug_options`, `compositor`, `gpu`). New
+    /// methods must preserve this invariant, otherwise the aliasing
+    /// `&NodeArena` returned here becomes unsound.
+    pub(crate) fn borrow_for_dispatch(
+        &mut self,
+    ) -> (&crate::view::node_arena::NodeArena, ViewportControl<'_>) {
+        // SAFETY: we hand out `&NodeArena` derived from the same `&mut self`
+        // that backs the returned `ViewportControl`. Soundness relies on
+        // `ViewportControl` only mutating disjoint fields (audited above).
+        // We take the shared reference via a raw pointer so Rust's borrow
+        // checker does not see an overlap with the subsequent `&mut self`
+        // reborrow inside `ViewportControl::new`.
+        let arena_ptr: *const crate::view::node_arena::NodeArena = &self.scene.node_arena;
+        let control = ViewportControl::new(self);
+        // SAFETY: `arena_ptr` points into `self.scene`, which lives for
+        // the returned `'a` lifetime (tied to the input `&mut self`).
+        let arena = unsafe { &*arena_ptr };
+        (arena, control)
+    }
+
 }

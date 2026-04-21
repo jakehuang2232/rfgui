@@ -1515,7 +1515,7 @@ impl TextArea {
 
     fn projection_fragment_cursor_char_from_viewport_position(
         &mut self,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         node_index: usize,
         fragment: &TextAreaRenderFragment,
         viewport_x: f32,
@@ -1524,7 +1524,7 @@ impl TextArea {
         let key = self.render_nodes.get(node_index)?.node;
         let fragment_start = fragment.source_range.start;
         let fragment_end = fragment.source_range.end;
-        find_first_text_area_with_arena(arena, key, |nested, _nested_arena| {
+        find_first_text_area_with_arena_ref(arena, key, |nested, _nested_arena| {
             let local_x = viewport_x - nested.layout_position.x;
             let local_y = viewport_y - nested.layout_position.y;
             nested.set_cursor_from_local_position(local_x, local_y);
@@ -1737,16 +1737,10 @@ impl TextArea {
         };
 
         let mut render_string = TextAreaRenderString::new(self.content.clone());
-        // 軌 1 #12 fix: handler may invoke `rsx!` which enters
-        // `build_scope`. Called during layout/place (outside the main
-        // render pass), that scope would start at depth 0, clear
-        // `live_keys`, and prune all other components' use_state
-        // slots after Element's `create_element` flips
-        // `components_rendered_in_build=true`. Wrap in `non_render_scope`
-        // so handler's nested scope is treated as non-top-level.
-        crate::ui::non_render_scope(|| {
-            handler.call(&mut render_string);
-        });
+        // 軌 1 #13: handler may invoke `rsx!` during layout/place. Host tag
+        // (Element/Text/...) no longer flips `components_rendered_in_build`,
+        // so the nested `build_scope` exits without pruning user state slots.
+        handler.call(&mut render_string);
 
         let projections = normalize_text_area_render_projections(
             self.content.as_str(),
@@ -2050,8 +2044,6 @@ impl TextArea {
             self.render_content_height = 0.0;
             return;
         }
-        self.sync_projection_preedit_state(arena);
-        self.sync_projection_selection_state(arena);
         let available_width = self.effective_width().max(1.0);
         let line_height_px = self.line_height_px();
         let effective_height = self.effective_height().max(line_height_px);
@@ -2116,7 +2108,7 @@ impl TextArea {
 
     fn set_cursor_from_projection_position(
         &mut self,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         viewport_x: f32,
         viewport_y: f32,
     ) -> bool {
@@ -3115,7 +3107,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::PointerDownEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         control.set_focus(Some(self_key));
@@ -3151,7 +3143,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::PointerUpEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         if event.pointer.button == Some(UiPointerButton::Left) {
@@ -3169,7 +3161,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::PointerMoveEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         if self.pointer_selecting && event.pointer.buttons.left {
@@ -3194,7 +3186,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::ClickEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         self.element.dispatch_click(event, control, arena, self_key);
@@ -3204,7 +3196,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::KeyDownEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         // Keep keydown handling in IME while composing to avoid mutating committed text.
@@ -3229,7 +3221,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::KeyUpEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         self.element.dispatch_key_up(event, control, arena, self_key);
@@ -3239,7 +3231,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::TextInputEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
         if self.read_only || event.text.is_empty() {
@@ -3261,7 +3253,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::ImePreeditEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
     ) {
         if self.read_only {
@@ -3281,7 +3273,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::FocusEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         self.is_focused = true;
@@ -3302,7 +3294,7 @@ impl EventTarget for TextArea {
         &mut self,
         event: &mut crate::ui::BlurEvent,
         control: &mut crate::view::viewport::ViewportControl<'_>,
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
         let had_selection = self.selection_range_chars().is_some();
@@ -3382,6 +3374,12 @@ impl EventTarget for TextArea {
 }
 
 impl Layoutable for TextArea {
+    fn sync_arena(&mut self, arena: &mut crate::view::node_arena::NodeArena) {
+        self.rebuild_projection_tree_if_dirty(arena);
+        self.sync_projection_preedit_state(arena);
+        self.sync_projection_selection_state(arena);
+    }
+
     fn measure(
         &mut self,
         constraints: LayoutConstraints,
@@ -3495,7 +3493,6 @@ impl Layoutable for TextArea {
         if (prev_layout_width - self.layout_size.width).abs() > 0.01 {
             self.invalidate_glyph_layout();
         }
-        self.rebuild_projection_tree_if_dirty(arena);
         if !self.render_nodes.is_empty() || self.on_render_handler.is_some() {
             self.layout_render_fragments(
                 placement.viewport_width,
@@ -3988,6 +3985,57 @@ fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &'static s
 /// run `f` against it, and return the result. Uses `with_element_taken`
 /// for the match so the closure has exclusive `&mut TextArea` plus an
 /// unaliased `&mut NodeArena` for any inner lookups. Follows the
+/// Shared-arena variant: dispatch-path callers hold `&NodeArena` and use
+/// `with_element_taken_ref` to swap an element out temporarily without
+/// requiring exclusive access to the arena. The FnOnce receives the
+/// shared arena too so it can navigate further down the tree.
+fn find_first_text_area_with_arena_ref<'a, R: 'a>(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    f: impl FnOnce(&mut TextArea, &crate::view::node_arena::NodeArena) -> R + 'a,
+) -> Option<R> {
+    let mut slot: Option<
+        Box<dyn FnOnce(&mut TextArea, &crate::view::node_arena::NodeArena) -> R + 'a>,
+    > = Some(Box::new(f));
+    recurse_find_first_text_area_ref(arena, key, &mut slot)
+}
+
+fn recurse_find_first_text_area_ref<'a, R>(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    slot: &mut Option<
+        Box<dyn FnOnce(&mut TextArea, &crate::view::node_arena::NodeArena) -> R + 'a>,
+    >,
+) -> Option<R> {
+    let is_match = arena
+        .get(key)
+        .map(|node| node.element.as_any().is::<TextArea>())
+        .unwrap_or(false);
+    if is_match {
+        let Some(callback) = slot.take() else {
+            return None;
+        };
+        return arena
+            .with_element_taken_ref(key, |element, arena_ref| {
+                element
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .map(|ta| callback(ta, arena_ref))
+            })
+            .flatten();
+    }
+    let children = arena.children_of(key);
+    for child in children {
+        if let Some(result) = recurse_find_first_text_area_ref(arena, child, slot) {
+            return Some(result);
+        }
+        if slot.is_none() {
+            return None;
+        }
+    }
+    None
+}
+
 /// FP-style recursion rule: clone `children_of` before iterating so no
 /// `Ref` is held across the recursive call.
 fn find_first_text_area_with_arena<'a, R: 'a>(
@@ -4151,7 +4199,7 @@ mod tests {
     // schedule lazily. Used by the projection subtree tests below.
     fn flush_projection_tree(area: &mut TextArea) -> crate::view::node_arena::NodeArena {
         let mut arena = crate::view::node_arena::NodeArena::new();
-        area.rebuild_projection_tree_if_dirty(&mut arena);
+        area.sync_arena(&mut arena);
         arena
     }
 
@@ -4477,6 +4525,7 @@ mod tests {
         let area_key = commit_element(&mut arena, Box::new(area));
 
         arena.with_element_taken(area_key, |el, a| {
+            el.sync_arena(a);
             el.place(LayoutPlacement {
                 parent_x: 0.0,
                 parent_y: 0.0,
@@ -4551,6 +4600,7 @@ mod tests {
             });
         });
         let mut arena = crate::view::node_arena::NodeArena::new();
+        area.sync_arena(&mut arena);
         area.place(LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,

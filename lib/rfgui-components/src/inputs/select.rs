@@ -18,6 +18,7 @@ pub struct Select<DataType = (), ValueType = ()>(std::marker::PhantomData<(DataT
 where
     ValueType: 'static;
 
+#[derive(Clone)]
 #[props]
 pub struct SelectProps<DataType, ValueType: 'static> {
     pub data: Vec<DataType>,
@@ -88,6 +89,7 @@ where
     }
 }
 
+#[rfgui::ui::component]
 impl<DataType, ValueType> rfgui::ui::RsxTag for Select<DataType, ValueType>
 where
     DataType: Clone + 'static,

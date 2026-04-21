@@ -774,7 +774,7 @@ fn composed_path_for_target(
 }
 
 pub fn dispatch_pointer_down_from_hit_test(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
@@ -788,7 +788,7 @@ pub fn dispatch_pointer_down_from_hit_test(
 }
 
 pub fn dispatch_pointer_up_from_hit_test(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
@@ -802,7 +802,7 @@ pub fn dispatch_pointer_up_from_hit_test(
 }
 
 pub(crate) fn dispatch_pointer_up_to_target(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerUpEvent,
@@ -817,7 +817,7 @@ pub(crate) fn dispatch_pointer_up_to_target(
 }
 
 pub fn dispatch_pointer_move_from_hit_test(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
@@ -831,7 +831,7 @@ pub fn dispatch_pointer_move_from_hit_test(
 }
 
 pub(crate) fn dispatch_pointer_move_to_target(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerMoveEvent,
@@ -846,7 +846,7 @@ pub(crate) fn dispatch_pointer_move_to_target(
 }
 
 pub fn dispatch_click_from_hit_test(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
@@ -860,7 +860,7 @@ pub fn dispatch_click_from_hit_test(
 }
 
 pub(crate) fn dispatch_click_to_target(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut ClickEvent,
@@ -875,7 +875,7 @@ pub(crate) fn dispatch_click_to_target(
 }
 
 pub(crate) fn dispatch_context_menu_to_target(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::ContextMenuEvent,
@@ -890,7 +890,7 @@ pub(crate) fn dispatch_context_menu_to_target(
 }
 
 pub fn dispatch_scroll_from_hit_test(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     viewport_x: f32,
     viewport_y: f32,
@@ -914,7 +914,7 @@ pub(crate) fn find_scroll_handler_from_target(
 }
 
 pub(crate) fn dispatch_scroll_to_target(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     delta_x: f32,
@@ -930,7 +930,7 @@ pub(crate) fn dispatch_scroll_to_target(
 /// Start / Center / End variants are recognised but fall back to
 /// Nearest until a future pass computes precise alignment deltas.
 pub(crate) fn scroll_into_view_impl(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_keys: &[crate::view::node_arena::NodeKey],
     target_key: crate::view::node_arena::NodeKey,
     options: crate::ui::ScrollIntoViewOptions,
@@ -1008,13 +1008,13 @@ pub fn get_scroll_offset_by_id(
 }
 
 pub fn set_scroll_offset_by_id(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     stable_id: u64,
     offset: (f32, f32),
 ) -> bool {
     arena
-        .with_element_taken(root_key, |element, arena| {
+        .with_element_taken_ref(root_key, |element, arena| {
             if element.stable_id() == stable_id {
                 element.set_scroll_offset(offset);
                 return true;
@@ -1031,11 +1031,11 @@ pub fn set_scroll_offset_by_id(
 }
 
 pub(crate) fn take_style_transition_requests(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     out: &mut Vec<StyleTrackRequest>,
 ) {
-    let _ = arena.with_element_taken(root_key, |element, arena| {
+    let _ = arena.with_element_taken_ref(root_key, |element, arena| {
         let children: Vec<_> = element.children().to_vec();
         for child_key in children.into_iter().rev() {
             take_style_transition_requests(arena, child_key, out);
@@ -1387,17 +1387,17 @@ fn set_visual_field_by_id_inner(
 }
 
 pub(crate) fn update_hover_state(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     target_key: Option<crate::view::node_arena::NodeKey>,
 ) -> bool {
     fn walk(
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         key: crate::view::node_arena::NodeKey,
         target_key: Option<crate::view::node_arena::NodeKey>,
     ) -> (bool, bool) {
         arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let mut contains_target = target_key == Some(key);
                 let mut changed = false;
                 let children: Vec<_> = element.children().to_vec();
@@ -1448,13 +1448,13 @@ pub(crate) fn hover_path_for_target(
 }
 
 fn dispatch_pointer_enter_to_key(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
     related: Option<crate::view::node_arena::NodeKey>,
     pointer: crate::ui::PointerEventData,
 ) -> bool {
     arena
-        .with_element_taken(key, |element, arena| {
+        .with_element_taken_ref(key, |element, arena| {
             let snapshot = element.box_model_snapshot();
             let (local_x, local_y) = local_point_for_node(
                 element.as_ref(),
@@ -1465,11 +1465,7 @@ fn dispatch_pointer_enter_to_key(
             let mut pointer = pointer;
             pointer.local_x = local_x;
             pointer.local_y = local_y;
-            let target = crate::ui::EventTarget {
-                id: key,
-                bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-            };
+            let target = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
             let mut meta = crate::ui::EventMeta::with_target(target);
             meta.set_related_target(related.map(crate::ui::EventTarget::bare));
             meta.set_bubbles(false);
@@ -1482,13 +1478,13 @@ fn dispatch_pointer_enter_to_key(
 }
 
 fn dispatch_pointer_leave_to_key(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
     related: Option<crate::view::node_arena::NodeKey>,
     pointer: crate::ui::PointerEventData,
 ) -> bool {
     arena
-        .with_element_taken(key, |element, arena| {
+        .with_element_taken_ref(key, |element, arena| {
             let snapshot = element.box_model_snapshot();
             let (local_x, local_y) = local_point_for_node(
                 element.as_ref(),
@@ -1499,11 +1495,7 @@ fn dispatch_pointer_leave_to_key(
             let mut pointer = pointer;
             pointer.local_x = local_x;
             pointer.local_y = local_y;
-            let target = crate::ui::EventTarget {
-                id: key,
-                bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-            };
+            let target = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
             let mut meta = crate::ui::EventMeta::with_target(target);
             meta.set_related_target(related.map(crate::ui::EventTarget::bare));
             meta.set_bubbles(false);
@@ -1516,7 +1508,7 @@ fn dispatch_pointer_leave_to_key(
 }
 
 pub(crate) fn dispatch_hover_transition(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_keys: &[crate::view::node_arena::NodeKey],
     previous_target: Option<crate::view::node_arena::NodeKey>,
     next_target: Option<crate::view::node_arena::NodeKey>,
@@ -1555,15 +1547,15 @@ pub(crate) fn dispatch_hover_transition(
 }
 
 pub(crate) fn cancel_pointer_interactions(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
 ) -> bool {
     fn walk(
-        arena: &mut crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         key: crate::view::node_arena::NodeKey,
     ) -> bool {
         arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let mut changed = element.cancel_pointer_interaction();
                 let children: Vec<_> = element.children().to_vec();
                 for child_key in children.into_iter().rev() {
@@ -1578,7 +1570,7 @@ pub(crate) fn cancel_pointer_interactions(
 }
 
 pub(crate) fn dispatch_key_down_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyDownEvent,
@@ -1591,7 +1583,7 @@ pub(crate) fn dispatch_key_down_bubble(
 }
 
 pub(crate) fn dispatch_key_up_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyUpEvent,
@@ -1604,7 +1596,7 @@ pub(crate) fn dispatch_key_up_bubble(
 }
 
 pub(crate) fn dispatch_text_input_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut TextInputEvent,
@@ -1617,7 +1609,7 @@ pub(crate) fn dispatch_text_input_bubble(
 }
 
 pub(crate) fn dispatch_ime_preedit_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut ImePreeditEvent,
@@ -1630,7 +1622,7 @@ pub(crate) fn dispatch_ime_preedit_bubble(
 }
 
 pub(crate) fn dispatch_focus_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut FocusEvent,
@@ -1643,7 +1635,7 @@ pub(crate) fn dispatch_focus_bubble(
 }
 
 pub(crate) fn dispatch_blur_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut BlurEvent,
@@ -1673,7 +1665,7 @@ fn local_point_for_node(
 /// Dispatches to target first, then each ancestor (via `arena.parent_of`)
 /// until the root is reached or `stop_propagation` is called.
 fn dispatch_pointer_down_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
@@ -1692,7 +1684,7 @@ fn dispatch_pointer_down_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let node_id = element.stable_id();
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
@@ -1703,11 +1695,7 @@ fn dispatch_pointer_down_bubble(
                 );
                 event.pointer.local_x = local_x;
                 event.pointer.local_y = local_y;
-                let ct = crate::ui::EventTarget {
-                    id: key,
-                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-                };
+                let ct = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
                 event.meta.set_current_target(ct);
                 let _ = node_id;
                 element.dispatch_pointer_down(event, control, arena, key);
@@ -1726,7 +1714,7 @@ fn dispatch_pointer_down_bubble(
 }
 
 fn dispatch_pointer_up_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
@@ -1745,7 +1733,7 @@ fn dispatch_pointer_up_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -1755,11 +1743,7 @@ fn dispatch_pointer_up_bubble(
                 );
                 event.pointer.local_x = local_x;
                 event.pointer.local_y = local_y;
-                let ct = crate::ui::EventTarget {
-                    id: key,
-                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-                };
+                let ct = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
                 event.meta.set_current_target(ct);
                 element.dispatch_pointer_up(event, control, arena, key);
                 true
@@ -1777,7 +1761,7 @@ fn dispatch_pointer_up_bubble(
 }
 
 fn dispatch_pointer_move_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
@@ -1796,7 +1780,7 @@ fn dispatch_pointer_move_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -1806,11 +1790,7 @@ fn dispatch_pointer_move_bubble(
                 );
                 event.pointer.local_x = local_x;
                 event.pointer.local_y = local_y;
-                let ct = crate::ui::EventTarget {
-                    id: key,
-                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-                };
+                let ct = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
                 event.meta.set_current_target(ct);
                 element.dispatch_pointer_move(event, control, arena, key);
                 true
@@ -1828,7 +1808,7 @@ fn dispatch_pointer_move_bubble(
 }
 
 fn dispatch_wheel_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::WheelEvent,
     control: &mut ViewportControl<'_>,
@@ -1847,7 +1827,7 @@ fn dispatch_wheel_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -1857,11 +1837,7 @@ fn dispatch_wheel_bubble(
                 );
                 event.local_x = local_x;
                 event.local_y = local_y;
-                let ct = crate::ui::EventTarget {
-                    id: key,
-                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-                };
+                let ct = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
                 event.meta.set_current_target(ct);
                 element.dispatch_wheel(event, control, arena, key);
                 true
@@ -1879,7 +1855,7 @@ fn dispatch_wheel_bubble(
 }
 
 pub(crate) fn dispatch_wheel_from_hit_test(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::WheelEvent,
     control: &mut ViewportControl<'_>,
@@ -1893,7 +1869,7 @@ pub(crate) fn dispatch_wheel_from_hit_test(
 }
 
 fn dispatch_context_menu_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::ContextMenuEvent,
     control: &mut ViewportControl<'_>,
@@ -1912,7 +1888,7 @@ fn dispatch_context_menu_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -1922,11 +1898,7 @@ fn dispatch_context_menu_bubble(
                 );
                 event.pointer.local_x = local_x;
                 event.pointer.local_y = local_y;
-                let ct = crate::ui::EventTarget {
-                    id: key,
-                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-                };
+                let ct = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
                 event.meta.set_current_target(ct);
                 element.dispatch_context_menu(event, control, arena, key);
                 true
@@ -1944,7 +1916,7 @@ fn dispatch_context_menu_bubble(
 }
 
 fn dispatch_click_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
@@ -1963,7 +1935,7 @@ fn dispatch_click_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -1973,11 +1945,7 @@ fn dispatch_click_bubble(
                 );
                 event.pointer.local_x = local_x;
                 event.pointer.local_y = local_y;
-                let ct = crate::ui::EventTarget {
-                    id: key,
-                    bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                    local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-                };
+                let ct = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
                 event.meta.set_current_target(ct);
                 element.dispatch_click(event, control, arena, key);
                 true
@@ -1997,7 +1965,7 @@ fn dispatch_click_bubble(
 /// Bubble a scroll event from `target_key` upward, letting the deepest
 /// ancestor that can scroll consume the delta.
 fn dispatch_scroll_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     dx: f32,
     dy: f32,
@@ -2006,7 +1974,7 @@ fn dispatch_scroll_bubble(
     while let Some(key) = current {
         let next = arena.parent_of(key);
         let handled = arena
-            .with_element_taken(key, |element, _arena| element.scroll_by(dx, dy))
+            .with_element_taken_ref(key, |element, _arena| element.scroll_by(dx, dy))
             .unwrap_or(false);
         if handled {
             return true;
@@ -2034,7 +2002,7 @@ fn find_scroll_handler_bubble(
 }
 
 fn dispatch_key_down_impl(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyDownEvent,
     control: &mut ViewportControl<'_>,
@@ -2053,7 +2021,7 @@ fn dispatch_key_down_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 event.meta.set_current_target_id(key);
                 element.dispatch_key_down(event, control, arena, key);
                 true
@@ -2071,7 +2039,7 @@ fn dispatch_key_down_impl(
 }
 
 fn dispatch_key_up_impl(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut KeyUpEvent,
     control: &mut ViewportControl<'_>,
@@ -2090,7 +2058,7 @@ fn dispatch_key_up_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 event.meta.set_current_target_id(key);
                 element.dispatch_key_up(event, control, arena, key);
                 true
@@ -2108,7 +2076,7 @@ fn dispatch_key_up_impl(
 }
 
 fn dispatch_focus_impl(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut FocusEvent,
     control: &mut ViewportControl<'_>,
@@ -2127,7 +2095,7 @@ fn dispatch_focus_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 event.meta.set_current_target_id(key);
                 element.dispatch_focus(event, control, arena, key);
                 true
@@ -2145,7 +2113,7 @@ fn dispatch_focus_impl(
 }
 
 fn dispatch_text_input_impl(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut TextInputEvent,
     control: &mut ViewportControl<'_>,
@@ -2164,7 +2132,7 @@ fn dispatch_text_input_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 event.meta.set_current_target_id(key);
                 element.dispatch_text_input(event, control, arena, key);
                 true
@@ -2182,7 +2150,7 @@ fn dispatch_text_input_impl(
 }
 
 fn dispatch_ime_preedit_impl(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut ImePreeditEvent,
     control: &mut ViewportControl<'_>,
@@ -2201,7 +2169,7 @@ fn dispatch_ime_preedit_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 event.meta.set_current_target_id(key);
                 element.dispatch_ime_preedit(event, control, arena, key);
                 true
@@ -2219,7 +2187,7 @@ fn dispatch_ime_preedit_impl(
 }
 
 fn dispatch_blur_impl(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut BlurEvent,
     control: &mut ViewportControl<'_>,
@@ -2238,7 +2206,7 @@ fn dispatch_blur_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken(key, |element, arena| {
+            .with_element_taken_ref(key, |element, arena| {
                 event.meta.set_current_target_id(key);
                 element.dispatch_blur(event, control, arena, key);
                 true
@@ -2258,7 +2226,7 @@ fn dispatch_blur_impl(
 macro_rules! define_focused_target_bubble {
     ($impl_fn:ident, $event_ty:ty, $dispatch_method:ident) => {
         fn $impl_fn(
-            arena: &mut crate::view::node_arena::NodeArena,
+            arena: &crate::view::node_arena::NodeArena,
             target_key: crate::view::node_arena::NodeKey,
             event: &mut $event_ty,
             control: &mut ViewportControl<'_>,
@@ -2277,7 +2245,7 @@ macro_rules! define_focused_target_bubble {
                 });
                 let next = arena.parent_of(key);
                 let did = arena
-                    .with_element_taken(key, |element, arena| {
+                    .with_element_taken_ref(key, |element, arena| {
                         event.meta.set_current_target_id(key);
                         element.$dispatch_method(event, control, arena, key);
                         true
@@ -2328,7 +2296,7 @@ define_focused_target_bubble!(
 );
 
 pub(crate) fn dispatch_ime_commit_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::ImeCommitEvent,
@@ -2341,7 +2309,7 @@ pub(crate) fn dispatch_ime_commit_bubble(
 }
 
 pub(crate) fn dispatch_ime_enabled_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::ImeEnabledEvent,
@@ -2354,7 +2322,7 @@ pub(crate) fn dispatch_ime_enabled_bubble(
 }
 
 pub(crate) fn dispatch_ime_disabled_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::ImeDisabledEvent,
@@ -2367,7 +2335,7 @@ pub(crate) fn dispatch_ime_disabled_bubble(
 }
 
 pub(crate) fn dispatch_copy_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::CopyEvent,
@@ -2380,7 +2348,7 @@ pub(crate) fn dispatch_copy_bubble(
 }
 
 pub(crate) fn dispatch_cut_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::CutEvent,
@@ -2393,7 +2361,7 @@ pub(crate) fn dispatch_cut_bubble(
 }
 
 pub(crate) fn dispatch_paste_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::PasteEvent,
@@ -2431,7 +2399,7 @@ define_focused_target_bubble!(
 );
 
 pub(crate) fn dispatch_drag_start_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::DragStartEvent,
@@ -2444,7 +2412,7 @@ pub(crate) fn dispatch_drag_start_bubble(
 }
 
 pub(crate) fn dispatch_drag_over_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::DragOverEvent,
@@ -2457,7 +2425,7 @@ pub(crate) fn dispatch_drag_over_bubble(
 }
 
 pub(crate) fn dispatch_drop_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::DropEvent,
@@ -2470,7 +2438,7 @@ pub(crate) fn dispatch_drop_bubble(
 }
 
 pub(crate) fn dispatch_drag_end_bubble(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     _root_key: crate::view::node_arena::NodeKey,
     target_key: crate::view::node_arena::NodeKey,
     event: &mut crate::ui::DragEndEvent,
@@ -2486,18 +2454,14 @@ pub(crate) fn dispatch_drag_end_bubble(
 /// counterpart of `DragOver`), so no ancestor walk — matches
 /// `PointerLeaveEvent` shape.
 pub(crate) fn dispatch_drag_leave_to_key(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
     control: &mut ViewportControl<'_>,
 ) -> bool {
     arena
-        .with_element_taken(key, |element, arena| {
+        .with_element_taken_ref(key, |element, arena| {
             let snapshot = element.box_model_snapshot();
-            let target = crate::ui::EventTarget {
-                id: key,
-                bounds: crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
-                local_bounds: crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
-            };
+            let target = crate::ui::EventTarget::snapshot(key, crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height), crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height));
             let mut meta = crate::ui::EventMeta::with_target(target);
             meta.set_bubbles(false);
             meta.set_source(crate::ui::EventSource::Synthetic);
@@ -2596,12 +2560,12 @@ pub fn get_cursor_by_id(
 }
 
 pub(crate) fn select_all_text_by_id(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     node_id: u64,
 ) -> bool {
     arena
-        .with_element_taken(root_key, |element, arena| {
+        .with_element_taken_ref(root_key, |element, arena| {
             if element.stable_id() == node_id {
                 if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
                     text_area.select_all();
@@ -2621,14 +2585,14 @@ pub(crate) fn select_all_text_by_id(
 }
 
 pub(crate) fn select_text_range_by_id(
-    arena: &mut crate::view::node_arena::NodeArena,
+    arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     node_id: u64,
     start: usize,
     end: usize,
 ) -> bool {
     arena
-        .with_element_taken(root_key, |element, arena| {
+        .with_element_taken_ref(root_key, |element, arena| {
             if element.stable_id() == node_id {
                 if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
                     text_area.select_range(start, end);
@@ -2719,7 +2683,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::PointerDownEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_pointer_down(event, control, arena, self_key);
@@ -2728,7 +2692,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::PointerUpEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_pointer_up(event, control, arena, self_key);
@@ -2737,7 +2701,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::PointerMoveEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_pointer_move(event, control, arena, self_key);
@@ -2746,7 +2710,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::ClickEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_click(event, control, arena, self_key);
@@ -2755,7 +2719,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::ContextMenuEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_context_menu(event, control, arena, self_key);
@@ -2764,7 +2728,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::WheelEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_wheel(event, control, arena, self_key);
@@ -2773,7 +2737,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::KeyDownEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_key_down(event, control, arena, self_key);
@@ -2782,7 +2746,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::KeyUpEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_key_up(event, control, arena, self_key);
@@ -2791,7 +2755,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::FocusEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_focus(event, control, arena, self_key);
@@ -2800,7 +2764,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::BlurEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_blur(event, control, arena, self_key);
@@ -2809,7 +2773,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::ImeCommitEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_ime_commit(event, control, arena, self_key);
@@ -2818,7 +2782,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::ImeEnabledEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_ime_enabled(event, control, arena, self_key);
@@ -2827,7 +2791,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::ImeDisabledEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_ime_disabled(event, control, arena, self_key);
@@ -2836,7 +2800,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::DragStartEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_drag_start(event, control, arena, self_key);
@@ -2845,7 +2809,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::DragOverEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_drag_over(event, control, arena, self_key);
@@ -2854,7 +2818,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::DragLeaveEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_drag_leave(event, control, arena, self_key);
@@ -2863,7 +2827,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::DropEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_drop(event, control, arena, self_key);
@@ -2872,7 +2836,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::DragEndEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_drag_end(event, control, arena, self_key);
@@ -2881,7 +2845,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::CopyEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_copy(event, control, arena, self_key);
@@ -2890,7 +2854,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::CutEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_cut(event, control, arena, self_key);
@@ -2899,7 +2863,7 @@ macro_rules! forward_event_target {
             &mut self,
             event: &mut $crate::ui::PasteEvent,
             control: &mut $crate::view::viewport::ViewportControl<'_>,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_paste(event, control, arena, self_key);
@@ -2909,7 +2873,7 @@ macro_rules! forward_event_target {
         fn dispatch_pointer_enter(
             &mut self,
             event: &mut $crate::ui::PointerEnterEvent,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_pointer_enter(event, arena, self_key);
@@ -2917,7 +2881,7 @@ macro_rules! forward_event_target {
         fn dispatch_pointer_leave(
             &mut self,
             event: &mut $crate::ui::PointerLeaveEvent,
-            arena: &mut $crate::view::node_arena::NodeArena,
+            arena: &$crate::view::node_arena::NodeArena,
             self_key: $crate::view::node_arena::NodeKey,
         ) {
             self.$field.dispatch_pointer_leave(event, arena, self_key);
@@ -2981,7 +2945,7 @@ mod tests {
         PointerDownEvent, PointerEventData,
     };
     use crate::view::base_component::{
-        Element, EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
+        Element, EventTarget, LayoutConstraints, LayoutPlacement,
     };
     use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
     use crate::view::{Viewport, ViewportControl};

@@ -178,6 +178,7 @@ struct WindowViewportListenerState {
 
 pub struct Window;
 
+#[derive(Clone)]
 #[props]
 pub struct WindowProps {
     pub title: String,
@@ -192,6 +193,7 @@ pub struct WindowProps {
     pub window_slots: Option<WindowSlotsProp>,
 }
 
+#[derive(Clone)]
 #[props]
 pub struct WindowSlotsProp {
     pub root_style: Option<WindowRootStyleSlot>,
@@ -200,6 +202,7 @@ pub struct WindowSlotsProp {
     pub content_style: Option<WindowContentStyleSlot>,
 }
 
+#[derive(Clone)]
 #[props]
 pub struct WindowRootStyleSlot {
     pub background: Option<Color>,
@@ -253,6 +256,7 @@ impl RsxComponent<WindowProps> for Window {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for Window {
     type Props = __WindowPropsInit;
     type StrictProps = WindowProps;

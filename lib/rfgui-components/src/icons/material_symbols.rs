@@ -10,6 +10,7 @@ pub const MATERIAL_SYMBOLS_OUTLINED_FONT_FAMILY: &str = "Material Symbols Outlin
 
 static MATERIAL_SYMBOLS_OUTLINED_INIT: Once = Once::new();
 
+#[derive(Clone)]
 #[props]
 pub struct MaterialSymbolIconProps {
     pub style: Option<ElementStylePropSchema>,
@@ -31,6 +32,7 @@ impl RsxComponent<MaterialSymbolIconProps> for MaterialSymbolIcon {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for MaterialSymbolIcon {
     type Props = __MaterialSymbolIconPropsInit;
     type StrictProps = MaterialSymbolIconProps;

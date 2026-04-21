@@ -18,6 +18,7 @@ pub trait NumberFieldValue: Copy + PartialEq + PartialOrd + 'static {
     fn format_value(value: &Self) -> String;
 }
 
+#[derive(Clone)]
 #[props]
 pub struct NumberFieldProps<T: NumberFieldValue> {
     pub value: Option<T>,
@@ -171,6 +172,7 @@ where
     }
 }
 
+#[rfgui::ui::component]
 impl<T> rfgui::ui::RsxTag for NumberField<T>
 where
     T: NumberFieldValue,

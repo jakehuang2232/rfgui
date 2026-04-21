@@ -42,6 +42,7 @@ fn generate_components(codepoints: &str) -> String {
         ));
         output.push_str("    }\n");
         output.push_str("}\n\n");
+        output.push_str("#[rfgui::ui::component]\n");
         output.push_str(&format!(
             "impl rfgui::ui::RsxTag for {component_name} {{\n"
         ));

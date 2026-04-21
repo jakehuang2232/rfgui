@@ -556,7 +556,7 @@ mod tests {
     use crate::Layout;
     use crate::view::ImageSource;
     use crate::view::base_component::{
-        Element, ElementTrait, LayoutConstraints, LayoutPlacement, Layoutable,
+        Element, LayoutConstraints, LayoutPlacement, Layoutable,
     };
     use crate::view::test_support::{commit_child, commit_element, new_test_arena};
     use crate::{Length, ParsedValue, PropertyId, Style};

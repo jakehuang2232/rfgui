@@ -47,6 +47,7 @@ impl rfgui::ui::IntoOptionalProp<IconButtonEdge> for String {
 
 pub struct IconButton;
 
+#[derive(Clone)]
 #[props]
 pub struct IconButtonProps {
     pub size: Option<ButtonSize>,
@@ -72,6 +73,7 @@ impl RsxComponent<IconButtonProps> for IconButton {
     }
 }
 
+#[rfgui::ui::component]
 impl rfgui::ui::RsxTag for IconButton {
     type Props = __IconButtonPropsInit;
     type StrictProps = IconButtonProps;

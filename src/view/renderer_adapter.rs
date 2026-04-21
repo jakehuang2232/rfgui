@@ -590,6 +590,12 @@ fn rendered_node_id(
         )),
         RsxNode::Text(_) => Some(stable_node_id_from_parts("TextNode", path, global_path)),
         RsxNode::Fragment(_) => None,
+        RsxNode::Component(_) => {
+            unreachable!("Component node should be unwrapped before renderer_adapter")
+        }
+        RsxNode::Provider(_) => {
+            unreachable!("Provider node should be unwrapped before renderer_adapter")
+        }
     }
 }
 
@@ -688,6 +694,12 @@ fn convert_node(
         }
         RsxNode::Fragment(_) => Err("fragment must be flattened before conversion".to_string()),
         RsxNode::Element(el) => convert_element(el, path, global_path, inherited_text_style),
+        RsxNode::Component(_) => {
+            Err("Component node must be unwrapped before conversion".to_string())
+        }
+        RsxNode::Provider(_) => {
+            Err("Provider node must be unwrapped before conversion".to_string())
+        }
     }
 }
 
@@ -2682,6 +2694,12 @@ fn convert_node_desc(
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<ElementDescriptor, String> {
     match node {
+        RsxNode::Component(_) => {
+            Err("Component node must be unwrapped before conversion".to_string())
+        }
+        RsxNode::Provider(_) => {
+            Err("Provider node must be unwrapped before conversion".to_string())
+        }
         RsxNode::Text(_) | RsxNode::Fragment(_) => {
             // Text is leaf; fragment should be flattened by caller.
             convert_node(node, path, global_path, inherited_text_style).map(ElementDescriptor::leaf)
@@ -2815,15 +2833,14 @@ mod tests {
     use super::{
         RenderedGlobalKeyEntry, ViewportRenderBackend, element_runtime_name,
         identity_token_from_node_identity, register_tag_element_factory, rendered_node_id,
-        rsx_to_elements, rsx_to_elements_lossy, rsx_to_elements_with_context,
-        stable_node_id_from_parts,
+        rsx_to_elements, rsx_to_elements_lossy, stable_node_id_from_parts,
     };
     use crate::ui::{
         GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx,
     };
     use crate::view::Viewport;
     use crate::view::base_component::{
-        Element, ElementTrait, Layoutable, Text, TextArea, get_cursor_by_id, hit_test,
+        Element, Text, TextArea, get_cursor_by_id, hit_test,
     };
     use crate::view::test_support::{commit_rsx_tree, measure_and_place};
     use crate::view::{
