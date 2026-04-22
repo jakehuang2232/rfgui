@@ -14,9 +14,7 @@ mod use_viewport;
 
 pub use component::*;
 pub use context::{
-    ContextSnapshot, ContextStackEntry, provide_context, provide_context_node,
-    snapshot_context_stack, use_context, use_context_expect,
-    with_installed_context_snapshot, with_pushed_context_raw,
+    provide_context_node, use_context, use_context_expect, with_pushed_context_raw,
 };
 pub use event::*;
 pub use node_id::{EventTarget, NodeId, Rect};
