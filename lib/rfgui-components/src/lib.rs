@@ -625,13 +625,10 @@ mod tests {
         assert_eq!(root.children.len(), 2);
     }
 
-    // React parity P3: provider sets a context via `provide_context` around
-    // its rsx! children. Under P2's lazy pipeline, the child component's
-    // render body runs AFTER the provider's closure returns (and would
-    // normally pop the context). The Component node captures a context
-    // snapshot at rsx! expansion time; the walker re-installs it before
-    // invoking the child's `vtable.render`. This test fails without the
-    // snapshot wiring.
+    // Provider-as-node lazy boundary: `<Provider<T>>` wraps a lazy child
+    // component. Under the P2 walker pipeline, the child's render body
+    // runs when the walker descends INTO the Provider node, so walker
+    // ancestry already has the value pushed — no snapshotting needed.
     // React parity P4: when a conditional branch is NOT selected, the
     // component in that branch must not have its render body invoked.
     // Pre-P2 every `<Heavy/>` eagerly ran its render inside the rsx!
@@ -689,7 +686,7 @@ mod tests {
 
     #[test]
     fn context_crosses_lazy_component_boundary() {
-        use rfgui::ui::{component, provide_context, use_context};
+        use rfgui::ui::{Provider, component, use_context};
 
         #[derive(Clone)]
         struct CtxValue(&'static str);
@@ -704,9 +701,11 @@ mod tests {
 
         #[component]
         fn CtxProvider() -> RsxNode {
-            provide_context(CtxValue("from-provider"), || {
-                rsx! { <CtxConsumer /> }
-            })
+            rsx! {
+                <Provider::<CtxValue> value={CtxValue("from-provider")}>
+                    <CtxConsumer />
+                </Provider>
+            }
         }
 
         let tree = rsx! { <CtxProvider /> };
@@ -714,7 +713,7 @@ mod tests {
         collect_text_nodes(&tree, &mut texts);
         assert!(
             texts.iter().any(|t| t == "from-provider"),
-            "consumer should read value installed by ancestor provider across lazy boundary; got {texts:?}"
+            "consumer should read value installed by ancestor Provider node across lazy boundary; got {texts:?}"
         );
     }
 

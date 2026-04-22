@@ -2,15 +2,10 @@
 //!
 //! Inspired by MUI X `SimpleTreeView` / `TreeItem` (MIT-licensed source),
 //! but reshaped around a `TreeNode<V>` data tree rather than `<TreeItem>`
-//! composition. The composition shape would require pushing context across
-//! pre-built lazy `RsxNode::Component` children — and the walker's
-//! `with_installed_context_snapshot` replaces the stack rather than merging
-//! into it, so values pushed by an ancestor `<Provider>` do not reach
-//! children that were constructed before the provider was walked.
-//!
-//! The data shape side-steps that limitation entirely: every row is rendered
-//! by `TreeView` itself, so all the per-item state (`expanded`, `selected`,
-//! click handlers) is wired up from one render scope.
+//! composition. The data shape keeps per-item state (`expanded`, `selected`,
+//! click handlers) wired up from one render scope, making the component
+//! testable without a full viewport and making selection / expansion
+//! semantics easy to reason about.
 //!
 //! `V` is the per-node value type used for selection + the expanded-set.
 //! Defaults to `String`, so the common path stays terse:

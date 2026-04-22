@@ -542,11 +542,6 @@ pub struct ComponentNodeInner {
     pub children: Vec<RsxNode>,
     pub key: Option<RsxKey>,
     pub vtable: &'static ComponentVTable,
-    /// React parity P3: context stack captured at the moment this
-    /// Component was constructed. Walker installs this before invoking
-    /// `vtable.render` so `use_context` resolves providers that were
-    /// on-stack at rsx! expansion time but have since been popped.
-    pub context_snapshot: crate::ui::ContextSnapshot,
 }
 
 impl Drop for ComponentNodeInner {
@@ -570,7 +565,6 @@ pub struct ComponentRenderParts {
     pub children: Vec<RsxNode>,
     pub props: NonNull<()>,
     pub vtable: &'static ComponentVTable,
-    pub context_snapshot: crate::ui::ContextSnapshot,
 }
 
 impl ComponentNodeInner {
@@ -595,7 +589,6 @@ impl ComponentNodeInner {
                 // `Vec<RsxNode>` ownership from `ptr::read` is fine
                 // because the source is never dropped.
                 let children = unsafe { std::ptr::read(&me.children) };
-                let context_snapshot = unsafe { std::ptr::read(&me.context_snapshot) };
                 ComponentRenderParts {
                     identity: me.identity,
                     type_id: me.type_id,
@@ -603,7 +596,6 @@ impl ComponentNodeInner {
                     children,
                     props: me.props,
                     vtable: me.vtable,
-                    context_snapshot,
                 }
             }
             Err(rc) => {
@@ -617,15 +609,6 @@ impl ComponentNodeInner {
                 // Safety: `clone_props` was emitted by the `#[component]`
                 // macro as a monomorphized shim over `<T::Props as Clone>`.
                 let cloned_props = unsafe { (rc.vtable.clone_props)(rc.props) };
-                // Snapshot cloning is cheap (`Rc<dyn Any>` clones).
-                let context_snapshot = rc
-                    .context_snapshot
-                    .iter()
-                    .map(|entry| crate::ui::ContextStackEntry {
-                        type_id: entry.type_id,
-                        stack: entry.stack.clone(),
-                    })
-                    .collect();
                 ComponentRenderParts {
                     identity: rc.identity,
                     type_id: rc.type_id,
@@ -633,7 +616,6 @@ impl ComponentNodeInner {
                     children: rc.children.clone(),
                     props: cloned_props,
                     vtable: rc.vtable,
-                    context_snapshot,
                 }
             }
         }
@@ -708,7 +690,6 @@ mod p2a_walker_tests {
             children: Vec::new(),
             key: None,
             vtable: &TEST_VTABLE,
-            context_snapshot: Vec::new(),
         }))
     }
 
@@ -825,11 +806,9 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
                 children,
                 props,
                 vtable,
-                context_snapshot,
             } = parts;
             with_component_key(key, || {
                 crate::ui::render_component_by_type_id(type_id, || {
-                    crate::ui::with_installed_context_snapshot(&context_snapshot, || {
                     // Safety: `props` was produced by `Box::into_raw(Box::new(T::Props))`
                     // during Component construction, and `vtable.render` is the
                     // monomorphized shim that `Box::from_raw`s it back to the
@@ -851,7 +830,6 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
                         });
                     }
                     walked
-                    })
                 })
             })
         }
@@ -994,10 +972,6 @@ pub fn create_element<T: RsxTag>(
         let strict = T::into_strict(init);
         let props_raw = Box::into_raw(Box::new(strict));
         let identity = RsxNodeIdentity::new(std::any::type_name::<T>(), key);
-        // P3: capture provider stack visible at rsx! expansion time so the
-        // walker can re-install it when this Component later renders,
-        // after the provider's closure has returned and popped its value.
-        let context_snapshot = crate::ui::snapshot_context_stack();
         RsxNode::Component(std::rc::Rc::new(ComponentNodeInner {
             identity,
             type_id: std::any::TypeId::of::<T>(),
@@ -1006,7 +980,6 @@ pub fn create_element<T: RsxTag>(
             children,
             key,
             vtable,
-            context_snapshot,
         }))
     }
 }
