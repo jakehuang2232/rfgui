@@ -1,6 +1,6 @@
-use rustc_hash::{FxHashMap, FxHashSet};
 use crate::time::Instant;
-use std::collections::{VecDeque};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -1448,8 +1448,10 @@ impl FrameGraph {
     }
 
     fn annotate_resource_versions(&mut self) {
-        let mut latest_texture_version: FxHashMap<TextureHandle, TextureVersionId> = FxHashMap::default();
-        let mut latest_buffer_version: FxHashMap<BufferHandle, BufferVersionId> = FxHashMap::default();
+        let mut latest_texture_version: FxHashMap<TextureHandle, TextureVersionId> =
+            FxHashMap::default();
+        let mut latest_buffer_version: FxHashMap<BufferHandle, BufferVersionId> =
+            FxHashMap::default();
         let mut version_producers: FxHashMap<ResourceVersionId, usize> = FxHashMap::default();
         let mut consumed_versions: Vec<ConsumedVersion> = Vec::new();
         let mut produced_versions: Vec<ProducedVersion> = Vec::new();
@@ -2161,9 +2163,11 @@ impl FrameGraph {
         FrameGraphError,
     > {
         let mut current_states = FxHashMap::<ResourceHandle, ResourceState>::default();
-        let mut pass_transitions = FxHashMap::<usize, Vec<CompiledPassResourceTransition>>::default();
+        let mut pass_transitions =
+            FxHashMap::<usize, Vec<CompiledPassResourceTransition>>::default();
         let mut resource_transitions = Vec::<CompiledResourceTransition>::new();
-        let mut timeline_map = FxHashMap::<ResourceHandle, Vec<CompiledResourceTransition>>::default();
+        let mut timeline_map =
+            FxHashMap::<ResourceHandle, Vec<CompiledResourceTransition>>::default();
 
         for (execution_index, &pass_index) in ordered_passes.iter().enumerate() {
             let per_resource = group_pass_usages_by_resource(&self.passes[pass_index].usages);
@@ -2665,8 +2669,7 @@ impl FrameGraph {
             };
             owned_color_views.push((view, resolve_target));
         }
-        let expected_sample_count =
-            resolve_pass_sample_count(compatibility.sample_count);
+        let expected_sample_count = resolve_pass_sample_count(compatibility.sample_count);
         for attachment in &compatibility.color_attachments {
             let actual_sample_count =
                 color_attachment_sample_count(ctx, attachment.target, attachment.resolve_target);
@@ -3470,7 +3473,8 @@ fn select_next_ready_node(
         best_distance: usize,
         best_idx: usize,
     }
-    let mut anchor_groups: FxHashMap<&RenderPassCompatibilityKey, AnchorGroupBest> = FxHashMap::default();
+    let mut anchor_groups: FxHashMap<&RenderPassCompatibilityKey, AnchorGroupBest> =
+        FxHashMap::default();
     for &idx in queue {
         // Resolve the anchor's signature through the index stored in BatchAnchorInfo —
         // no clone required; we borrow directly from the signatures slice.
@@ -4630,7 +4634,11 @@ pub struct CacheStatSnapshot {
 impl CacheStatSnapshot {
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
-        if total == 0 { 0.0 } else { self.hits as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
     }
 }
 
@@ -4731,9 +4739,9 @@ macro_rules! static_resource_cache {
                 > = ::std::sync::OnceLock::new();
                 let cache = CACHE.get_or_init(|| {
                     $crate::view::frame_graph::register_cache_stats(&STATS);
-                    ::std::sync::Mutex::new(
-                        $crate::view::frame_graph::ResourceCache::with_stats(&STATS),
-                    )
+                    ::std::sync::Mutex::new($crate::view::frame_graph::ResourceCache::with_stats(
+                        &STATS,
+                    ))
                 });
                 f(&mut cache.lock().unwrap())
             }
@@ -4750,9 +4758,8 @@ macro_rules! static_resource_cache {
                     let mut borrowed = c.borrow_mut();
                     if borrowed.is_none() {
                         $crate::view::frame_graph::register_cache_stats(&STATS);
-                        *borrowed = Some(
-                            $crate::view::frame_graph::ResourceCache::with_stats(&STATS),
-                        );
+                        *borrowed =
+                            Some($crate::view::frame_graph::ResourceCache::with_stats(&STATS));
                     }
                     f(borrowed.as_mut().unwrap())
                 })

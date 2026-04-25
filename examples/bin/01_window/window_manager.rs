@@ -58,6 +58,7 @@ impl WindowManager {
                 on_focus: None,
                 on_blur: None,
                 window_slots: None,
+                scrollable: None,
             },
             children,
         });

@@ -1,7 +1,5 @@
 use crate::use_theme;
-use rfgui::ui::{
-    Binding, RsxComponent, RsxNode, on_click, props, rsx, use_state,
-};
+use rfgui::ui::{Binding, RsxComponent, RsxNode, on_click, props, rsx, use_state};
 use rfgui::view::{Element, Text};
 use rfgui::{Align, Layout, Length, Operator, Transition, TransitionProperty};
 use std::rc::Rc;

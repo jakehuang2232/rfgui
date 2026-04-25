@@ -720,7 +720,7 @@ pub fn translate_rooted_patches_all_or_nothing(
                 // failing subtree. Keeps other roots / siblings on the
                 // incremental path; only the one subtree rebuilds.
                 if let Some(fallback) =
-                    fallback_replace_node_patch(&patch_snapshot, per_root_new_rsx)
+                    fallback_replace_node_patch(&patch_snapshot, per_root_old_rsx, per_root_new_rsx)
                     && let Some(work) = patch_to_fiber_work_with_rsx(
                         fallback,
                         id_to_key,
@@ -741,7 +741,11 @@ pub fn translate_rooted_patches_all_or_nothing(
     Some(out)
 }
 
-fn fallback_replace_node_patch(patch: &Patch, per_root_new_rsx: Option<&RsxNode>) -> Option<Patch> {
+fn fallback_replace_node_patch(
+    patch: &Patch,
+    per_root_old_rsx: Option<&RsxNode>,
+    per_root_new_rsx: Option<&RsxNode>,
+) -> Option<Patch> {
     let new_root = per_root_new_rsx?;
     let path: Vec<usize> = match patch {
         Patch::UpdateElementProps { path, .. } | Patch::SetText { path, .. } => path.clone(),
@@ -750,8 +754,25 @@ fn fallback_replace_node_patch(patch: &Patch, per_root_new_rsx: Option<&RsxNode>
         | Patch::MoveChild { parent_path, .. } => parent_path.clone(),
         _ => return None,
     };
-    let node = walk_rsx_by_index_path(new_root, &path)?.clone();
-    Some(Patch::ReplaceNode { path, node })
+    // The fallback rewrites the patch as `ReplaceNode { path, NEW[path] }`.
+    // That only round-trips when `OLD[path]` and `NEW[path]` describe the
+    // same arena slot — e.g. a shape-change at a stable position. If a
+    // keyed sibling reorder above this path made `NEW[path]` a different
+    // keyed node than `OLD[path]`, replacing the OLD slot with NEW's
+    // contents would clobber an unrelated arena node (the one the
+    // pending MoveChild is still going to address by its OLD index),
+    // and end up with a duplicate row. Refuse the fallback in that case
+    // so the caller falls through to the legacy full-rebuild path.
+    let old_root = per_root_old_rsx?;
+    let old_at_path = walk_rsx_by_index_path(old_root, &path)?;
+    let new_at_path = walk_rsx_by_index_path(new_root, &path)?;
+    if old_at_path.identity() != new_at_path.identity() {
+        return None;
+    }
+    Some(Patch::ReplaceNode {
+        path,
+        node: new_at_path.clone(),
+    })
 }
 
 /// 軌 1 #11: per-prop apply outcome reported by `ElementTrait::apply_prop`.
@@ -824,7 +845,6 @@ impl FiberWork {
             FiberWork::CreateMany { .. } => true,
         }
     }
-
 }
 
 /// PropertyIds that cascade into descendant text nodes (font_family,
@@ -1183,7 +1203,9 @@ fn apply_update_work(
                 PropApplyOutcome::DecodeFailed(p) => {
                     eprintln!("[fiber_work] Update skipped prop {p:?} (decode failed)");
                 }
-                PropApplyOutcome::CannotReset(_) => unreachable!("apply_prop never returns CannotReset"),
+                PropApplyOutcome::CannotReset(_) => {
+                    unreachable!("apply_prop never returns CannotReset")
+                }
             }
         }
         for name in removed {
@@ -1234,7 +1256,6 @@ pub(crate) fn resolve_font_size_px_with_inherited(
         _ => None,
     }
 }
-
 
 /// Apply a `Patch::SetText` to a Text or TextArea host at `key`.
 ///

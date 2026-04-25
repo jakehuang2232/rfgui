@@ -1,7 +1,7 @@
 use crate::{CheckIcon, use_theme};
 use rfgui::ui::{
-    Binding, ClickHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp,
-    RsxComponent, RsxNode, props, rsx, use_state,
+    Binding, ClickHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxComponent,
+    RsxNode, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};

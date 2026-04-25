@@ -10,7 +10,6 @@ use crate::ui::{
     current_build_depth, register_global_key, with_component_key,
 };
 
-
 pub trait RsxChildrenPolicy {
     const ACCEPTS_CHILDREN: bool;
 }
@@ -65,11 +64,23 @@ macro_rules! impl_no_arg_event_into_optional_prop {
     };
 }
 
-impl_event_into_optional_prop!(crate::ui::PointerDownHandlerProp, crate::ui::PointerDownEvent);
+impl_event_into_optional_prop!(
+    crate::ui::PointerDownHandlerProp,
+    crate::ui::PointerDownEvent
+);
 impl_event_into_optional_prop!(crate::ui::PointerUpHandlerProp, crate::ui::PointerUpEvent);
-impl_event_into_optional_prop!(crate::ui::PointerMoveHandlerProp, crate::ui::PointerMoveEvent);
-impl_event_into_optional_prop!(crate::ui::PointerEnterHandlerProp, crate::ui::PointerEnterEvent);
-impl_event_into_optional_prop!(crate::ui::PointerLeaveHandlerProp, crate::ui::PointerLeaveEvent);
+impl_event_into_optional_prop!(
+    crate::ui::PointerMoveHandlerProp,
+    crate::ui::PointerMoveEvent
+);
+impl_event_into_optional_prop!(
+    crate::ui::PointerEnterHandlerProp,
+    crate::ui::PointerEnterEvent
+);
+impl_event_into_optional_prop!(
+    crate::ui::PointerLeaveHandlerProp,
+    crate::ui::PointerLeaveEvent
+);
 impl_event_into_optional_prop!(crate::ui::ClickHandlerProp, crate::ui::ClickEvent);
 impl_event_into_optional_prop!(
     crate::ui::ContextMenuHandlerProp,
@@ -78,7 +89,10 @@ impl_event_into_optional_prop!(
 impl_event_into_optional_prop!(crate::ui::WheelHandlerProp, crate::ui::WheelEvent);
 impl_event_into_optional_prop!(crate::ui::ImeCommitHandlerProp, crate::ui::ImeCommitEvent);
 impl_event_into_optional_prop!(crate::ui::ImeEnabledHandlerProp, crate::ui::ImeEnabledEvent);
-impl_event_into_optional_prop!(crate::ui::ImeDisabledHandlerProp, crate::ui::ImeDisabledEvent);
+impl_event_into_optional_prop!(
+    crate::ui::ImeDisabledHandlerProp,
+    crate::ui::ImeDisabledEvent
+);
 impl_event_into_optional_prop!(crate::ui::DragStartHandlerProp, crate::ui::DragStartEvent);
 impl_event_into_optional_prop!(crate::ui::DragOverHandlerProp, crate::ui::DragOverEvent);
 impl_event_into_optional_prop!(crate::ui::DragLeaveHandlerProp, crate::ui::DragLeaveEvent);
@@ -207,25 +221,31 @@ impl IntoOptionalProp<crate::Background> for crate::Color {
 
 impl<'a> IntoOptionalProp<crate::Background> for crate::HexColor<'a> {
     fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(Box::new(
-            crate::IntoColor::<crate::Color>::into_color(self),
-        )))
+        Some(crate::Background::Color(Box::new(crate::IntoColor::<
+            crate::Color,
+        >::into_color(
+            self
+        ))))
     }
 }
 
 impl IntoOptionalProp<crate::Background> for &str {
     fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(Box::new(
-            crate::IntoColor::<crate::Color>::into_color(self),
-        )))
+        Some(crate::Background::Color(Box::new(crate::IntoColor::<
+            crate::Color,
+        >::into_color(
+            self
+        ))))
     }
 }
 
 impl IntoOptionalProp<crate::Background> for String {
     fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(Box::new(
-            crate::IntoColor::<crate::Color>::into_color(self),
-        )))
+        Some(crate::Background::Color(Box::new(crate::IntoColor::<
+            crate::Color,
+        >::into_color(
+            self
+        ))))
     }
 }
 
@@ -653,10 +673,7 @@ mod p2a_walker_tests {
         value: u32,
     }
 
-    unsafe fn test_render_shim(
-        props: NonNull<()>,
-        _children: Vec<RsxNode>,
-    ) -> RsxNode {
+    unsafe fn test_render_shim(props: NonNull<()>, _children: Vec<RsxNode>) -> RsxNode {
         let boxed: Box<TestProps> = unsafe { Box::from_raw(props.as_ptr().cast()) };
         RENDER_CALLS.with(|c| c.set(c.get() + 1));
         RENDER_SUM.with(|c| c.set(c.get() + boxed.value));
@@ -790,11 +807,10 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
                 Ok(inner) => inner,
                 Err(rc) => (*rc).clone(),
             };
-            let walked_child = crate::ui::with_pushed_context_raw(
-                provider.type_id,
-                provider.value,
-                || unwrap_components(provider.child),
-            );
+            let walked_child =
+                crate::ui::with_pushed_context_raw(provider.type_id, provider.value, || {
+                    unwrap_components(provider.child)
+                });
             walked_child
         }
         RsxNode::Component(inner) => {
@@ -975,8 +991,7 @@ pub fn create_element<T: RsxTag>(
         RsxNode::Component(std::rc::Rc::new(ComponentNodeInner {
             identity,
             type_id: std::any::TypeId::of::<T>(),
-            props: NonNull::new(props_raw.cast())
-                .expect("Box::into_raw returns non-null"),
+            props: NonNull::new(props_raw.cast()).expect("Box::into_raw returns non-null"),
             children,
             key,
             vtable,
@@ -1026,4 +1041,3 @@ impl From<GlobalKey> for RsxKey {
         Self::Global(value)
     }
 }
-

@@ -339,8 +339,7 @@ impl ElementTrait for Svg {
         use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::node_arena::NodeKey;
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, as_element_style, commit_descriptor_tree,
-            convert_image_slot_desc,
+            InheritedTextStyle, as_element_style, commit_descriptor_tree, convert_image_slot_desc,
         };
 
         match name {

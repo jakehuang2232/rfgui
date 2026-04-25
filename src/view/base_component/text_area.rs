@@ -85,14 +85,15 @@ impl TextAreaRenderString {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum TextAreaRenderFragmentKind {
     Text(String),
+    Newline,
     Preedit(String),
     Projection(usize),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct TextAreaRenderFragment {
     source_range: Range<usize>,
     kind: TextAreaRenderFragmentKind,
@@ -132,6 +133,7 @@ pub struct TextArea {
     auto_width: bool,
     auto_height: bool,
     multiline: bool,
+    auto_wrap: bool,
     placeholder: String,
     read_only: bool,
     text_binding: Option<Binding<String>>,
@@ -152,6 +154,7 @@ pub struct TextArea {
     selection_focus_char: Option<usize>,
     pointer_selecting: bool,
     is_focused: bool,
+    scroll_x: f32,
     scroll_y: f32,
     ime_preedit: String,
     ime_preedit_cursor: Option<(usize, usize)>,
@@ -194,10 +197,23 @@ thread_local! {
 const GLYPH_BUFFER_POOL_MAX: usize = 8;
 
 /// Take a `GlyphBuffer` from the thread-local pool, or create a new one.
-fn take_pooled_glyph_buffer(font_system: &mut FontSystem, font_size: f32, line_height: f32) -> GlyphBuffer {
-    let mut buffer = GLYPH_BUFFER_POOL.with(|pool| pool.borrow_mut().pop())
-        .unwrap_or_else(|| GlyphBuffer::new(font_system, Metrics::new(font_size, font_size * line_height)));
-    buffer.set_metrics(font_system, Metrics::new(font_size, font_size * line_height));
+fn take_pooled_glyph_buffer(
+    font_system: &mut FontSystem,
+    font_size: f32,
+    line_height: f32,
+) -> GlyphBuffer {
+    let mut buffer = GLYPH_BUFFER_POOL
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_else(|| {
+            GlyphBuffer::new(
+                font_system,
+                Metrics::new(font_size, font_size * line_height),
+            )
+        });
+    buffer.set_metrics(
+        font_system,
+        Metrics::new(font_size, font_size * line_height),
+    );
     buffer
 }
 
@@ -288,6 +304,7 @@ impl TextArea {
             auto_width: false,
             auto_height: false,
             multiline: true,
+            auto_wrap: true,
             placeholder: String::new(),
             read_only: false,
             text_binding: None,
@@ -304,6 +321,7 @@ impl TextArea {
             selection_focus_char: None,
             pointer_selecting: false,
             is_focused: false,
+            scroll_x: 0.0,
             scroll_y: 0.0,
             ime_preedit: String::new(),
             ime_preedit_cursor: None,
@@ -510,12 +528,13 @@ impl TextArea {
     /// with a single prop-driven handler. Wipes existing entries so
     /// user-authored `on_change={...}` is not duplicated across
     /// renders (reconciler emits one Update per prop change).
-    pub(crate) fn replace_on_change_handler(
-        &mut self,
-        handler: crate::ui::TextChangeHandlerProp,
-    ) {
+    pub(crate) fn replace_on_change_handler(&mut self, handler: crate::ui::TextChangeHandlerProp) {
         self.on_change_handlers.clear();
         self.on_change_handlers.push(handler);
+    }
+
+    pub(crate) fn clear_on_change_handlers(&mut self) {
+        self.on_change_handlers.clear();
     }
 
     pub(crate) fn replace_on_focus_handler(
@@ -526,6 +545,10 @@ impl TextArea {
         self.on_focus_handlers.push(handler);
     }
 
+    pub(crate) fn clear_on_focus_handlers(&mut self) {
+        self.on_focus_handlers.clear();
+    }
+
     pub(crate) fn replace_on_render_handler(
         &mut self,
         handler: crate::ui::TextAreaRenderHandlerProp,
@@ -534,12 +557,27 @@ impl TextArea {
         self.mark_projection_tree_dirty();
     }
 
-    pub(crate) fn replace_on_blur_handler(
+    pub(crate) fn clear_on_render_handler(
         &mut self,
-        handler: crate::ui::BlurHandlerProp,
+        arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        self.on_render_handler = None;
+        self.projection_tree_dirty = false;
+        for prev in self.render_nodes.drain(..) {
+            arena.remove_subtree(prev.node);
+        }
+        self.rebuild_render_fragments_from_ranges(Vec::new());
+        self.cached_ime_cursor_rect = None;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
+    }
+
+    pub(crate) fn replace_on_blur_handler(&mut self, handler: crate::ui::BlurHandlerProp) {
         // Forward to inner Element's blur handler list replacement.
         self.element.replace_on_blur_handler(handler);
+    }
+
+    pub(crate) fn clear_on_blur_handler(&mut self) {
+        self.element.clear_rsx_event_handler("on_blur");
     }
 
     fn mark_projection_tree_dirty(&mut self) {
@@ -789,7 +827,8 @@ impl TextArea {
         inherited: &crate::view::renderer_adapter::InheritedTextStyle,
     ) -> bool {
         let mut changed = false;
-        if !self.font_family_explicit && !inherited.font_families.is_empty()
+        if !self.font_family_explicit
+            && !inherited.font_families.is_empty()
             && self.font_families != inherited.font_families
         {
             self.font_families = inherited.font_families.clone();
@@ -797,7 +836,8 @@ impl TextArea {
             self.invalidate_glyph_layout();
             changed = true;
         }
-        if !self.font_size_explicit && let Some(fs) = inherited.font_size
+        if !self.font_size_explicit
+            && let Some(fs) = inherited.font_size
             && (self.font_size - fs).abs() > f32::EPSILON
         {
             self.font_size = fs;
@@ -805,12 +845,16 @@ impl TextArea {
             self.invalidate_glyph_layout();
             changed = true;
         }
-        if !self.color_explicit && let Some(color) = &inherited.color {
+        if !self.color_explicit
+            && let Some(color) = &inherited.color
+        {
             self.color = Box::new(color.clone());
             self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
             changed = true;
         }
-        if !self.cursor_explicit && let Some(cursor) = inherited.cursor {
+        if !self.cursor_explicit
+            && let Some(cursor) = inherited.cursor
+        {
             let mut style = Style::new();
             style.set_cursor(cursor);
             self.element.apply_style(style);
@@ -873,6 +917,17 @@ impl TextArea {
         }
     }
 
+    pub fn set_auto_wrap(&mut self, auto_wrap: bool) {
+        if self.auto_wrap == auto_wrap {
+            return;
+        }
+        self.auto_wrap = auto_wrap;
+        self.clear_vertical_goal();
+        self.invalidate_glyph_layout();
+        self.mark_measure_dirty();
+        self.clamp_scroll();
+    }
+
     fn line_height_px(&self) -> f32 {
         (self.font_size * self.line_height.max(0.1)).max(1.0)
     }
@@ -895,6 +950,36 @@ impl TextArea {
                     .collect(),
             );
         }
+    }
+
+    fn clear_preedit_preserving_render_fragments(&mut self) {
+        if self.ime_preedit.is_empty() && self.ime_preedit_cursor.is_none() {
+            return;
+        }
+        self.ime_preedit.clear();
+        self.ime_preedit_cursor = None;
+        self.invalidate_glyph_layout();
+        self.cached_ime_cursor_rect = None;
+        self.mark_measure_dirty();
+    }
+
+    fn commit_preedit_preserving_render_fragments(&mut self) -> bool {
+        if self.ime_preedit.is_empty() {
+            self.clear_preedit_preserving_render_fragments();
+            return false;
+        }
+        let preedit = self.ime_preedit.clone();
+        self.clear_preedit_preserving_render_fragments();
+        self.insert_text(preedit.as_str())
+    }
+
+    fn rebuild_render_fragments_from_current_projection_ranges(&mut self) {
+        self.rebuild_render_fragments_from_ranges(
+            self.render_nodes
+                .iter()
+                .map(|projection| projection.range.clone())
+                .collect(),
+        );
     }
 
     fn clear_vertical_goal(&mut self) {
@@ -1125,14 +1210,21 @@ impl TextArea {
             if !at_end && !is_newline {
                 continue;
             }
-            Self::push_wrapped_lines(
-                &mut lines,
-                &chars,
-                paragraph_start,
-                idx,
-                max_width,
-                self.font_size,
-            );
+            if self.auto_wrap {
+                Self::push_wrapped_lines(
+                    &mut lines,
+                    &chars,
+                    paragraph_start,
+                    idx,
+                    max_width,
+                    self.font_size,
+                );
+            } else {
+                lines.push(VisualLine {
+                    start_char: paragraph_start,
+                    end_char: idx,
+                });
+            }
             paragraph_start = idx + 1;
         }
 
@@ -1200,7 +1292,7 @@ impl TextArea {
 
     fn set_cursor_from_local_position(&mut self, local_x: f32, local_y: f32) {
         if self.uses_projection_rendering() {
-            let hit_x = local_x.max(0.0);
+            let hit_x = (local_x + self.scroll_x).max(0.0);
             let hit_y = (local_y + self.scroll_y).max(0.0);
             for fragment in &self.render_fragments {
                 let left = fragment.content_x;
@@ -1221,7 +1313,7 @@ impl TextArea {
                 self.ensure_cursor_visible();
                 return;
             }
-            self.cursor_char = self.content.chars().count();
+            self.cursor_char = self.projection_cursor_from_missed_hit(hit_x, hit_y);
             self.reset_caret_blink();
             self.cached_ime_cursor_rect = None;
             self.clear_vertical_goal();
@@ -1231,7 +1323,7 @@ impl TextArea {
         let composed = self.composed_text();
         let scale = self.glyph_cache_scale_factor.max(0.0001);
         self.ensure_glyph_layout(composed.as_str(), scale);
-        let hit_x = local_x.max(0.0);
+        let hit_x = (local_x + self.scroll_x).max(0.0);
         let hit_y = (local_y + self.scroll_y).max(0.0);
         if let Some(cursor) = self.glyph_buffer.hit(hit_x, hit_y) {
             let composed_char = self.cursor_char_from_line_index_for_text(
@@ -1241,7 +1333,7 @@ impl TextArea {
             );
             self.cursor_char = self.cursor_char_from_composed(composed_char);
         } else {
-            self.cursor_char = self.content.chars().count();
+            self.cursor_char = self.normal_cursor_from_missed_hit(composed.as_str(), hit_x, hit_y);
         }
         self.reset_caret_blink();
         self.cached_ime_cursor_rect = None;
@@ -1262,13 +1354,126 @@ impl TextArea {
         }
     }
 
+    fn normal_cursor_from_missed_hit(&self, composed: &str, hit_x: f32, hit_y: f32) -> usize {
+        let runs = collect_run_positions(&self.glyph_buffer);
+        let Some(first) = runs.first() else {
+            return self.content.chars().count();
+        };
+        if hit_y < first.line_top {
+            return 0;
+        }
+        if let Some(last) = runs.last()
+            && hit_y > last.line_top + last.line_height
+        {
+            return self.content.chars().count();
+        }
+
+        let Some(run_position) = runs.iter().min_by(|a, b| {
+            let a_center = a.line_top + a.line_height * 0.5;
+            let b_center = b.line_top + b.line_height * 0.5;
+            (hit_y - a_center)
+                .abs()
+                .total_cmp(&(hit_y - b_center).abs())
+        }) else {
+            return self.content.chars().count();
+        };
+
+        let target_y = run_position.line_top + run_position.line_height * 0.5;
+        if let Some(cursor) = self.glyph_buffer.hit(hit_x.max(0.0), target_y) {
+            let composed_char =
+                self.cursor_char_from_line_index_for_text(composed, cursor.line, cursor.index);
+            return self.cursor_char_from_composed(composed_char);
+        }
+
+        let Some(run) = find_layout_run_by_line_layout(
+            &self.glyph_buffer,
+            run_position.line_i,
+            run_position.layout_i,
+        ) else {
+            return self.content.chars().count();
+        };
+        let cursor_index = if hit_x <= 0.0 {
+            run.glyphs.first().map(|glyph| glyph.start).unwrap_or(0)
+        } else {
+            run.glyphs.last().map(|glyph| glyph.end).unwrap_or(0)
+        };
+        let composed_char =
+            self.cursor_char_from_line_index_for_text(composed, run_position.line_i, cursor_index);
+        self.cursor_char_from_composed(composed_char)
+    }
+
+    fn projection_cursor_from_missed_hit(&self, hit_x: f32, hit_y: f32) -> usize {
+        let Some(first) = self.render_fragments.first() else {
+            return self.content.chars().count();
+        };
+        if hit_y < first.content_y {
+            return 0;
+        }
+        if let Some(last) = self.render_fragments.last()
+            && hit_y > last.content_y + last.height
+        {
+            return self.content.chars().count();
+        }
+
+        let rows = self.projection_visual_rows();
+        let Some(row_y) = rows.iter().min_by(|a, b| {
+            let a_distance = (hit_y - **a).abs();
+            let b_distance = (hit_y - **b).abs();
+            a_distance.total_cmp(&b_distance)
+        }) else {
+            return self.content.chars().count();
+        };
+
+        let row_fragments = self
+            .render_fragments
+            .iter()
+            .filter(|fragment| (fragment.content_y - *row_y).abs() <= 0.5);
+
+        if let Some(fragment) = row_fragments.clone().find(|fragment| {
+            hit_x >= fragment.content_x && hit_x <= fragment.content_x + fragment.width
+        }) {
+            return self.projection_fragment_char_near_x(fragment, hit_x);
+        }
+
+        let Some(nearest) = row_fragments.min_by(|a, b| {
+            let a_left = a.content_x;
+            let a_right = a.content_x + a.width;
+            let b_left = b.content_x;
+            let b_right = b.content_x + b.width;
+            let a_distance = if hit_x < a_left {
+                a_left - hit_x
+            } else if hit_x > a_right {
+                hit_x - a_right
+            } else {
+                0.0
+            };
+            let b_distance = if hit_x < b_left {
+                b_left - hit_x
+            } else if hit_x > b_right {
+                hit_x - b_right
+            } else {
+                0.0
+            };
+            a_distance.total_cmp(&b_distance)
+        }) else {
+            return self.content.chars().count();
+        };
+        self.projection_fragment_char_near_x(nearest, hit_x)
+    }
+
     fn ensure_cursor_visible(&mut self) {
-        let lines = self.visual_lines();
-        let line_index = self.resolve_cursor_line(&lines);
         let line_height = self.line_height_px();
-        let line_top = (line_index as f32) * line_height;
-        let line_bottom = line_top + line_height;
+        let view_width = self.effective_width();
         let view_height = self.effective_height();
+
+        let (line_top, line_bottom) = if self.uses_projection_rendering() {
+            self.cursor_line_bounds_from_fragments(line_height)
+        } else {
+            let lines = self.visual_lines();
+            let line_index = self.resolve_cursor_line(&lines);
+            let top = (line_index as f32) * line_height;
+            (top, top + line_height)
+        };
 
         if line_top < self.scroll_y {
             self.scroll_y = line_top;
@@ -1276,7 +1481,104 @@ impl TextArea {
             self.scroll_y = (line_bottom - view_height).max(0.0);
         }
 
+        if let Some(caret_x) = self.cursor_local_x() {
+            let caret_left = caret_x;
+            let caret_right = caret_x + 1.0;
+            if caret_left < self.scroll_x {
+                self.scroll_x = caret_left;
+            } else if caret_right > self.scroll_x + view_width {
+                self.scroll_x = (caret_right - view_width).max(0.0);
+            }
+        }
+
         self.clamp_scroll();
+    }
+
+    fn cursor_local_x(&mut self) -> Option<f32> {
+        if self.uses_projection_rendering() {
+            return self
+                .projection_caret_local_position(self.cursor_char)
+                .map(|(x, _, _)| x);
+        }
+
+        let text = self.composed_text();
+        let caret_byte = self.caret_byte_in_composed_for_char(text.as_str(), self.cursor_char)?;
+        let (cursor_line, cursor_index) = line_and_index_from_byte(text.as_str(), caret_byte);
+        let scale = self.glyph_cache_scale_factor.max(0.0001);
+        self.ensure_glyph_layout(text.as_str(), scale);
+        for affinity in [Affinity::Before, Affinity::After] {
+            let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
+            let Some(layout_cursor) = Self::with_shared_font_system(|font_system| {
+                self.glyph_buffer.layout_cursor(font_system, cursor)
+            }) else {
+                continue;
+            };
+            if layout_cursor.line != cursor_line {
+                continue;
+            }
+            if let Some(run) = find_layout_run_by_line_layout(
+                &self.glyph_buffer,
+                layout_cursor.line,
+                layout_cursor.layout,
+            ) && let Some(x) = caret_x_in_layout_run(cursor_index, &run)
+            {
+                return Some(x);
+            }
+        }
+
+        Some(0.0)
+    }
+
+    fn cursor_line_bounds_from_fragments(&self, fallback_line_height: f32) -> (f32, f32) {
+        match self.projection_caret_local_position(self.cursor_char) {
+            Some((_, y, height)) => {
+                let h = if height > 0.0 {
+                    height
+                } else {
+                    fallback_line_height
+                };
+                (y, y + h)
+            }
+            None => (0.0, fallback_line_height),
+        }
+    }
+
+    fn projection_caret_local_position(&self, cursor_char: usize) -> Option<(f32, f32, f32)> {
+        for fragment in &self.render_fragments {
+            if cursor_char <= fragment.source_range.start {
+                return Some((
+                    fragment.content_x,
+                    fragment.content_y,
+                    fragment.height.max(self.line_height_px()),
+                ));
+            }
+            if cursor_char <= fragment.source_range.end {
+                if matches!(fragment.kind, TextAreaRenderFragmentKind::Newline)
+                    && cursor_char == fragment.source_range.end
+                {
+                    return Some((
+                        0.0,
+                        fragment.content_y + fragment.height.max(self.line_height_px()),
+                        self.line_height_px(),
+                    ));
+                }
+                let (offset_x, offset_y) = self.fragment_cursor_offset_px(fragment, cursor_char);
+                return Some((
+                    fragment.content_x + offset_x,
+                    fragment.content_y + offset_y,
+                    fragment.height.max(self.line_height_px()),
+                ));
+            }
+        }
+        self.render_fragments.last().map(|fragment| {
+            let (offset_x, offset_y) =
+                self.fragment_cursor_offset_px(fragment, fragment.source_range.end);
+            (
+                fragment.content_x + offset_x,
+                fragment.content_y + offset_y,
+                fragment.height.max(self.line_height_px()),
+            )
+        })
     }
 
     fn content_height(&self) -> f32 {
@@ -1286,12 +1588,14 @@ impl TextArea {
         if let Some((_, widths)) = self.cached_measure_line_widths.as_ref() {
             let effective_width = self.effective_width().max(1.0);
             let line_count = widths.len().max(1);
-            let resolved_lines = if self.multiline {
+            let resolved_lines = if self.multiline && self.auto_wrap {
                 let wrapped_lines = widths
                     .iter()
                     .map(|line_width| ((*line_width) / effective_width).ceil().max(1.0) as usize)
                     .sum::<usize>();
                 wrapped_lines.max(line_count)
+            } else if self.multiline {
+                line_count
             } else {
                 1
             };
@@ -1301,11 +1605,41 @@ impl TextArea {
         self.line_height_px() * lines.len() as f32
     }
 
+    fn content_width(&self) -> f32 {
+        if self.uses_projection_rendering() {
+            return self
+                .render_fragments
+                .iter()
+                .map(|fragment| fragment.content_x + fragment.width)
+                .fold(0.0_f32, f32::max)
+                .max(1.0);
+        }
+        if self.multiline && self.auto_wrap {
+            return self.effective_width();
+        }
+        if let Some((_, widths)) = self.cached_measure_line_widths.as_ref() {
+            return widths.iter().copied().fold(0.0_f32, f32::max).max(1.0);
+        }
+        self.measure_content_line_widths()
+            .into_iter()
+            .fold(0.0_f32, f32::max)
+            .max(1.0)
+    }
+
+    fn max_scroll_x(&self) -> f32 {
+        (self.content_width() - self.effective_width()).max(0.0)
+    }
+
+    fn text_draw_width(&self) -> f32 {
+        self.layout_size.width.max(self.content_width()).max(1.0)
+    }
+
     fn max_scroll_y(&self) -> f32 {
         (self.content_height() - self.effective_height()).max(0.0)
     }
 
     fn clamp_scroll(&mut self) {
+        self.scroll_x = self.scroll_x.clamp(0.0, self.max_scroll_x());
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y());
         self.cached_ime_cursor_rect = None;
     }
@@ -1351,16 +1685,18 @@ impl TextArea {
         &self,
         fragment: &TextAreaRenderFragment,
         cursor_char: usize,
-    ) -> f32 {
+    ) -> (f32, f32) {
         let start = fragment.source_range.start;
         let end = fragment.source_range.end;
         if start >= end || fragment.width <= 0.0 {
-            return 0.0;
+            return (0.0, 0.0);
         }
 
         let text = match &fragment.kind {
-            TextAreaRenderFragmentKind::Text(text)
-            | TextAreaRenderFragmentKind::Preedit(text) => text.as_str(),
+            TextAreaRenderFragmentKind::Text(text) | TextAreaRenderFragmentKind::Preedit(text) => {
+                text.as_str()
+            }
+            TextAreaRenderFragmentKind::Newline => "\n",
             TextAreaRenderFragmentKind::Projection(_) => "",
         };
         if !text.is_empty() {
@@ -1377,11 +1713,8 @@ impl TextArea {
                 font_families,
                 |buffer, font_system| {
                     for affinity in [Affinity::Before, Affinity::After] {
-                        let cursor =
-                            Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
-                        let Some(layout_cursor) =
-                            buffer.layout_cursor(font_system, cursor)
-                        else {
+                        let cursor = Cursor::new_with_affinity(cursor_line, cursor_index, affinity);
+                        let Some(layout_cursor) = buffer.layout_cursor(font_system, cursor) else {
                             continue;
                         };
                         if layout_cursor.line != cursor_line {
@@ -1393,14 +1726,14 @@ impl TextArea {
                             layout_cursor.layout,
                         ) && let Some(x) = caret_x_in_layout_run(cursor_index, &run)
                         {
-                            return Some(x);
+                            return Some((x, run.line_top));
                         }
                     }
                     None
                 },
             );
-            if let Some(x) = result {
-                return x;
+            if let Some((x, line_top)) = result {
+                return (x, line_top);
             }
         }
 
@@ -1420,7 +1753,7 @@ impl TextArea {
         } else {
             1.0
         };
-        (offset * scale).clamp(0.0, fragment.width)
+        ((offset * scale).clamp(0.0, fragment.width), 0.0)
     }
 
     fn fragment_cursor_screen_x(
@@ -1428,9 +1761,20 @@ impl TextArea {
         fragment: &TextAreaRenderFragment,
         cursor_char: usize,
     ) -> f32 {
-        self.layout_position.x
-            + fragment.content_x
-            + self.fragment_cursor_offset_px(fragment, cursor_char)
+        self.layout_position.x + fragment.content_x - self.scroll_x
+            + self.fragment_cursor_offset_px(fragment, cursor_char).0
+    }
+
+    fn fragment_cursor_screen_xy(
+        &self,
+        fragment: &TextAreaRenderFragment,
+        cursor_char: usize,
+    ) -> (f32, f32) {
+        let (offset_x, line_top) = self.fragment_cursor_offset_px(fragment, cursor_char);
+        (
+            self.layout_position.x + fragment.content_x + offset_x - self.scroll_x,
+            self.layout_position.y + fragment.content_y + line_top - self.scroll_y,
+        )
     }
 
     fn preedit_fragment_caret_screen_position(
@@ -1449,7 +1793,8 @@ impl TextArea {
             fragment.width * (caret_chars as f32 / total_chars as f32)
         };
         Some((
-            self.layout_position.x + fragment.content_x + offset.clamp(0.0, fragment.width),
+            self.layout_position.x + fragment.content_x + offset.clamp(0.0, fragment.width)
+                - self.scroll_x,
             self.layout_position.y + fragment.content_y - self.scroll_y,
         ))
     }
@@ -1493,7 +1838,7 @@ impl TextArea {
                 continue;
             };
             let key = node.node;
-            let screen_x = self.layout_position.x + fragment.content_x;
+            let screen_x = self.layout_position.x + fragment.content_x - self.scroll_x;
             let screen_y = self.layout_position.y + fragment.content_y - self.scroll_y;
             let placement = LayoutPlacement {
                 parent_x: screen_x,
@@ -1557,8 +1902,17 @@ impl TextArea {
                 let fragment = self.render_fragments[fragment_index].clone();
                 if cursor_char <= fragment.source_range.start {
                     return Some((
-                        self.layout_position.x + fragment.content_x,
+                        self.layout_position.x + fragment.content_x - self.scroll_x,
                         self.layout_position.y + fragment.content_y - self.scroll_y,
+                    ));
+                }
+                if matches!(fragment.kind, TextAreaRenderFragmentKind::Newline)
+                    && cursor_char == fragment.source_range.end
+                {
+                    return Some((
+                        self.layout_position.x - self.scroll_x,
+                        self.layout_position.y + fragment.content_y + fragment.height
+                            - self.scroll_y,
                     ));
                 }
                 if cursor_char <= fragment.source_range.end {
@@ -1572,17 +1926,12 @@ impl TextArea {
                     {
                         return Some(position);
                     }
-                    return Some((
-                        self.fragment_cursor_screen_x(&fragment, cursor_char),
-                        self.layout_position.y + fragment.content_y - self.scroll_y,
-                    ));
+                    return Some(self.fragment_cursor_screen_xy(&fragment, cursor_char));
                 }
             }
-            if let Some(last) = self.render_fragments.last() {
-                return Some((
-                    self.layout_position.x + last.content_x + last.width,
-                    self.layout_position.y + last.content_y - self.scroll_y,
-                ));
+            if let Some(last) = self.render_fragments.last().cloned() {
+                let end_char = last.source_range.end;
+                return Some(self.fragment_cursor_screen_xy(&last, end_char));
             }
         }
         let composed = self.composed_text();
@@ -1607,7 +1956,7 @@ impl TextArea {
             ) {
                 if let Some(x) = caret_x_in_layout_run(cursor_index, &run) {
                     return Some((
-                        self.layout_position.x + x,
+                        self.layout_position.x + x - self.scroll_x,
                         self.layout_position.y + run.line_top - self.scroll_y,
                     ));
                 }
@@ -1617,7 +1966,7 @@ impl TextArea {
         let fallback_y =
             fallback_line_top_for_cursor_line(&self.glyph_buffer, cursor_line).unwrap_or(0.0);
         Some((
-            self.layout_position.x,
+            self.layout_position.x - self.scroll_x,
             self.layout_position.y + fallback_y - self.scroll_y,
         ))
     }
@@ -1683,7 +2032,7 @@ impl TextArea {
             }
             rects.push((
                 [
-                    self.layout_position.x + left,
+                    self.layout_position.x + left - self.scroll_x,
                     self.layout_position.y + run.line_top - self.scroll_y,
                 ],
                 [width, run.line_height.max(1.0)],
@@ -1769,11 +2118,8 @@ impl TextArea {
             let Ok(desc) = self.build_projection_root_desc(index, &projection.node) else {
                 continue;
             };
-            let key = crate::view::renderer_adapter::commit_descriptor_tree(
-                arena,
-                parent_key,
-                desc,
-            );
+            let key =
+                crate::view::renderer_adapter::commit_descriptor_tree(arena, parent_key, desc);
             apply_text_source_range(arena, key, projection.range.clone());
             next_nodes.push(TextAreaProjectionNode {
                 range: projection.range.clone(),
@@ -1966,10 +2312,7 @@ impl TextArea {
         })
     }
 
-    fn sync_projection_preedit_state(
-        &mut self,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
+    fn sync_projection_preedit_state(&mut self, arena: &mut crate::view::node_arena::NodeArena) {
         let cursor_char = self.cursor_char.min(self.content.chars().count());
         let ime_preedit = self.ime_preedit.clone();
         let ime_preedit_cursor = self.ime_preedit_cursor;
@@ -1985,10 +2328,7 @@ impl TextArea {
                     .saturating_sub(range.start)
                     .min(nested.content.chars().count());
                 nested.cursor_char = local_cursor;
-                if !ime.is_empty()
-                    && cursor_char >= range.start
-                    && cursor_char <= range.end
-                {
+                if !ime.is_empty() && cursor_char >= range.start && cursor_char <= range.end {
                     nested.set_preedit(ime.clone(), ime_preedit_cursor);
                 } else {
                     nested.clear_preedit();
@@ -1997,10 +2337,32 @@ impl TextArea {
         }
     }
 
-    fn sync_projection_selection_state(
-        &mut self,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
+    fn sync_projection_preedit_state_ref(&mut self, arena: &crate::view::node_arena::NodeArena) {
+        let cursor_char = self.cursor_char.min(self.content.chars().count());
+        let ime_preedit = self.ime_preedit.clone();
+        let ime_preedit_cursor = self.ime_preedit_cursor;
+        let ranges: Vec<(crate::view::node_arena::NodeKey, Range<usize>)> = self
+            .render_nodes
+            .iter()
+            .map(|p| (p.node, p.range.clone()))
+            .collect();
+        for (key, range) in ranges {
+            let ime = ime_preedit.clone();
+            find_first_text_area_with_arena_ref(arena, key, |nested, _nested_arena| {
+                let local_cursor = cursor_char
+                    .saturating_sub(range.start)
+                    .min(nested.content.chars().count());
+                nested.cursor_char = local_cursor;
+                if !ime.is_empty() && cursor_char >= range.start && cursor_char <= range.end {
+                    nested.set_preedit(ime.clone(), ime_preedit_cursor);
+                } else {
+                    nested.clear_preedit();
+                }
+            });
+        }
+    }
+
+    fn sync_projection_selection_state(&mut self, arena: &mut crate::view::node_arena::NodeArena) {
         let selection = self.selection_range_chars();
         let selection_color = self.selection_background_color.to_rgba_f32();
         let ranges: Vec<(crate::view::node_arena::NodeKey, Range<usize>)> = self
@@ -2026,10 +2388,8 @@ impl TextArea {
                     nested.clear_selection();
                     return;
                 }
-                nested.selection_anchor_char =
-                    Some(overlap_start.saturating_sub(range.start));
-                nested.selection_focus_char =
-                    Some(overlap_end.saturating_sub(range.start));
+                nested.selection_anchor_char = Some(overlap_start.saturating_sub(range.start));
+                nested.selection_focus_char = Some(overlap_end.saturating_sub(range.start));
             });
         }
     }
@@ -2066,6 +2426,16 @@ impl TextArea {
                     );
                     (measured.0, measured.1)
                 }
+                TextAreaRenderFragmentKind::Newline => {
+                    fragment.content_x = cursor_x;
+                    fragment.content_y = cursor_y;
+                    fragment.width = 1.0;
+                    fragment.height = line_height_px;
+                    cursor_x = 0.0;
+                    cursor_y += line_height;
+                    line_height = line_height_px;
+                    continue;
+                }
                 TextAreaRenderFragmentKind::Projection(index) => {
                     let Some(node) = self.render_nodes.get(*index) else {
                         continue;
@@ -2085,11 +2455,21 @@ impl TextArea {
                             element.measured_size()
                         })
                         .unwrap_or((0.0, 0.0));
-                    (measured.0.max(1.0), measured.1.max(line_height_px))
+                    let measured_width = measured.0.max(1.0);
+                    let fragment_width = if self.auto_wrap {
+                        measured_width.min(available_width)
+                    } else {
+                        measured_width
+                    };
+                    (fragment_width, measured.1.max(line_height_px))
                 }
             };
 
-            if self.multiline && cursor_x > 0.0 && cursor_x + fragment_width > available_width {
+            if self.multiline
+                && self.auto_wrap
+                && cursor_x > 0.0
+                && cursor_x + fragment_width > available_width
+            {
                 cursor_x = 0.0;
                 cursor_y += line_height;
                 line_height = line_height_px;
@@ -2114,7 +2494,7 @@ impl TextArea {
     ) -> bool {
         for fragment_index in 0..self.render_fragments.len() {
             let fragment = self.render_fragments[fragment_index].clone();
-            let left = self.layout_position.x + fragment.content_x;
+            let left = self.layout_position.x + fragment.content_x - self.scroll_x;
             let top = self.layout_position.y + fragment.content_y - self.scroll_y;
             let right = left + fragment.width;
             let bottom = top + fragment.height;
@@ -2178,7 +2558,7 @@ impl TextArea {
                         if fragment.width > 0.01 && fragment.height > 0.01 {
                             rects.push((
                                 [
-                                    self.layout_position.x + fragment.content_x,
+                                    self.layout_position.x + fragment.content_x - self.scroll_x,
                                     self.layout_position.y + fragment.content_y - self.scroll_y
                                         + fragment.height
                                         - 1.0,
@@ -2212,7 +2592,7 @@ impl TextArea {
                             rects.extend(nested_rects);
                         }
                     }
-                    TextAreaRenderFragmentKind::Text(_) => {}
+                    TextAreaRenderFragmentKind::Text(_) | TextAreaRenderFragmentKind::Newline => {}
                 }
             }
             let _ = end_char;
@@ -2249,7 +2629,12 @@ impl TextArea {
         Self::with_shared_font_system(|font_system| {
             self.glyph_buffer =
                 GlyphBuffer::new(font_system, Metrics::new(font_size, line_height_px));
-            self.glyph_buffer.set_wrap(font_system, Wrap::WordOrGlyph);
+            let wrap = if self.multiline && self.auto_wrap {
+                Wrap::WordOrGlyph
+            } else {
+                Wrap::None
+            };
+            self.glyph_buffer.set_wrap(font_system, wrap);
             self.glyph_buffer.set_size(font_system, Some(width), None);
             let attrs = if let Some(first) = self.font_families.first() {
                 Attrs::new().family(Family::Name(first.as_str()))
@@ -2315,7 +2700,13 @@ impl TextArea {
             };
             buffer.set_wrap(font_system, Wrap::WordOrGlyph);
             buffer.set_size(font_system, None, None);
-            buffer.set_text(font_system, content, &attrs, Shaping::Advanced, Some(Align::Left));
+            buffer.set_text(
+                font_system,
+                content,
+                &attrs,
+                Shaping::Advanced,
+                Some(Align::Left),
+            );
             buffer.shape_until_scroll(font_system, false);
             let measured = measure_buffer_size(&buffer);
             return_pooled_glyph_buffer(buffer);
@@ -2341,7 +2732,13 @@ impl TextArea {
             };
             buffer.set_wrap(font_system, Wrap::WordOrGlyph);
             buffer.set_size(font_system, None, None);
-            buffer.set_text(font_system, content, &attrs, Shaping::Advanced, Some(Align::Left));
+            buffer.set_text(
+                font_system,
+                content,
+                &attrs,
+                Shaping::Advanced,
+                Some(Align::Left),
+            );
             buffer.shape_until_scroll(font_system, false);
             let result = f(&mut buffer, font_system);
             return_pooled_glyph_buffer(buffer);
@@ -2404,9 +2801,169 @@ impl TextArea {
         let preedit = self.ime_preedit.as_str();
         let caret_in_preedit = match self.ime_preedit_cursor {
             Some((_, end)) => clamp_utf8_boundary(preedit, end),
-            None => return None,
+            None => preedit.len(),
         };
         Some((base + caret_in_preedit).min(composed.len()))
+    }
+
+    fn projection_visual_rows(&self) -> Vec<f32> {
+        let mut rows = Vec::new();
+        for fragment in &self.render_fragments {
+            if rows
+                .last()
+                .map(|row: &f32| (fragment.content_y - *row).abs() <= 0.5)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            rows.push(fragment.content_y);
+            if matches!(fragment.kind, TextAreaRenderFragmentKind::Newline) {
+                rows.push(fragment.content_y + fragment.height.max(self.line_height_px()));
+            }
+        }
+        rows.sort_by(|a, b| a.total_cmp(b));
+        rows.dedup_by(|a, b| (*a - *b).abs() <= 0.5);
+        rows
+    }
+
+    fn projection_cursor_row_y(&self, cursor_char: usize) -> Option<f32> {
+        for fragment in &self.render_fragments {
+            if cursor_char <= fragment.source_range.start {
+                return Some(fragment.content_y);
+            }
+            if cursor_char <= fragment.source_range.end {
+                if matches!(fragment.kind, TextAreaRenderFragmentKind::Newline)
+                    && cursor_char == fragment.source_range.end
+                {
+                    return Some(fragment.content_y + fragment.height.max(self.line_height_px()));
+                }
+                return Some(fragment.content_y);
+            }
+        }
+        self.render_fragments
+            .last()
+            .map(|fragment| fragment.content_y)
+    }
+
+    fn projection_fragment_char_near_x(
+        &self,
+        fragment: &TextAreaRenderFragment,
+        local_x: f32,
+    ) -> usize {
+        match &fragment.kind {
+            TextAreaRenderFragmentKind::Projection(_) => {
+                let len = fragment
+                    .source_range
+                    .end
+                    .saturating_sub(fragment.source_range.start);
+                if len == 0 {
+                    return fragment.source_range.start;
+                }
+                let ratio =
+                    ((local_x - fragment.content_x) / fragment.width.max(1.0)).clamp(0.0, 1.0);
+                fragment.source_range.start + ((len as f32) * ratio).round() as usize
+            }
+            TextAreaRenderFragmentKind::Newline => fragment.source_range.start,
+            TextAreaRenderFragmentKind::Text(_) | TextAreaRenderFragmentKind::Preedit(_) => {
+                let mut best_char = fragment.source_range.start;
+                let mut best_distance = f32::INFINITY;
+                for candidate in fragment.source_range.start..=fragment.source_range.end {
+                    let caret_x =
+                        fragment.content_x + self.fragment_cursor_offset_px(fragment, candidate).0;
+                    let distance = (local_x - caret_x).abs();
+                    if distance < best_distance {
+                        best_distance = distance;
+                        best_char = candidate;
+                    }
+                }
+                best_char
+            }
+        }
+    }
+
+    fn move_cursor_vertical_in_projection(&mut self, motion: Motion) -> bool {
+        if !self.multiline {
+            return false;
+        }
+        let Some((current_x, current_y, _)) =
+            self.projection_caret_local_position(self.cursor_char)
+        else {
+            return false;
+        };
+        let current_row_y = self
+            .projection_cursor_row_y(self.cursor_char)
+            .unwrap_or(current_y);
+        let rows = self.projection_visual_rows();
+        let Some(current_row_idx) = rows
+            .iter()
+            .position(|row| (current_row_y - *row).abs() <= 0.5)
+            .or_else(|| {
+                rows.iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        (current_row_y - **a)
+                            .abs()
+                            .total_cmp(&(current_row_y - **b).abs())
+                    })
+                    .map(|(idx, _)| idx)
+            })
+        else {
+            return false;
+        };
+        let target_row_idx = match motion {
+            Motion::Up => current_row_idx.checked_sub(1),
+            Motion::Down => current_row_idx
+                .checked_add(1)
+                .filter(|idx| *idx < rows.len()),
+            _ => None,
+        };
+        let Some(target_row_idx) = target_row_idx else {
+            return false;
+        };
+
+        let desired_x = self
+            .vertical_cursor_x_opt
+            .map(|x| x as f32)
+            .unwrap_or(current_x);
+        let target_y = rows[target_row_idx];
+        let mut best_char = None::<usize>;
+        let mut best_distance = f32::INFINITY;
+        let mut fallback_newline_char = None::<usize>;
+        let mut fallback_newline_distance = f32::INFINITY;
+        for fragment in &self.render_fragments {
+            if (fragment.content_y - target_y).abs() > 0.5 {
+                continue;
+            }
+            let candidate = self.projection_fragment_char_near_x(fragment, desired_x);
+            let candidate_x = self
+                .projection_caret_local_position(candidate)
+                .map(|(x, _, _)| x)
+                .unwrap_or(fragment.content_x);
+            let distance = (desired_x - candidate_x).abs();
+            if matches!(fragment.kind, TextAreaRenderFragmentKind::Newline) {
+                if distance < fallback_newline_distance {
+                    fallback_newline_distance = distance;
+                    fallback_newline_char = Some(candidate);
+                }
+                continue;
+            }
+            if distance < best_distance {
+                best_distance = distance;
+                best_char = Some(candidate);
+            }
+        }
+        let Some(next_char) = best_char.or(fallback_newline_char) else {
+            return false;
+        };
+        if next_char == self.cursor_char {
+            self.vertical_cursor_x_opt = Some(desired_x.round() as i32);
+            return false;
+        }
+        self.cursor_char = next_char.min(self.content.chars().count());
+        self.reset_caret_blink();
+        self.cached_ime_cursor_rect = None;
+        self.vertical_cursor_x_opt = Some(desired_x.round() as i32);
+        true
     }
 
     fn handle_key_down(
@@ -2551,7 +3108,7 @@ impl TextArea {
 
     fn move_cursor_vertical(&mut self, motion: Motion) -> bool {
         if self.uses_projection_rendering() {
-            return false;
+            return self.move_cursor_vertical_in_projection(motion);
         }
         if !self.multiline {
             return false;
@@ -2894,9 +3451,11 @@ impl ElementTrait for TextArea {
         self.font_size.to_bits().hash(&mut hasher);
         self.line_height.to_bits().hash(&mut hasher);
         self.multiline.hash(&mut hasher);
+        self.auto_wrap.hash(&mut hasher);
         self.read_only.hash(&mut hasher);
         self.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
         self.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
+        self.scroll_x.to_bits().hash(&mut hasher);
         self.scroll_y.to_bits().hash(&mut hasher);
         self.cursor_char.hash(&mut hasher);
         self.selection_anchor_char.hash(&mut hasher);
@@ -3044,6 +3603,13 @@ impl ElementTrait for TextArea {
                 self.set_multiline(v);
                 PropApplyOutcome::Applied
             }
+            "auto_wrap" => {
+                let Ok(v) = bool::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_auto_wrap(v);
+                PropApplyOutcome::Applied
+            }
             "read_only" => {
                 let Ok(v) = bool::from_prop_value(value) else {
                     return PropApplyOutcome::DecodeFailed(name);
@@ -3086,7 +3652,7 @@ impl ElementTrait for TextArea {
 
     fn reset_prop(
         &mut self,
-        _arena: &mut crate::view::node_arena::NodeArena,
+        arena: &mut crate::view::node_arena::NodeArena,
         _self_key: crate::view::node_arena::NodeKey,
         _ctx: &crate::view::fiber_work::ApplyContext<'_>,
         name: &'static str,
@@ -3095,6 +3661,22 @@ impl ElementTrait for TextArea {
         match name {
             "opacity" => {
                 self.set_opacity(1.0);
+                PropApplyOutcome::Applied
+            }
+            "on_render" => {
+                self.clear_on_render_handler(arena);
+                PropApplyOutcome::Applied
+            }
+            "on_change" => {
+                self.clear_on_change_handlers();
+                PropApplyOutcome::Applied
+            }
+            "on_focus" => {
+                self.clear_on_focus_handlers();
+                PropApplyOutcome::Applied
+            }
+            "on_blur" => {
+                self.clear_on_blur_handler();
                 PropApplyOutcome::Applied
             }
             _ => PropApplyOutcome::CannotReset(name),
@@ -3112,7 +3694,17 @@ impl EventTarget for TextArea {
     ) {
         control.set_focus(Some(self_key));
         self.is_focused = true;
-        self.clear_preedit();
+        let had_preedit = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
+        let preserve_projection_geometry = had_preedit && self.uses_projection_rendering();
+        let previous_content = self.content.clone();
+        if had_preedit {
+            self.commit_preedit_preserving_render_fragments();
+            if preserve_projection_geometry {
+                self.sync_projection_preedit_state_ref(arena);
+            }
+        } else {
+            self.clear_preedit();
+        }
         self.reset_caret_blink();
         let previous = self.cursor_char;
         if !self.set_cursor_from_projection_position(
@@ -3130,11 +3722,19 @@ impl EventTarget for TextArea {
             self.selection_anchor_char = Some(self.cursor_char);
             self.selection_focus_char = Some(self.cursor_char);
         }
-        self.pointer_selecting = event.pointer.button == Some(UiPointerButton::Left);
+        self.pointer_selecting =
+            !had_preedit && event.pointer.button == Some(UiPointerButton::Left);
         if self.pointer_selecting {
             control.set_pointer_capture(self_key);
         }
-        self.element.dispatch_pointer_down(event, control, arena, self_key);
+        if preserve_projection_geometry {
+            self.rebuild_render_fragments_from_current_projection_ranges();
+        }
+        if self.content != previous_content {
+            self.notify_change_handlers();
+        }
+        self.element
+            .dispatch_pointer_down(event, control, arena, self_key);
         event.meta.stop_propagation();
         control.request_redraw();
     }
@@ -3154,7 +3754,8 @@ impl EventTarget for TextArea {
             }
             control.request_redraw();
         }
-        self.element.dispatch_pointer_up(event, control, arena, self_key);
+        self.element
+            .dispatch_pointer_up(event, control, arena, self_key);
     }
 
     fn dispatch_pointer_move(
@@ -3176,10 +3777,12 @@ impl EventTarget for TextArea {
                 self.selection_anchor_char = Some(self.cursor_char);
             }
             self.selection_focus_char = Some(self.cursor_char);
+            self.ensure_cursor_visible();
             event.meta.stop_propagation();
             control.request_redraw();
         }
-        self.element.dispatch_pointer_move(event, control, arena, self_key);
+        self.element
+            .dispatch_pointer_move(event, control, arena, self_key);
     }
 
     fn dispatch_click(
@@ -3201,7 +3804,8 @@ impl EventTarget for TextArea {
     ) {
         // Keep keydown handling in IME while composing to avoid mutating committed text.
         if !self.ime_preedit.is_empty() {
-            self.element.dispatch_key_down(event, control, arena, self_key);
+            self.element
+                .dispatch_key_down(event, control, arena, self_key);
             return;
         }
         let previous_content = self.content.clone();
@@ -3214,7 +3818,8 @@ impl EventTarget for TextArea {
             event.meta.stop_propagation();
             control.request_redraw();
         }
-        self.element.dispatch_key_down(event, control, arena, self_key);
+        self.element
+            .dispatch_key_down(event, control, arena, self_key);
     }
 
     fn dispatch_key_up(
@@ -3224,7 +3829,8 @@ impl EventTarget for TextArea {
         arena: &crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
     ) {
-        self.element.dispatch_key_up(event, control, arena, self_key);
+        self.element
+            .dispatch_key_up(event, control, arena, self_key);
     }
 
     fn dispatch_text_input(
@@ -3316,17 +3922,18 @@ impl EventTarget for TextArea {
         was_selecting || self.element.cancel_pointer_interaction()
     }
 
-    fn scroll_by(&mut self, _dx: f32, dy: f32) -> bool {
-        if !self.multiline {
+    fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
+        let max_x = self.max_scroll_x();
+        let max_y = self.max_scroll_y();
+        if max_x <= 0.0 && max_y <= 0.0 {
             return false;
         }
-        let max = self.max_scroll_y();
-        if max <= 0.0 {
-            return false;
-        }
-        let next = (self.scroll_y + dy).clamp(0.0, max);
-        let changed = (next - self.scroll_y).abs() > 0.001;
-        self.scroll_y = next;
+        let next_x = (self.scroll_x + dx).clamp(0.0, max_x);
+        let next_y = (self.scroll_y + dy).clamp(0.0, max_y);
+        let changed =
+            (next_x - self.scroll_x).abs() > 0.001 || (next_y - self.scroll_y).abs() > 0.001;
+        self.scroll_x = next_x;
+        self.scroll_y = next_y;
         if changed {
             self.cached_ime_cursor_rect = None;
             self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
@@ -3334,24 +3941,25 @@ impl EventTarget for TextArea {
         changed
     }
 
-    fn can_scroll_by(&self, _dx: f32, dy: f32) -> bool {
-        if !self.multiline {
+    fn can_scroll_by(&self, dx: f32, dy: f32) -> bool {
+        let max_x = self.max_scroll_x();
+        let max_y = self.max_scroll_y();
+        if max_x <= 0.0 && max_y <= 0.0 {
             return false;
         }
-        let max = self.max_scroll_y();
-        if max <= 0.0 {
-            return false;
-        }
-        let next = (self.scroll_y + dy).clamp(0.0, max);
-        (next - self.scroll_y).abs() > 0.001
+        let next_x = (self.scroll_x + dx).clamp(0.0, max_x);
+        let next_y = (self.scroll_y + dy).clamp(0.0, max_y);
+        (next_x - self.scroll_x).abs() > 0.001 || (next_y - self.scroll_y).abs() > 0.001
     }
 
     fn get_scroll_offset(&self) -> (f32, f32) {
-        (0.0, self.scroll_y)
+        (self.scroll_x, self.scroll_y)
     }
 
     fn set_scroll_offset(&mut self, offset: (f32, f32)) {
-        let changed = (self.scroll_y - offset.1).abs() > 0.001;
+        let changed =
+            (self.scroll_x - offset.0).abs() > 0.001 || (self.scroll_y - offset.1).abs() > 0.001;
+        self.scroll_x = offset.0;
         self.scroll_y = offset.1;
         self.clamp_scroll();
         self.cached_ime_cursor_rect = None;
@@ -3417,7 +4025,7 @@ impl Layoutable for TextArea {
                 self.size.width.min(constraints.max_width.max(1.0)).max(1.0)
             };
 
-            let resolved_lines = if self.multiline {
+            let resolved_lines = if self.multiline && self.auto_wrap {
                 let wrapped_lines = if line_widths.is_empty() {
                     1
                 } else {
@@ -3429,6 +4037,8 @@ impl Layoutable for TextArea {
                         .sum::<usize>()
                 };
                 wrapped_lines.max(line_count)
+            } else if self.multiline {
+                line_count
             } else {
                 1
             };
@@ -3526,8 +4136,16 @@ impl Layoutable for TextArea {
         let (measured_w, measured_h) = self.measured_size();
         let base = self.element.flex_props();
         crate::view::base_component::FlexProps {
-            width: if self.auto_width { crate::SizeValue::Auto } else { base.width },
-            height: if self.auto_height { crate::SizeValue::Auto } else { base.height },
+            width: if self.auto_width {
+                crate::SizeValue::Auto
+            } else {
+                base.width
+            },
+            height: if self.auto_height {
+                crate::SizeValue::Auto
+            } else {
+                base.height
+            },
             allows_cross_stretch_when_row: self.auto_height,
             allows_cross_stretch_when_col: self.auto_width,
             intrinsic_width: Some(measured_w),
@@ -3599,7 +4217,7 @@ impl Renderable for TextArea {
             }
 
             for fragment in &mut self.render_fragments {
-                let screen_x = self.layout_position.x + fragment.content_x;
+                let screen_x = self.layout_position.x + fragment.content_x - self.scroll_x;
                 let screen_y = self.layout_position.y + fragment.content_y - self.scroll_y;
                 match &fragment.kind {
                     TextAreaRenderFragmentKind::Text(text)
@@ -3633,24 +4251,36 @@ impl Renderable for TextArea {
                         let Some(node) = self.render_nodes.get(*index) else {
                             continue;
                         };
+                        if !projection_fragment_intersects_clip(
+                            clip,
+                            screen_x,
+                            screen_y,
+                            fragment.width,
+                            fragment.height,
+                        ) {
+                            continue;
+                        }
                         let key = node.node;
                         let viewport = ctx.viewport();
-                        // Move the full ctx into the closure; the arena
-                        // side runs build() and returns the resulting
-                        // BuildState which we re-wrap. If the slot is
-                        // missing, preserve the current ctx state as a
-                        // best-effort fallback.
+                        // Projection subtrees render as detached arena
+                        // roots, so they do not naturally inherit the
+                        // TextArea text-pass scissor. Use the TextArea clip
+                        // for the subtree and let projection children keep
+                        // their own inner-clip behavior.
                         let state_before = ctx.state_clone();
-                        let moved_ctx = std::mem::replace(
+                        let mut moved_ctx = std::mem::replace(
                             &mut ctx,
                             UiBuildContext::from_parts(viewport.clone(), state_before.clone()),
                         );
+                        let previous_scissor = moved_ctx.push_scissor_rect(clip);
                         let next_state_opt = arena.with_element_taken(key, |element, arena_ref| {
                             element.build(graph, arena_ref, moved_ctx)
                         });
                         let next_state = next_state_opt.unwrap_or(state_before);
                         ctx = UiBuildContext::from_parts(viewport, next_state);
+                        ctx.restore_scissor_rect(previous_scissor);
                     }
+                    TextAreaRenderFragmentKind::Newline => {}
                 }
             }
 
@@ -3721,9 +4351,9 @@ impl Renderable for TextArea {
                 TextPassParams::single_fragment(
                     TextPassFragment {
                         content,
-                        x: self.layout_position.x,
+                        x: self.layout_position.x - self.scroll_x,
                         y: self.layout_position.y - self.scroll_y,
-                        width: self.layout_size.width,
+                        width: self.text_draw_width(),
                         height: self.layout_size.height.max(self.content_height()),
                         color,
                         opacity,
@@ -3843,18 +4473,48 @@ fn append_plain_render_fragments(
 ) {
     let chars: Vec<char> = content.chars().collect();
     let end = end.min(chars.len());
-    let start = start.min(end);
-    if start >= end {
+    let mut segment_start = start.min(end);
+    if segment_start >= end {
         return;
     }
-    out.push(TextAreaRenderFragment {
-        source_range: start..end,
-        kind: TextAreaRenderFragmentKind::Text(chars[start..end].iter().collect::<String>()),
-        content_x: 0.0,
-        content_y: 0.0,
-        width: 0.0,
-        height: 0.0,
-    });
+    for idx in segment_start..end {
+        if chars[idx] != '\n' {
+            continue;
+        }
+        if segment_start < idx {
+            out.push(TextAreaRenderFragment {
+                source_range: segment_start..idx,
+                kind: TextAreaRenderFragmentKind::Text(
+                    chars[segment_start..idx].iter().collect::<String>(),
+                ),
+                content_x: 0.0,
+                content_y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            });
+        }
+        out.push(TextAreaRenderFragment {
+            source_range: idx..idx + 1,
+            kind: TextAreaRenderFragmentKind::Newline,
+            content_x: 0.0,
+            content_y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        });
+        segment_start = idx + 1;
+    }
+    if segment_start < end {
+        out.push(TextAreaRenderFragment {
+            source_range: segment_start..end,
+            kind: TextAreaRenderFragmentKind::Text(
+                chars[segment_start..end].iter().collect::<String>(),
+            ),
+            content_x: 0.0,
+            content_y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        });
+    }
 }
 
 fn append_preedit_render_fragment(
@@ -3968,7 +4628,11 @@ fn update_projection_rsx_node_range(node: &mut RsxNode, content: &str, range: Ra
     }
 }
 
-fn set_rsx_element_prop(element: &mut crate::ui::RsxElementNode, key: &'static str, value: PropValue) {
+fn set_rsx_element_prop(
+    element: &mut crate::ui::RsxElementNode,
+    key: &'static str,
+    value: PropValue,
+) {
     let props = std::rc::Rc::make_mut(&mut element.props);
     if let Some((_, prop_value)) = props
         .iter_mut()
@@ -4162,12 +4826,71 @@ fn push_text_pass_explicit(
     ctx.set_current_target(input_target);
 }
 
+fn projection_fragment_intersects_clip(
+    textarea_clip: Option<[u32; 4]>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> bool {
+    let Some(fragment_clip) = scissor_from_rect(x, y, width, height) else {
+        return false;
+    };
+    intersect_scissor_rects(textarea_clip, Some(fragment_clip)).is_some()
+}
+
+fn scissor_from_rect(x: f32, y: f32, width: f32, height: f32) -> Option<[u32; 4]> {
+    if width <= 0.0
+        || height <= 0.0
+        || !x.is_finite()
+        || !y.is_finite()
+        || !width.is_finite()
+        || !height.is_finite()
+    {
+        return None;
+    }
+    let left = x.floor().max(0.0) as u32;
+    let top = y.floor().max(0.0) as u32;
+    let right = (x + width).ceil().max(0.0) as u32;
+    let bottom = (y + height).ceil().max(0.0) as u32;
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some([left, top, right - left, bottom - top])
+}
+
+fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let left = ax.max(bx);
+            let top = ay.max(by);
+            let right = ax.saturating_add(aw).min(bx.saturating_add(bw));
+            let bottom = ay.saturating_add(ah).min(by.saturating_add(bh));
+            if right <= left || bottom <= top {
+                return None;
+            }
+            Some([left, top, right - left, bottom - top])
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TextArea, TextAreaRenderFragmentKind};
+    use super::{
+        TextArea, TextAreaRenderFragment, TextAreaRenderFragmentKind,
+        find_first_text_area_with_arena_ref,
+    };
     use crate::ColorLike;
     use crate::Length;
-    use crate::ui::{Binding, BlurEvent, EventMeta, FocusEvent, Modifiers, NodeId, PointerButton, PointerButtons, PointerDownEvent, PointerEventData, TextInputEvent, EventCommand, rsx};
+    use crate::platform::PointerType;
+    use crate::platform::input::Key;
+    use crate::ui::{
+        Binding, BlurEvent, EventCommand, EventMeta, FocusEvent, KeyDownEvent, KeyEventData,
+        KeyLocation, Modifiers, NodeId, PointerButton, PointerButtons, PointerDownEvent,
+        PointerEventData, PointerMoveEvent, TextInputEvent, rsx,
+    };
     use crate::view::base_component::{
         DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
         Layoutable, dispatch_pointer_down_from_hit_test, select_all_text_by_id,
@@ -4177,7 +4900,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Instant;
-    use crate::platform::PointerType;
 
     #[test]
     fn multiline_false_normalizes_newline() {
@@ -4185,6 +4907,28 @@ mod tests {
         area.set_multiline(false);
         area.set_text("x\ny");
         assert_eq!(area.content, "x y");
+    }
+
+    #[test]
+    fn projection_fragment_intersects_textarea_clip() {
+        assert!(super::projection_fragment_intersects_clip(
+            Some([20, 10, 100, 40]),
+            90.0,
+            20.0,
+            80.0,
+            20.0
+        ));
+    }
+
+    #[test]
+    fn projection_fragment_intersects_clip_skips_outside_textarea_clip() {
+        assert!(!super::projection_fragment_intersects_clip(
+            Some([20, 10, 100, 40]),
+            140.0,
+            20.0,
+            20.0,
+            20.0
+        ));
     }
 
     #[test]
@@ -4268,10 +5012,12 @@ mod tests {
         let child_keys = wrapper.children.clone();
         drop(wrapper);
         assert_eq!(child_keys.len(), 2);
-        assert!(child_keys.iter().any(|k| arena
-            .get(*k)
-            .map(|n| n.element.as_any().is::<TextArea>())
-            .unwrap_or(false)));
+        assert!(child_keys.iter().any(|k| {
+            arena
+                .get(*k)
+                .map(|n| n.element.as_any().is::<TextArea>())
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
@@ -4371,7 +5117,9 @@ mod tests {
         // subtrees (see `convert_text_area_element`). The descriptor
         // pipeline is what populates `render_nodes` now.
         use crate::style::Style;
-        use crate::view::renderer_adapter::{commit_descriptor_tree, rsx_to_descriptors_with_context};
+        use crate::view::renderer_adapter::{
+            commit_descriptor_tree, rsx_to_descriptors_with_context,
+        };
         let (descs, errors) = rsx_to_descriptors_with_context(&tree, &Style::new(), 0.0, 0.0);
         assert!(errors.is_empty(), "rsx conversion errors: {:?}", errors);
         assert_eq!(descs.len(), 1);
@@ -4387,12 +5135,84 @@ mod tests {
             }
         });
         let node = arena.get(key).unwrap();
-        let area = node.element.as_any().downcast_ref::<TextArea>().expect("host textarea");
+        let area = node
+            .element
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .expect("host textarea");
         assert_eq!(area.render_nodes.len(), 1);
         assert!(matches!(
             area.render_fragments[0].kind,
             TextAreaRenderFragmentKind::Projection(_)
         ));
+    }
+
+    #[test]
+    fn reset_on_render_prop_clears_projection_nodes() {
+        let tree = rsx! {
+            <crate::view::TextArea
+                content="{{API_HOST}}/user"
+                multiline={false}
+                on_render={move |render: &mut crate::view::base_component::TextAreaRenderString| {
+                    render.range(0..12, |text_area_node| {
+                        rsx! {
+                            <crate::view::Element>
+                                {text_area_node}
+                            </crate::view::Element>
+                        }
+                    });
+                }}
+            />
+        };
+
+        use crate::style::Style;
+        use crate::view::fiber_work::ApplyContext;
+        use crate::view::renderer_adapter::{
+            commit_descriptor_tree, rsx_to_descriptors_with_context,
+        };
+
+        let (descs, errors) = rsx_to_descriptors_with_context(&tree, &Style::new(), 0.0, 0.0);
+        assert!(errors.is_empty(), "rsx conversion errors: {:?}", errors);
+        assert_eq!(descs.len(), 1);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        let mut descs = descs;
+        let key = commit_descriptor_tree(&mut arena, None, descs.remove(0));
+        arena.with_element_taken(key, |element, arena_ref| {
+            if let Some(area) = element.as_any_mut().downcast_mut::<TextArea>() {
+                area.rebuild_projection_tree_if_dirty(arena_ref);
+            }
+        });
+
+        {
+            let node = arena.get(key).unwrap();
+            let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            assert_eq!(area.render_nodes.len(), 1);
+            assert!(area.uses_projection_rendering());
+        }
+
+        let viewport_style = Style::new();
+        let ctx = ApplyContext {
+            viewport_style: &viewport_style,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+        };
+        arena.with_element_taken(key, |element, arena_ref| {
+            let area = element.as_any_mut().downcast_mut::<TextArea>().unwrap();
+            assert!(matches!(
+                area.reset_prop(arena_ref, key, &ctx, "on_render"),
+                crate::view::fiber_work::PropApplyOutcome::Applied
+            ));
+        });
+
+        {
+            let node = arena.get(key).unwrap();
+            let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            assert_eq!(area.render_nodes.len(), 0);
+            assert!(!area.uses_projection_rendering());
+            assert!(!area.render_fragments.iter().any(|fragment| {
+                matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_))
+            }));
+        }
     }
 
     #[test]
@@ -4421,18 +5241,21 @@ mod tests {
         area.is_focused = true;
         area.cursor_char = 1;
         let mut arena = crate::view::node_arena::NodeArena::new();
-        area.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 240.0,
-            available_height: 64.0,
-            viewport_width: 240.0,
-            viewport_height: 64.0,
-            percent_base_width: Some(240.0),
-            percent_base_height: Some(64.0),
-        }, &mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 64.0,
+                viewport_width: 240.0,
+                viewport_height: 64.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(64.0),
+            },
+            &mut arena,
+        );
 
         area.set_preedit("中文".to_string(), Some((0, 0)));
         area.layout_render_fragments(240.0, 64.0, &mut arena);
@@ -4469,6 +5292,396 @@ mod tests {
             .expect("nested projection text area");
         assert_eq!(nested.ime_preedit, "中文");
         assert_eq!(nested.cursor_char, 2);
+    }
+
+    #[test]
+    fn pointer_down_during_projection_preedit_clears_nested_preedit_before_moving_caret() {
+        use crate::view::test_support::{commit_element, new_test_arena};
+        let mut area = TextArea::from_content("{{API_HOST}}");
+        area.on_render(|render| {
+            render.range(0..12, |text_area_node| text_area_node);
+        });
+        area.cursor_char = 6;
+        area.set_preedit("中文".to_string(), None);
+
+        let mut arena = new_test_arena();
+        let area_key = commit_element(&mut arena, Box::new(area));
+        arena.with_element_taken(area_key, |element, arena_ref| {
+            element.sync_arena(arena_ref);
+            element.place(
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 240.0,
+                    available_height: 64.0,
+                    viewport_width: 240.0,
+                    viewport_height: 64.0,
+                    percent_base_width: Some(240.0),
+                    percent_base_height: Some(64.0),
+                },
+                arena_ref,
+            );
+        });
+
+        let (nested_key, click_x, click_y) = {
+            let node = arena.get(area_key).unwrap();
+            let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            let nested_key = area.render_nodes[0].node;
+            let fragment = area
+                .render_fragments
+                .iter()
+                .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+                .expect("projection fragment")
+                .clone();
+            (
+                nested_key,
+                area.layout_position.x + fragment.content_x + 2.0,
+                area.layout_position.y + fragment.content_y + fragment.height * 0.5,
+            )
+        };
+        find_first_text_area_with_arena_ref(&arena, nested_key, |nested, _| {
+            assert_eq!(nested.ime_preedit, "中文");
+        });
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let meta = EventMeta::new(NodeId::default());
+        let viewport_api = meta.viewport();
+        let mut event = PointerDownEvent {
+            meta,
+            pointer: PointerEventData {
+                viewport_x: click_x,
+                viewport_y: click_y,
+                local_x: click_x,
+                local_y: click_y,
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
+                modifiers: Default::default(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: Instant::now(),
+            },
+            viewport: viewport_api,
+        };
+
+        assert!(dispatch_pointer_down_from_hit_test(
+            &arena,
+            area_key,
+            &mut event,
+            &mut control
+        ));
+
+        let node = arena.get(area_key).unwrap();
+        let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+        assert!(area.ime_preedit.is_empty());
+        assert_eq!(area.content, "{{API_中文HOST}}");
+        assert!(area.cursor_char <= 3);
+        assert_eq!(area.selection_range_chars(), None);
+        find_first_text_area_with_arena_ref(&arena, nested_key, |nested, _| {
+            assert!(nested.ime_preedit.is_empty());
+            assert_eq!(nested.selection_range_chars(), None);
+        });
+    }
+
+    #[test]
+    fn pointer_move_after_projection_preedit_click_does_not_select_to_end() {
+        use crate::view::test_support::{commit_element, new_test_arena};
+        let mut area = TextArea::from_content("{{API_HOST}}");
+        area.on_render(|render| {
+            render.range(0..12, |text_area_node| text_area_node);
+        });
+        area.cursor_char = 6;
+        area.set_preedit("中文".to_string(), None);
+
+        let mut arena = new_test_arena();
+        let area_key = commit_element(&mut arena, Box::new(area));
+        arena.with_element_taken(area_key, |element, arena_ref| {
+            element.sync_arena(arena_ref);
+            element.place(
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 240.0,
+                    available_height: 64.0,
+                    viewport_width: 240.0,
+                    viewport_height: 64.0,
+                    percent_base_width: Some(240.0),
+                    percent_base_height: Some(64.0),
+                },
+                arena_ref,
+            );
+        });
+
+        let (down_x, down_y, move_x) = {
+            let node = arena.get(area_key).unwrap();
+            let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            let fragment = area
+                .render_fragments
+                .iter()
+                .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+                .expect("projection fragment");
+            (
+                area.layout_position.x + fragment.content_x + 2.0,
+                area.layout_position.y + fragment.content_y + fragment.height * 0.5,
+                area.layout_position.x + fragment.content_x + fragment.width + 200.0,
+            )
+        };
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let meta = EventMeta::new(NodeId::default());
+        let viewport_api = meta.viewport();
+        let mut down = PointerDownEvent {
+            meta,
+            pointer: PointerEventData {
+                viewport_x: down_x,
+                viewport_y: down_y,
+                local_x: down_x,
+                local_y: down_y,
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
+                modifiers: Default::default(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: Instant::now(),
+            },
+            viewport: viewport_api,
+        };
+        assert!(dispatch_pointer_down_from_hit_test(
+            &arena,
+            area_key,
+            &mut down,
+            &mut control
+        ));
+
+        let meta = EventMeta::new(NodeId::default());
+        let viewport_api = meta.viewport();
+        let mut move_event = PointerMoveEvent {
+            viewport: viewport_api,
+            meta,
+            pointer: PointerEventData {
+                viewport_x: move_x,
+                viewport_y: down_y,
+                local_x: move_x,
+                local_y: down_y,
+                button: None,
+                buttons: PointerButtons {
+                    left: true,
+                    right: false,
+                    middle: false,
+                    back: false,
+                    forward: false,
+                },
+                modifiers: Default::default(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: Instant::now(),
+            },
+        };
+        arena.with_element_taken_ref(area_key, |element, arena_ref| {
+            element.dispatch_pointer_move(&mut move_event, &mut control, arena_ref, area_key);
+        });
+
+        let node = arena.get(area_key).unwrap();
+        let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+        assert_eq!(area.content, "{{API_中文HOST}}");
+        assert!(area.cursor_char <= 3);
+        assert_eq!(area.selection_range_chars(), None);
+    }
+
+    #[test]
+    fn backspace_after_projection_preedit_click_deletes_on_first_press() {
+        use crate::view::test_support::{commit_element, new_test_arena};
+        let mut area = TextArea::from_content("{{API_HOST}}");
+        area.on_render(|render| {
+            render.range(0..12, |text_area_node| text_area_node);
+        });
+        area.cursor_char = 6;
+        area.set_preedit("中文".to_string(), None);
+
+        let mut arena = new_test_arena();
+        let area_key = commit_element(&mut arena, Box::new(area));
+        arena.with_element_taken(area_key, |element, arena_ref| {
+            element.sync_arena(arena_ref);
+            element.place(
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 240.0,
+                    available_height: 64.0,
+                    viewport_width: 240.0,
+                    viewport_height: 64.0,
+                    percent_base_width: Some(240.0),
+                    percent_base_height: Some(64.0),
+                },
+                arena_ref,
+            );
+        });
+
+        let (click_x, click_y) = {
+            let node = arena.get(area_key).unwrap();
+            let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            let fragment = area
+                .render_fragments
+                .iter()
+                .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+                .expect("projection fragment");
+            (
+                area.layout_position.x + fragment.content_x + fragment.width * 0.25,
+                area.layout_position.y + fragment.content_y + fragment.height * 0.5,
+            )
+        };
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let meta = EventMeta::new(NodeId::default());
+        let viewport_api = meta.viewport();
+        let mut down = PointerDownEvent {
+            meta,
+            pointer: PointerEventData {
+                viewport_x: click_x,
+                viewport_y: click_y,
+                local_x: click_x,
+                local_y: click_y,
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
+                modifiers: Default::default(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: Instant::now(),
+            },
+            viewport: viewport_api,
+        };
+        assert!(dispatch_pointer_down_from_hit_test(
+            &arena,
+            area_key,
+            &mut down,
+            &mut control
+        ));
+
+        let before_backspace = {
+            let node = arena.get(area_key).unwrap();
+            let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            assert_eq!(area.content, "{{API_中文HOST}}");
+            assert!(area.ime_preedit.is_empty());
+            assert!(area.ime_preedit_cursor.is_none());
+            assert_eq!(area.selection_range_chars(), None);
+            assert!(area.cursor_char > 0);
+            area.content.clone()
+        };
+
+        let mut key = KeyDownEvent {
+            meta: EventMeta::new(area_key),
+            key: KeyEventData {
+                key: Key::Backspace,
+                characters: None,
+                modifiers: Modifiers::default(),
+                repeat: false,
+                is_composing: false,
+                location: KeyLocation::Standard,
+                timestamp: Instant::now(),
+            },
+        };
+        arena.with_element_taken_ref(area_key, |element, arena_ref| {
+            element.dispatch_key_down(&mut key, &mut control, arena_ref, area_key);
+        });
+
+        let node = arena.get(area_key).unwrap();
+        let area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+        assert_ne!(area.content, before_backspace);
+        assert_eq!(area.content.chars().count(), before_backspace.chars().count() - 1);
+    }
+
+    #[test]
+    fn backspace_after_normal_preedit_click_deletes_on_first_press() {
+        let mut area = TextArea::from_content("abcdef");
+        area.cursor_char = 3;
+        area.set_preedit("中".to_string(), None);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 64.0,
+                viewport_width: 240.0,
+                viewport_height: 64.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(64.0),
+            },
+            &mut arena,
+        );
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let meta = EventMeta::new(NodeId::default());
+        let viewport_api = meta.viewport();
+        let mut down = PointerDownEvent {
+            meta,
+            pointer: PointerEventData {
+                viewport_x: 24.0,
+                viewport_y: 8.0,
+                local_x: 24.0,
+                local_y: 8.0,
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
+                modifiers: Default::default(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: Instant::now(),
+            },
+            viewport: viewport_api,
+        };
+        EventTarget::dispatch_pointer_down(
+            &mut area,
+            &mut down,
+            &mut control,
+            &arena,
+            crate::view::node_arena::NodeKey::default(),
+        );
+
+        assert_eq!(area.content, "abc中def");
+        assert!(area.ime_preedit.is_empty());
+        assert!(area.ime_preedit_cursor.is_none());
+        assert_eq!(area.selection_range_chars(), None);
+        assert!(area.cursor_char > 0);
+        let before_backspace = area.content.clone();
+
+        let mut key = KeyDownEvent {
+            meta: EventMeta::new(crate::view::node_arena::NodeKey::default()),
+            key: KeyEventData {
+                key: Key::Backspace,
+                characters: None,
+                modifiers: Modifiers::default(),
+                repeat: false,
+                is_composing: false,
+                location: KeyLocation::Standard,
+                timestamp: Instant::now(),
+            },
+        };
+        EventTarget::dispatch_key_down(
+            &mut area,
+            &mut key,
+            &mut control,
+            &arena,
+            crate::view::node_arena::NodeKey::default(),
+        );
+
+        assert_ne!(area.content, before_backspace);
+        assert_eq!(area.content.chars().count(), before_backspace.chars().count() - 1);
     }
 
     #[test]
@@ -4526,18 +5739,21 @@ mod tests {
 
         arena.with_element_taken(area_key, |el, a| {
             el.sync_arena(a);
-            el.place(LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 240.0,
-                available_height: 64.0,
-                viewport_width: 240.0,
-                viewport_height: 64.0,
-                percent_base_width: Some(240.0),
-                percent_base_height: Some(64.0),
-            }, a);
+            el.place(
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 240.0,
+                    available_height: 64.0,
+                    viewport_width: 240.0,
+                    viewport_height: 64.0,
+                    percent_base_width: Some(240.0),
+                    percent_base_height: Some(64.0),
+                },
+                a,
+            );
         });
 
         let (click_x, click_y) = {
@@ -4601,18 +5817,21 @@ mod tests {
         });
         let mut arena = crate::view::node_arena::NodeArena::new();
         area.sync_arena(&mut arena);
-        area.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 320.0,
-            available_height: 64.0,
-            viewport_width: 320.0,
-            viewport_height: 64.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(64.0),
-        }, &mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 64.0,
+                viewport_width: 320.0,
+                viewport_height: 64.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(64.0),
+            },
+            &mut arena,
+        );
 
         let fragment = area
             .render_fragments
@@ -4628,22 +5847,622 @@ mod tests {
     }
 
     #[test]
+    fn projection_fragments_respect_explicit_newlines() {
+        let mut area = TextArea::from_content("a\n{{x}}");
+        area.on_render(|render| {
+            render.range(2..7, |text_area_node| text_area_node);
+        });
+        area.is_focused = true;
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.sync_arena(&mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 80.0,
+                viewport_width: 240.0,
+                viewport_height: 80.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(80.0),
+            },
+            &mut arena,
+        );
+
+        let newline_y = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Newline))
+            .expect("newline fragment")
+            .content_y;
+        let projection_y = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+            .expect("projection fragment")
+            .content_y;
+        assert!(projection_y > newline_y);
+
+        area.cursor_char = 2;
+        let caret_after_newline = area
+            .caret_screen_position(&mut arena)
+            .expect("caret after newline");
+        assert!(caret_after_newline.1 >= projection_y);
+    }
+
+    #[test]
+    fn projection_arrow_down_moves_between_visual_rows() {
+        let mut area = TextArea::from_content("aa\n{{x}}\nzz");
+        area.on_render(|render| {
+            render.range(3..8, |text_area_node| text_area_node);
+        });
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.sync_arena(&mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 120.0,
+                viewport_width: 240.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(120.0),
+            },
+            &mut arena,
+        );
+
+        area.cursor_char = 1;
+        assert!(area.move_cursor_vertical(cosmic_text::Motion::Down));
+        assert!((3..=8).contains(&area.cursor_char));
+
+        assert!(area.move_cursor_vertical(cosmic_text::Motion::Down));
+        assert!(area.cursor_char > 8);
+    }
+
+    #[test]
+    fn projection_arrow_keys_cross_empty_rows_from_consecutive_newlines() {
+        let mut area = TextArea::from_content("aa\n\n{{x}}");
+        area.on_render(|render| {
+            render.range(4..9, |text_area_node| text_area_node);
+        });
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.sync_arena(&mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 120.0,
+                viewport_width: 240.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(120.0),
+            },
+            &mut arena,
+        );
+
+        area.cursor_char = 1;
+        assert!(area.move_cursor_vertical(cosmic_text::Motion::Down));
+        assert_eq!(area.cursor_char, 3);
+
+        assert!(area.move_cursor_vertical(cosmic_text::Motion::Down));
+        assert!((4..=9).contains(&area.cursor_char));
+
+        assert!(area.move_cursor_vertical(cosmic_text::Motion::Up));
+        assert_eq!(area.cursor_char, 3);
+    }
+
+    #[test]
+    fn projection_fragment_width_is_clamped_to_textarea_width() {
+        let mut area = TextArea::from_content("{{very_long_projection}}tail");
+        area.set_width(80.0);
+        area.on_render(|render| {
+            render.range(0..24, |text_area_node| text_area_node);
+        });
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.sync_arena(&mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 80.0,
+                available_height: 120.0,
+                viewport_width: 80.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(80.0),
+                percent_base_height: Some(120.0),
+            },
+            &mut arena,
+        );
+
+        let projection = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+            .expect("projection fragment");
+        assert!(projection.width <= 80.0);
+
+        let tail = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(&fragment.kind, TextAreaRenderFragmentKind::Text(text) if text == "tail"))
+            .expect("tail fragment");
+        assert_eq!(tail.content_x, 0.0);
+        assert!(tail.content_y > projection.content_y);
+    }
+
+    #[test]
+    fn auto_wrap_false_keeps_long_text_on_single_visual_line() {
+        let mut area = TextArea::from_content("abcdefghij");
+        area.set_width(20.0);
+        area.set_auto_wrap(false);
+
+        let lines = area.visual_lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].start_char, 0);
+        assert_eq!(lines[0].end_char, 10);
+    }
+
+    #[test]
+    fn auto_wrap_false_still_respects_explicit_newlines() {
+        let mut area = TextArea::from_content("aa\nbbbbbbbb");
+        area.set_width(20.0);
+        area.set_auto_wrap(false);
+
+        let lines = area.visual_lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!((lines[0].start_char, lines[0].end_char), (0, 2));
+        assert_eq!((lines[1].start_char, lines[1].end_char), (3, 11));
+    }
+
+    #[test]
+    fn auto_wrap_false_content_height_respects_explicit_newlines() {
+        let mut area = TextArea::from_content("aa\nbb\ncc");
+        area.set_width(20.0);
+        area.set_height(24.0);
+        area.set_auto_wrap(false);
+
+        let expected = area.line_height_px() * 3.0;
+        assert!((area.content_height() - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn auto_wrap_false_auto_height_uses_explicit_line_count() {
+        let mut area = TextArea::from_content("aa\nbb\ncc");
+        area.set_auto_wrap(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+
+        area.measure(
+            LayoutConstraints {
+                max_width: 20.0,
+                max_height: 500.0,
+                viewport_width: 20.0,
+                viewport_height: 500.0,
+                percent_base_width: Some(20.0),
+                percent_base_height: Some(500.0),
+            },
+            &mut arena,
+        );
+
+        let expected = area.line_height_px() * 3.0;
+        assert!((area.measured_size().1 - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn auto_wrap_false_cursor_visibility_scrolls_vertically_across_explicit_lines() {
+        let mut area = TextArea::from_content("aa\nbb\ncc");
+        area.set_width(80.0);
+        area.set_height(area.line_height_px());
+        area.set_auto_wrap(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 80.0,
+                available_height: area.line_height_px(),
+                viewport_width: 80.0,
+                viewport_height: area.line_height_px(),
+                percent_base_width: Some(80.0),
+                percent_base_height: Some(area.line_height_px()),
+            },
+            &mut arena,
+        );
+        area.cursor_char = area.content.chars().count();
+
+        area.ensure_cursor_visible();
+
+        assert!(area.scroll_y > 0.0);
+        assert!(area.scroll_y <= area.max_scroll_y() + 0.01);
+    }
+
+    #[test]
+    fn projection_auto_wrap_false_allows_projection_to_exceed_textarea_width() {
+        let mut area = TextArea::from_content("{{very_long_projection}}tail");
+        area.set_width(80.0);
+        area.set_auto_wrap(false);
+        area.on_render(|render| {
+            render.range(0..24, |text_area_node| {
+                rsx! {
+                    <crate::view::Element style={{ width: Length::px(160.0), height: Length::px(24.0) }}>
+                        {text_area_node}
+                    </crate::view::Element>
+                }
+            });
+        });
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.sync_arena(&mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 80.0,
+                available_height: 120.0,
+                viewport_width: 80.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(80.0),
+                percent_base_height: Some(120.0),
+            },
+            &mut arena,
+        );
+
+        let projection = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(fragment.kind, TextAreaRenderFragmentKind::Projection(_)))
+            .expect("projection fragment");
+        assert!(projection.width > 80.0);
+
+        let tail = area
+            .render_fragments
+            .iter()
+            .find(|fragment| matches!(&fragment.kind, TextAreaRenderFragmentKind::Text(text) if text == "tail"))
+            .expect("tail fragment");
+        assert!(tail.content_x > 80.0);
+        assert_eq!(tail.content_y, projection.content_y);
+    }
+
+    #[test]
+    fn auto_wrap_false_caret_visibility_scrolls_horizontally() {
+        let mut area = TextArea::from_content("abcdefghijklmnopqrstuvwxyz");
+        area.set_width(48.0);
+        area.set_height(32.0);
+        area.set_auto_wrap(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 48.0,
+                available_height: 32.0,
+                viewport_width: 48.0,
+                viewport_height: 32.0,
+                percent_base_width: Some(48.0),
+                percent_base_height: Some(32.0),
+            },
+            &mut arena,
+        );
+
+        area.cursor_char = area.content.chars().count();
+        area.ensure_cursor_visible();
+
+        assert!(area.scroll_x > 0.0);
+        assert!(area.scroll_x <= area.max_scroll_x() + 0.01);
+    }
+
+    #[test]
+    fn ime_preedit_cursor_scrolls_horizontally() {
+        let mut area = TextArea::from_content("");
+        area.set_width(48.0);
+        area.set_height(32.0);
+        area.set_auto_wrap(false);
+        area.set_preedit("abcdefghijklmnopqrstuvwxyz".to_string(), Some((26, 26)));
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 48.0,
+                available_height: 32.0,
+                viewport_width: 48.0,
+                viewport_height: 32.0,
+                percent_base_width: Some(48.0),
+                percent_base_height: Some(32.0),
+            },
+            &mut arena,
+        );
+
+        area.ensure_cursor_visible();
+
+        assert!(area.scroll_x > 0.0);
+        assert!(area.scroll_x <= area.max_scroll_x() + 0.01);
+    }
+
+    #[test]
+    fn ime_preedit_cursor_none_does_not_break_cursor_visibility() {
+        let mut area = TextArea::from_content("");
+        area.set_width(48.0);
+        area.set_height(32.0);
+        area.set_auto_wrap(false);
+        area.set_preedit("abcdefghijklmnopqrstuvwxyz".to_string(), None);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 48.0,
+                available_height: 32.0,
+                viewport_width: 48.0,
+                viewport_height: 32.0,
+                percent_base_width: Some(48.0),
+                percent_base_height: Some(32.0),
+            },
+            &mut arena,
+        );
+
+        area.ensure_cursor_visible();
+
+        assert!(area.scroll_x > 0.0);
+        assert!(area.scroll_x <= area.max_scroll_x() + 0.01);
+    }
+
+    #[test]
+    fn horizontal_scroll_offset_affects_text_hit_testing() {
+        let mut area = TextArea::from_content("abcdefghijklmnopqrstuvwxyz");
+        area.set_width(48.0);
+        area.set_height(32.0);
+        area.set_auto_wrap(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 48.0,
+                available_height: 32.0,
+                viewport_width: 48.0,
+                viewport_height: 32.0,
+                percent_base_width: Some(48.0),
+                percent_base_height: Some(32.0),
+            },
+            &mut arena,
+        );
+        area.scroll_x = area.max_scroll_x();
+
+        area.set_cursor_from_local_position(47.0, 4.0);
+
+        assert!(area.cursor_char >= 20);
+    }
+
+    #[test]
+    fn text_area_scroll_api_supports_horizontal_offsets() {
+        let mut area = TextArea::from_content("abcdefghijklmnopqrstuvwxyz");
+        area.set_width(48.0);
+        area.set_height(32.0);
+        area.set_auto_wrap(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 48.0,
+                available_height: 32.0,
+                viewport_width: 48.0,
+                viewport_height: 32.0,
+                percent_base_width: Some(48.0),
+                percent_base_height: Some(32.0),
+            },
+            &mut arena,
+        );
+
+        assert!(area.scroll_by(24.0, 0.0));
+        assert!(area.get_scroll_offset().0 > 0.0);
+        area.set_scroll_offset((10_000.0, 0.0));
+        assert!((area.get_scroll_offset().0 - area.max_scroll_x()).abs() <= 0.01);
+    }
+
+    #[test]
+    fn normal_text_draw_width_covers_content_when_horizontally_scrolled() {
+        let mut area = TextArea::from_content("abcdefghijklmnopqrstuvwxyz");
+        area.set_width(48.0);
+        area.set_height(32.0);
+        area.set_multiline(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 48.0,
+                available_height: 32.0,
+                viewport_width: 48.0,
+                viewport_height: 32.0,
+                percent_base_width: Some(48.0),
+                percent_base_height: Some(32.0),
+            },
+            &mut arena,
+        );
+        area.scroll_x = area.max_scroll_x();
+
+        assert!(area.scroll_x > 0.0);
+        assert!(area.text_draw_width() > area.layout_size.width);
+        assert!((area.text_draw_width() - area.content_width()).abs() <= 0.01);
+    }
+
+    #[test]
+    fn dragging_selection_scrolls_horizontally_to_follow_caret() {
+        let mut area = TextArea::from_content("abcdefghijklmnopqrstuvwxyz");
+        area.set_width(48.0);
+        area.set_height(32.0);
+        area.set_auto_wrap(false);
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 48.0,
+                available_height: 32.0,
+                viewport_width: 48.0,
+                viewport_height: 32.0,
+                percent_base_width: Some(48.0),
+                percent_base_height: Some(32.0),
+            },
+            &mut arena,
+        );
+        area.pointer_selecting = true;
+        area.selection_anchor_char = Some(0);
+        area.selection_focus_char = Some(0);
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let meta = EventMeta::new(crate::view::node_arena::NodeKey::default());
+        let mut event = PointerMoveEvent {
+            viewport: meta.viewport(),
+            meta,
+            pointer: PointerEventData {
+                viewport_x: 240.0,
+                viewport_y: 4.0,
+                local_x: 240.0,
+                local_y: 4.0,
+                button: None,
+                buttons: PointerButtons {
+                    left: true,
+                    right: false,
+                    middle: false,
+                    back: false,
+                    forward: false,
+                },
+                modifiers: Modifiers::default(),
+                pointer_id: 0,
+                pointer_type: PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: Instant::now(),
+            },
+        };
+
+        EventTarget::dispatch_pointer_move(
+            &mut area,
+            &mut event,
+            &mut control,
+            &mut arena,
+            crate::view::node_arena::NodeKey::default(),
+        );
+
+        assert!(area.scroll_x > 0.0);
+        assert_eq!(area.selection_focus_char, Some(area.cursor_char));
+    }
+
+    #[test]
+    fn drag_selection_between_lines_does_not_jump_to_end() {
+        let mut area = TextArea::from_content("aa\nbb\ncc");
+        area.set_width(80.0);
+        area.set_height(80.0);
+        let composed = area.composed_text();
+        area.ensure_glyph_layout(composed.as_str(), 1.0);
+
+        let cursor =
+            area.normal_cursor_from_missed_hit(composed.as_str(), 0.0, area.line_height_px() * 1.5);
+
+        assert!(cursor < area.content.chars().count());
+        assert!((3..=5).contains(&cursor));
+    }
+
+    #[test]
+    fn click_between_lines_uses_nearest_visual_line() {
+        let mut area = TextArea::from_content("aa\nbb\ncc");
+        area.set_width(80.0);
+        area.set_height(80.0);
+        let composed = area.composed_text();
+        area.ensure_glyph_layout(composed.as_str(), 1.0);
+
+        let cursor =
+            area.normal_cursor_from_missed_hit(composed.as_str(), 0.0, area.line_height_px() * 2.5);
+
+        assert!(cursor < area.content.chars().count());
+        assert!(cursor >= 6);
+    }
+
+    #[test]
+    fn projection_drag_between_rows_uses_nearest_fragment() {
+        let mut area = TextArea::from_content("abcd\nef");
+        area.render_fragments = vec![
+            TextAreaRenderFragment {
+                source_range: 0..4,
+                kind: TextAreaRenderFragmentKind::Projection(0),
+                content_x: 0.0,
+                content_y: 0.0,
+                width: 40.0,
+                height: 16.0,
+            },
+            TextAreaRenderFragment {
+                source_range: 4..5,
+                kind: TextAreaRenderFragmentKind::Newline,
+                content_x: 40.0,
+                content_y: 0.0,
+                width: 1.0,
+                height: 16.0,
+            },
+            TextAreaRenderFragment {
+                source_range: 5..7,
+                kind: TextAreaRenderFragmentKind::Projection(1),
+                content_x: 0.0,
+                content_y: 40.0,
+                width: 40.0,
+                height: 16.0,
+            },
+        ];
+
+        let cursor = area.projection_cursor_from_missed_hit(2.0, 28.0);
+
+        assert!(cursor < area.content.chars().count());
+        assert!(cursor >= 5);
+    }
+
+    #[test]
     fn cursor_at_wrapped_line_start_maps_to_next_line() {
         let mut area = TextArea::from_content("abcd");
         area.set_width(20.0);
         let mut arena = crate::view::node_arena::NodeArena::new();
-        area.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 20.0,
-            available_height: 100.0,
-            viewport_width: 20.0,
-            percent_base_width: Some(20.0),
-            percent_base_height: Some(100.0),
-            viewport_height: 100.0,
-        }, &mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 20.0,
+                available_height: 100.0,
+                viewport_width: 20.0,
+                percent_base_width: Some(20.0),
+                percent_base_height: Some(100.0),
+                viewport_height: 100.0,
+            },
+            &mut arena,
+        );
 
         area.cursor_char = 2;
         let lines = area.visual_lines();
@@ -4795,18 +6614,21 @@ mod tests {
     fn mouse_selection_requests_pointer_capture_until_mouse_up() {
         let mut area = TextArea::from_content("hello world");
         let mut arena = crate::view::node_arena::NodeArena::new();
-        area.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 200.0,
-            available_height: 80.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(80.0),
-            viewport_height: 80.0,
-        }, &mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 80.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(80.0),
+                viewport_height: 80.0,
+            },
+            &mut arena,
+        );
 
         let mut viewport = Viewport::new();
         {
@@ -4829,10 +6651,10 @@ mod tests {
                         forward: false,
                     },
                     modifiers: Modifiers::default(),
-                pointer_id: 0,
-                pointer_type: PointerType::Mouse,
-                pressure: 0.0,
-                timestamp: Instant::now(),
+                    pointer_id: 0,
+                    pointer_type: PointerType::Mouse,
+                    pressure: 0.0,
+                    timestamp: Instant::now(),
                 },
             };
 
@@ -4872,10 +6694,10 @@ mod tests {
                         forward: false,
                     },
                     modifiers: Modifiers::default(),
-                pointer_id: 0,
-                pointer_type: PointerType::Mouse,
-                pressure: 0.0,
-                timestamp: Instant::now(),
+                    pointer_id: 0,
+                    pointer_type: PointerType::Mouse,
+                    pressure: 0.0,
+                    timestamp: Instant::now(),
                 },
             };
 
@@ -4907,39 +6729,48 @@ mod tests {
         area.set_multiline(false);
         let mut arena = crate::view::node_arena::NodeArena::new();
 
-        area.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 40.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut arena);
+        area.measure(
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 40.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut arena,
+        );
         assert_eq!(area.measured_size().0, 200.0);
 
         area.set_layout_width(80.0);
-        area.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 200.0,
-            available_height: 40.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 40.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut arena,
+        );
         assert_eq!(area.box_model_snapshot().width, 80.0);
 
-        area.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 40.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut arena);
+        area.measure(
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 40.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut arena,
+        );
         assert_eq!(area.measured_size().0, 200.0);
     }
 
@@ -4948,18 +6779,21 @@ mod tests {
         let mut area = TextArea::from_content("abc");
         area.set_font_size(16.0);
         let mut arena = crate::view::node_arena::NodeArena::new();
-        area.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 100.0,
-            available_height: 40.0,
-            viewport_width: 100.0,
-            percent_base_width: Some(100.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut arena);
+        area.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 40.0,
+                viewport_width: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut arena,
+        );
 
         area.ensure_glyph_layout("abc", 1.0);
         let metrics_1x = area.glyph_buffer.metrics();
@@ -4981,14 +6815,17 @@ mod tests {
         area.set_multiline(false);
         area.set_font_size(16.0);
         let mut arena = crate::view::node_arena::NodeArena::new();
-        area.measure(LayoutConstraints {
-            max_width: 500.0,
-            max_height: 40.0,
-            viewport_width: 500.0,
-            percent_base_width: Some(500.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut arena);
+        area.measure(
+            LayoutConstraints {
+                max_width: 500.0,
+                max_height: 40.0,
+                viewport_width: 500.0,
+                percent_base_width: Some(500.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut arena,
+        );
 
         let expected_width = TextArea::measure_render_text_run_with_style(
             "{{API_HOST}}",
@@ -5007,26 +6844,32 @@ mod tests {
         area.set_style_height(Some(Length::px(40.5)));
         let mut arena = crate::view::node_arena::NodeArena::new();
 
-        area.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 100.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(100.0),
-            viewport_height: 100.0,
-        }, &mut arena);
-        area.place(LayoutPlacement {
-            parent_x: 4.1,
-            parent_y: 5.3,
-            visual_offset_x: 0.2,
-            visual_offset_y: -0.1,
-            available_width: 200.0,
-            available_height: 100.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(100.0),
-            viewport_height: 100.0,
-        }, &mut arena);
+        area.measure(
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 100.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(100.0),
+                viewport_height: 100.0,
+            },
+            &mut arena,
+        );
+        area.place(
+            LayoutPlacement {
+                parent_x: 4.1,
+                parent_y: 5.3,
+                visual_offset_x: 0.2,
+                visual_offset_y: -0.1,
+                available_width: 200.0,
+                available_height: 100.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(100.0),
+                viewport_height: 100.0,
+            },
+            &mut arena,
+        );
 
         let snapshot = area.box_model_snapshot();
         assert!((snapshot.x - 4.3).abs() < 0.01);

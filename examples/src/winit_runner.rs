@@ -13,6 +13,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::winit_key_map::{physical_key_to_rf, winit_modifiers_to_rf};
 use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::desktop_backend::ArboardClipboard;
 use rfgui::platform::{
@@ -20,9 +21,9 @@ use rfgui::platform::{
     PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent, PlatformPointerEventKind,
     PlatformServices, PlatformTextInput, PlatformWheelEvent, PointerType,
 };
-use smol_str::SmolStr;
 use rfgui::ui::{next_timer_deadline, run_due_timers};
 use rfgui::view::viewport::{RenderFrameResult, Viewport};
+use smol_str::SmolStr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -33,7 +34,6 @@ use winit::event::{
     MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use crate::winit_key_map::{physical_key_to_rf, winit_modifiers_to_rf};
 use winit::window::{Window, WindowId};
 
 /// Run an `App` until the user closes the window.
@@ -132,8 +132,6 @@ impl Runner {
         window.request_redraw();
     }
 
-
-
     fn handle_keyboard(&mut self, event: KeyEvent) {
         // Snapshot ingest time first — winit does not carry a hardware event
         // timestamp, so we record the earliest moment the runner observes the
@@ -162,11 +160,14 @@ impl Runner {
         };
         let app_event = AppEvent::Key(platform_event.clone());
         if let Some(viewport) = self.viewport.as_mut() {
-            viewport.dispatch_app_event(&app_event, PlatformServices {
-                clipboard: self.clipboard.as_mut(),
-                cursor: &mut self.cursor,
-                redraw: &self.redraw,
-            });
+            viewport.dispatch_app_event(
+                &app_event,
+                PlatformServices {
+                    clipboard: self.clipboard.as_mut(),
+                    cursor: &mut self.cursor,
+                    redraw: &self.redraw,
+                },
+            );
             let _ = viewport.dispatch_platform_key_event(&platform_event);
         }
         // Clipboard shortcuts: Cmd/Ctrl+C/X/V on key-down. Fire the
@@ -214,11 +215,14 @@ impl Runner {
                     };
                     let ti_event = AppEvent::TextInput(ti.clone());
                     if let Some(viewport) = self.viewport.as_mut() {
-                        viewport.dispatch_app_event(&ti_event, PlatformServices {
-                            clipboard: self.clipboard.as_mut(),
-                            cursor: &mut self.cursor,
-                            redraw: &self.redraw,
-                        });
+                        viewport.dispatch_app_event(
+                            &ti_event,
+                            PlatformServices {
+                                clipboard: self.clipboard.as_mut(),
+                                cursor: &mut self.cursor,
+                                redraw: &self.redraw,
+                            },
+                        );
                         let _ = viewport.dispatch_platform_text_input(&ti);
                     }
                 }
@@ -265,11 +269,14 @@ impl Runner {
                 };
                 let app_event = AppEvent::ImePreedit(preedit.clone());
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&app_event, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &app_event,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_platform_ime_preedit(&preedit);
                 }
             }
@@ -285,11 +292,14 @@ impl Runner {
                 };
                 let app_event = AppEvent::TextInput(ti.clone());
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&app_event, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &app_event,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                     // Fire the dedicated lifecycle event first so observers see
                     // the commit before the text-input insertion path runs.
                     let _ = viewport.dispatch_ime_commit_event(text);
@@ -315,12 +325,19 @@ impl Runner {
                 // Trackpad deltas come in physical pixels; fold the viewport
                 // scale factor in so downstream logic sees logical pixels.
                 let viewport = self.viewport.as_ref()?;
-                let (lx, ly) =
-                    viewport.physical_to_logical_point(pos.x as f32, pos.y as f32);
+                let (lx, ly) = viewport.physical_to_logical_point(pos.x as f32, pos.y as f32);
                 let lx = lx * cfg.touchpad_pixel_scale;
                 let ly = ly * cfg.touchpad_pixel_scale;
-                let lx = if lx.abs() < cfg.touchpad_deadzone { 0.0 } else { lx };
-                let ly = if ly.abs() < cfg.touchpad_deadzone { 0.0 } else { ly };
+                let lx = if lx.abs() < cfg.touchpad_deadzone {
+                    0.0
+                } else {
+                    lx
+                };
+                let ly = if ly.abs() < cfg.touchpad_deadzone {
+                    0.0
+                } else {
+                    ly
+                };
                 (lx, ly)
             }
         };
@@ -380,10 +397,7 @@ impl Runner {
         }
         self.last_ime_rect = Some(next);
         if let Some(window) = &self.window {
-            window.set_ime_cursor_area(
-                PhysicalPosition::new(x, y),
-                PhysicalSize::new(w, h),
-            );
+            window.set_ime_cursor_area(PhysicalPosition::new(x, y), PhysicalSize::new(w, h));
         }
     }
 
@@ -505,22 +519,20 @@ impl ApplicationHandler for Runner {
         }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         self.ensure_ready();
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(viewport) = self.viewport.as_mut() {
                     let close = AppEvent::CloseRequested;
-                    viewport.dispatch_app_event(&close, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &close,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                     viewport.app_on_shutdown(PlatformServices {
                         clipboard: self.clipboard.as_mut(),
                         cursor: &mut self.cursor,
@@ -538,11 +550,14 @@ impl ApplicationHandler for Runner {
                         height: size.height,
                         scale,
                     };
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -555,11 +570,14 @@ impl ApplicationHandler for Runner {
                         scale: scale_factor as f32,
                         suggested_size: None,
                     };
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -568,9 +586,7 @@ impl ApplicationHandler for Runner {
                 let (logical_x, logical_y) = self
                     .viewport
                     .as_ref()
-                    .map(|v| {
-                        v.physical_to_logical_point(position.x as f32, position.y as f32)
-                    })
+                    .map(|v| v.physical_to_logical_point(position.x as f32, position.y as f32))
                     .unwrap_or((position.x as f32, position.y as f32));
                 self.last_mouse_logical = Some((logical_x, logical_y));
                 let move_event = PlatformPointerEvent {
@@ -584,11 +600,14 @@ impl ApplicationHandler for Runner {
                 };
                 let ev = AppEvent::Pointer(move_event);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_platform_pointer_event(&move_event);
                 }
             }
@@ -604,10 +623,8 @@ impl ApplicationHandler for Runner {
                 };
                 let pressed = matches!(state, ElementState::Pressed);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.set_pointer_button_pressed(
-                        platform_button_to_viewport(mapped),
-                        pressed,
-                    );
+                    viewport
+                        .set_pointer_button_pressed(platform_button_to_viewport(mapped), pressed);
                     let kind = if pressed {
                         PlatformPointerEventKind::Down(mapped)
                     } else {
@@ -620,11 +637,14 @@ impl ApplicationHandler for Runner {
                         pointer_type: PointerType::Mouse,
                         pressure,
                     });
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
                         kind,
                         pointer_id: 0,
@@ -639,11 +659,14 @@ impl ApplicationHandler for Runner {
                             pressure: 0.0,
                         };
                         let click_ev = AppEvent::Pointer(click);
-                        viewport.dispatch_app_event(&click_ev, PlatformServices {
-                            clipboard: self.clipboard.as_mut(),
-                            cursor: &mut self.cursor,
-                            redraw: &self.redraw,
-                        });
+                        viewport.dispatch_app_event(
+                            &click_ev,
+                            PlatformServices {
+                                clipboard: self.clipboard.as_mut(),
+                                cursor: &mut self.cursor,
+                                redraw: &self.redraw,
+                            },
+                        );
                         let _ = viewport.dispatch_platform_pointer_event(&click);
                     }
                 }
@@ -664,22 +687,28 @@ impl ApplicationHandler for Runner {
                 };
                 let ev = AppEvent::Wheel(wheel);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_platform_wheel_event(&wheel);
                 }
             }
             WindowEvent::Focused(focused) => {
                 let ev = AppEvent::HostFocus(focused);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
                 if !focused {
                     self.ime_composing = false;
@@ -707,21 +736,27 @@ impl ApplicationHandler for Runner {
             WindowEvent::Moved(pos) => {
                 let ev = AppEvent::Moved { x: pos.x, y: pos.y };
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             WindowEvent::Occluded(occluded) => {
                 let ev = AppEvent::Occluded(occluded);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             WindowEvent::ThemeChanged(theme) => {
@@ -731,11 +766,14 @@ impl ApplicationHandler for Runner {
                 };
                 let ev = AppEvent::ThemeChanged(mapped);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             WindowEvent::HoveredFile(path) => {
@@ -743,31 +781,40 @@ impl ApplicationHandler for Runner {
                 // `FilesHovered` call so downstream handlers see a batch.
                 let ev = AppEvent::FilesHovered(vec![path]);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             WindowEvent::HoveredFileCancelled => {
                 let ev = AppEvent::FilesHoverCancelled;
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             WindowEvent::DroppedFile(path) => {
                 let ev = AppEvent::FilesDropped(vec![path]);
                 if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: self.clipboard.as_mut(),
-                        cursor: &mut self.cursor,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: self.clipboard.as_mut(),
+                            cursor: &mut self.cursor,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             _ => {}
@@ -775,12 +822,7 @@ impl ApplicationHandler for Runner {
         self.drain_and_apply();
     }
 
-    fn device_event(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-        _id: DeviceId,
-        event: DeviceEvent,
-    ) {
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
         // Device events are the only drag channel that keeps firing after
         // the cursor leaves the window. We only consume them during an
         // active in-progress drag — indicated by an existing viewport
@@ -804,8 +846,7 @@ impl ApplicationHandler for Runner {
                 let Some(viewport) = self.viewport.as_mut() else {
                     return;
                 };
-                let (dx, dy) =
-                    viewport.physical_to_logical_point(delta.0 as f32, delta.1 as f32);
+                let (dx, dy) = viewport.physical_to_logical_point(delta.0 as f32, delta.1 as f32);
                 let next = (last_x + dx, last_y + dy);
                 viewport.set_pointer_position_viewport(next.0, next.1);
                 let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
@@ -830,12 +871,19 @@ impl ApplicationHandler for Runner {
                     if let Some((x, y)) = self.last_mouse_logical {
                         viewport.set_pointer_position_viewport(x, y);
                     }
-                    viewport.set_pointer_button_pressed(
-                        platform_button_to_viewport(mapped),
-                        false,
-                    );
-                    let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent { kind: PlatformPointerEventKind::Up(mapped), pointer_id: 0, pointer_type: PointerType::Mouse, pressure: 0.0 });
-                    let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent { kind: PlatformPointerEventKind::Click(mapped), pointer_id: 0, pointer_type: PointerType::Mouse, pressure: 0.0 });
+                    viewport.set_pointer_button_pressed(platform_button_to_viewport(mapped), false);
+                    let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
+                        kind: PlatformPointerEventKind::Up(mapped),
+                        pointer_id: 0,
+                        pointer_type: PointerType::Mouse,
+                        pressure: 0.0,
+                    });
+                    let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
+                        kind: PlatformPointerEventKind::Click(mapped),
+                        pointer_id: 0,
+                        pointer_type: PointerType::Mouse,
+                        pressure: 0.0,
+                    });
                 }
             }
             _ => {}
@@ -876,7 +924,6 @@ impl ApplicationHandler for Runner {
         }
     }
 }
-
 
 /// Toggle the macOS native window drop-shadow.
 ///
@@ -1005,4 +1052,3 @@ fn winit_cursor_from(cursor: rfgui::Cursor) -> winit::window::Cursor {
     };
     winit::window::Cursor::Icon(icon)
 }
-

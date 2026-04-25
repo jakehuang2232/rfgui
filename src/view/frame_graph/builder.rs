@@ -1,4 +1,3 @@
-use rustc_hash::FxHashMap;
 use super::buffer_resource::{BufferDesc, BufferHandle, BufferResource};
 use super::frame_graph::{
     AttachmentLoadOp, AttachmentTarget, FrameGraphError, GraphicsColorAttachmentDescriptor,
@@ -10,6 +9,7 @@ use super::frame_graph::{
 };
 use super::slot::{InSlot, OutSlot, ResourceType};
 use super::texture_resource::{TextureDesc, TextureHandle, TextureResource};
+use rustc_hash::FxHashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BufferReadUsage {

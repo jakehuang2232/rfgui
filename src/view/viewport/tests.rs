@@ -1,5 +1,5 @@
 use super::{
-    PointerButton, PendingClick, Viewport, build_reuse_overlay_geometry, is_valid_click_candidate,
+    PendingClick, PointerButton, Viewport, build_reuse_overlay_geometry, is_valid_click_candidate,
 };
 use crate::transition::CHANNEL_STYLE_BOX_SHADOW;
 use crate::ui::{Binding, RsxNode, UiDirtyState};

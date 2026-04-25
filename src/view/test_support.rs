@@ -13,14 +13,12 @@
 #![cfg(test)]
 #![allow(dead_code)]
 
-use crate::view::base_component::{
-    ElementTrait, LayoutConstraints, LayoutPlacement,
-};
+use crate::Style;
+use crate::view::base_component::{ElementTrait, LayoutConstraints, LayoutPlacement};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{
     ElementDescriptor, commit_descriptor_tree, rsx_to_descriptors_with_context,
 };
-use crate::Style;
 
 /// Fresh empty arena.
 pub(crate) fn new_test_arena() -> NodeArena {
@@ -28,10 +26,7 @@ pub(crate) fn new_test_arena() -> NodeArena {
 }
 
 /// Commit a single element at the root of the arena. Returns its key.
-pub(crate) fn commit_element(
-    arena: &mut NodeArena,
-    element: Box<dyn ElementTrait>,
-) -> NodeKey {
+pub(crate) fn commit_element(arena: &mut NodeArena, element: Box<dyn ElementTrait>) -> NodeKey {
     commit_descriptor_tree(arena, None, ElementDescriptor::leaf(element))
 }
 
@@ -68,10 +63,7 @@ pub(crate) fn commit_descriptor(
 /// Commit an entire RSX tree into a fresh arena. Returns the committed
 /// root keys (fragments are flattened). Errors from conversion panic —
 /// tests use this for happy-path trees.
-pub(crate) fn commit_rsx_tree(
-    arena: &mut NodeArena,
-    tree: &crate::ui::RsxNode,
-) -> Vec<NodeKey> {
+pub(crate) fn commit_rsx_tree(arena: &mut NodeArena, tree: &crate::ui::RsxNode) -> Vec<NodeKey> {
     commit_rsx_tree_with_context(arena, tree, &Style::new(), 0.0, 0.0)
 }
 
@@ -82,12 +74,8 @@ pub(crate) fn commit_rsx_tree_with_context(
     viewport_width: f32,
     viewport_height: f32,
 ) -> Vec<NodeKey> {
-    let (descs, errors) = rsx_to_descriptors_with_context(
-        tree,
-        viewport_style,
-        viewport_width,
-        viewport_height,
-    );
+    let (descs, errors) =
+        rsx_to_descriptors_with_context(tree, viewport_style, viewport_width, viewport_height);
     if !errors.is_empty() {
         panic!("commit_rsx_tree: rsx conversion errors: {:?}", errors);
     }
@@ -116,7 +104,9 @@ pub(crate) fn walk_layout_snapshot(
     key: NodeKey,
     out: &mut Vec<(f32, f32, f32, f32)>,
 ) {
-    let Some(node) = arena.get(key) else { return; };
+    let Some(node) = arena.get(key) else {
+        return;
+    };
     let s = node.element.box_model_snapshot();
     out.push((s.x, s.y, s.width, s.height));
     let children = node.children.clone();
@@ -127,10 +117,11 @@ pub(crate) fn walk_layout_snapshot(
 }
 
 /// Downcast the element stored at `key` to `&T`.
-pub(crate) fn get_element<'a, T: 'static>(arena: &'a NodeArena, key: NodeKey) -> std::cell::Ref<'a, T> {
-    let node = arena
-        .get(key)
-        .expect("get_element: key not found in arena");
+pub(crate) fn get_element<'a, T: 'static>(
+    arena: &'a NodeArena,
+    key: NodeKey,
+) -> std::cell::Ref<'a, T> {
+    let node = arena.get(key).expect("get_element: key not found in arena");
     std::cell::Ref::map(node, |n| {
         n.element
             .as_any()

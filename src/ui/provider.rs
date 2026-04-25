@@ -17,9 +17,7 @@
 //! any descendant (including children the user passed in from an outer
 //! rsx) reads the value.
 
-use crate::ui::{
-    RsxComponent, RsxFragmentNode, RsxNode, RsxNodeIdentity, provide_context_node,
-};
+use crate::ui::{RsxComponent, RsxFragmentNode, RsxNode, RsxNodeIdentity, provide_context_node};
 use ::rfgui_rsx::props;
 use std::marker::PhantomData;
 use std::rc::Rc;

@@ -4,89 +4,85 @@ use rustc_hash::{FxHashMap, FxHashSet};
 mod debug;
 mod dispatch;
 mod frame;
-mod input;
 mod gpu_resources;
+mod input;
 mod lifecycle;
+#[cfg(test)]
+mod m2_incremental_tests;
 mod promotion_runtime;
 mod render;
 mod scene_helpers;
-mod transitions_tick;
 #[cfg(any())]
 mod tests;
-#[cfg(test)]
-mod m2_incremental_tests;
+mod transitions_tick;
 
 use crate::time::Instant;
 use crate::transition::{
-    AnimationPlugin, ChannelId, ClaimMode, LayoutTransitionPlugin,
-    ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleField,
-    StyleTransitionPlugin, StyleValue,
-    TrackKey, TrackTarget, Transition,
-    TransitionFrame, TransitionHost, TransitionPluginId, VisualTransitionPlugin,
-    CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X, CHANNEL_LAYOUT_Y, CHANNEL_SCROLL_X,
-    CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR, CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR, CHANNEL_STYLE_BORDER_RADIUS,
-    CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR, CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
-    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
+    AnimationPlugin, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X,
+    CHANNEL_LAYOUT_Y, CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
+    CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
+    CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
+    CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
+    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId, ClaimMode,
+    LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleField,
+    StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition, TransitionFrame,
+    TransitionHost, TransitionPluginId, VisualTransitionPlugin,
 };
 use crate::ui::{
-    peek_state_dirty, reconcile, take_state_dirty, BlurEvent, ClickEvent, EventCommand, EventMeta,
-    FocusEvent, FromPropValue, ImePreeditEvent, KeyDownEvent, KeyEventData,
-    KeyUpEvent, NodeId, Patch, PointerButtons as UiPointerButtons, PointerDownEvent,
-    PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler, PropValue,
-    RsxNode, TextInputEvent, ViewportListenerHandle,
+    BlurEvent, ClickEvent, EventCommand, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent,
+    KeyDownEvent, KeyEventData, KeyUpEvent, NodeId, Patch, PointerButtons as UiPointerButtons,
+    PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler,
+    PropValue, RsxNode, TextInputEvent, ViewportListenerHandle, peek_state_dirty, reconcile,
+    take_state_dirty,
 };
 use crate::view::base_component::Renderable;
 use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
 use crate::view::promotion::{
-    active_channels_by_node, evaluate_promotion, PromotedLayerUpdate, PromotedLayerUpdateKind,
-    PromotionDecision, PromotionState, ViewportPromotionConfig,
+    PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionDecision, PromotionState,
+    ViewportPromotionConfig, active_channels_by_node, evaluate_promotion,
 };
 use crate::view::promotion_builder::{
     collect_debug_subtree_signatures, collect_promoted_layer_updates, collect_promotion_candidates,
 };
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
-use crate::{
-    ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style,
-};
+use crate::{ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style};
 
 use std::ops::Sub;
 use std::sync::Arc;
 use wgpu::util::StagingBelt;
 use wgpu::{
-    rwh::{HasDisplayHandle, HasWindowHandle}, Instance, Queue,
-    TextureUsages,
+    Instance, Queue, TextureUsages,
+    rwh::{HasDisplayHandle, HasWindowHandle},
 };
 
 pub(crate) use self::debug::{
-    begin_debug_reuse_path_frame, record_debug_reuse_path, set_debug_trace_enabled,
-    DebugReusePathContext, DebugReusePathRecord,
+    DebugReusePathContext, DebugReusePathRecord, begin_debug_reuse_path_frame,
+    record_debug_reuse_path, set_debug_trace_enabled,
 };
 use self::debug::{
-    build_compile_trace_nodes, build_execute_detail_trace_nodes, build_layout_place_trace_nodes, build_reuse_overlay_geometry,
-    build_text_measure_trace_nodes, format_promotion_trace,
-    format_reuse_path_trace, format_style_field,
-    format_style_promotion_trace, format_style_request_trace, format_style_sample_trace,
-    format_style_value, format_trace_render_tree, record_debug_style_promotion,
-    record_debug_style_request, record_debug_style_sample, record_debug_style_sample_record,
-    style_field_requires_relayout, take_debug_reuse_path, take_debug_style_sample_records,
-    trace_promoted_build_frame_marker, DebugStyleSampleRecord, PostLayoutTransitionResult,
-    TraceRenderNode,
+    DebugStyleSampleRecord, PostLayoutTransitionResult, TraceRenderNode, build_compile_trace_nodes,
+    build_execute_detail_trace_nodes, build_layout_place_trace_nodes, build_reuse_overlay_geometry,
+    build_text_measure_trace_nodes, format_promotion_trace, format_reuse_path_trace,
+    format_style_field, format_style_promotion_trace, format_style_request_trace,
+    format_style_sample_trace, format_style_value, format_trace_render_tree,
+    record_debug_style_promotion, record_debug_style_request, record_debug_style_sample,
+    record_debug_style_sample_record, style_field_requires_relayout, take_debug_reuse_path,
+    take_debug_style_sample_records, trace_promoted_build_frame_marker,
 };
 pub use self::frame::FrameParts;
 use self::frame::{
     BeginFrameProfile, EndFrameProfile, FrameState, FrameStats, FrameTimings, LayoutPassResult,
 };
 use self::input::{
-    is_valid_click_candidate, DragState, InputState, PendingClick, ViewportPointerUpListener,
+    DragState, InputState, PendingClick, ViewportPointerUpListener, is_valid_click_candidate,
 };
 pub use self::input::{PointerButton, ViewportDebugOptions};
 use self::transitions_tick::TransitionHostAdapter;
 use crate::app::App;
 use crate::platform::{
     Modifiers, PlatformImePreedit, PlatformKeyEvent, PlatformPointerEvent,
-    PlatformPointerEventKind, PlatformRequests, PlatformTextInput, PlatformWheelEvent,
-    PointerType,
+    PlatformPointerEventKind, PlatformRequests, PlatformTextInput, PlatformWheelEvent, PointerType,
 };
 
 pub trait WindowHandle: HasWindowHandle + HasDisplayHandle {}
@@ -598,8 +594,11 @@ impl Viewport {
             return;
         }
         let base = self.frame.debug_overlay_vertices.len() as u32;
-        self.frame.debug_overlay_vertices.extend_from_slice(vertices);
-        self.frame.debug_overlay_indices
+        self.frame
+            .debug_overlay_vertices
+            .extend_from_slice(vertices);
+        self.frame
+            .debug_overlay_indices
             .extend(indices.iter().map(|index| base + *index));
     }
 
@@ -649,7 +648,10 @@ impl Viewport {
     }
 
     pub fn surface_size(&self) -> (u32, u32) {
-        (self.gpu.surface_config.width, self.gpu.surface_config.height)
+        (
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+        )
     }
 
     fn update_logical_size(&mut self, physical_width: u32, physical_height: u32) {
@@ -690,7 +692,10 @@ impl Viewport {
             .or(self.input_state.focused_node_id)
     }
 
-    pub fn set_pointer_capture_node_id(&mut self, node_id: Option<crate::view::node_arena::NodeKey>) {
+    pub fn set_pointer_capture_node_id(
+        &mut self,
+        node_id: Option<crate::view::node_arena::NodeKey>,
+    ) {
         self.input_state.pointer_capture_node_id = node_id;
     }
 
@@ -743,5 +748,4 @@ impl Viewport {
         let arena = unsafe { &*arena_ptr };
         (arena, control)
     }
-
 }

@@ -1129,7 +1129,6 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     }
 }
 
-
 // ============================================================================
 // v2 expansion: React-style shared createElement path
 // ============================================================================
@@ -1196,16 +1195,18 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
 
     // `PhantomData::<#close_tag>` nudges rustc / rust-analyzer to resolve
     // the closing-tag name (enables hover, goto-def, and unused-import
-    // warnings on the close ident). When the user drops generics on close
-    // (`<Provider::<Ctx>>...</Provider>`), the bare `Provider` path no
-    // longer type-checks; fall back to the open tag in that case. Close
-    // tag ident still carries its own span for mismatch diagnostics
-    // emitted during parse.
-    let close_phantom_tag = if close_tag_has_args(&element.close_tag) {
-        element.close_tag.clone()
-    } else {
-        element.tag.clone()
-    };
+    // warnings on the close ident). Only fall back to the open tag when
+    // the React shorthand form drops generics on close
+    // (`<Provider::<Ctx>>...</Provider>`): the bare `Provider` path then
+    // no longer type-checks. In every other shape — including the common
+    // `<Element>...</Element>` (no generics either side) — keep the close
+    // path so its span carries a real type reference.
+    let close_phantom_tag =
+        if close_tag_has_args(&element.tag) && !close_tag_has_args(&element.close_tag) {
+            element.tag.clone()
+        } else {
+            element.close_tag.clone()
+        };
 
     quote! {
         {
@@ -1415,18 +1416,15 @@ mod tests {
         // React-parity: `<Provider::<T>>…</Provider>` must parse. Close tag
         // path key compares idents only; PhantomData fallback uses open
         // tag when close has no args.
-        syn::parse_str::<MultipleNodes>(
-            r#"<Provider::<Ctx> value={v}><Child/></Provider>"#,
-        )
-        .expect("bare close tag should match generic open tag");
+        syn::parse_str::<MultipleNodes>(r#"<Provider::<Ctx> value={v}><Child/></Provider>"#)
+            .expect("bare close tag should match generic open tag");
     }
 
     #[test]
     fn close_tag_ident_mismatch_still_rejected() {
         // Stripping generics must not loosen ident comparison.
-        let result = syn::parse_str::<MultipleNodes>(
-            r#"<Provider::<Ctx> value={v}><Child/></Consumer>"#,
-        );
+        let result =
+            syn::parse_str::<MultipleNodes>(r#"<Provider::<Ctx> value={v}><Child/></Consumer>"#);
         assert!(result.is_err(), "close ident mismatch should still fail");
     }
 

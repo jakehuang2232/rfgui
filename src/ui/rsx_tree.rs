@@ -9,9 +9,9 @@ use crate::ui::{
     DragEndHandlerProp, DragLeaveHandlerProp, DragOverHandlerProp, DragStartHandlerProp,
     DropHandlerProp, FocusHandlerProp, ImeCommitHandlerProp, ImeDisabledHandlerProp,
     ImeEnabledHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp, PasteHandlerProp,
-    PointerDownHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp, PointerMoveHandlerProp,
-    PointerUpHandlerProp, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp, TextChangeHandlerProp,
-    WheelHandlerProp,
+    PointerDownHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp,
+    PointerMoveHandlerProp, PointerUpHandlerProp, TextAreaFocusHandlerProp,
+    TextAreaRenderHandlerProp, TextChangeHandlerProp, WheelHandlerProp,
 };
 use std::any::{Any, TypeId};
 use std::fmt;
@@ -839,37 +839,59 @@ impl IntoPropValue for BlurHandlerProp {
 }
 
 impl IntoPropValue for ImeCommitHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnImeCommit(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnImeCommit(self)
+    }
 }
 impl IntoPropValue for ImeEnabledHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnImeEnabled(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnImeEnabled(self)
+    }
 }
 impl IntoPropValue for ImeDisabledHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnImeDisabled(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnImeDisabled(self)
+    }
 }
 impl IntoPropValue for DragStartHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnDragStart(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnDragStart(self)
+    }
 }
 impl IntoPropValue for DragOverHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnDragOver(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnDragOver(self)
+    }
 }
 impl IntoPropValue for DragLeaveHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnDragLeave(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnDragLeave(self)
+    }
 }
 impl IntoPropValue for DropHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnDrop(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnDrop(self)
+    }
 }
 impl IntoPropValue for DragEndHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnDragEnd(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnDragEnd(self)
+    }
 }
 impl IntoPropValue for CopyHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnCopy(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnCopy(self)
+    }
 }
 impl IntoPropValue for CutHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnCut(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnCut(self)
+    }
 }
 impl IntoPropValue for PasteHandlerProp {
-    fn into_prop_value(self) -> PropValue { PropValue::OnPaste(self) }
+    fn into_prop_value(self) -> PropValue {
+        PropValue::OnPaste(self)
+    }
 }
 
 impl IntoPropValue for TextAreaFocusHandlerProp {

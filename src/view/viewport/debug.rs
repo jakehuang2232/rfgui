@@ -323,10 +323,7 @@ pub(super) fn build_compile_trace_nodes(
         ),
     ];
     if profile.topology_cache_hit {
-        nodes.insert(
-            0,
-            TraceRenderNode::new("topology_cache [HIT]", 0.0),
-        );
+        nodes.insert(0, TraceRenderNode::new("topology_cache [HIT]", 0.0));
     }
     nodes
 }

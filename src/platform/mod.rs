@@ -29,9 +29,8 @@ pub use callback::{CallbackCursorSink, CallbackRedrawRequester};
 pub use headless::{HeadlessBackend, NullClipboard, NullCursorSink, NullRedrawRequester};
 pub use input::{
     Key, Modifiers, PlatformImePreedit, PlatformInputType, PlatformKeyEvent, PlatformPointerButton,
-    PlatformPointerEvent, PlatformPointerEventKind, PlatformPreeditAttribute,
-    PlatformPreeditStyle, PlatformTextInput, PlatformWheelEvent, PointerType, WheelDeltaMode,
-    WheelPhase,
+    PlatformPointerEvent, PlatformPointerEventKind, PlatformPreeditAttribute, PlatformPreeditStyle,
+    PlatformTextInput, PlatformWheelEvent, PointerType, WheelDeltaMode, WheelPhase,
 };
 
 /// Anything that can back a `wgpu::Surface`.

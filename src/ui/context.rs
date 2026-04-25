@@ -60,11 +60,7 @@ pub fn use_context_expect<T: Clone + 'static>() -> T {
 ///
 /// The `value: Rc<dyn Any>` must point to an allocation whose concrete
 /// type matches `type_id`; `use_context::<T>()` downcasts back to `T`.
-pub fn with_pushed_context_raw<R>(
-    type_id: TypeId,
-    value: Rc<dyn Any>,
-    f: impl FnOnce() -> R,
-) -> R {
+pub fn with_pushed_context_raw<R>(type_id: TypeId, value: Rc<dyn Any>, f: impl FnOnce() -> R) -> R {
     CONTEXT_STACK.with(|s| s.borrow_mut().entry(type_id).or_default().push(value));
 
     struct Guard(TypeId);
@@ -131,10 +127,8 @@ mod tests {
 
     #[test]
     fn nested_push_shadows_outer() {
-        let (outer_visible, inner_visible, after_pop) = with_pushed_context_raw(
-            TypeId::of::<Theme>(),
-            Rc::new(Theme("light")),
-            || {
+        let (outer_visible, inner_visible, after_pop) =
+            with_pushed_context_raw(TypeId::of::<Theme>(), Rc::new(Theme("light")), || {
                 let outer = use_context::<Theme>();
                 let inner = with_pushed_context_raw(
                     TypeId::of::<Theme>(),
@@ -143,8 +137,7 @@ mod tests {
                 );
                 let restored = use_context::<Theme>();
                 (outer, inner, restored)
-            },
-        );
+            });
         assert_eq!(outer_visible, Some(Theme("light")));
         assert_eq!(inner_visible, Some(Theme("dark")));
         assert_eq!(after_pop, Some(Theme("light")));
@@ -173,11 +166,9 @@ mod tests {
     #[test]
     fn stack_unwinds_on_panic() {
         let result = std::panic::catch_unwind(|| {
-            with_pushed_context_raw(
-                TypeId::of::<Theme>(),
-                Rc::new(Theme("dark")),
-                || -> () { panic!("boom") },
-            )
+            with_pushed_context_raw(TypeId::of::<Theme>(), Rc::new(Theme("dark")), || -> () {
+                panic!("boom")
+            })
         });
         assert!(result.is_err());
         assert_eq!(use_context::<Theme>(), None);

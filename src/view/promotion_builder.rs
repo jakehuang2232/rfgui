@@ -1,8 +1,8 @@
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use crate::transition::AnimationPromotionHint;
 use crate::view::base_component::{BoxModelSnapshot, ElementTrait};
 use crate::view::node_arena::NodeKey;
 use crate::view::promotion::{PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionCandidate};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use std::hash::{Hash, Hasher};
 
@@ -72,7 +72,9 @@ pub(crate) fn collect_promotion_candidates(
 
     let mut out = Vec::new();
     for &root_key in root_keys {
-        let Some(root_node) = arena.get(root_key) else { continue };
+        let Some(root_node) = arena.get(root_key) else {
+            continue;
+        };
         walk(
             root_node.element.as_ref(),
             active_animator_hints,
@@ -209,8 +211,9 @@ pub(crate) fn collect_promoted_layer_updates(
             } else {
                 PromotedLayerUpdateKind::Reraster
             };
-            let previous_composition_signature =
-                previous_composition_signatures.get(&node.stable_id()).copied();
+            let previous_composition_signature = previous_composition_signatures
+                .get(&node.stable_id())
+                .copied();
             let composition_kind = if previous_composition_signature == Some(composition_signature)
             {
                 PromotedLayerUpdateKind::Reuse
@@ -241,9 +244,12 @@ pub(crate) fn collect_promoted_layer_updates(
     let cap = promoted_node_ids.len();
     let mut updates = Vec::with_capacity(cap);
     let mut next_base_signatures = FxHashMap::with_capacity_and_hasher(cap, Default::default());
-    let mut next_composition_signatures = FxHashMap::with_capacity_and_hasher(cap, Default::default());
+    let mut next_composition_signatures =
+        FxHashMap::with_capacity_and_hasher(cap, Default::default());
     for &root_key in root_keys {
-        let Some(root_node) = arena.get(root_key) else { continue };
+        let Some(root_node) = arena.get(root_key) else {
+            continue;
+        };
         walk(
             root_node.element.as_ref(),
             promoted_node_ids,
@@ -376,8 +382,15 @@ pub(crate) fn collect_debug_subtree_signatures(
 
     let mut out = FxHashMap::default();
     for &root_key in root_keys {
-        let Some(root_node) = arena.get(root_key) else { continue };
-        walk(root_node.element.as_ref(), promoted_node_ids, &mut out, arena);
+        let Some(root_node) = arena.get(root_key) else {
+            continue;
+        };
+        walk(
+            root_node.element.as_ref(),
+            promoted_node_ids,
+            &mut out,
+            arena,
+        );
     }
     out
 }
@@ -464,7 +477,6 @@ mod tests {
         TransitionHost, TransitionPluginId,
     };
     use crate::view::base_component::{Element, ElementTrait, EventTarget, set_style_field_by_id};
-    
 
     #[derive(Default)]
     struct TestHost {
@@ -633,7 +645,12 @@ mod tests {
         let roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(root)];
         let promoted = FxHashSet::from_iter([1_u64, 2_u64]);
         let (first_updates, first_base_signatures, first_composition_signatures) =
-            collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
+            collect_promoted_layer_updates(
+                &roots,
+                &promoted,
+                &FxHashMap::default(),
+                &FxHashMap::default(),
+            );
         assert!(
             first_updates
                 .iter()
@@ -680,7 +697,12 @@ mod tests {
         let roots: Vec<Box<dyn ElementTrait>> = vec![Box::new(root)];
         let promoted = FxHashSet::from_iter([1_u64]);
         let (first_updates, first_base_signatures, first_composition_signatures) =
-            collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
+            collect_promoted_layer_updates(
+                &roots,
+                &promoted,
+                &FxHashMap::default(),
+                &FxHashMap::default(),
+            );
         assert_eq!(first_updates.len(), 1);
         assert_eq!(first_updates[0].kind, PromotedLayerUpdateKind::Reraster);
         assert_eq!(
@@ -716,7 +738,12 @@ mod tests {
         let roots = build_style_transition_lab_like_tree();
         let promoted = FxHashSet::from_iter([1_u64]);
         let (first_updates, first_base_signatures, first_composition_signatures) =
-            collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
+            collect_promoted_layer_updates(
+                &roots,
+                &promoted,
+                &FxHashMap::default(),
+                &FxHashMap::default(),
+            );
         assert_eq!(first_updates.len(), 1);
         assert_eq!(first_updates[0].node_id, 1);
         assert_eq!(first_updates[0].kind, PromotedLayerUpdateKind::Reraster);
@@ -760,7 +787,12 @@ mod tests {
         let mut roots = build_style_transition_lab_like_tree();
         let promoted = FxHashSet::from_iter([1_u64]);
         let (_, first_base_signatures, first_composition_signatures) =
-            collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
+            collect_promoted_layer_updates(
+                &roots,
+                &promoted,
+                &FxHashMap::default(),
+                &FxHashMap::default(),
+            );
 
         let mut plugin = StyleTransitionPlugin::new();
         let mut host = TestHost::default();
@@ -812,7 +844,12 @@ mod tests {
         let mut roots = build_style_transition_lab_like_tree();
         let promoted = FxHashSet::from_iter([1_u64]);
         let (_, first_base_signatures, first_composition_signatures) =
-            collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
+            collect_promoted_layer_updates(
+                &roots,
+                &promoted,
+                &FxHashMap::default(),
+                &FxHashMap::default(),
+            );
 
         assert!(set_style_field_by_id(
             roots[0].as_mut(),
@@ -842,7 +879,12 @@ mod tests {
         let promoted = FxHashSet::from_iter([10_u64, 11_u64, 12_u64]);
         let roots = build_cross_root_scroll_and_nested_promoted_tree();
         let (first_updates, first_base_signatures, first_composition_signatures) =
-            collect_promoted_layer_updates(&roots, &promoted, &FxHashMap::default(), &FxHashMap::default());
+            collect_promoted_layer_updates(
+                &roots,
+                &promoted,
+                &FxHashMap::default(),
+                &FxHashMap::default(),
+            );
         assert_eq!(first_updates.len(), 3);
         assert!(
             first_updates

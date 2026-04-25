@@ -19,6 +19,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
+use crate::winit_key_map::{physical_key_to_rf, winit_modifiers_to_rf};
 use rfgui::SurfaceFormatPreference;
 use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::web_backend::{CanvasCursorSink, InMemoryClipboard};
@@ -27,9 +28,9 @@ use rfgui::platform::{
     PlatformPointerButton, PlatformPointerEvent, PlatformPointerEventKind, PlatformServices,
     PlatformTextInput, PlatformWheelEvent, PointerType, RedrawRequester,
 };
-use smol_str::SmolStr;
 use rfgui::ui::run_due_timers;
 use rfgui::view::viewport::{RenderFrameResult, Viewport};
+use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -42,7 +43,6 @@ use winit::event::{
     ElementState, Ime, KeyEvent, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use crate::winit_key_map::{physical_key_to_rf, winit_modifiers_to_rf};
 use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys};
 use winit::window::{Window, WindowId};
 
@@ -112,7 +112,8 @@ impl Runner {
             return;
         };
         self.init_in_flight = true;
-        let (physical_size, scale) = sync_canvas_size(lookup_app_canvas().as_ref(), window.scale_factor() as f32);
+        let (physical_size, scale) =
+            sync_canvas_size(lookup_app_canvas().as_ref(), window.scale_factor() as f32);
         let clear_color = self.config.clear_color;
         let viewport_slot = self.viewport.clone();
         let pending_app = self.pending_app.clone();
@@ -147,18 +148,15 @@ impl Runner {
         let viewport_slot = self.viewport.clone();
         let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
             let canvas = lookup_app_canvas();
-            let (size, scale) =
-                sync_canvas_size(canvas.as_ref(), window.scale_factor() as f32);
+            let (size, scale) = sync_canvas_size(canvas.as_ref(), window.scale_factor() as f32);
             if let Some(viewport) = viewport_slot.borrow_mut().as_mut() {
                 viewport.set_scale_factor(scale);
                 viewport.set_size(size.0, size.1);
             }
             window.request_redraw();
         }) as Box<dyn FnMut()>);
-        let _ = web_window.add_event_listener_with_callback(
-            "resize",
-            closure.as_ref().unchecked_ref(),
-        );
+        let _ =
+            web_window.add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref());
         self.resize_listener = Some(closure);
     }
 
@@ -253,12 +251,19 @@ impl Runner {
         let (dx, dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (x * cfg.mouse_line_step, y * cfg.mouse_line_step),
             MouseScrollDelta::PixelDelta(pos) => {
-                let (lx, ly) =
-                    viewport.physical_to_logical_point(pos.x as f32, pos.y as f32);
+                let (lx, ly) = viewport.physical_to_logical_point(pos.x as f32, pos.y as f32);
                 let lx = lx * cfg.touchpad_pixel_scale;
                 let ly = ly * cfg.touchpad_pixel_scale;
-                let lx = if lx.abs() < cfg.touchpad_deadzone { 0.0 } else { lx };
-                let ly = if ly.abs() < cfg.touchpad_deadzone { 0.0 } else { ly };
+                let lx = if lx.abs() < cfg.touchpad_deadzone {
+                    0.0
+                } else {
+                    lx
+                };
+                let ly = if ly.abs() < cfg.touchpad_deadzone {
+                    0.0
+                } else {
+                    ly
+                };
                 (lx, ly)
             }
         };
@@ -303,11 +308,14 @@ impl Runner {
                     Some(sink) => sink,
                     None => &mut NoopCursorSink,
                 };
-                viewport.dispatch_app_event(&app_event, PlatformServices {
-                    clipboard: &mut self.clipboard,
-                    cursor: cursor_sink,
-                    redraw: &self.redraw,
-                });
+                viewport.dispatch_app_event(
+                    &app_event,
+                    PlatformServices {
+                        clipboard: &mut self.clipboard,
+                        cursor: cursor_sink,
+                        redraw: &self.redraw,
+                    },
+                );
                 let _ = viewport.dispatch_platform_key_event(&platform_event);
             }
         }
@@ -363,11 +371,14 @@ impl Runner {
                                 Some(sink) => sink,
                                 None => &mut NoopCursorSink,
                             };
-                            viewport.dispatch_app_event(&ti_event, PlatformServices {
-                                clipboard: &mut self.clipboard,
-                                cursor: cursor_sink,
-                                redraw: &self.redraw,
-                            });
+                            viewport.dispatch_app_event(
+                                &ti_event,
+                                PlatformServices {
+                                    clipboard: &mut self.clipboard,
+                                    cursor: cursor_sink,
+                                    redraw: &self.redraw,
+                                },
+                            );
                             let _ = viewport.dispatch_platform_text_input(&ti);
                         }
                     }
@@ -420,11 +431,14 @@ impl Runner {
                         Some(sink) => sink,
                         None => &mut NoopCursorSink,
                     };
-                    viewport.dispatch_app_event(&app_event, PlatformServices {
-                        clipboard: &mut self.clipboard,
-                        cursor: cursor_sink,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &app_event,
+                        PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_platform_ime_preedit(&preedit);
                 }
             }
@@ -445,11 +459,14 @@ impl Runner {
                         Some(sink) => sink,
                         None => &mut NoopCursorSink,
                     };
-                    viewport.dispatch_app_event(&app_event, PlatformServices {
-                        clipboard: &mut self.clipboard,
-                        cursor: cursor_sink,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &app_event,
+                        PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_ime_commit_event(text);
                     let _ = viewport.dispatch_platform_text_input(&ti);
                 }
@@ -485,12 +502,7 @@ impl ApplicationHandler for Runner {
         self.install_resize_listener();
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         // Viewport may not exist yet on the very first events while
         // async surface init is still in flight; ensure_viewport keeps
         // trying so the next event will have it.
@@ -508,11 +520,14 @@ impl ApplicationHandler for Runner {
                             None => &mut NoopCursorSink,
                         };
                         let close = AppEvent::CloseRequested;
-                        viewport.dispatch_app_event(&close, PlatformServices {
-                            clipboard: &mut self.clipboard,
-                            cursor: cursor_sink,
-                            redraw: &self.redraw,
-                        });
+                        viewport.dispatch_app_event(
+                            &close,
+                            PlatformServices {
+                                clipboard: &mut self.clipboard,
+                                cursor: cursor_sink,
+                                redraw: &self.redraw,
+                            },
+                        );
                         let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
                             Some(sink) => sink,
                             None => &mut NoopCursorSink,
@@ -540,11 +555,14 @@ impl ApplicationHandler for Runner {
                         Some(sink) => sink,
                         None => &mut NoopCursorSink,
                     };
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: &mut self.clipboard,
-                        cursor: cursor_sink,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
                 drop(vp);
                 if let Some(window) = &self.window {
@@ -563,11 +581,14 @@ impl ApplicationHandler for Runner {
                         Some(sink) => sink,
                         None => &mut NoopCursorSink,
                     };
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: &mut self.clipboard,
-                        cursor: cursor_sink,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        },
+                    );
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -595,11 +616,14 @@ impl ApplicationHandler for Runner {
                         Some(sink) => sink,
                         None => &mut NoopCursorSink,
                     };
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: &mut self.clipboard,
-                        cursor: cursor_sink,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_platform_pointer_event(&move_event);
                 }
             }
@@ -617,8 +641,10 @@ impl ApplicationHandler for Runner {
                 {
                     let mut vp = self.viewport.borrow_mut();
                     if let Some(viewport) = vp.as_mut() {
-                        viewport
-                            .set_pointer_button_pressed(platform_button_to_viewport(mapped), pressed);
+                        viewport.set_pointer_button_pressed(
+                            platform_button_to_viewport(mapped),
+                            pressed,
+                        );
                         let kind = if pressed {
                             PlatformPointerEventKind::Down(mapped)
                         } else {
@@ -635,11 +661,14 @@ impl ApplicationHandler for Runner {
                             Some(sink) => sink,
                             None => &mut NoopCursorSink,
                         };
-                        viewport.dispatch_app_event(&ev, PlatformServices {
-                            clipboard: &mut self.clipboard,
-                            cursor: cursor_sink,
-                            redraw: &self.redraw,
-                        });
+                        viewport.dispatch_app_event(
+                            &ev,
+                            PlatformServices {
+                                clipboard: &mut self.clipboard,
+                                cursor: cursor_sink,
+                                redraw: &self.redraw,
+                            },
+                        );
                         let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
                             kind,
                             pointer_id: 0,
@@ -658,11 +687,14 @@ impl ApplicationHandler for Runner {
                                 Some(sink) => sink,
                                 None => &mut NoopCursorSink,
                             };
-                            viewport.dispatch_app_event(&click_ev, PlatformServices {
-                                clipboard: &mut self.clipboard,
-                                cursor: cursor_sink,
-                                redraw: &self.redraw,
-                            });
+                            viewport.dispatch_app_event(
+                                &click_ev,
+                                PlatformServices {
+                                    clipboard: &mut self.clipboard,
+                                    cursor: cursor_sink,
+                                    redraw: &self.redraw,
+                                },
+                            );
                             let _ = viewport.dispatch_platform_pointer_event(&click);
                         }
                     }
@@ -688,11 +720,14 @@ impl ApplicationHandler for Runner {
                         Some(sink) => sink,
                         None => &mut NoopCursorSink,
                     };
-                    viewport.dispatch_app_event(&ev, PlatformServices {
-                        clipboard: &mut self.clipboard,
-                        cursor: cursor_sink,
-                        redraw: &self.redraw,
-                    });
+                    viewport.dispatch_app_event(
+                        &ev,
+                        PlatformServices {
+                            clipboard: &mut self.clipboard,
+                            cursor: cursor_sink,
+                            redraw: &self.redraw,
+                        },
+                    );
                     let _ = viewport.dispatch_platform_wheel_event(&wheel);
                 }
             }
@@ -705,11 +740,14 @@ impl ApplicationHandler for Runner {
                             Some(sink) => sink,
                             None => &mut NoopCursorSink,
                         };
-                        viewport.dispatch_app_event(&ev, PlatformServices {
-                            clipboard: &mut self.clipboard,
-                            cursor: cursor_sink,
-                            redraw: &self.redraw,
-                        });
+                        viewport.dispatch_app_event(
+                            &ev,
+                            PlatformServices {
+                                clipboard: &mut self.clipboard,
+                                cursor: cursor_sink,
+                                redraw: &self.redraw,
+                            },
+                        );
                     }
                 }
                 if !focused {
@@ -798,10 +836,7 @@ fn lookup_app_canvas() -> Option<HtmlCanvasElement> {
 /// is configured at the same physical resolution the browser is composing.
 /// Returns `(physical_size, scale_factor)` for the caller to push into the
 /// viewport.
-fn sync_canvas_size(
-    canvas: Option<&HtmlCanvasElement>,
-    fallback_scale: f32,
-) -> ((u32, u32), f32) {
+fn sync_canvas_size(canvas: Option<&HtmlCanvasElement>, fallback_scale: f32) -> ((u32, u32), f32) {
     let Some(canvas) = canvas else {
         return ((1, 1), fallback_scale);
     };
@@ -824,14 +859,16 @@ fn sync_canvas_size(
 
 fn hide_boot_overlay() {
     let Some(win) = window() else { return };
-    let boot = match js_sys::Reflect::get(&win, &wasm_bindgen::JsValue::from_str("__RFGUI_BOOT__")) {
+    let boot = match js_sys::Reflect::get(&win, &wasm_bindgen::JsValue::from_str("__RFGUI_BOOT__"))
+    {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
         _ => return,
     };
-    let func = match js_sys::Reflect::get(&boot, &wasm_bindgen::JsValue::from_str("hideBootOverlay")) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
+    let func =
+        match js_sys::Reflect::get(&boot, &wasm_bindgen::JsValue::from_str("hideBootOverlay")) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
     if let Ok(func) = func.dyn_into::<js_sys::Function>() {
         let _ = func.call0(&boot);
     }

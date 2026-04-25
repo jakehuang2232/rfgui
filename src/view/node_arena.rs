@@ -249,9 +249,7 @@ impl NodeArena {
         for k in to_remove {
             if let Some(cell) = self.slots.remove(k) {
                 let sid = cell.borrow().element.stable_id();
-                if sid != 0
-                    && self.stable_id_index.get(&sid).copied() == Some(k)
-                {
+                if sid != 0 && self.stable_id_index.get(&sid).copied() == Some(k) {
                     self.stable_id_index.remove(&sid);
                 }
                 removed += 1;
@@ -329,7 +327,9 @@ impl NodeArena {
     /// borrowed. Use inside dispatch when a handler may recursively query
     /// its own element so the call returns gracefully instead of panicking.
     pub fn try_get_mut(&self, key: NodeKey) -> Option<RefMut<'_, Node>> {
-        self.slots.get(key).and_then(|cell| cell.try_borrow_mut().ok())
+        self.slots
+            .get(key)
+            .and_then(|cell| cell.try_borrow_mut().ok())
     }
 
     pub fn contains_key(&self, key: NodeKey) -> bool {
@@ -388,7 +388,10 @@ impl NodeArena {
     /// measure/place hot loops can read the cache in O(1) instead of
     /// walking the whole subtree per node (the O(N²) trap that bit the
     /// arena refactor).
-    pub fn refresh_subtree_dirty_cache(&self, key: NodeKey) -> crate::view::base_component::DirtyFlags {
+    pub fn refresh_subtree_dirty_cache(
+        &self,
+        key: NodeKey,
+    ) -> crate::view::base_component::DirtyFlags {
         use crate::view::base_component::DirtyFlags;
         let Some(cell) = self.slots.get(key) else {
             return DirtyFlags::NONE;

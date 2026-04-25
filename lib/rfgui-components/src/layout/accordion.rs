@@ -1,7 +1,5 @@
 use crate::{ExpandMoreIcon, use_theme};
-use rfgui::ui::{
-    Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state,
-};
+use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
 use rfgui::view::Element;
 use rfgui::{
     Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform,

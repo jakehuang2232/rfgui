@@ -172,9 +172,9 @@ impl Gradient {
 
     pub fn stops(&self) -> &[ColorStop] {
         match self {
-            Self::Linear { stops, .. }
-            | Self::Radial { stops, .. }
-            | Self::Conic { stops, .. } => stops,
+            Self::Linear { stops, .. } | Self::Radial { stops, .. } | Self::Conic { stops, .. } => {
+                stops
+            }
         }
     }
 

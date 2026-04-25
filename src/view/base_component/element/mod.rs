@@ -978,23 +978,43 @@ impl FlexProps {
     }
     #[inline]
     pub fn min_main(&self, is_row: bool) -> SizeValue {
-        if is_row { self.min_width } else { self.min_height }
+        if is_row {
+            self.min_width
+        } else {
+            self.min_height
+        }
     }
     #[inline]
     pub fn max_main(&self, is_row: bool) -> SizeValue {
-        if is_row { self.max_width } else { self.max_height }
+        if is_row {
+            self.max_width
+        } else {
+            self.max_height
+        }
     }
     #[inline]
     pub fn has_explicit_min_main(&self, is_row: bool) -> bool {
-        if is_row { self.has_explicit_min_width } else { self.has_explicit_min_height }
+        if is_row {
+            self.has_explicit_min_width
+        } else {
+            self.has_explicit_min_height
+        }
     }
     #[inline]
     pub fn allows_cross_stretch(&self, is_row: bool) -> bool {
-        if is_row { self.allows_cross_stretch_when_row } else { self.allows_cross_stretch_when_col }
+        if is_row {
+            self.allows_cross_stretch_when_row
+        } else {
+            self.allows_cross_stretch_when_col
+        }
     }
     #[inline]
     pub fn intrinsic_main(&self, is_row: bool) -> Option<f32> {
-        if is_row { self.intrinsic_width } else { self.intrinsic_height }
+        if is_row {
+            self.intrinsic_width
+        } else {
+            self.intrinsic_height
+        }
     }
 
     /// Derived auto_min_main: only content-sized elements opt in via
@@ -1034,11 +1054,7 @@ pub trait Layoutable {
         constraints: LayoutConstraints,
         arena: &mut crate::view::node_arena::NodeArena,
     );
-    fn place(
-        &mut self,
-        placement: LayoutPlacement,
-        arena: &mut crate::view::node_arena::NodeArena,
-    );
+    fn place(&mut self, placement: LayoutPlacement, arena: &mut crate::view::node_arena::NodeArena);
     fn measured_size(&self) -> (f32, f32);
     fn set_layout_width(&mut self, width: f32);
     fn set_layout_height(&mut self, height: f32);
@@ -1353,7 +1369,26 @@ pub trait Renderable {
     ) -> BuildState;
 }
 
-pub trait ElementTrait: Layoutable + EventTarget + Renderable + std::any::Any {
+/// Dynamic type-name supertrait for [`ElementTrait`]. Implemented via a
+/// blanket `impl<T: 'static>` so every concrete element type gets a
+/// correct [`std::any::type_name`] entry in its vtable — callers holding
+/// `&dyn ElementTrait` can then resolve the concrete type's name
+/// (unlike [`std::any::type_name_of_val`] on a trait object, which
+/// returns the *static* `"dyn …"` name).
+pub trait ElementTypeName {
+    fn element_type_name(&self) -> &'static str;
+}
+
+impl<T: 'static + ?Sized> ElementTypeName for T {
+    #[inline]
+    fn element_type_name(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
+}
+
+pub trait ElementTrait:
+    Layoutable + EventTarget + Renderable + ElementTypeName + std::any::Any
+{
     fn stable_id(&self) -> u64;
     fn box_model_snapshot(&self) -> BoxModelSnapshot;
 
@@ -1514,21 +1549,15 @@ type KeyDownHandler = Box<dyn FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>)
 type KeyUpHandler = Box<dyn FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>)>;
 type FocusHandler = Box<dyn FnMut(&mut FocusEvent, &mut ViewportControl<'_>)>;
 type BlurHandler = Box<dyn FnMut(&mut BlurEvent, &mut ViewportControl<'_>)>;
-type ImeCommitHandler =
-    Box<dyn FnMut(&mut crate::ui::ImeCommitEvent, &mut ViewportControl<'_>)>;
-type ImeEnabledHandler =
-    Box<dyn FnMut(&mut crate::ui::ImeEnabledEvent, &mut ViewportControl<'_>)>;
+type ImeCommitHandler = Box<dyn FnMut(&mut crate::ui::ImeCommitEvent, &mut ViewportControl<'_>)>;
+type ImeEnabledHandler = Box<dyn FnMut(&mut crate::ui::ImeEnabledEvent, &mut ViewportControl<'_>)>;
 type ImeDisabledHandler =
     Box<dyn FnMut(&mut crate::ui::ImeDisabledEvent, &mut ViewportControl<'_>)>;
-type DragStartHandler =
-    Box<dyn FnMut(&mut crate::ui::DragStartEvent, &mut ViewportControl<'_>)>;
-type DragOverHandler =
-    Box<dyn FnMut(&mut crate::ui::DragOverEvent, &mut ViewportControl<'_>)>;
-type DragLeaveHandler =
-    Box<dyn FnMut(&mut crate::ui::DragLeaveEvent, &mut ViewportControl<'_>)>;
+type DragStartHandler = Box<dyn FnMut(&mut crate::ui::DragStartEvent, &mut ViewportControl<'_>)>;
+type DragOverHandler = Box<dyn FnMut(&mut crate::ui::DragOverEvent, &mut ViewportControl<'_>)>;
+type DragLeaveHandler = Box<dyn FnMut(&mut crate::ui::DragLeaveEvent, &mut ViewportControl<'_>)>;
 type DropHandler = Box<dyn FnMut(&mut crate::ui::DropEvent, &mut ViewportControl<'_>)>;
-type DragEndHandler =
-    Box<dyn FnMut(&mut crate::ui::DragEndEvent, &mut ViewportControl<'_>)>;
+type DragEndHandler = Box<dyn FnMut(&mut crate::ui::DragEndEvent, &mut ViewportControl<'_>)>;
 type CopyHandler = Box<dyn FnMut(&mut crate::ui::CopyEvent, &mut ViewportControl<'_>)>;
 type CutHandler = Box<dyn FnMut(&mut crate::ui::CutEvent, &mut ViewportControl<'_>)>;
 type PasteHandler = Box<dyn FnMut(&mut crate::ui::PasteEvent, &mut ViewportControl<'_>)>;
@@ -1858,13 +1887,12 @@ impl Element {
             let Some(child_node) = arena.get(*child_key) else {
                 continue;
             };
-            let child_bounds = if let Some(element) =
-                child_node.element.as_any().downcast_ref::<Element>()
-            {
-                element.transform_subtree_raster_bounds(arena)
-            } else {
-                child_node.element.promotion_composite_bounds()
-            };
+            let child_bounds =
+                if let Some(element) = child_node.element.as_any().downcast_ref::<Element>() {
+                    element.transform_subtree_raster_bounds(arena)
+                } else {
+                    child_node.element.promotion_composite_bounds()
+                };
             bounds = Self::union_promotion_bounds(bounds, child_bounds);
         }
         bounds

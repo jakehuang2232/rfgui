@@ -1,7 +1,7 @@
 use crate::rfgui::ui::{RsxNode, rsx};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{
-    Border, BorderRadius, Color, ColorLike, Layout, Length, Padding, ScrollDirection,
+    Border, BorderRadius, Color, ColorLike, Layout, Length, Padding,
 };
 use crate::rfgui_components::Theme;
 
@@ -55,11 +55,9 @@ pub fn build(theme: &Theme) -> RsxNode {
     rsx! {
         <Element style={{
             width: Length::percent(100.0),
-            height: Length::percent(100.0),
             layout: Layout::flow().column().no_wrap(),
             gap: theme.spacing.md,
             padding: Padding::uniform(theme.spacing.lg),
-            scroll_direction: ScrollDirection::Vertical,
             color: theme.color.text.primary.clone(),
             font: theme.typography.font_family.clone(),
             font_size: theme.typography.size.sm,

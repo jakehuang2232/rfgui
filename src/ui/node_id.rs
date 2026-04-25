@@ -6,7 +6,14 @@
 //! `stable_id` path survives only for cross-frame stable-id lookups (e.g.
 //! `get_scroll_offset_by_id`).
 
+use std::any::TypeId;
+use std::cell::Ref;
 use std::fmt;
+use std::marker::PhantomData;
+use std::ops::Deref;
+
+use crate::view::base_component::ElementTrait;
+use crate::view::node_arena::Node;
 
 /// Opaque id assigned by the viewport to each element in the retained tree.
 ///
@@ -30,7 +37,12 @@ pub struct Rect {
 impl Rect {
     #[inline]
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// `true` if `(px, py)` lies inside this rectangle (half-open on the
@@ -175,7 +187,9 @@ impl<'a> EventTarget<'a> {
 
     /// `true` if `other` is a descendant of (or equal to) this target.
     pub fn contains(&self, other: NodeId) -> bool {
-        let Some(vp) = self.viewport else { return false };
+        let Some(vp) = self.viewport else {
+            return false;
+        };
         if self.id == other {
             return true;
         }
@@ -190,14 +204,78 @@ impl<'a> EventTarget<'a> {
         false
     }
 
-    /// Component tag of the node (e.g. `"Element"`, `"TextArea"`).
+    /// [`TypeId`] of the concrete element type at this node. Use for
+    /// cheap `Copy`/`Eq` identity checks and as the building block for
+    /// [`Self::is`] / delegation patterns like
+    /// `target.closest(|t| t.is::<Button>())`.
     ///
-    /// Placeholder — returns `None` until `ElementTrait` exposes a
-    /// `type_name` / `kind` method. Needed for `closest(|t| t.tag() == …)`
-    /// delegation patterns.
+    /// Returns `None` for synthetic / detached targets (no viewport attached
+    /// or key no longer in arena).
+    pub fn tag(&self) -> Option<TypeId> {
+        let vp = self.viewport?;
+        let node = vp.node_arena().get(self.id)?;
+        Some((*node.element).as_any().type_id())
+    }
+
+    /// Human-readable type name of the concrete element (e.g.
+    /// `"rfgui::view::base_component::element::Element"`). Debug / tracing
+    /// only — do **not** pattern-match on it (format is not stable across
+    /// rustc versions). Prefer [`Self::tag`] / [`Self::is`] for comparisons.
+    pub fn tag_name(&self) -> Option<&'static str> {
+        let vp = self.viewport?;
+        let node = vp.node_arena().get(self.id)?;
+        // Dispatches through the `ElementTypeName` vtable slot so we get
+        // the concrete element type's name, not `"dyn ElementTrait"`.
+        Some((*node.element).element_type_name())
+    }
+
+    /// True if the node's concrete element type is `T`. Equivalent to
+    /// `self.tag() == Some(TypeId::of::<T>())` but reads better at the
+    /// call site.
+    ///
+    /// ```ignore
+    /// target.closest(|t| t.is::<Button>());
+    /// ```
     #[inline]
-    pub fn tag(&self) -> Option<&'static str> {
-        None
+    pub fn is<T: ElementTrait>(&self) -> bool {
+        self.tag() == Some(TypeId::of::<T>())
+    }
+
+    /// Borrow the element as `&T` when the concrete type matches. Returns
+    /// `None` on type mismatch / synthetic target / detached node.
+    ///
+    /// ```ignore
+    /// if let Some(btn) = target.downcast::<Button>() {
+    ///     if btn.disabled { return; }
+    /// }
+    /// ```
+    ///
+    /// The returned [`ElementRef`] holds a [`Ref`] into the arena slot
+    /// and must not outlive the current handler invocation. Do not clone
+    /// or store it — dropping it releases the borrow so other code can
+    /// mutate the arena.
+    pub fn downcast<T: ElementTrait>(&self) -> Option<ElementRef<'a, T>> {
+        let vp = self.viewport?;
+        let guard = vp.node_arena().get(self.id)?;
+        if (*guard.element).as_any().type_id() != TypeId::of::<T>() {
+            return None;
+        }
+        Some(ElementRef {
+            guard,
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Borrow the element as a `&dyn ElementTrait` trait object. Useful
+    /// when the specific type is not known but trait methods suffice.
+    /// Returns `None` for synthetic / detached targets.
+    pub fn element(&self) -> Option<ElementRef<'a, dyn ElementTrait>> {
+        let vp = self.viewport?;
+        let guard = vp.node_arena().get(self.id)?;
+        Some(ElementRef {
+            guard,
+            _phantom: PhantomData,
+        })
     }
 
     /// ARIA role placeholder. Always `None` until the a11y layer lands.
@@ -263,6 +341,50 @@ impl PartialEq for EventTarget<'_> {
         self.id == other.id
             && self.bounds == other.bounds
             && self.local_bounds == other.local_bounds
+    }
+}
+
+/// Transient handle to a node's concrete element, returned by
+/// [`EventTarget::downcast`] and [`EventTarget::element`].
+///
+/// Wraps a [`Ref`] into the arena slot; its lifetime is bound to the
+/// `EventTarget` that produced it. Hold it only for the duration of a
+/// handler — cloning into long-lived storage would keep the slot
+/// immutably borrowed and eventually panic when the engine tries to
+/// mutate it.
+///
+/// `Deref`s to either `T` ([`EventTarget::downcast::<T>`]) or
+/// `dyn ElementTrait` ([`EventTarget::element`]).
+pub struct ElementRef<'a, T: ?Sized> {
+    guard: Ref<'a, Node>,
+    _phantom: PhantomData<fn() -> *const T>,
+}
+
+impl<'a, T: ElementTrait> Deref for ElementRef<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // `downcast` verifies the type before constructing — the downcast
+        // here cannot fail. Expressed as `expect` rather than `unwrap`
+        // for a clearer panic message in the impossible case.
+        (*self.guard.element)
+            .as_any()
+            .downcast_ref::<T>()
+            .expect("ElementRef<T> constructed without type check")
+    }
+}
+
+impl<'a> Deref for ElementRef<'a, dyn ElementTrait> {
+    type Target = dyn ElementTrait;
+    fn deref(&self) -> &dyn ElementTrait {
+        &*self.guard.element
+    }
+}
+
+impl<'a, T: ?Sized> fmt::Debug for ElementRef<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ElementRef")
+            .field("ty", &std::any::type_name::<T>())
+            .finish()
     }
 }
 
@@ -339,12 +461,15 @@ mod tests {
         let t = EventTarget::bare(NodeId::default());
         assert!(t.parent().is_none());
         assert!(t.ancestors().next().is_none());
-        assert!(t
-            .closest(|_| true)
-            .map(|c| c == t)
-            .unwrap_or(false)); // closest finds self
+        assert!(t.closest(|_| true).map(|c| c == t).unwrap_or(false)); // closest finds self
         assert!(!t.contains(NodeId::default()) || t.id == NodeId::default());
         assert!(t.tag().is_none());
+        assert!(t.tag_name().is_none());
+        assert!(
+            t.downcast::<crate::view::base_component::Element>()
+                .is_none()
+        );
+        assert!(t.element().is_none());
         assert!(t.role().is_none());
         assert_eq!(t.state(), NodeState::default());
         assert!(!t.disabled());
@@ -378,5 +503,111 @@ mod tests {
         assert!(!s.disabled);
         assert!(!s.visible);
     }
-}
 
+    mod live {
+        //! Tests that exercise `tag` / `is` / `downcast` against a live
+        //! arena. Render a minimal rsx tree into a `Viewport`, pick the
+        //! resulting root `NodeKey`, hand-build an `EventTarget` pointing
+        //! at it, then verify the accessors report the concrete type.
+        use super::*;
+        use crate::Length;
+        use crate::ui::{RsxNode, rsx};
+        use crate::view::Element as RuntimeElementTag;
+        use crate::view::base_component::Element as RuntimeElement;
+        use crate::view::viewport::Viewport;
+
+        fn host_tree() -> RsxNode {
+            rsx! {
+                <RuntimeElementTag style={{
+                    width: Length::px(100.0),
+                    height: Length::px(50.0),
+                }} />
+            }
+        }
+
+        fn viewport_with_root() -> (Viewport, NodeId) {
+            let mut vp = Viewport::new();
+            vp.render_rsx(&host_tree()).expect("render succeeds");
+            let key = vp
+                .node_arena()
+                .roots()
+                .first()
+                .copied()
+                .expect("one root inserted");
+            (vp, key)
+        }
+
+        fn target_for<'a>(vp: &'a Viewport, key: NodeId) -> EventTarget<'a> {
+            super::super::target_from_viewport(vp, key)
+        }
+
+        #[test]
+        fn tag_returns_concrete_type_id() {
+            let (vp, key) = viewport_with_root();
+            let t = target_for(&vp, key);
+            assert_eq!(t.tag(), Some(std::any::TypeId::of::<RuntimeElement>()));
+        }
+
+        #[test]
+        fn tag_name_contains_element() {
+            let (vp, key) = viewport_with_root();
+            let t = target_for(&vp, key);
+            let name = t.tag_name().expect("live target has a type name");
+            assert!(name.contains("Element"), "unexpected tag_name: {name}");
+        }
+
+        #[test]
+        fn is_reports_correct_type() {
+            let (vp, key) = viewport_with_root();
+            let t = target_for(&vp, key);
+            assert!(t.is::<RuntimeElement>());
+        }
+
+        #[test]
+        fn downcast_hits_on_matching_type() {
+            let (vp, key) = viewport_with_root();
+            let t = target_for(&vp, key);
+            let el = t.downcast::<RuntimeElement>().expect("type matches");
+            // Deref lets us read fields through the `ElementRef` guard.
+            let _id: u64 = el.stable_id();
+        }
+
+        #[test]
+        fn element_returns_trait_object() {
+            let (vp, key) = viewport_with_root();
+            let t = target_for(&vp, key);
+            let el = t.element().expect("live target has an element");
+            // `dyn ElementTrait` exposes trait methods directly.
+            let _ = el.box_model_snapshot();
+        }
+
+        // Sentinel element type used purely as a `TypeId` for the
+        // negative-downcast test — it is never actually inserted into
+        // the arena, so downcasting an `Element` slot to this type must
+        // fail.
+        struct NotAnElement;
+
+        #[test]
+        fn downcast_mismatched_type_returns_none() {
+            let (vp, key) = viewport_with_root();
+            let t = target_for(&vp, key);
+            // `NotAnElement` does not implement `ElementTrait`, so the
+            // bound on `downcast::<T>` rejects it at compile time —
+            // instead verify via `is::<T>` that the type ids differ.
+            assert_ne!(t.tag(), Some(std::any::TypeId::of::<NotAnElement>()));
+            assert!(!t.is::<crate::view::base_component::TextArea>());
+            assert!(
+                t.downcast::<crate::view::base_component::TextArea>()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn closest_with_type_predicate() {
+            let (vp, key) = viewport_with_root();
+            let t = target_for(&vp, key);
+            let hit = t.closest(|c| c.is::<RuntimeElement>());
+            assert_eq!(hit.map(|h| h.id), Some(key));
+        }
+    }
+}

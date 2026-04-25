@@ -155,6 +155,7 @@ impl Viewport {
         // normal pointer_up path.
         if self.input_state.drag_state.is_some() {
             let _ = button;
+            self.input_state.pending_click = None;
             return self.handle_drag_up(x, y);
         }
         let buttons = self.current_ui_pointer_buttons();
@@ -232,10 +233,9 @@ impl Viewport {
         }
         let redraw_requested_before = self.redraw_requested;
         let root_keys = self.scene.ui_root_keys.clone();
-        let hover_target = root_keys
-            .iter()
-            .rev()
-            .find_map(|&root_key| crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y));
+        let hover_target = root_keys.iter().rev().find_map(|&root_key| {
+            crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+        });
         let buttons = self.current_ui_pointer_buttons();
         let pointer_data = PointerEventData {
             viewport_x: x,
@@ -322,10 +322,9 @@ impl Viewport {
         }
         let buttons = self.current_ui_pointer_buttons();
         let root_keys = self.scene.ui_root_keys.clone();
-        let hit_target = root_keys
-            .iter()
-            .rev()
-            .find_map(|&root_key| crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y));
+        let hit_target = root_keys.iter().rev().find_map(|&root_key| {
+            crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+        });
         let is_valid_click = is_valid_click_candidate(pending_click, button, hit_target, x, y);
         if !is_valid_click {
             return false;
@@ -492,19 +491,28 @@ impl Viewport {
         }
         let mut pending_scroll_track: Option<(TrackTarget, (f32, f32), (f32, f32))> = None;
         let root_keys = self.scene.ui_root_keys.clone();
-        let Some((root_index, target_key)) =
-            Self::find_scroll_handler_at_pointer(&self.scene.node_arena, &root_keys, x, y, delta_x, delta_y)
-        else {
+        let Some((root_index, target_key)) = Self::find_scroll_handler_at_pointer(
+            &self.scene.node_arena,
+            &root_keys,
+            x,
+            y,
+            delta_x,
+            delta_y,
+        ) else {
             return false;
         };
         // Cross-frame scroll track keys are u64 stable_ids; resolve once.
-        let target_stable_id = self.scene.node_arena
+        let target_stable_id = self
+            .scene
+            .node_arena
             .get(target_key)
             .map(|n| n.element.stable_id())
             .unwrap_or(0);
         if let Some(&root_key) = root_keys.get(root_index) {
             if let Some(from) = crate::view::base_component::get_scroll_offset_by_id(
-                &self.scene.node_arena, root_key, target_stable_id,
+                &self.scene.node_arena,
+                root_key,
+                target_stable_id,
             ) {
                 let _ = crate::view::base_component::dispatch_scroll_to_target(
                     &self.scene.node_arena,
@@ -539,24 +547,30 @@ impl Viewport {
                 claims: &mut self.transitions.transition_claims,
             };
             if (to.0 - from.0).abs() > 0.001 {
-                let _ = self.transitions.scroll_transition_plugin.start_scroll_track(
-                    &mut host,
-                    target_id,
-                    ScrollAxis::X,
-                    from.0,
-                    to.0,
-                    transition_spec,
-                );
+                let _ = self
+                    .transitions
+                    .scroll_transition_plugin
+                    .start_scroll_track(
+                        &mut host,
+                        target_id,
+                        ScrollAxis::X,
+                        from.0,
+                        to.0,
+                        transition_spec,
+                    );
             }
             if (to.1 - from.1).abs() > 0.001 {
-                let _ = self.transitions.scroll_transition_plugin.start_scroll_track(
-                    &mut host,
-                    target_id,
-                    ScrollAxis::Y,
-                    from.1,
-                    to.1,
-                    transition_spec,
-                );
+                let _ = self
+                    .transitions
+                    .scroll_transition_plugin
+                    .start_scroll_track(
+                        &mut host,
+                        target_id,
+                        ScrollAxis::Y,
+                        from.1,
+                        to.1,
+                        transition_spec,
+                    );
             }
             handled = true;
         }
@@ -1104,11 +1118,7 @@ impl Viewport {
     /// Fire [`crate::ui::DragLeaveEvent`] at `target_id`. Non-bubbling.
     fn dispatch_drag_leave_event(&mut self, target_id: NodeId) -> bool {
         let (arena, mut control) = self.borrow_for_dispatch();
-        crate::view::base_component::dispatch_drag_leave_to_key(
-            &arena,
-            target_id,
-            &mut control,
-        )
+        crate::view::base_component::dispatch_drag_leave_to_key(&arena, target_id, &mut control)
     }
 
     /// Fire [`crate::ui::DropEvent`] at `target_id` with the resolved
@@ -1200,12 +1210,9 @@ impl Viewport {
     fn handle_drag_move(&mut self, x: f32, y: f32) -> bool {
         let arena_view = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
-        let target = root_keys
-            .iter()
-            .rev()
-            .find_map(|&root_key| {
-                crate::view::base_component::hit_test(&arena_view, root_key, x, y)
-            });
+        let target = root_keys.iter().rev().find_map(|&root_key| {
+            crate::view::base_component::hit_test(&arena_view, root_key, x, y)
+        });
         self.scene.node_arena = arena_view;
 
         let prev_target = self
@@ -1213,11 +1220,7 @@ impl Viewport {
             .drag_state
             .as_ref()
             .and_then(|s| s.last_over_target);
-        let data = self
-            .input_state
-            .drag_state
-            .as_ref()
-            .map(|s| s.data.clone());
+        let data = self.input_state.drag_state.as_ref().map(|s| s.data.clone());
         let Some(data) = data else {
             return false;
         };
@@ -1259,8 +1262,22 @@ impl Viewport {
             self.current_key_modifiers(),
             self.current_ui_pointer_buttons(),
         );
-        let effect = state.last_drop_effect;
-        if let (Some(target), Some(effect)) = (state.last_over_target, effect) {
+        let current_target = {
+            let arena_view = std::mem::take(&mut self.scene.node_arena);
+            let root_keys = self.scene.ui_root_keys.clone();
+            let target = root_keys.iter().rev().find_map(|&root_key| {
+                crate::view::base_component::hit_test(&arena_view, root_key, x, y)
+            });
+            self.scene.node_arena = arena_view;
+            target
+        };
+        let drop_target = current_target.or(state.last_over_target);
+        let effect = if let Some(target) = current_target {
+            self.dispatch_drag_over_event(target, pointer, state.data.clone())
+        } else {
+            state.last_drop_effect
+        };
+        if let (Some(target), Some(effect)) = (drop_target, effect) {
             let _ = self.dispatch_drop_event(target, pointer, state.data.clone(), effect);
         }
         let _ = self.dispatch_drag_end_event(state.source_id, pointer, effect);
@@ -1362,19 +1379,13 @@ impl Viewport {
     /// keep working. New backend code should only ever see this method.
     pub fn dispatch_platform_pointer_event(&mut self, event: &PlatformPointerEvent) -> bool {
         match event.kind {
-            PlatformPointerEventKind::Down(button) => {
-                self.dispatch_pointer_down_event(button)
-            }
-            PlatformPointerEventKind::Up(button) => {
-                self.dispatch_pointer_up_event(button)
-            }
+            PlatformPointerEventKind::Down(button) => self.dispatch_pointer_down_event(button),
+            PlatformPointerEventKind::Up(button) => self.dispatch_pointer_up_event(button),
             PlatformPointerEventKind::Move { x, y } => {
                 self.set_pointer_position_viewport(x, y);
                 self.dispatch_pointer_move_event()
             }
-            PlatformPointerEventKind::Click(button) => {
-                self.dispatch_click_event(button)
-            }
+            PlatformPointerEventKind::Click(button) => self.dispatch_click_event(button),
         }
     }
 
@@ -1583,7 +1594,9 @@ impl Viewport {
                 }
                 EventCommand::SelectTextRangeAll(target_id) => {
                     let root_keys = self.scene.ui_root_keys.clone();
-                    let stable_id = self.scene.node_arena
+                    let stable_id = self
+                        .scene
+                        .node_arena
                         .get(target_id)
                         .map(|n| n.element.stable_id())
                         .unwrap_or(0);
@@ -1604,7 +1617,9 @@ impl Viewport {
                     end,
                 } => {
                     let root_keys = self.scene.ui_root_keys.clone();
-                    let stable_id = self.scene.node_arena
+                    let stable_id = self
+                        .scene
+                        .node_arena
                         .get(target_id)
                         .map(|n| n.element.stable_id())
                         .unwrap_or(0);
@@ -1646,9 +1661,7 @@ impl Viewport {
                     self.input_state.keyboard_capture_node_id = node_id;
                 }
                 EventCommand::Window(command) => {
-                    self.pending_platform_requests
-                        .window_commands
-                        .push(command);
+                    self.pending_platform_requests.window_commands.push(command);
                 }
                 EventCommand::Ime(command) => {
                     self.pending_platform_requests.ime_commands.push(command);
@@ -1672,17 +1685,19 @@ impl Viewport {
                     });
                     // Tell the runner an OS-level drag should start (no-op
                     // on backends without a native drag bridge).
-                    self.pending_platform_requests
-                        .pending_drags
-                        .push(crate::platform::PendingDrag {
+                    self.pending_platform_requests.pending_drags.push(
+                        crate::platform::PendingDrag {
                             source_id,
                             payload,
                             effect_allowed,
-                        });
+                        },
+                    );
                     // Fire DragStart synchronously so the handler can
                     // veto (future: prevent_default clears drag_state).
                     let pointer = synthetic_pointer_data(
-                        self.input_state.pointer_position_viewport.unwrap_or((0.0, 0.0)),
+                        self.input_state
+                            .pointer_position_viewport
+                            .unwrap_or((0.0, 0.0)),
                         self.current_key_modifiers(),
                         self.current_ui_pointer_buttons(),
                     );
@@ -1718,7 +1733,10 @@ impl Viewport {
     }
 
     pub fn clear_pointer_position_viewport(&mut self) {
-        let last_pos = self.input_state.pointer_position_viewport.unwrap_or((0.0, 0.0));
+        let last_pos = self
+            .input_state
+            .pointer_position_viewport
+            .unwrap_or((0.0, 0.0));
         self.input_state.pointer_position_viewport = None;
         self.input_state.pointer_capture_node_id = None;
         let root_keys = self.scene.ui_root_keys.clone();
@@ -1788,7 +1806,9 @@ impl Viewport {
         self.dispatched_focus_node_id = None;
         let root_keys = self.scene.ui_root_keys.clone();
         let pointer_data = synthetic_pointer_data(
-            self.input_state.pointer_position_viewport.unwrap_or((0.0, 0.0)),
+            self.input_state
+                .pointer_position_viewport
+                .unwrap_or((0.0, 0.0)),
             self.current_key_modifiers(),
             self.current_ui_pointer_buttons(),
         );
@@ -1804,7 +1824,6 @@ impl Viewport {
             self.request_redraw();
         }
     }
-
 }
 
 fn ui_input_type_from_platform(

@@ -1,5 +1,8 @@
 use crate::rfgui::ui::{RsxNode, component, rsx};
-use rfgui::{Align, Animation, Animator, Direction, Element, JustifyContent, Keyframe, Layout, Length, Repeat, style, Transform, Scale};
+use rfgui::{
+    Align, Animation, Animator, Direction, Element, JustifyContent, Keyframe, Layout, Length,
+    Repeat, Scale, Transform, style,
+};
 
 #[component]
 pub fn MainScene() -> RsxNode {

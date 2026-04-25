@@ -1,12 +1,12 @@
+use crate::rfgui::register_element_factory;
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
-    PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent,
-    RsxNode, ViewportHandle, component, use_viewport,
+    PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent, RsxNode, ViewportHandle,
+    component, use_viewport,
 };
-use crate::rfgui::view::viewport::ViewportControl;
 use crate::rfgui::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, InlineMeasureContext,
-    InlineNodeSize, InlinePlacement, Layoutable, LayoutConstraints, LayoutPlacement, Renderable,
+    InlineNodeSize, InlinePlacement, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
     UiBuildContext,
 };
 use crate::rfgui::view::frame_graph::slot::{InSlot, OutSlot};
@@ -16,11 +16,11 @@ use crate::rfgui::view::frame_graph::{
     GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::rfgui::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
-use crate::rfgui::view::render_pass::{GraphicsCtx, GraphicsPass};
 use crate::rfgui::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams, TextureCompositePass,
 };
-use crate::rfgui::register_element_factory;
+use crate::rfgui::view::render_pass::{GraphicsCtx, GraphicsPass};
+use crate::rfgui::view::viewport::ViewportControl;
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -37,8 +37,12 @@ const SPAWN_RATE: f32 = 100.0; // particles per second
 
 /// 3D particle in normalised space. Projected to 2D for rendering.
 struct Particle {
-    x: f32,  y: f32,  z: f32,
-    vx: f32, vy: f32, vz: f32,
+    x: f32,
+    y: f32,
+    z: f32,
+    vx: f32,
+    vy: f32,
+    vz: f32,
     color: [f32; 4],
     size_norm: f32,
     life: f32,
@@ -127,8 +131,8 @@ impl ParticleSystemInner {
 
         // Central mass attracted to mouse (or center) by gravity + damping.
         let target = self.attractor.unwrap_or((0.5, 0.5));
-        let spring = 30.0_f32;  // spring stiffness
-        let damping = 6.0_f32;  // velocity damping
+        let spring = 30.0_f32; // spring stiffness
+        let damping = 6.0_f32; // velocity damping
         let dx_m = target.0 - self.mass_x;
         let dy_m = target.1 - self.mass_y;
         self.mass_vx += dx_m * spring * dt;
@@ -207,8 +211,12 @@ impl ParticleSystemInner {
             let size_norm = 0.004 + self.next_f32() * 0.010;
 
             self.particles.push(Particle {
-                x: px, y: py, z: pz,
-                vx, vy, vz,
+                x: px,
+                y: py,
+                z: pz,
+                vx,
+                vy,
+                vz,
                 color: [cr, cg, cb, 1.0],
                 size_norm,
                 life: 1.0,
@@ -223,7 +231,11 @@ impl ParticleSystemInner {
         for p in &self.particles {
             // Perspective projection: objects closer to camera appear larger.
             let depth = CAM_DIST - p.z; // camera at z = CAM_DIST, looking toward z=0
-            let scale = if depth > 0.01 { CAM_DIST / depth } else { CAM_DIST / 0.01 };
+            let scale = if depth > 0.01 {
+                CAM_DIST / depth
+            } else {
+                CAM_DIST / 0.01
+            };
             // Project around canvas center.
             let cx = canvas_width * 0.5;
             let cy = canvas_height * 0.5;
@@ -565,33 +577,57 @@ impl Layoutable for ParticleCanvas {
             ..Default::default()
         }
     }
-    fn cross_alignment_size(&self, is_row: bool, _: Option<f32>, _arena: &rfgui::view::NodeArena) -> f32 {
+    fn cross_alignment_size(
+        &self,
+        is_row: bool,
+        _: Option<f32>,
+        _arena: &rfgui::view::NodeArena,
+    ) -> f32 {
         if is_row { self.target_h } else { self.target_w }
     }
-    fn inline_relative_position(&self) -> (f32, f32) { (self.offset_x, self.offset_y) }
+    fn inline_relative_position(&self) -> (f32, f32) {
+        (self.offset_x, self.offset_y)
+    }
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.offset_x = x;
         self.offset_y = y;
     }
     fn measure_inline(&mut self, ctx: InlineMeasureContext, arena: &mut rfgui::view::NodeArena) {
-        self.measure(LayoutConstraints {
-            max_width: ctx.first_available_width, max_height: 1_000_000.0,
-            viewport_width: ctx.viewport_width, viewport_height: ctx.viewport_height,
-            percent_base_width: ctx.percent_base_width, percent_base_height: ctx.percent_base_height,
-        }, arena);
+        self.measure(
+            LayoutConstraints {
+                max_width: ctx.first_available_width,
+                max_height: 1_000_000.0,
+                viewport_width: ctx.viewport_width,
+                viewport_height: ctx.viewport_height,
+                percent_base_width: ctx.percent_base_width,
+                percent_base_height: ctx.percent_base_height,
+            },
+            arena,
+        );
     }
     fn get_inline_nodes_size(&self, _arena: &rfgui::view::NodeArena) -> Vec<InlineNodeSize> {
-        vec![InlineNodeSize { width: self.target_w, height: self.target_h }]
+        vec![InlineNodeSize {
+            width: self.target_w,
+            height: self.target_h,
+        }]
     }
     fn place_inline(&mut self, p: InlinePlacement, arena: &mut rfgui::view::NodeArena) {
         self.set_layout_offset(p.offset_x, p.offset_y);
-        self.place(LayoutPlacement {
-            parent_x: p.parent_x, parent_y: p.parent_y,
-            visual_offset_x: p.visual_offset_x, visual_offset_y: p.visual_offset_y,
-            available_width: p.available_width, available_height: p.available_height,
-            viewport_width: p.viewport_width, viewport_height: p.viewport_height,
-            percent_base_width: p.percent_base_width, percent_base_height: p.percent_base_height,
-        }, arena);
+        self.place(
+            LayoutPlacement {
+                parent_x: p.parent_x,
+                parent_y: p.parent_y,
+                visual_offset_x: p.visual_offset_x,
+                visual_offset_y: p.visual_offset_y,
+                available_width: p.available_width,
+                available_height: p.available_height,
+                viewport_width: p.viewport_width,
+                viewport_height: p.viewport_height,
+                percent_base_width: p.percent_base_width,
+                percent_base_height: p.percent_base_height,
+            },
+            arena,
+        );
     }
 }
 
@@ -654,7 +690,12 @@ impl EventTarget for ParticleCanvas {
 }
 
 impl Renderable for ParticleCanvas {
-    fn build(&mut self, graph: &mut FrameGraph, _arena: &mut rfgui::view::NodeArena, ctx: UiBuildContext) -> BuildState {
+    fn build(
+        &mut self,
+        graph: &mut FrameGraph,
+        _arena: &mut rfgui::view::NodeArena,
+        ctx: UiBuildContext,
+    ) -> BuildState {
         if !self.should_render {
             return ctx.into_state();
         }
@@ -675,13 +716,8 @@ impl Renderable for ParticleCanvas {
         let tex_h = (canvas_h * scale).ceil() as u32;
 
         let offscreen: OutSlot<TextureResource, RenderTargetTag> = graph.declare_texture(
-            TextureDesc::new(
-                tex_w,
-                tex_h,
-                format,
-                wgpu::TextureDimension::D2,
-            )
-            .with_label("ParticleCanvas Offscreen"),
+            TextureDesc::new(tex_w, tex_h, format, wgpu::TextureDimension::D2)
+                .with_label("ParticleCanvas Offscreen"),
         );
 
         // 2. Update particle state and add particle render pass.
@@ -752,21 +788,35 @@ impl Renderable for ParticleCanvas {
 }
 
 impl ElementTrait for ParticleCanvas {
-    fn stable_id(&self) -> u64 { self.id }
-    fn parent_id(&self) -> Option<u64> { self.parent_id }
-    fn set_parent_id(&mut self, id: Option<u64>) { self.parent_id = id; }
+    fn stable_id(&self) -> u64 {
+        self.id
+    }
+    fn parent_id(&self) -> Option<u64> {
+        self.parent_id
+    }
+    fn set_parent_id(&mut self, id: Option<u64>) {
+        self.parent_id = id;
+    }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         BoxModelSnapshot {
-            node_id: self.id, parent_id: self.parent_id,
-            x: self.layout_x, y: self.layout_y,
-            width: self.layout_w, height: self.layout_h,
-            border_radius: 0.0, should_render: self.should_render,
+            node_id: self.id,
+            parent_id: self.parent_id,
+            x: self.layout_x,
+            y: self.layout_y,
+            width: self.layout_w,
+            height: self.layout_h,
+            border_radius: 0.0,
+            should_render: self.should_render,
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 
     fn promotion_self_signature(&self) -> u64 {
         // Always changing → prevents promotion from caching stale frames.
@@ -775,7 +825,9 @@ impl ElementTrait for ParticleCanvas {
         CTR.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn local_dirty_flags(&self) -> DirtyFlags { DirtyFlags::ALL }
+    fn local_dirty_flags(&self) -> DirtyFlags {
+        DirtyFlags::ALL
+    }
     fn clear_local_dirty_flags(&mut self, _: DirtyFlags) {}
 }
 
@@ -788,7 +840,11 @@ pub fn register_particle_canvas() {
         "ParticleCanvas",
         Arc::new(|_node, path| {
             // Size defaults to 0 → will be filled by parent constraints during layout.
-            Ok(Box::new(ParticleCanvas::new(stable_id("ParticleCanvas", path), 0.0, 0.0)))
+            Ok(Box::new(ParticleCanvas::new(
+                stable_id("ParticleCanvas", path),
+                0.0,
+                0.0,
+            )))
         }),
     );
 }

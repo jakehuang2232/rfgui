@@ -52,7 +52,6 @@ macro_rules! __rfgui_style_assign_nested {
     };
 }
 
-
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __rfgui_style_build_hover {
@@ -93,13 +92,13 @@ macro_rules! style {
     }};
 }
 
-mod style;
-/// Platform abstraction traits (surface target, clipboard, cursor sink, ...).
-/// Phase 0 of the viewport-decoupling work. No backend code lives here.
-pub mod platform;
 /// `App` trait + supporting types — contract between user code and host
 /// runners. The engine itself never drives an event loop.
 pub mod app;
+/// Platform abstraction traits (surface target, clipboard, cursor sink, ...).
+/// Phase 0 of the viewport-decoupling work. No backend code lives here.
+pub mod platform;
+mod style;
 pub mod time {
     pub use std::time::Duration;
     #[cfg(not(target_arch = "wasm32"))]

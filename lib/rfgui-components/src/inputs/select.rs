@@ -4,8 +4,7 @@ use std::rc::Rc;
 use crate::{ExpandMoreIcon, use_theme};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
-    PointerDownHandlerProp, RsxComponent, RsxNode, component, props, rsx,
-    use_state,
+    PointerDownHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{
@@ -392,4 +391,3 @@ where
     }
     panic!("Select prop `to_value` is required when ValueType is not String");
 }
-
