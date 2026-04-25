@@ -197,10 +197,10 @@ impl Element {
 
     fn resolve_corner_radii_from_self_box(&mut self, proposal: LayoutProposal) {
         let radius_base = self
-            .core
+            .layout_state
             .layout_size
             .width
-            .min(self.core.layout_size.height)
+            .min(self.layout_state.layout_size.height)
             .max(0.0);
         self.border_radii = CornerRadii {
             top_left: resolve_px(
@@ -233,18 +233,18 @@ impl Element {
 
     pub(crate) fn set_border_radius_transition_sample(&mut self, radius: f32) {
         let proposal = self.last_layout_proposal.unwrap_or(LayoutProposal {
-            width: self.core.layout_size.width.max(0.0),
-            height: self.core.layout_size.height.max(0.0),
+            width: self.layout_state.layout_size.width.max(0.0),
+            height: self.layout_state.layout_size.height.max(0.0),
             viewport_width: 0.0,
             viewport_height: 0.0,
             percent_base_width: None,
             percent_base_height: None,
         });
         let radius_base = self
-            .core
+            .layout_state
             .layout_size
             .width
-            .min(self.core.layout_size.height)
+            .min(self.layout_state.layout_size.height)
             .max(0.0);
         let target_radii = CornerRadii {
             top_left: resolve_px(
@@ -295,7 +295,7 @@ impl Element {
         absolute_mask: &[bool],
     ) {
         if self.children.is_empty() {
-            self.content_size = Size {
+            self.layout_state.content_size = Size {
                 width: 0.0,
                 height: 0.0,
             };
@@ -315,22 +315,22 @@ impl Element {
                 .element
                 .as_any()
                 .downcast_ref::<Element>()
-                .map(|el| (el.layout_flow_position.x, el.layout_flow_position.y))
+                .map(|el| (el.layout_state.layout_flow_position.x, el.layout_state.layout_flow_position.y))
                 .unwrap_or((snapshot.x, snapshot.y));
-            let rel_x = child_flow_x - self.layout_flow_inner_position.x + self.scroll_offset.x;
-            let rel_y = child_flow_y - self.layout_flow_inner_position.y + self.scroll_offset.y;
+            let rel_x = child_flow_x - self.layout_state.layout_flow_inner_position.x + self.scroll_offset.x;
+            let rel_y = child_flow_y - self.layout_state.layout_flow_inner_position.y + self.scroll_offset.y;
             max_x = max_x.max(rel_x + snapshot.width.max(0.0));
             max_y = max_y.max(rel_y + snapshot.height.max(0.0));
         }
-        self.content_size = Size {
+        self.layout_state.content_size = Size {
             width: max_x.max(0.0),
             height: max_y.max(0.0),
         };
     }
 
     fn clamp_scroll_offset(&mut self) {
-        let max_x = (self.content_size.width - self.layout_inner_size.width).max(0.0);
-        let max_y = (self.content_size.height - self.layout_inner_size.height).max(0.0);
+        let max_x = (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width).max(0.0);
+        let max_y = (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height).max(0.0);
         self.scroll_offset.x = self.scroll_offset.x.clamp(0.0, max_x);
         self.scroll_offset.y = self.scroll_offset.y.clamp(0.0, max_y);
     }
@@ -368,61 +368,20 @@ impl Element {
             percent_base_height: None,
         });
 
-        let bw_l = resolve_px_or_zero(
-            self.computed_style.border_widths.left,
+        let insets = resolve_layout_insets(
+            &self.computed_style.border_widths,
+            &self.computed_style.padding,
             proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_r = resolve_px_or_zero(
-            self.computed_style.border_widths.right,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_t = resolve_px_or_zero(
-            self.computed_style.border_widths.top,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_b = resolve_px_or_zero(
-            self.computed_style.border_widths.bottom,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-
-        let p_l = resolve_px_or_zero(
-            self.computed_style.padding.left,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_r = resolve_px_or_zero(
-            self.computed_style.padding.right,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_t = resolve_px_or_zero(
-            self.computed_style.padding.top,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_b = resolve_px_or_zero(
-            self.computed_style.padding.bottom,
             proposal.percent_base_height,
             proposal.viewport_width,
             proposal.viewport_height,
         );
 
         if self.computed_style.width == SizeValue::Auto {
-            self.core.set_width(max_w + bw_l + bw_r + p_l + p_r);
+            self.core.set_width(max_w + insets.horizontal());
         }
         if self.computed_style.height == SizeValue::Auto {
-            self.core.set_height(max_h + bw_t + bw_b + p_t + p_b);
+            self.core.set_height(max_h + insets.vertical());
         }
     }
 
@@ -631,16 +590,16 @@ impl Element {
             self.layout_transition_override_height = None;
             self.layout_transition_target_height = None;
         }
-        let current_visual_rel_x = (self.layout_flow_position.x - self.last_parent_layout_x)
+        let current_visual_rel_x = (self.layout_state.layout_flow_position.x - self.last_parent_layout_x)
             + self.layout_transition_visual_offset_x;
-        let current_visual_rel_y = (self.layout_flow_position.y - self.last_parent_layout_y)
+        let current_visual_rel_y = (self.layout_state.layout_flow_position.y - self.last_parent_layout_y)
             + self.layout_transition_visual_offset_y;
-        let prev_target_rel_x = self.layout_flow_position.x - self.last_parent_layout_x;
-        let prev_target_rel_y = self.layout_flow_position.y - self.last_parent_layout_y;
+        let prev_target_rel_x = self.layout_state.layout_flow_position.x - self.last_parent_layout_x;
+        let prev_target_rel_y = self.layout_state.layout_flow_position.y - self.last_parent_layout_y;
         let current_offset_x = current_visual_rel_x - target_rel_x;
         let current_offset_y = current_visual_rel_y - target_rel_y;
-        let prev_width = self.core.layout_size.width.max(0.0);
-        let prev_height = self.core.layout_size.height.max(0.0);
+        let prev_width = self.layout_state.layout_size.width.max(0.0);
+        let prev_height = self.layout_state.layout_size.height.max(0.0);
         // If visual target changes while track is active, always rebase from current rendered
         // position and restart. This keeps the visual track start anchored to "where it is now".
         if self
@@ -683,25 +642,25 @@ impl Element {
             .layout_transition_override_height
             .unwrap_or(target_height)
             .max(0.0);
-        self.layout_flow_position = Position {
+        self.layout_state.layout_flow_position = Position {
             x: parent_x + frame_rel_x,
             y: parent_y + frame_rel_y,
         };
         let frame = LayoutFrame {
-            x: self.layout_flow_position.x
+            x: self.layout_state.layout_flow_position.x
                 + parent_visual_offset_x
                 + self.layout_transition_visual_offset_x,
-            y: self.layout_flow_position.y
+            y: self.layout_state.layout_flow_position.y
                 + parent_visual_offset_y
                 + self.layout_transition_visual_offset_y,
             width: frame_width,
             height: frame_height,
         };
-        self.core.layout_position = Position {
+        self.layout_state.layout_position = Position {
             x: frame.x,
             y: frame.y,
         };
-        self.core.layout_size = Size {
+        self.layout_state.layout_size = Size {
             width: frame.width,
             height: frame.height,
         };
@@ -754,11 +713,11 @@ impl Element {
             proposal.viewport_height,
         );
 
-        self.core.should_render = frame.width > 0.0
+        self.layout_state.should_render = frame.width > 0.0
             && frame.height > 0.0
             && intersects_parent_clip
             && intersects_absolute_clip;
-        self.core.should_paint = self.core.should_render
+        self.core.should_paint = self.layout_state.should_render
             && self.computed_style.opacity > 0.0
             && has_nonzero_inner_area
             && has_visible_self_paint;
@@ -1033,10 +992,10 @@ impl Element {
             height: 0.0,
         });
         let snapshot = AnchorSnapshot {
-            x: self.core.layout_position.x,
-            y: self.core.layout_position.y,
-            width: self.core.layout_size.width.max(0.0),
-            height: self.core.layout_size.height.max(0.0),
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.layout_state.layout_size.width.max(0.0),
+            height: self.layout_state.layout_size.height.max(0.0),
             parent_clip_rect,
         };
         PLACEMENT_RUNTIME.with(|runtime| {
@@ -1179,10 +1138,10 @@ impl Element {
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
         let inherited_hit_test_clip = self.hit_test_clip_rect.unwrap_or(Rect {
-            x: self.core.layout_position.x,
-            y: self.core.layout_position.y,
-            width: self.core.layout_size.width.max(0.0),
-            height: self.core.layout_size.height.max(0.0),
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.layout_state.layout_size.width.max(0.0),
+            height: self.layout_state.layout_size.height.max(0.0),
         });
         self.push_hit_test_clip_scope(intersect_rect(
             inherited_hit_test_clip,
@@ -1190,10 +1149,10 @@ impl Element {
         ));
         let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
         self.push_child_clip_scope(Rect {
-            x: self.layout_inner_position.x - overscan,
-            y: self.layout_inner_position.y - overscan,
-            width: (self.layout_inner_size.width + overscan * 2.0).max(0.0),
-            height: (self.layout_inner_size.height + overscan * 2.0).max(0.0),
+            x: self.layout_state.layout_inner_position.x - overscan,
+            y: self.layout_state.layout_inner_position.y - overscan,
+            width: (self.layout_state.layout_inner_size.width + overscan * 2.0).max(0.0),
+            height: (self.layout_state.layout_inner_size.height + overscan * 2.0).max(0.0),
         });
         let is_axis_layout = matches!(
             self.computed_style.layout,
@@ -1225,10 +1184,10 @@ impl Element {
                 }
             });
         } else {
-            let origin_x = self.layout_flow_inner_position.x - self.scroll_offset.x;
-            let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
-            let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
-            let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
+            let origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
+            let origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+            let visual_offset_x = self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
+            let visual_offset_y = self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
             let non_axis_children_started_at = Instant::now();
             let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
             // Build the is-absolute mask once: each call is arena.get +
@@ -1344,22 +1303,6 @@ impl Element {
             return;
         }
 
-        let info = if let Some(info) = self.flex_info.take() {
-            info
-        } else {
-            self.compute_flex_info(
-                child_inner_width,
-                child_inner_height,
-                child_available_width,
-                child_available_height,
-                viewport_width,
-                viewport_height,
-                child_percent_base_width,
-                child_percent_base_height,
-                arena,
-            )
-        };
-
         let is_row = matches!(
             self.computed_style.layout_axis_direction(),
             FlowDirection::Row
@@ -1373,175 +1316,81 @@ impl Element {
             viewport_width,
             viewport_height,
         );
-        let origin_x = self.layout_flow_inner_position.x - self.scroll_offset.x;
-        let origin_y = self.layout_flow_inner_position.y - self.scroll_offset.y;
-        let visual_offset_x = self.core.layout_position.x - self.layout_flow_position.x;
-        let visual_offset_y = self.core.layout_position.y - self.layout_flow_position.y;
+        let origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
+        let origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+        let visual_offset_x = self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
+        let visual_offset_y = self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
 
-        let total_cross = info.total_cross;
-        let cross_size = self.computed_style.layout_axis_cross_size();
-        let align = self.computed_style.layout_axis_align();
-        let mut cross_cursor = cross_start_offset(cross_limit, total_cross, align);
-        let flex_children_started_at = Instant::now();
+        let absolute_mask = self.compute_children_absolute_mask(arena);
+        let info = if let Some(cached) = self.flex_info.take() {
+            cached
+        } else {
+            let is_real_flex = matches!(self.computed_style.layout, Layout::Flex { .. });
+            let solver_wrap = !is_real_flex
+                && matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
+            crate::view::layout::flex_solver::compute_flex_info(
+                crate::view::layout::flex_solver::FlexSolverInputs {
+                    layout_kind: self.computed_style.layout,
+                    children: &self.children,
+                    absolute_mask: &absolute_mask,
+                    is_row,
+                    is_real_flex,
+                    wrap: solver_wrap,
+                    gap,
+                    main_limit,
+                    child_available_width,
+                    child_available_height,
+                    viewport_width,
+                    viewport_height,
+                    child_percent_base_width,
+                    child_percent_base_height,
+                },
+                arena,
+            )
+        };
 
-        for (line_idx, line) in info.lines.iter().enumerate() {
-            let line_main = info.line_main_sum[line_idx];
-            let line_cross = info.line_cross_max[line_idx];
-            let mut line_item_count = 0_usize;
-            let mut prev_child_index: Option<usize> = None;
-            for item in line {
-                if prev_child_index != Some(item.child_index) {
-                    line_item_count += 1;
-                    prev_child_index = Some(item.child_index);
-                }
-            }
-            let (mut main_cursor, distributed_gap) = main_axis_start_and_gap(
-                main_limit,
-                line_main,
+        crate::view::layout::place::place_axis_children(
+            crate::view::layout::place::PlaceAxisChildrenInputs {
+                layout: self.computed_style.layout,
+                children: &self.children,
+                flex_info: info,
+                is_row,
                 gap,
-                line_item_count,
-                self.computed_style.layout_axis_justify_content(),
-            );
+                main_limit,
+                cross_limit,
+                origin_x,
+                origin_y,
+                visual_offset_x,
+                visual_offset_y,
+                child_available_width,
+                child_available_height,
+                viewport_width,
+                viewport_height,
+                child_percent_base_width,
+                child_percent_base_height,
+                align: self.computed_style.layout_axis_align(),
+                justify_content: self.computed_style.layout_axis_justify_content(),
+                cross_size: self.computed_style.layout_axis_cross_size(),
+            },
+            arena,
+        );
 
-            for (item_idx, item) in line.iter().enumerate() {
-                let child_idx = item.child_index;
-                let item_main = item.main;
-                let child_key = self.children[child_idx];
-                LAYOUT_PLACE_PROFILE.with(|profile| {
-                    profile.borrow_mut().child_place_calls += 1;
-                });
-                if matches!(self.computed_style.layout, Layout::Inline) {
-                    let alignment_cross = item.cross.max(0.0);
-                    let align_offset = cross_item_offset(line_cross, alignment_cross, align);
-                    let (offset_x, offset_y) = if is_row {
-                        (
-                            main_cursor + item.main_offset,
-                            cross_cursor + align_offset + item.cross_offset,
-                        )
-                    } else {
-                        (
-                            cross_cursor + align_offset + item.cross_offset,
-                            main_cursor + item.main_offset,
-                        )
-                    };
-                    arena.with_element_taken(child_key, |child, arena| {
-                        child.place_inline(
-                            InlinePlacement {
-                                node_index: item.node_index,
-                                x: origin_x + visual_offset_x + offset_x,
-                                y: origin_y + visual_offset_y + offset_y,
-                                offset_x,
-                                offset_y,
-                                parent_x: origin_x,
-                                parent_y: origin_y,
-                                visual_offset_x,
-                                visual_offset_y,
-                                available_width: child_available_width,
-                                available_height: child_available_height,
-                                viewport_width,
-                                viewport_height,
-                                percent_base_width: child_percent_base_width,
-                                percent_base_height: child_percent_base_height,
-                            },
-                            arena,
-                        );
-                    });
-                } else {
-                    arena.with_element_taken(child_key, |child, arena| {
-                        if is_row {
-                            child.set_layout_width(item_main);
-                        } else {
-                            child.set_layout_height(item_main);
-                        }
-                        let stretched_cross = if cross_size == CrossSize::Stretch
-                            && child.flex_props().allows_cross_stretch(is_row)
-                        {
-                            if is_row {
-                                child.set_layout_height(line_cross);
-                            } else {
-                                child.set_layout_width(line_cross);
-                            }
-                            Some(line_cross)
-                        } else {
-                            None
-                        };
-                        let alignment_cross = child
-                            .cross_alignment_size(is_row, stretched_cross, arena)
-                            .max(0.0);
-                        let cross_offset = cross_item_offset(line_cross, alignment_cross, align);
-                        let (offset_x, offset_y) = if is_row {
-                            (main_cursor, cross_cursor + cross_offset)
-                        } else {
-                            (cross_cursor + cross_offset, main_cursor)
-                        };
-                        child.set_layout_offset(offset_x, offset_y);
-                        child.place(
-                            LayoutPlacement {
-                                parent_x: origin_x,
-                                parent_y: origin_y,
-                                visual_offset_x,
-                                visual_offset_y,
-                                available_width: child_available_width,
-                                available_height: child_available_height,
-                                viewport_width,
-                                viewport_height,
-                                percent_base_width: child_percent_base_width,
-                                percent_base_height: child_percent_base_height,
-                            },
-                            arena,
-                        );
-                    });
-                }
-                main_cursor += item_main;
-                if line
-                    .get(item_idx + 1)
-                    .is_some_and(|next| next.child_index != child_idx)
-                {
-                    main_cursor += distributed_gap;
-                }
-            }
-
-            cross_cursor += line_cross + gap;
-        }
-        let flex_children_elapsed_ms =
-            flex_children_started_at.elapsed().as_secs_f64() * 1000.0;
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().non_axis_child_place_ms += flex_children_elapsed_ms;
-        });
-
-        let absolute_children_started_at = Instant::now();
-        let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-        for (idx, child_key) in child_keys.iter().copied().enumerate() {
-            if !self.child_is_absolute(idx, arena) {
-                continue;
-            }
-            LAYOUT_PLACE_PROFILE.with(|profile| {
-                let mut profile = profile.borrow_mut();
-                profile.child_place_calls += 1;
-                profile.absolute_child_place_calls += 1;
-            });
-            arena.with_element_taken(child_key, |child, arena| {
-                child.place(
-                    LayoutPlacement {
-                        parent_x: origin_x,
-                        parent_y: origin_y,
-                        visual_offset_x,
-                        visual_offset_y,
-                        available_width: child_available_width,
-                        available_height: child_available_height,
-                        viewport_width,
-                        viewport_height,
-                        percent_base_width: child_percent_base_width,
-                        percent_base_height: child_percent_base_height,
-                    },
-                    arena,
-                );
-            });
-        }
-        let absolute_children_elapsed_ms =
-            absolute_children_started_at.elapsed().as_secs_f64() * 1000.0;
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().absolute_child_place_ms += absolute_children_elapsed_ms;
-        });
+        crate::view::layout::place::place_absolute_children(
+            crate::view::layout::place::PlaceAbsoluteChildrenInputs {
+                children: &self.children,
+                absolute_mask: &absolute_mask,
+                origin_x,
+                origin_y,
+                visual_offset_x,
+                visual_offset_y,
+                child_available_width,
+                child_available_height,
+                viewport_width,
+                viewport_height,
+                child_percent_base_width,
+                child_percent_base_height,
+            },
+            arena,
+        );
     }
 }

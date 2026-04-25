@@ -6,7 +6,7 @@ use crate::ColorLike;
 use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
-    CrossSize, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
+    Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
     ScrollDirection, SizeValue, Style, Transform, TransformKind, TransformOrigin,
     TransitionProperty, TransitionTiming, compute_style, interpolate_transform_with_reference_box,
 };
@@ -168,11 +168,11 @@ struct EdgeColors {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Rect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+pub(crate) struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 impl Rect {
@@ -303,6 +303,15 @@ pub(crate) fn reset_layout_place_profile() {
 
 pub(crate) fn take_layout_place_profile() -> LayoutPlaceProfile {
     LAYOUT_PLACE_PROFILE.with(|profile| std::mem::take(&mut *profile.borrow_mut()))
+}
+
+/// Mutate the per-frame layout-place profile via a closure.
+/// `pub(crate)` so layout-pipeline modules (e.g. `crate::view::layout::place`)
+/// can record profile counters without exposing the thread-local directly.
+pub(crate) fn with_layout_place_profile<R>(
+    f: impl FnOnce(&mut LayoutPlaceProfile) -> R,
+) -> R {
+    LAYOUT_PLACE_PROFILE.with(|profile| f(&mut profile.borrow_mut()))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1602,39 +1611,6 @@ struct ElementTransitionRequests {
     visual: Vec<VisualTrackRequest>,
 }
 
-#[derive(Clone, Debug)]
-struct FlexLayoutInfo {
-    lines: Vec<Vec<FlexLineItem>>,
-    line_main_sum: Vec<f32>,
-    line_cross_max: Vec<f32>,
-    total_main: f32,
-    total_cross: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct FlexLineItem {
-    child_index: usize,
-    node_index: usize,
-    main: f32,
-    cross: f32,
-    main_offset: f32,
-    cross_offset: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct FlexItemPlan {
-    index: usize,
-    flex_base_main: f32,
-    hypothetical_main: f32,
-    used_main: f32,
-    min_main: f32,
-    max_main: Option<f32>,
-    grow: f32,
-    shrink: f32,
-    frozen: bool,
-    cross: f32,
-}
-
 /// Snapshot of an Element's "previous frame" visual style. Used by
 /// the style-transition emission path (`collect_style_transition_
 /// requests` / `preserve_transform_transition_baseline`) to compute
@@ -1660,10 +1636,7 @@ struct ElementStyleSnapshot {
 pub struct Element {
     core: ElementCore,
     anchor_name: Option<AnchorName>,
-    layout_flow_position: Position,
-    layout_inner_position: Position,
-    layout_flow_inner_position: Position,
-    layout_inner_size: Size,
+    pub(crate) layout_state: crate::view::layout::LayoutState,
     intrinsic_size_is_percent_base: bool,
     parsed_style: Style,
     computed_style: ComputedStyle,
@@ -1682,7 +1655,6 @@ pub struct Element {
     opacity: f32,
     scroll_direction: ScrollDirection,
     scroll_offset: Position,
-    content_size: Size,
     pending_inline_measure_context: Option<InlineMeasureContext>,
     last_inline_measure_context: Option<InlineMeasureContext>,
     inline_paint_fragments: Vec<Rect>,
@@ -1711,7 +1683,7 @@ pub struct Element {
     dirty_flags: DirtyFlags,
     last_layout_placement: Option<LayoutPlacement>,
     last_layout_proposal: Option<LayoutProposal>,
-    flex_info: Option<FlexLayoutInfo>,
+    flex_info: Option<crate::view::layout::FlexLayoutInfo>,
     has_absolute_descendant_for_hit_test: bool,
     absolute_clip_rect: Option<Rect>,
     anchor_parent_clip_rect: Option<Rect>,
@@ -1990,12 +1962,12 @@ impl ElementTrait for Element {
         BoxModelSnapshot {
             node_id: self.core.id,
             parent_id: self.core.parent_id,
-            x: self.core.layout_position.x,
-            y: self.core.layout_position.y,
-            width: self.core.layout_size.width,
-            height: self.core.layout_size.height,
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.layout_state.layout_size.width,
+            height: self.layout_state.layout_size.height,
             border_radius: self.border_radius,
-            should_render: self.core.should_render,
+            should_render: self.layout_state.should_render,
         }
     }
 
@@ -2010,8 +1982,8 @@ impl ElementTrait for Element {
     // Phase B: snapshot_state / restore_state removed (see trait def).
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
-        let local_x = viewport_x - self.core.layout_position.x;
-        let local_y = viewport_y - self.core.layout_position.y;
+        let local_x = viewport_x - self.layout_state.layout_position.x;
+        let local_y = viewport_y - self.layout_state.layout_position.y;
         self.is_scrollbar_hit(local_x, local_y)
     }
 
@@ -2045,14 +2017,14 @@ impl ElementTrait for Element {
 
     fn promotion_self_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.core.should_render.hash(&mut hasher);
+        self.layout_state.should_render.hash(&mut hasher);
         self.core.should_paint.hash(&mut hasher);
-        hash_f32(&mut hasher, self.core.layout_position.x);
-        hash_f32(&mut hasher, self.core.layout_position.y);
-        hash_f32(&mut hasher, self.core.layout_size.width.max(0.0));
-        hash_f32(&mut hasher, self.core.layout_size.height.max(0.0));
-        hash_f32(&mut hasher, self.layout_inner_size.width.max(0.0));
-        hash_f32(&mut hasher, self.layout_inner_size.height.max(0.0));
+        hash_f32(&mut hasher, self.layout_state.layout_position.x);
+        hash_f32(&mut hasher, self.layout_state.layout_position.y);
+        hash_f32(&mut hasher, self.layout_state.layout_size.width.max(0.0));
+        hash_f32(&mut hasher, self.layout_state.layout_size.height.max(0.0));
+        hash_f32(&mut hasher, self.layout_state.layout_inner_size.width.max(0.0));
+        hash_f32(&mut hasher, self.layout_state.layout_inner_size.height.max(0.0));
         hash_f32(&mut hasher, self.padding.left);
         hash_f32(&mut hasher, self.padding.right);
         hash_f32(&mut hasher, self.padding.top);
@@ -2066,8 +2038,8 @@ impl ElementTrait for Element {
         .hash(&mut hasher);
         hash_f32(&mut hasher, self.scroll_offset.x);
         hash_f32(&mut hasher, self.scroll_offset.y);
-        hash_f32(&mut hasher, self.content_size.width.max(0.0));
-        hash_f32(&mut hasher, self.content_size.height.max(0.0));
+        hash_f32(&mut hasher, self.layout_state.content_size.width.max(0.0));
+        hash_f32(&mut hasher, self.layout_state.content_size.height.max(0.0));
         self.inline_paint_fragments.len().hash(&mut hasher);
         for fragment in &self.inline_paint_fragments {
             hash_f32(&mut hasher, fragment.x);
@@ -2185,8 +2157,8 @@ impl ElementTrait for Element {
                 .collect();
             let outer_radii = normalize_corner_radii(
                 self.border_radii,
-                self.core.layout_size.width.max(0.0),
-                self.core.layout_size.height.max(0.0),
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
             );
             let inner_radii = self.inner_clip_radii(outer_radii);
             let should_clip_children =

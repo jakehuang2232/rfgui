@@ -4,8 +4,8 @@ impl Element {
         arena: &crate::view::node_arena::NodeArena,
     ) -> Option<&'static str> {
         if self.children.is_empty()
-            || self.layout_inner_size.width <= 0.0
-            || self.layout_inner_size.height <= 0.0
+            || self.layout_state.layout_inner_size.width <= 0.0
+            || self.layout_state.layout_inner_size.height <= 0.0
         {
             return None;
         }
@@ -14,8 +14,8 @@ impl Element {
             .collect();
         let outer_radii = normalize_corner_radii(
             self.border_radii,
-            self.core.layout_size.width.max(0.0),
-            self.core.layout_size.height.max(0.0),
+            self.layout_state.layout_size.width.max(0.0),
+            self.layout_state.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
         if self.should_clip_children(&overflow_child_indices, inner_radii, arena) {
@@ -66,7 +66,7 @@ impl Element {
                 ctx.current_target().and_then(|target| target.handle())
             ),
         );
-        if !self.core.should_render {
+        if !self.layout_state.should_render {
             if self.has_absolute_descendant_for_hit_test {
                 self.collect_root_viewport_deferred_descendants(arena, &mut ctx);
             }
@@ -83,8 +83,8 @@ impl Element {
 
         let outer_radii = normalize_corner_radii(
             self.border_radii,
-            self.core.layout_size.width.max(0.0),
-            self.core.layout_size.height.max(0.0),
+            self.layout_state.layout_size.width.max(0.0),
+            self.layout_state.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
         self.border_radius = outer_radii.max();
@@ -195,51 +195,10 @@ impl Element {
         proposal: LayoutProposal,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
-        let bw_l = resolve_px_or_zero(
-            self.computed_style.border_widths.left,
+        let insets = resolve_layout_insets(
+            &self.computed_style.border_widths,
+            &self.computed_style.padding,
             proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_r = resolve_px_or_zero(
-            self.computed_style.border_widths.right,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_t = resolve_px_or_zero(
-            self.computed_style.border_widths.top,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let bw_b = resolve_px_or_zero(
-            self.computed_style.border_widths.bottom,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-
-        let p_l = resolve_px_or_zero(
-            self.computed_style.padding.left,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_r = resolve_px_or_zero(
-            self.computed_style.padding.right,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_t = resolve_px_or_zero(
-            self.computed_style.padding.top,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let p_b = resolve_px_or_zero(
-            self.computed_style.padding.bottom,
             proposal.percent_base_height,
             proposal.viewport_width,
             proposal.viewport_height,
@@ -260,8 +219,8 @@ impl Element {
         } else {
             layout_h
         };
-        let inner_w = (measure_w - bw_l - bw_r - p_l - p_r).max(0.0);
-        let inner_h = (measure_h - bw_t - bw_b - p_t - p_b).max(0.0);
+        let inner_w = (measure_w - insets.horizontal()).max(0.0);
+        let inner_h = (measure_h - insets.vertical()).max(0.0);
 
         let (child_available_width, child_available_height) = match self.scroll_direction {
             ScrollDirection::None => (inner_w, inner_h),
@@ -288,529 +247,71 @@ impl Element {
             proposal.viewport_width,
             proposal.viewport_height,
         );
-        let inline_horizontal_insets =
-            (bw_l + bw_r + p_l + p_r).max(0.0);
-        let mut current_line_width = 0.0_f32;
-        let mut line_has_content = false;
-        let mut pending_first_available_width = self
-            .pending_inline_measure_context
-            .map(|context| {
+        let inline_horizontal_insets = insets.horizontal().max(0.0);
+        let inline_first_available_width =
+            self.pending_inline_measure_context.map(|context| {
                 (context.first_available_width - inline_horizontal_insets)
                     .max(0.0)
                     .min(inner_w)
             });
-        let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-        for child_key in child_keys {
-            if matches!(self.computed_style.layout, Layout::Inline) {
-                let first_available_width = if let Some(width) = pending_first_available_width.take() {
-                    width
-                } else if !line_has_content {
-                    inner_w
-                } else {
-                    (inner_w - current_line_width - inline_gap).max(0.0)
-                };
-                let node_sizes = arena
-                    .with_element_taken(child_key, |child, arena| {
-                        child.measure_inline(
-                            InlineMeasureContext {
-                                first_available_width,
-                                full_available_width: inner_w,
-                                viewport_width: proposal.viewport_width,
-                                viewport_height: proposal.viewport_height,
-                                percent_base_width: child_percent_base_width,
-                                percent_base_height: child_percent_base_height,
-                            },
-                            arena,
-                        );
-                        child.get_inline_nodes_size(arena)
-                    })
-                    .unwrap_or_default();
-                if node_sizes.is_empty() {
-                    continue;
-                }
-                for (node_index, node) in node_sizes.into_iter().enumerate() {
-                    let item_width = node.width.max(0.0);
-                    let inserts_gap = node_index == 0 && line_has_content;
-                    let next_width = if !line_has_content {
-                        item_width
-                    } else if inserts_gap {
-                        current_line_width + inline_gap + item_width
-                    } else {
-                        current_line_width + item_width
-                    };
-                    if inline_wrap && line_has_content && next_width > inner_w {
-                        current_line_width = item_width;
-                    } else {
-                        current_line_width = next_width;
-                    }
-                    line_has_content = true;
-                }
-            } else {
-                arena.with_element_taken(child_key, |child, arena| {
-                    child.measure(
-                        LayoutConstraints {
-                            max_width: child_available_width,
-                            max_height: child_available_height,
-                            viewport_width: proposal.viewport_width,
-                            viewport_height: proposal.viewport_height,
-                            percent_base_width: child_percent_base_width,
-                            percent_base_height: child_percent_base_height,
-                        },
-                        arena,
-                    );
-                });
-            }
-        }
-        let info = self.compute_flex_info(
-            inner_w,
-            inner_h,
-            child_available_width,
-            child_available_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-            child_percent_base_width,
-            child_percent_base_height,
-            arena,
-        );
-        let is_row = matches!(
-            self.computed_style.layout_axis_direction(),
-            FlowDirection::Row
-        );
-
-        if self.computed_style.width == SizeValue::Auto {
-            let auto_width = if is_row {
-                info.total_main
-            } else {
-                info.total_cross
-            };
-            self.core.set_width(auto_width + bw_l + bw_r + p_l + p_r);
-        }
-        if self.computed_style.height == SizeValue::Auto {
-            let auto_height = if is_row {
-                info.total_cross
-            } else {
-                info.total_main
-            };
-            self.core.set_height(auto_height + bw_t + bw_b + p_t + p_b);
-        }
-
-        self.content_size = Size {
-            width: if is_row {
-                info.total_main
-            } else {
-                info.total_cross
-            },
-            height: if is_row {
-                info.total_cross
-            } else {
-                info.total_main
-            },
-        };
-        self.flex_info = Some(info);
-    }
-
-    fn resolve_flex_base_main_size(
-        props: &crate::view::base_component::FlexProps,
-        measured_main: f32,
-        is_row: bool,
-        main_limit: f32,
-        viewport_width: f32,
-        viewport_height: f32,
-    ) -> f32 {
-        match props.basis {
-            SizeValue::Length(length) => {
-                resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
-                    .unwrap_or(measured_main)
-            }
-            SizeValue::Auto => match props.main_size(is_row) {
-                SizeValue::Length(length) => {
-                    resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
-                        .unwrap_or(0.0)
-                }
-                SizeValue::Auto => props.auto_base_main(is_row).unwrap_or(0.0),
-            },
-        }
-        .max(0.0)
-    }
-
-    fn resolve_flex_main_constraint(
-        value: SizeValue,
-        main_limit: f32,
-        viewport_width: f32,
-        viewport_height: f32,
-    ) -> Option<f32> {
-        let SizeValue::Length(length) = value else {
-            return None;
-        };
-        resolve_px_with_base(length, Some(main_limit), viewport_width, viewport_height)
-            .map(|value| value.max(0.0))
-    }
-
-    fn clamp_flex_main(main: f32, min_main: f32, max_main: Option<f32>) -> f32 {
-        let clamped = main.max(min_main);
-        if let Some(max_main) = max_main {
-            clamped.min(max_main.max(min_main))
-        } else {
-            clamped
-        }
-    }
-
-    fn build_flex_item_plans(
-        &self,
-        is_row: bool,
-        main_limit: f32,
-        viewport_width: f32,
-        viewport_height: f32,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> Vec<FlexItemPlan> {
-        let mut items = Vec::new();
-        for (idx, child_key) in self.children.iter().enumerate() {
-            if self.child_is_absolute(idx, arena) {
-                continue;
-            }
-            let Some(child_node) = arena.get(*child_key) else {
-                continue;
-            };
-            let props = child_node.element.flex_props();
-            let (measured_w, measured_h) = child_node.element.measured_size();
-            drop(child_node);
-            let measured_main = if is_row { measured_w } else { measured_h };
-            let flex_base_main = Self::resolve_flex_base_main_size(
-                &props,
-                measured_main,
-                is_row,
-                main_limit,
-                viewport_width,
-                viewport_height,
-            );
-            let min_main = if props.has_explicit_min_main(is_row) {
-                Self::resolve_flex_main_constraint(
-                    props.min_main(is_row),
-                    main_limit,
-                    viewport_width,
-                    viewport_height,
-                )
-                .unwrap_or(0.0)
-            } else {
-                props.auto_min_main(is_row).unwrap_or(0.0)
-            };
-            items.push(FlexItemPlan {
-                index: idx,
-                flex_base_main,
-                hypothetical_main: flex_base_main,
-                used_main: flex_base_main,
-                min_main,
-                max_main: Self::resolve_flex_main_constraint(
-                    props.max_main(is_row),
-                    main_limit,
-                    viewport_width,
-                    viewport_height,
-                ),
-                grow: props.grow.max(0.0),
-                shrink: props.shrink.max(0.0),
-                frozen: false,
-                cross: 0.0,
-            });
-            let item = items.last_mut().expect("just pushed");
-            item.hypothetical_main =
-                Self::clamp_flex_main(item.flex_base_main, item.min_main, item.max_main);
-            item.used_main = item.hypothetical_main;
-        }
-        items
-    }
-
-    fn distribute_flex_line(&self, items: &mut [FlexItemPlan], gap: f32, main_limit: f32) {
-        for item in items.iter_mut() {
-            item.used_main = item.hypothetical_main;
-            item.frozen = false;
-        }
-
-        let gap_total = gap * (items.len().saturating_sub(1) as f32);
-        loop {
-            let free_space =
-                main_limit - gap_total - items.iter().map(|item| item.used_main).sum::<f32>();
-            if free_space.abs() <= 0.01 {
-                break;
-            }
-
-            if free_space > 0.0 {
-                let total_grow = items
-                    .iter()
-                    .filter(|item| !item.frozen)
-                    .map(|item| item.grow)
-                    .sum::<f32>();
-                if total_grow <= 0.0 {
-                    break;
-                }
-
-                let mut froze_any = false;
-                for item in items.iter_mut().filter(|item| !item.frozen) {
-                    let candidate = item.used_main + free_space * (item.grow / total_grow);
-                    let clamped = Self::clamp_flex_main(candidate, item.min_main, item.max_main);
-                    item.used_main = clamped;
-                    if (clamped - candidate).abs() > 0.01 {
-                        item.frozen = true;
-                        froze_any = true;
-                    }
-                }
-                if !froze_any {
-                    break;
-                }
-                continue;
-            }
-
-            let total_shrink_weight = items
-                .iter()
-                .filter(|item| !item.frozen)
-                .map(|item| item.shrink * item.flex_base_main)
-                .sum::<f32>();
-            if total_shrink_weight <= 0.0 {
-                break;
-            }
-
-            let mut froze_any = false;
-            for item in items.iter_mut().filter(|item| !item.frozen) {
-                let shrink_weight = item.shrink * item.flex_base_main;
-                let candidate = item.used_main + free_space * (shrink_weight / total_shrink_weight);
-                let clamped = Self::clamp_flex_main(candidate, item.min_main, item.max_main);
-                item.used_main = clamped;
-                if (clamped - candidate).abs() > 0.01 {
-                    item.frozen = true;
-                    froze_any = true;
-                }
-            }
-            if !froze_any {
-                break;
-            }
-        }
-    }
-
-    fn compute_flex_info(
-        &mut self,
-        inner_w: f32,
-        inner_h: f32,
-        child_available_width: f32,
-        child_available_height: f32,
-        viewport_width: f32,
-        viewport_height: f32,
-        child_percent_base_width: Option<f32>,
-        child_percent_base_height: Option<f32>,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) -> FlexLayoutInfo {
+        let absolute_mask = self.compute_children_absolute_mask(arena);
         let is_row = matches!(
             self.computed_style.layout_axis_direction(),
             FlowDirection::Row
         );
         let is_real_flex = matches!(self.computed_style.layout, Layout::Flex { .. });
-        let wrap = !is_real_flex && matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
+        let solver_wrap =
+            !is_real_flex && matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
-        let gap_base = if is_row { inner_w } else { inner_h };
-        let gap = resolve_px(
+        let solver_gap = resolve_px(
             self.computed_style.gap,
-            gap_base,
-            viewport_width,
-            viewport_height,
+            if is_row { inner_w } else { inner_h },
+            proposal.viewport_width,
+            proposal.viewport_height,
+        );
+        let outputs = crate::view::layout::measure::measure_axis(
+            crate::view::layout::measure::MeasureAxisInputs {
+                layout: self.computed_style.layout,
+                children: &self.children,
+                absolute_mask: &absolute_mask,
+                is_row,
+                is_real_flex,
+                solver_wrap,
+                solver_gap,
+                main_limit,
+                inner_width: inner_w,
+                child_available_width,
+                child_available_height,
+                child_percent_base_width,
+                child_percent_base_height,
+                viewport_width: proposal.viewport_width,
+                viewport_height: proposal.viewport_height,
+                inline_wrap,
+                inline_gap,
+                inline_first_available_width,
+            },
+            arena,
         );
 
-        let mut child_sizes = vec![(0.0_f32, 0.0_f32); self.children.len()];
-        if is_real_flex {
-            let mut items = self.build_flex_item_plans(
-                is_row,
-                main_limit,
-                viewport_width,
-                viewport_height,
-                arena,
-            );
-            let line = items.iter().map(|item| item.index).collect::<Vec<_>>();
-            self.distribute_flex_line(&mut items, gap, main_limit);
-            let gap_total = gap * (items.len().saturating_sub(1) as f32);
-            let mut line_cross = 0.0_f32;
-            let mut final_main_sum = 0.0_f32;
-
-            for item in &mut items {
-                let child_key = self.children[item.index];
-                let measured = arena
-                    .with_element_taken(child_key, |child, arena| {
-                        child.measure(
-                            LayoutConstraints {
-                                max_width: if is_row {
-                                    item.used_main
-                                } else {
-                                    child_available_width
-                                },
-                                max_height: if is_row {
-                                    child_available_height
-                                } else {
-                                    item.used_main
-                                },
-                                viewport_width,
-                                viewport_height,
-                                percent_base_width: child_percent_base_width,
-                                percent_base_height: child_percent_base_height,
-                            },
-                            arena,
-                        );
-                        child.measured_size()
-                    })
-                    .unwrap_or((0.0, 0.0));
-                let (measured_w, measured_h) = measured;
-                item.cross = if is_row { measured_h } else { measured_w };
-                child_sizes[item.index] = (item.used_main, item.cross);
-                final_main_sum += item.used_main;
-                line_cross = line_cross.max(item.cross);
-            }
-
-            let total_main = if line.is_empty() {
-                0.0
+        if self.computed_style.width == SizeValue::Auto {
+            let auto_width = if is_row {
+                outputs.flex_info.total_main
             } else {
-                final_main_sum + gap_total
+                outputs.flex_info.total_cross
             };
-            let line_items = line
-                .iter()
-                .copied()
-                .map(|child_index| FlexLineItem {
-                    child_index,
-                    node_index: 0,
-                    main: child_sizes[child_index].0,
-                    cross: child_sizes[child_index].1,
-                    main_offset: 0.0,
-                    cross_offset: 0.0,
-                })
-                .collect::<Vec<_>>();
-            return FlexLayoutInfo {
-                lines: if line_items.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![line_items]
-                },
-                line_main_sum: if total_main > 0.0 || line_cross > 0.0 {
-                    vec![total_main]
-                } else {
-                    Vec::new()
-                },
-                line_cross_max: if total_main > 0.0 || line_cross > 0.0 {
-                    vec![line_cross]
-                } else {
-                    Vec::new()
-                },
-                total_main,
-                total_cross: line_cross,
-            };
+            self.core.set_width(auto_width + insets.horizontal());
         }
-
-        let mut inline_nodes: Vec<FlexLineItem> = Vec::new();
-        for (child_index, child_key) in self.children.iter().enumerate() {
-            if self.child_is_absolute(child_index, arena) {
-                continue;
-            }
-            let node_sizes = {
-                let Some(child_node) = arena.get(*child_key) else {
-                    continue;
-                };
-                if matches!(self.computed_style.layout, Layout::Inline) {
-                    // get_inline_nodes_size only reads the arena; the Ref on
-                    // child_node is live while we pass `arena` down. That is
-                    // fine — the arena re-borrow is shared.
-                    let sizes = child_node.element.get_inline_nodes_size(arena);
-                    sizes
-                } else {
-                    let (w, h) = child_node.element.measured_size();
-                    vec![InlineNodeSize { width: w, height: h }]
-                }
-            };
-            if node_sizes.is_empty() {
-                inline_nodes.push(FlexLineItem {
-                    child_index,
-                    node_index: 0,
-                    main: 0.0,
-                    cross: 0.0,
-                    main_offset: 0.0,
-                    cross_offset: 0.0,
-                });
-                continue;
-            }
-            for (node_index, node) in node_sizes.into_iter().enumerate() {
-                let node_main = if is_row {
-                    node.width.max(0.0)
-                } else {
-                    node.height.max(0.0)
-                };
-                let node_cross = if is_row {
-                    node.height.max(0.0)
-                } else {
-                    node.width.max(0.0)
-                };
-                inline_nodes.push(FlexLineItem {
-                    child_index,
-                    node_index,
-                    main: node_main,
-                    cross: node_cross,
-                    main_offset: 0.0,
-                    cross_offset: 0.0,
-                });
-            }
-        }
-
-        let mut lines: Vec<Vec<FlexLineItem>> = Vec::new();
-        let mut line_main_sum: Vec<f32> = Vec::new();
-        let mut line_cross_max: Vec<f32> = Vec::new();
-        let mut current = Vec::new();
-        let mut current_main = 0.0;
-        let mut current_cross = 0.0;
-
-        for item in inline_nodes {
-            let item_main = item.main;
-            let item_cross = item.cross;
-            let inserts_gap = current
-                .last()
-                .is_some_and(|prev: &FlexLineItem| prev.child_index != item.child_index);
-            let next_main = if current.is_empty() {
-                item_main
-            } else if inserts_gap {
-                current_main + gap + item_main
+        if self.computed_style.height == SizeValue::Auto {
+            let auto_height = if is_row {
+                outputs.flex_info.total_cross
             } else {
-                current_main + item_main
+                outputs.flex_info.total_main
             };
-            if wrap && !current.is_empty() && next_main > main_limit {
-                lines.push(current);
-                line_main_sum.push(current_main);
-                line_cross_max.push(current_cross);
-                current = Vec::new();
-                current_main = 0.0;
-                current_cross = 0.0;
-            }
-            if current.is_empty() {
-                current_main = item_main;
-                current_cross = item_cross;
-            } else if current
-                .last()
-                .is_some_and(|prev: &FlexLineItem| prev.child_index != item.child_index)
-            {
-                current_main += gap + item_main;
-                current_cross = current_cross.max(item_cross);
-            } else {
-                current_main += item_main;
-                current_cross = current_cross.max(item_cross);
-            }
-            current.push(item);
-        }
-        if !current.is_empty() {
-            lines.push(current);
-            line_main_sum.push(current_main);
-            line_cross_max.push(current_cross);
+            self.core.set_height(auto_height + insets.vertical());
         }
 
-        let total_main = line_main_sum.iter().fold(0.0f32, |a, &b| a.max(b));
-        let total_cross = line_cross_max.iter().sum::<f32>()
-            + gap * (line_cross_max.len().saturating_sub(1) as f32);
-
-        FlexLayoutInfo {
-            lines,
-            line_main_sum,
-            line_cross_max,
-            total_main,
-            total_cross,
-        }
+        self.layout_state.content_size = outputs.content_size;
+        self.flex_info = Some(outputs.flex_info);
     }
 
     fn build_render_pipeline(
@@ -828,15 +329,15 @@ impl Element {
         let gradient_paint = self.computed_style.background_image.as_ref().map(|g| {
             resolve_gradient_paint(
                 g,
-                self.core.layout_size.width.max(0.0),
-                self.core.layout_size.height.max(0.0),
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
             )
         });
         let border_gradient_paint = self.computed_style.border_image.as_ref().map(|g| {
             resolve_gradient_paint(
                 g,
-                self.core.layout_size.width.max(0.0),
-                self.core.layout_size.height.max(0.0),
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
             )
         });
         let shadow_state = self.render_box_shadows(
@@ -851,10 +352,10 @@ impl Element {
         }
 
         let max_bw = (self
-            .core
+            .layout_state
             .layout_size
             .width
-            .min(self.core.layout_size.height))
+            .min(self.layout_state.layout_size.height))
             * 0.5;
         let left = self.border_widths.left.clamp(0.0, max_bw);
         let right = self.border_widths.right.clamp(0.0, max_bw);
@@ -863,13 +364,13 @@ impl Element {
 
         let outer_radii = normalize_corner_radii(
             self.border_radii,
-            self.core.layout_size.width.max(0.0),
-            self.core.layout_size.height.max(0.0),
+            self.layout_state.layout_size.width.max(0.0),
+            self.layout_state.layout_size.height.max(0.0),
         );
         let mut fill_pass = DrawRectPass::new(
             RectPassParams {
-                position: [self.core.layout_position.x, self.core.layout_position.y],
-                size: [self.core.layout_size.width, self.core.layout_size.height],
+                position: [self.layout_state.layout_position.x, self.layout_state.layout_position.y],
+                size: [self.layout_state.layout_size.width, self.layout_state.layout_size.height],
                 fill_color,
                 opacity,
                 gradient: gradient_paint,
@@ -889,8 +390,8 @@ impl Element {
 
         let mut border_pass = DrawRectPass::new(
             RectPassParams {
-                position: [self.core.layout_position.x, self.core.layout_position.y],
-                size: [self.core.layout_size.width, self.core.layout_size.height],
+                position: [self.layout_state.layout_position.x, self.layout_state.layout_position.y],
+                size: [self.layout_state.layout_size.width, self.layout_state.layout_size.height],
                 fill_color: [0.0, 0.0, 0.0, 0.0],
                 opacity,
                 border_gradient: border_gradient_paint,
@@ -1132,7 +633,7 @@ impl Element {
         if self.transform.as_slice().is_empty() {
             return None;
         }
-        let size = self.core.layout_size;
+        let size = self.layout_state.layout_size;
         let origin = Vec3::new(
             resolve_signed_px_with_base(
                 self.transform_origin.x(),
@@ -1172,8 +673,8 @@ impl Element {
             transform *= next;
         }
         let origin_world = Vec3::new(
-            self.core.layout_position.x + origin.x,
-            self.core.layout_position.y + origin.y,
+            self.layout_state.layout_position.x + origin.x,
+            self.layout_state.layout_position.y + origin.y,
             origin.z,
         );
         Some(
@@ -1197,10 +698,10 @@ impl Element {
             self.inline_paint_fragments.clone()
         } else {
             vec![Rect {
-                x: self.core.layout_position.x,
-                y: self.core.layout_position.y,
-                width: self.core.layout_size.width.max(0.0),
-                height: self.core.layout_size.height.max(0.0),
+                x: self.layout_state.layout_position.x,
+                y: self.layout_state.layout_position.y,
+                width: self.layout_state.layout_size.width.max(0.0),
+                height: self.layout_state.layout_size.height.max(0.0),
             }]
         };
         let shadows = self.box_shadows.clone();
@@ -1438,8 +939,8 @@ impl Element {
                 .collect();
             let outer_radii = normalize_corner_radii(
                 self.border_radii,
-                self.core.layout_size.width.max(0.0),
-                self.core.layout_size.height.max(0.0),
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
             );
             let inner_radii = self.inner_clip_radii(outer_radii);
             let should_clip_promoted_descendants =

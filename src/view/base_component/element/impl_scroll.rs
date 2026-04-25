@@ -5,15 +5,15 @@ impl Element {
 
     fn max_scroll(&self) -> (f32, f32) {
         (
-            (self.content_size.width - self.layout_inner_size.width).max(0.0),
-            (self.content_size.height - self.layout_inner_size.height).max(0.0),
+            (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width).max(0.0),
+            (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height).max(0.0),
         )
     }
 
     fn local_inner_origin(&self) -> (f32, f32) {
         (
-            self.layout_inner_position.x - self.core.layout_position.x,
-            self.layout_inner_position.y - self.core.layout_position.y,
+            self.layout_state.layout_inner_position.x - self.layout_state.layout_position.x,
+            self.layout_state.layout_inner_position.y - self.layout_state.layout_position.y,
         )
     }
 
@@ -72,9 +72,9 @@ impl Element {
         };
 
         if can_scroll_y {
-            let track_x = inner_x + self.layout_inner_size.width - THICKNESS - MARGIN;
+            let track_x = inner_x + self.layout_state.layout_inner_size.width - THICKNESS - MARGIN;
             let track_y = inner_y + MARGIN;
-            let track_h = (self.layout_inner_size.height - MARGIN * 2.0 - reserve_h).max(0.0);
+            let track_h = (self.layout_state.layout_inner_size.height - MARGIN * 2.0 - reserve_h).max(0.0);
             if track_h > 0.0 {
                 let track = Rect {
                     x: track_x,
@@ -82,7 +82,7 @@ impl Element {
                     width: THICKNESS,
                     height: track_h,
                 };
-                let ratio = (self.layout_inner_size.height / self.content_size.height.max(1.0))
+                let ratio = (self.layout_state.layout_inner_size.height / self.layout_state.content_size.height.max(1.0))
                     .clamp(0.0, 1.0);
                 let thumb_h = (track_h * ratio).clamp(MIN_THUMB.min(track_h), track_h);
                 let travel = (track_h - thumb_h).max(0.0);
@@ -103,8 +103,8 @@ impl Element {
 
         if can_scroll_x {
             let track_x = inner_x + MARGIN;
-            let track_y = inner_y + self.layout_inner_size.height - THICKNESS - MARGIN;
-            let track_w = (self.layout_inner_size.width - MARGIN * 2.0 - reserve_v).max(0.0);
+            let track_y = inner_y + self.layout_state.layout_inner_size.height - THICKNESS - MARGIN;
+            let track_w = (self.layout_state.layout_inner_size.width - MARGIN * 2.0 - reserve_v).max(0.0);
             if track_w > 0.0 {
                 let track = Rect {
                     x: track_x,
@@ -112,7 +112,7 @@ impl Element {
                     width: track_w,
                     height: THICKNESS,
                 };
-                let ratio = (self.layout_inner_size.width / self.content_size.width.max(1.0))
+                let ratio = (self.layout_state.layout_inner_size.width / self.layout_state.content_size.width.max(1.0))
                     .clamp(0.0, 1.0);
                 let thumb_w = (track_w * ratio).clamp(MIN_THUMB.min(track_w), track_w);
                 let travel = (track_w - thumb_w).max(0.0);
@@ -441,7 +441,7 @@ impl Element {
         const TRACK_SHADOW_ALPHA: f32 = 0.5;
         const THUMB_SHADOW_ALPHA: f32 = 0.5;
         let geometry =
-            self.scrollbar_geometry(self.layout_inner_position.x, self.layout_inner_position.y);
+            self.scrollbar_geometry(self.layout_state.layout_inner_position.x, self.layout_state.layout_inner_position.y);
         let track_alpha = (0.35 * alpha).clamp(0.0, 1.0);
         let thumb_alpha = (0.58 * alpha).clamp(0.0, 1.0);
         let track_shadow_alpha = (TRACK_SHADOW_ALPHA * alpha).clamp(0.0, 1.0);
@@ -878,13 +878,13 @@ impl Element {
 
     pub(crate) fn child_layout_origin(&self) -> (f32, f32) {
         (
-            self.layout_flow_inner_position.x - self.scroll_offset.x,
-            self.layout_flow_inner_position.y - self.scroll_offset.y,
+            self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x,
+            self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y,
         )
     }
 
     pub(crate) fn layout_flow_origin(&self) -> (f32, f32) {
-        (self.layout_flow_position.x, self.layout_flow_position.y)
+        (self.layout_state.layout_flow_position.x, self.layout_state.layout_flow_position.y)
     }
 
     /// Append a pre-inserted arena node as child. Caller must already have

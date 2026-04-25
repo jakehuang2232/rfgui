@@ -384,8 +384,8 @@ impl EventTarget for Element {
         if !can_scroll {
             return false;
         }
-        let max_scroll_x = (self.content_size.width - self.layout_inner_size.width).max(0.0);
-        let max_scroll_y = (self.content_size.height - self.layout_inner_size.height).max(0.0);
+        let max_scroll_x = (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width).max(0.0);
+        let max_scroll_y = (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height).max(0.0);
         let mut next_x = self.scroll_offset.x;
         let mut next_y = self.scroll_offset.y;
         match self.scroll_direction {
@@ -417,8 +417,8 @@ impl EventTarget for Element {
         if !can_scroll {
             return false;
         }
-        let max_scroll_x = (self.content_size.width - self.layout_inner_size.width).max(0.0);
-        let max_scroll_y = (self.content_size.height - self.layout_inner_size.height).max(0.0);
+        let max_scroll_x = (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width).max(0.0);
+        let max_scroll_y = (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height).max(0.0);
         let mut next_x = self.scroll_offset.x;
         let mut next_y = self.scroll_offset.y;
         match self.scroll_direction {
