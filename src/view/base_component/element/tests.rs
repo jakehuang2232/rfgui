@@ -202,10 +202,10 @@ mod tests {
         assert!((snapshot.y - 7.6).abs() < 0.01);
         assert!((snapshot.width - 100.5).abs() < 0.01);
         assert!((snapshot.height - 50.5).abs() < 0.01);
-        assert!((root_el.layout_inner_position.x - 8.75).abs() < 0.01);
-        assert!((root_el.layout_inner_position.y - 10.1).abs() < 0.01);
-        assert!((root_el.layout_inner_size.width - 94.0).abs() < 0.01);
-        assert!((root_el.layout_inner_size.height - 45.5).abs() < 0.01);
+        assert!((root_el.layout_state.layout_inner_position.x - 8.75).abs() < 0.01);
+        assert!((root_el.layout_state.layout_inner_position.y - 10.1).abs() < 0.01);
+        assert!((root_el.layout_state.layout_inner_size.width - 94.0).abs() < 0.01);
+        assert!((root_el.layout_state.layout_inner_size.height - 45.5).abs() < 0.01);
     }
 
     #[test]
@@ -1276,7 +1276,7 @@ mod tests {
         );
 
         let rendered = crate::view::test_support::get_element::<Element>(&arena, child_k)
-            .core
+            .layout_state
             .should_render;
         assert!(rendered);
     }
@@ -1296,7 +1296,7 @@ mod tests {
             ),
         );
         child.apply_style(child_style);
-        parent.core.should_render = false;
+        parent.layout_state.should_render = false;
 
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
@@ -1364,7 +1364,7 @@ mod tests {
         );
 
         let rendered = crate::view::test_support::get_element::<Element>(&arena, child_k)
-            .core
+            .layout_state
             .should_render;
         assert!(!rendered);
     }
@@ -1424,7 +1424,7 @@ mod tests {
         );
 
         let rendered = crate::view::test_support::get_element::<Element>(&arena, child_k)
-            .core
+            .layout_state
             .should_render;
         assert!(rendered);
     }
@@ -1982,8 +1982,8 @@ mod tests {
         });
         old.last_parent_layout_x = 100.0;
         old.last_parent_layout_y = 0.0;
-        old.layout_flow_position = LayoutPosition { x: 170.0, y: 0.0 };
-        old.core.layout_position = LayoutPosition { x: 150.0, y: 0.0 };
+        old.layout_state.layout_flow_position = LayoutPosition { x: 170.0, y: 0.0 };
+        old.layout_state.layout_position = LayoutPosition { x: 150.0, y: 0.0 };
         old.layout_transition_visual_offset_x = -20.0;
         old.layout_transition_target_x = Some(70.0);
 
@@ -2009,8 +2009,8 @@ mod tests {
         {
             let rebuilt_ref =
                 crate::view::test_support::get_element::<Element>(&arena, rebuilt_key);
-            assert_eq!(rebuilt_ref.core.layout_position.x, 150.0);
-            assert_eq!(rebuilt_ref.layout_flow_position.x, 170.0);
+            assert_eq!(rebuilt_ref.layout_state.layout_position.x, 150.0);
+            assert_eq!(rebuilt_ref.layout_state.layout_flow_position.x, 170.0);
         }
 
         arena.with_element_taken(rebuilt_key, |el, a| {
@@ -2032,7 +2032,7 @@ mod tests {
         });
 
         let rebuilt_ref = crate::view::test_support::get_element::<Element>(&arena, rebuilt_key);
-        assert!((rebuilt_ref.core.layout_position.x - 150.0).abs() < 0.01);
+        assert!((rebuilt_ref.layout_state.layout_position.x - 150.0).abs() < 0.01);
     }
 
     #[test]
@@ -2833,8 +2833,8 @@ mod tests {
         let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
         let inner_radii = parent_ref.inner_clip_radii(normalize_corner_radii(
             parent_ref.border_radii,
-            parent_ref.core.layout_size.width.max(0.0),
-            parent_ref.core.layout_size.height.max(0.0),
+            parent_ref.layout_state.layout_size.width.max(0.0),
+            parent_ref.layout_state.layout_size.height.max(0.0),
         ));
         let overflow_child_indices: Vec<bool> = (0..child_count)
             .map(|idx| parent_ref.child_renders_outside_inner_clip(idx, &arena))
@@ -2883,8 +2883,8 @@ mod tests {
         let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
         let inner_radii = parent_ref.inner_clip_radii(normalize_corner_radii(
             parent_ref.border_radii,
-            parent_ref.core.layout_size.width.max(0.0),
-            parent_ref.core.layout_size.height.max(0.0),
+            parent_ref.layout_state.layout_size.width.max(0.0),
+            parent_ref.layout_state.layout_size.height.max(0.0),
         ));
         let overflow_child_indices: Vec<bool> = (0..child_count)
             .map(|idx| parent_ref.child_renders_outside_inner_clip(idx, &arena))
@@ -2938,8 +2938,8 @@ mod tests {
             let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
             parent_ref.inner_clip_radii(normalize_corner_radii(
                 parent_ref.border_radii,
-                parent_ref.core.layout_size.width.max(0.0),
-                parent_ref.core.layout_size.height.max(0.0),
+                parent_ref.layout_state.layout_size.width.max(0.0),
+                parent_ref.layout_state.layout_size.height.max(0.0),
             ))
         };
         assert!(!inner_radii.has_any_rounding());
@@ -2997,8 +2997,8 @@ mod tests {
             let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
             parent_ref.inner_clip_radii(normalize_corner_radii(
                 parent_ref.border_radii,
-                parent_ref.core.layout_size.width.max(0.0),
-                parent_ref.core.layout_size.height.max(0.0),
+                parent_ref.layout_state.layout_size.width.max(0.0),
+                parent_ref.layout_state.layout_size.height.max(0.0),
             ))
         };
 
@@ -3388,7 +3388,7 @@ mod tests {
         let row_snapshot = nth_child_snapshot(&arena, parent_key, 0);
         assert!((row_snapshot.height - 24.0).abs() < 0.01);
         let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
-        assert!((parent_ref.content_size.height - 24.0).abs() < 0.01);
+        assert!((parent_ref.layout_state.content_size.height - 24.0).abs() < 0.01);
     }
 
     #[test]
@@ -3745,7 +3745,7 @@ mod tests {
         );
 
         let el = crate::view::test_support::get_element::<Element>(&arena, key);
-        assert!(el.core.should_render);
+        assert!(el.layout_state.should_render);
         assert!(!el.core.should_paint);
     }
 
@@ -3788,15 +3788,15 @@ mod tests {
 
         let el = crate::view::test_support::get_element::<Element>(&arena, key);
         let transformed = el.transformed_frame_bounding_rect(super::LayoutFrame {
-            x: el.core.layout_position.x,
-            y: el.core.layout_position.y,
-            width: el.core.layout_size.width,
-            height: el.core.layout_size.height,
+            x: el.layout_state.layout_position.x,
+            y: el.layout_state.layout_position.y,
+            width: el.layout_state.layout_size.width,
+            height: el.layout_state.layout_size.height,
         });
         assert!((transformed.x - 40.0).abs() < 0.01, "{transformed:?}");
         assert!((transformed.width - 40.0).abs() < 0.01, "{transformed:?}");
         assert!(
-            el.core.should_render,
+            el.layout_state.should_render,
             "translate 後的 bounding box 已進入 parent clip，不應被提前剔除"
         );
     }
@@ -3887,7 +3887,7 @@ mod tests {
         );
 
         let parent = crate::view::test_support::get_element::<Element>(&arena, parent_key);
-        assert!(parent.core.should_render);
+        assert!(parent.layout_state.should_render);
         assert!(!parent.core.should_paint);
     }
 
@@ -3933,21 +3933,21 @@ mod tests {
         );
 
         let el = crate::view::test_support::get_element::<Element>(&arena, key);
-        assert_eq!(el.layout_inner_size.width, 0.0);
-        assert_eq!(el.layout_inner_size.height, 0.0);
-        assert!(el.core.should_render);
+        assert_eq!(el.layout_state.layout_inner_size.width, 0.0);
+        assert_eq!(el.layout_state.layout_inner_size.height, 0.0);
+        assert!(el.layout_state.should_render);
         assert!(!el.core.should_paint);
     }
 
     #[test]
     fn transition_override_keeps_inner_render_area_available() {
         let mut el = Element::new(0.0, 0.0, 20.0, 20.0);
-        el.core.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
-        el.core.layout_size.width = 0.0;
-        el.core.layout_size.height = 0.0;
-        el.layout_inner_position = LayoutPosition { x: 0.0, y: 0.0 };
-        el.layout_inner_size.width = 0.0;
-        el.layout_inner_size.height = 0.0;
+        el.layout_state.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
+        el.layout_state.layout_size.width = 0.0;
+        el.layout_state.layout_size.height = 0.0;
+        el.layout_state.layout_inner_position = LayoutPosition { x: 0.0, y: 0.0 };
+        el.layout_state.layout_inner_size.width = 0.0;
+        el.layout_state.layout_inner_size.height = 0.0;
         el.layout_transition_override_width = Some(40.0);
         el.layout_transition_override_height = Some(30.0);
 
@@ -4278,16 +4278,16 @@ mod tests {
         let anchor = crate::view::test_support::get_element::<Element>(&arena, anchor_key);
         let child = crate::view::test_support::get_element::<Element>(&arena, child_k);
         assert!(
-            (anchor.core.layout_position.x - 300.0).abs() < 0.01,
+            (anchor.layout_state.layout_position.x - 300.0).abs() < 0.01,
             "anchor_x={}, child_x={}",
-            anchor.core.layout_position.x,
-            child.core.layout_position.x
+            anchor.layout_state.layout_position.x,
+            child.layout_state.layout_position.x
         );
         assert!(
-            (child.core.layout_position.x - 310.0).abs() < 0.01,
+            (child.layout_state.layout_position.x - 310.0).abs() < 0.01,
             "anchor_x={}, child_x={}",
-            anchor.core.layout_position.x,
-            child.core.layout_position.x
+            anchor.layout_state.layout_position.x,
+            child.layout_state.layout_position.x
         );
     }
 
@@ -4506,7 +4506,7 @@ mod tests {
         assert_eq!(third.y, 10.0);
         let parent_el = crate::view::test_support::get_element::<Element>(&arena, parent_key);
         assert!((parent_el.box_model_snapshot().height - 30.0).abs() < 0.01);
-        assert!((parent_el.content_size.height - 30.0).abs() < 0.01);
+        assert!((parent_el.layout_state.content_size.height - 30.0).abs() < 0.01);
     }
 
     #[test]

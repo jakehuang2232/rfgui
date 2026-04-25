@@ -6,6 +6,7 @@ pub mod fiber_work;
 pub(crate) mod font_system;
 pub mod frame_graph;
 pub(crate) mod image_resource;
+pub(crate) mod layout;
 pub mod node_arena;
 /// Layer promotion analysis and configuration APIs.
 pub mod promotion;

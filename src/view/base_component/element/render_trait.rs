@@ -8,14 +8,14 @@ impl Renderable for Element {
         if trace_layout_enabled() {
             eprintln!(
                 "[build ] pos=({:.1},{:.1}) size=({:.1},{:.1}) should_render={}",
-                self.core.layout_position.x,
-                self.core.layout_position.y,
-                self.core.layout_size.width,
-                self.core.layout_size.height,
-                self.core.should_render
+                self.layout_state.layout_position.x,
+                self.layout_state.layout_position.y,
+                self.layout_state.layout_size.width,
+                self.layout_state.layout_size.height,
+                self.layout_state.should_render
             );
         }
-        if !self.core.should_render {
+        if !self.layout_state.should_render {
             if self.has_absolute_descendant_for_hit_test {
                 self.collect_root_viewport_deferred_descendants(arena, &mut ctx);
             }

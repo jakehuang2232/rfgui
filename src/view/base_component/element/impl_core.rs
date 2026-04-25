@@ -61,8 +61,8 @@ impl Element {
         let inset_top = border_top + self.padding.top.max(0.0);
         let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
         Rect {
-            x: self.core.layout_position.x + inset_left,
-            y: self.core.layout_position.y + inset_top,
+            x: self.layout_state.layout_position.x + inset_left,
+            y: self.layout_state.layout_position.y + inset_top,
             width: (frame_width - inset_left - inset_right).max(0.0),
             height: (frame_height - inset_top - inset_bottom).max(0.0),
         }
@@ -94,8 +94,8 @@ impl Element {
                     rect_to_scissor_rect(rect)
                 } else {
                     let (viewport_w, viewport_h) = self.viewport_size_from_runtime(
-                        self.core.layout_size.width,
-                        self.core.layout_size.height,
+                        self.layout_state.layout_size.width,
+                        self.layout_state.layout_size.height,
                     );
                     rect_to_scissor_rect(Rect {
                         x: 0.0,
@@ -119,10 +119,10 @@ impl Element {
     }
 
     fn inner_clip_radii(&self, outer_radii: CornerRadii) -> CornerRadii {
-        let outer_x = self.core.layout_position.x;
-        let outer_y = self.core.layout_position.y;
-        let outer_w = self.core.layout_size.width.max(0.0);
-        let outer_h = self.core.layout_size.height.max(0.0);
+        let outer_x = self.layout_state.layout_position.x;
+        let outer_y = self.layout_state.layout_position.y;
+        let outer_w = self.layout_state.layout_size.width.max(0.0);
+        let outer_h = self.layout_state.layout_size.height.max(0.0);
         let inner = self.inner_clip_rect();
         let inset_left = (inner.x - outer_x).max(0.0);
         let inset_top = (inner.y - outer_y).max(0.0);
@@ -344,8 +344,8 @@ impl Element {
         };
         let inner_radii = self.inner_clip_radii(normalize_corner_radii(
             self.border_radii,
-            self.core.layout_size.width.max(0.0),
-            self.core.layout_size.height.max(0.0),
+            self.layout_state.layout_size.width.max(0.0),
+            self.layout_state.layout_size.height.max(0.0),
         ));
         let inner = self.inner_clip_rect();
 
@@ -429,13 +429,7 @@ impl Element {
                 ElementCore::new_with_id(id, x, y, width, height)
             },
             anchor_name: None,
-            layout_flow_position: Position { x, y },
-            layout_inner_position: Position { x, y },
-            layout_flow_inner_position: Position { x, y },
-            layout_inner_size: Size {
-                width: width.max(0.0),
-                height: height.max(0.0),
-            },
+            layout_state: crate::view::layout::LayoutState::new(x, y, width, height),
             intrinsic_size_is_percent_base: true,
             parsed_style: style,
             computed_style: ComputedStyle::default(),
@@ -469,10 +463,6 @@ impl Element {
             opacity: 1.0,
             scroll_direction: ScrollDirection::None,
             scroll_offset: Position { x: 0.0, y: 0.0 },
-            content_size: Size {
-                width: 0.0,
-                height: 0.0,
-            },
             pending_inline_measure_context: None,
             last_inline_measure_context: None,
             inline_paint_fragments: Vec::new(),
@@ -662,8 +652,8 @@ impl Element {
             &to,
             progress,
             glam::Vec2::new(
-                self.core.layout_size.width.max(0.0),
-                self.core.layout_size.height.max(0.0),
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
             ),
         );
         self.update_resolved_transform();
@@ -687,8 +677,8 @@ impl Element {
             to,
             progress,
             glam::Vec2::new(
-                self.core.layout_size.width.max(0.0),
-                self.core.layout_size.height.max(0.0),
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
             ),
         );
         self.update_resolved_transform();
@@ -708,14 +698,14 @@ impl Element {
     pub fn set_layout_transition_width(&mut self, value: f32) {
         let value = round_layout_value(value.max(0.0));
         self.layout_transition_override_width = Some(value);
-        self.core.layout_size.width = value;
+        self.layout_state.layout_size.width = value;
         self.mark_layout_dirty();
     }
 
     pub fn set_layout_transition_height(&mut self, value: f32) {
         let value = round_layout_value(value.max(0.0));
         self.layout_transition_override_height = Some(value);
-        self.core.layout_size.height = value;
+        self.layout_state.layout_size.height = value;
         self.mark_layout_dirty();
     }
 
@@ -730,9 +720,9 @@ impl Element {
         parent_layout_x: f32,
         parent_layout_y: f32,
     ) {
-        self.core.layout_position = round_layout_position(layout_x, layout_y);
-        self.layout_flow_position = round_layout_position(flow_x, flow_y);
-        self.core.layout_size = round_layout_size(layout_width, layout_height);
+        self.layout_state.layout_position = round_layout_position(layout_x, layout_y);
+        self.layout_state.layout_flow_position = round_layout_position(flow_x, flow_y);
+        self.layout_state.layout_size = round_layout_size(layout_width, layout_height);
         self.update_resolved_transform();
         self.last_parent_layout_x = parent_layout_x;
         self.last_parent_layout_y = parent_layout_y;
@@ -836,10 +826,10 @@ impl Element {
 
     pub(crate) fn inner_content_rect_for_render(&self) -> (f32, f32, f32, f32) {
         (
-            self.layout_inner_position.x,
-            self.layout_inner_position.y,
-            self.layout_inner_size.width.max(0.0),
-            self.layout_inner_size.height.max(0.0),
+            self.layout_state.layout_inner_position.x,
+            self.layout_state.layout_inner_position.y,
+            self.layout_state.layout_inner_size.width.max(0.0),
+            self.layout_state.layout_inner_size.height.max(0.0),
         )
     }
 

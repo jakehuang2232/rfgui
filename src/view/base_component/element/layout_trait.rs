@@ -48,51 +48,10 @@ impl Layoutable for Element {
         if is_axis_layout {
             self.measure_flex_children(proposal, arena);
         } else {
-            let bw_l = resolve_px_or_zero(
-                self.computed_style.border_widths.left,
+            let insets = resolve_layout_insets(
+                &self.computed_style.border_widths,
+                &self.computed_style.padding,
                 proposal.percent_base_width,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
-            let bw_r = resolve_px_or_zero(
-                self.computed_style.border_widths.right,
-                proposal.percent_base_width,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
-            let bw_t = resolve_px_or_zero(
-                self.computed_style.border_widths.top,
-                proposal.percent_base_height,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
-            let bw_b = resolve_px_or_zero(
-                self.computed_style.border_widths.bottom,
-                proposal.percent_base_height,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
-
-            let p_l = resolve_px_or_zero(
-                self.computed_style.padding.left,
-                proposal.percent_base_width,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
-            let p_r = resolve_px_or_zero(
-                self.computed_style.padding.right,
-                proposal.percent_base_width,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
-            let p_t = resolve_px_or_zero(
-                self.computed_style.padding.top,
-                proposal.percent_base_height,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
-            let p_b = resolve_px_or_zero(
-                self.computed_style.padding.bottom,
                 proposal.percent_base_height,
                 proposal.viewport_width,
                 proposal.viewport_height,
@@ -113,8 +72,8 @@ impl Layoutable for Element {
             } else {
                 layout_h
             };
-            let inner_w = (measure_w - bw_l - bw_r - p_l - p_r).max(0.0);
-            let inner_h = (measure_h - bw_t - bw_b - p_t - p_b).max(0.0);
+            let inner_w = (measure_w - insets.horizontal()).max(0.0);
+            let inner_h = (measure_h - insets.vertical()).max(0.0);
 
             let (child_available_width, child_available_height) = match self.scroll_direction {
                 ScrollDirection::None => (inner_w, inner_h),
@@ -214,10 +173,10 @@ impl Layoutable for Element {
         self.register_anchor_snapshot();
         self.resolve_corner_radii_from_self_box(proposal);
         let max_bw = (self
-            .core
+            .layout_state
             .layout_size
             .width
-            .min(self.core.layout_size.height))
+            .min(self.layout_state.layout_size.height))
             * 0.5;
         let border_left = self.border_widths.left.clamp(0.0, max_bw);
         let border_right = self.border_widths.right.clamp(0.0, max_bw);
@@ -227,17 +186,17 @@ impl Layoutable for Element {
         let inset_right = border_right + self.padding.right.max(0.0);
         let inset_top = border_top + self.padding.top.max(0.0);
         let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
-        self.layout_flow_inner_position = Position {
-            x: self.layout_flow_position.x + inset_left,
-            y: self.layout_flow_position.y + inset_top,
+        self.layout_state.layout_flow_inner_position = Position {
+            x: self.layout_state.layout_flow_position.x + inset_left,
+            y: self.layout_state.layout_flow_position.y + inset_top,
         };
-        self.layout_inner_position = Position {
-            x: self.core.layout_position.x + inset_left,
-            y: self.core.layout_position.y + inset_top,
+        self.layout_state.layout_inner_position = Position {
+            x: self.layout_state.layout_position.x + inset_left,
+            y: self.layout_state.layout_position.y + inset_top,
         };
-        self.layout_inner_size = Size {
-            width: (self.core.layout_size.width - inset_left - inset_right).max(0.0),
-            height: (self.core.layout_size.height - inset_top - inset_bottom).max(0.0),
+        self.layout_state.layout_inner_size = Size {
+            width: (self.layout_state.layout_size.width - inset_left - inset_right).max(0.0),
+            height: (self.layout_state.layout_size.height - inset_top - inset_bottom).max(0.0),
         };
 
         let is_axis_layout = matches!(
@@ -251,7 +210,7 @@ impl Layoutable for Element {
                 height: (target_h - inset_top - inset_bottom).max(0.0),
             }
         } else {
-            self.layout_inner_size
+            self.layout_state.layout_inner_size
         };
 
         let child_percent_base_width = if self.width_is_known(proposal) {
@@ -321,9 +280,9 @@ impl Layoutable for Element {
         _arena: &crate::view::node_arena::NodeArena,
     ) -> f32 {
         let rendered_cross = if is_row {
-            self.core.layout_size.height.max(0.0)
+            self.layout_state.layout_size.height.max(0.0)
         } else {
-            self.core.layout_size.width.max(0.0)
+            self.layout_state.layout_size.width.max(0.0)
         };
         let (measured_w, measured_h) = self.measured_size();
         let measured_cross = if is_row { measured_h } else { measured_w }.max(0.0);
@@ -502,203 +461,25 @@ impl Layoutable for Element {
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
             let top_inset = (self.border_widths.top + self.padding.top).max(0.0);
             let bottom_inset = (self.border_widths.bottom + self.padding.bottom).max(0.0);
-
-            if placement.node_index == 0 {
-                self.inline_paint_fragments.clear();
-                self.layout_flow_position = Position {
-                    x: placement.x,
-                    y: placement.y,
-                };
-                self.core.layout_position = self.layout_flow_position;
-                self.core.layout_size = Size {
-                    width: 0.0,
-                    height: 0.0,
-                };
-                self.layout_inner_position = self.core.layout_position;
-                self.layout_flow_inner_position = self.layout_flow_position;
-                self.layout_inner_size = self.core.layout_size;
-                self.core.should_render = false;
-            }
-
-            let inline_child_count = self
-                .children
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| !self.child_is_absolute(*idx, arena))
-                .count();
-            let is_row = matches!(
-                self.computed_style.layout_axis_direction(),
-                FlowDirection::Row
+            let absolute_mask = self.compute_children_absolute_mask(arena);
+            crate::view::layout::inline_fragment::place_inline_fragment(
+                crate::view::layout::inline_fragment::PlaceInlineFragmentInputs {
+                    placement,
+                    children: &self.children,
+                    absolute_mask: &absolute_mask,
+                    flex_info: self.flex_info.as_ref(),
+                    left_inset,
+                    right_inset,
+                    top_inset,
+                    bottom_inset,
+                    gap_length: self.computed_style.gap,
+                    direction: self.computed_style.layout_axis_direction(),
+                    align: self.computed_style.layout_axis_align(),
+                },
+                &mut self.layout_state,
+                &mut self.inline_paint_fragments,
+                arena,
             );
-            let align = self.computed_style.layout_axis_align();
-
-            let (line_width, line_height, total_nodes) = if inline_child_count > 1 {
-                let Some(info) = self.flex_info.as_ref() else {
-                    return;
-                };
-                let total_nodes = info.lines.len();
-                let Some(line) = info.lines.get(placement.node_index) else {
-                    return;
-                };
-                let line_width = info
-                    .line_main_sum
-                    .get(placement.node_index)
-                    .copied()
-                    .unwrap_or(0.0)
-                    .max(0.0);
-                let line_height = info
-                    .line_cross_max
-                    .get(placement.node_index)
-                    .copied()
-                    .unwrap_or(0.0)
-                    .max(0.0);
-                let mut main_cursor = 0.0_f32;
-                let mut prev_child_index: Option<usize> = None;
-                let gap = resolve_px(
-                    self.computed_style.gap,
-                    line_width.max(0.0),
-                    placement.viewport_width,
-                    placement.viewport_height,
-                );
-
-                for item in line {
-                    if prev_child_index != Some(item.child_index) && prev_child_index.is_some() {
-                        main_cursor += gap;
-                    }
-                    let align_offset =
-                        cross_item_offset(line_height, item.cross.max(0.0), align);
-                    let content_origin_x = placement.x
-                        + if placement.node_index == 0 {
-                            left_inset
-                        } else {
-                            0.0
-                        };
-                    let (x, y) = if is_row {
-                        (
-                            content_origin_x + main_cursor + item.main_offset,
-                            placement.y + align_offset + item.cross_offset,
-                        )
-                    } else {
-                        (
-                            placement.x + align_offset + item.cross_offset,
-                            placement.y + main_cursor + item.main_offset,
-                        )
-                    };
-                    let child_key = self.children[item.child_index];
-                    arena.with_element_taken(child_key, |child, arena| {
-                        child.place_inline(
-                            InlinePlacement {
-                                x,
-                                y,
-                                node_index: item.node_index,
-                                ..placement
-                            },
-                            arena,
-                        );
-                    });
-                    main_cursor += item.main.max(0.0);
-                    prev_child_index = Some(item.child_index);
-                }
-
-                (line_width, line_height, total_nodes)
-            } else {
-                let mut current = 0_usize;
-                let mut total_nodes = 0_usize;
-                let mut target: Option<(usize, usize, f32, f32)> = None;
-                for (child_idx, child_key) in self.children.iter().enumerate() {
-                    if self.child_is_absolute(child_idx, arena) {
-                        continue;
-                    }
-                    let nodes = arena
-                        .get(*child_key)
-                        .map(|n| n.element.get_inline_nodes_size(arena))
-                        .unwrap_or_default();
-                    total_nodes += nodes.len();
-                    if target.is_none() && placement.node_index < current + nodes.len() {
-                        let local_index = placement.node_index - current;
-                        let node = nodes[local_index];
-                        target = Some((child_idx, local_index, node.width, node.height));
-                    }
-                    current += nodes.len();
-                }
-                let Some((child_idx, local_index, width, height)) = target else {
-                    return;
-                };
-                let child_key = self.children[child_idx];
-                arena.with_element_taken(child_key, |child, arena| {
-                    child.place_inline(
-                        InlinePlacement {
-                            x: placement.x
-                                + if placement.node_index == 0 {
-                                    left_inset
-                                } else {
-                                    0.0
-                                },
-                            y: placement.y,
-                            node_index: local_index,
-                            ..placement
-                        },
-                        arena,
-                    );
-                });
-                (width.max(0.0), height.max(0.0), total_nodes)
-            };
-
-            let is_first_fragment = placement.node_index == 0;
-            let is_last_fragment = placement.node_index + 1 == total_nodes;
-            let left = placement.x;
-            let top = placement.y - top_inset;
-            let outer_width = line_width
-                + if is_first_fragment { left_inset } else { 0.0 }
-                + if is_last_fragment { right_inset } else { 0.0 };
-            let outer_height = line_height + top_inset + bottom_inset;
-            let right = placement.x + outer_width;
-            let bottom = top + outer_height;
-            let should_extend_existing = self
-                .inline_paint_fragments
-                .last()
-                .is_some_and(|fragment| (fragment.y - top).abs() < 0.5);
-            if should_extend_existing {
-                if let Some(fragment) = self.inline_paint_fragments.last_mut() {
-                    let fragment_right = fragment.x + fragment.width;
-                    let fragment_bottom = fragment.y + fragment.height;
-                    fragment.x = fragment.x.min(left);
-                    fragment.y = fragment.y.min(top);
-                    fragment.width = fragment_right.max(right) - fragment.x;
-                    fragment.height = fragment_bottom.max(bottom) - fragment.y;
-                }
-            } else {
-                self.inline_paint_fragments.push(Rect {
-                    x: left,
-                    y: top,
-                    width: (right - left).max(0.0),
-                    height: (bottom - top).max(0.0),
-                });
-            }
-            if self.core.should_render {
-                let current_right = self.core.layout_position.x + self.core.layout_size.width;
-                let current_bottom = self.core.layout_position.y + self.core.layout_size.height;
-                self.core.layout_position.x = self.core.layout_position.x.min(left);
-                self.core.layout_position.y = self.core.layout_position.y.min(top);
-                self.layout_flow_position = self.core.layout_position;
-                self.core.layout_size.width =
-                    current_right.max(right) - self.core.layout_position.x;
-                self.core.layout_size.height =
-                    current_bottom.max(bottom) - self.core.layout_position.y;
-            } else {
-                self.core.layout_position = Position { x: left, y: top };
-                self.layout_flow_position = self.core.layout_position;
-                self.core.layout_size = Size {
-                    width: (right - left).max(0.0),
-                    height: (bottom - top).max(0.0),
-                };
-            }
-            self.layout_inner_position = self.core.layout_position;
-            self.layout_flow_inner_position = self.layout_flow_position;
-            self.layout_inner_size = self.core.layout_size;
-            self.content_size = self.core.layout_size;
-            self.core.should_render =
-                self.core.layout_size.width > 0.0 && self.core.layout_size.height > 0.0;
             self.dirty_flags = self.dirty_flags.without(
                 DirtyFlags::PLACE
                     .union(DirtyFlags::BOX_MODEL)

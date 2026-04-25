@@ -160,7 +160,7 @@ fn apply_collision(
     }
 }
 
-fn main_axis_start_and_gap(
+pub(crate) fn main_axis_start_and_gap(
     main_limit: f32,
     occupied_main: f32,
     base_gap: f32,
@@ -198,7 +198,7 @@ fn main_axis_start_and_gap(
     }
 }
 
-fn cross_start_offset(limit: f32, occupied: f32, align: Align) -> f32 {
+pub(crate) fn cross_start_offset(limit: f32, occupied: f32, align: Align) -> f32 {
     let free = (limit - occupied).max(0.0);
     match align {
         Align::Start => 0.0,
@@ -207,7 +207,7 @@ fn cross_start_offset(limit: f32, occupied: f32, align: Align) -> f32 {
     }
 }
 
-fn cross_item_offset(line_cross: f32, item_cross: f32, align: Align) -> f32 {
+pub(crate) fn cross_item_offset(line_cross: f32, item_cross: f32, align: Align) -> f32 {
     let free = (line_cross - item_cross).max(0.0);
     match align {
         Align::Start => 0.0,
@@ -271,14 +271,14 @@ pub(crate) fn test_promoted_build_count(node_id: u64, phase: &str) -> usize {
     })
 }
 
-fn resolve_px(length: Length, base: f32, viewport_width: f32, viewport_height: f32) -> f32 {
+pub(crate) fn resolve_px(length: Length, base: f32, viewport_width: f32, viewport_height: f32) -> f32 {
     length
         .resolve_with_base(Some(base), viewport_width, viewport_height)
         .unwrap_or(0.0)
         .max(0.0)
 }
 
-fn resolve_px_with_base(
+pub(crate) fn resolve_px_with_base(
     length: Length,
     base: Option<f32>,
     viewport_width: f32,
@@ -305,6 +305,106 @@ fn resolve_px_or_zero(
     viewport_height: f32,
 ) -> f32 {
     resolve_px_with_base(length, base, viewport_width, viewport_height).unwrap_or(0.0)
+}
+
+/// Resolved px insets (border + padding) per side. Used by axis-layout
+/// shells to thread `inner_w` / `inner_h` / inset pairs into the layout
+/// free functions without repeating the 8 resolve calls per call site.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ResolvedLayoutInsets {
+    pub border_l: f32,
+    pub border_r: f32,
+    pub border_t: f32,
+    pub border_b: f32,
+    pub padding_l: f32,
+    pub padding_r: f32,
+    pub padding_t: f32,
+    pub padding_b: f32,
+}
+
+impl ResolvedLayoutInsets {
+    /// Sum of horizontal insets (left + right border + padding).
+    #[inline]
+    pub fn horizontal(&self) -> f32 {
+        self.border_l + self.border_r + self.padding_l + self.padding_r
+    }
+
+    /// Sum of vertical insets (top + bottom border + padding).
+    #[inline]
+    pub fn vertical(&self) -> f32 {
+        self.border_t + self.border_b + self.padding_t + self.padding_b
+    }
+}
+
+/// Resolve the 4 border-width and 4 padding values against the given
+/// proposal. Centralizes the otherwise-repeated `resolve_px_or_zero`
+/// block at axis-layout shell entry points.
+pub(crate) fn resolve_layout_insets(
+    border_widths: &crate::style::EdgeInsets<Length>,
+    padding: &crate::style::EdgeInsets<Length>,
+    percent_base_width: Option<f32>,
+    percent_base_height: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> ResolvedLayoutInsets {
+    let bw_l = resolve_px_or_zero(
+        border_widths.left,
+        percent_base_width,
+        viewport_width,
+        viewport_height,
+    );
+    let bw_r = resolve_px_or_zero(
+        border_widths.right,
+        percent_base_width,
+        viewport_width,
+        viewport_height,
+    );
+    let bw_t = resolve_px_or_zero(
+        border_widths.top,
+        percent_base_height,
+        viewport_width,
+        viewport_height,
+    );
+    let bw_b = resolve_px_or_zero(
+        border_widths.bottom,
+        percent_base_height,
+        viewport_width,
+        viewport_height,
+    );
+    let p_l = resolve_px_or_zero(
+        padding.left,
+        percent_base_width,
+        viewport_width,
+        viewport_height,
+    );
+    let p_r = resolve_px_or_zero(
+        padding.right,
+        percent_base_width,
+        viewport_width,
+        viewport_height,
+    );
+    let p_t = resolve_px_or_zero(
+        padding.top,
+        percent_base_height,
+        viewport_width,
+        viewport_height,
+    );
+    let p_b = resolve_px_or_zero(
+        padding.bottom,
+        percent_base_height,
+        viewport_width,
+        viewport_height,
+    );
+    ResolvedLayoutInsets {
+        border_l: bw_l,
+        border_r: bw_r,
+        border_t: bw_t,
+        border_b: bw_b,
+        padding_l: p_l,
+        padding_r: p_r,
+        padding_t: p_t,
+        padding_b: p_b,
+    }
 }
 
 fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {

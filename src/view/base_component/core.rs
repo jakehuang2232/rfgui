@@ -17,9 +17,6 @@ pub(crate) struct ElementCore {
     pub parent_id: Option<u64>,
     pub position: Position,
     pub size: Size,
-    pub layout_position: Position,
-    pub layout_size: Size,
-    pub should_render: bool,
     pub should_paint: bool,
 }
 
@@ -28,18 +25,15 @@ impl ElementCore {
         Self::new_with_id(next_ui_node_id(), x, y, width, height)
     }
 
-    pub fn new_with_id(id: u64, x: f32, y: f32, width: f32, height: f32) -> Self {
+    pub fn new_with_id(id: u64, x: f32, y: f32, _width: f32, _height: f32) -> Self {
         Self {
             id,
             parent_id: None,
             position: Position { x, y },
-            size: Size { width, height },
-            layout_position: Position { x, y },
-            layout_size: Size {
-                width: width.max(0.0),
-                height: height.max(0.0),
+            size: Size {
+                width: _width,
+                height: _height,
             },
-            should_render: true,
             should_paint: true,
         }
     }
