@@ -171,6 +171,7 @@ impl Layoutable for Element {
             profile.borrow_mut().place_self_ms += place_self_elapsed_ms;
         });
         self.register_anchor_snapshot();
+        self.push_ancestor_anchor_scope();
         self.resolve_corner_radii_from_self_box(proposal);
         let max_bw = (self
             .layout_state
@@ -244,6 +245,7 @@ impl Layoutable for Element {
         LAYOUT_PLACE_PROFILE.with(|profile| {
             profile.borrow_mut().place_children_ms += place_children_elapsed_ms;
         });
+        self.pop_ancestor_anchor_scope();
         self.end_place_scope();
         self.last_layout_placement = Some(placement);
         self.dirty_flags = self.dirty_flags.without(

@@ -226,6 +226,10 @@ struct SceneState {
     /// this arena via [`SceneState::ui_root_keys`].
     node_arena: super::node_arena::NodeArena,
     ui_root_keys: Vec<super::node_arena::NodeKey>,
+    /// Interaction-ordered stack of viewport-clip absolute nodes. Single
+    /// source of truth for both deferred render order and pointer
+    /// hit-test priority. See [`crate::view::popup_stack::PopupStack`].
+    popup_stack: super::popup_stack::PopupStack,
     scroll_offsets: FxHashMap<u64, (f32, f32)>,
     last_rsx_root: Option<RsxNode>,
     /// Phase A M1 dark-launch flag for the Fiber-commit (`FiberWork`)
@@ -241,6 +245,7 @@ impl SceneState {
         Self {
             node_arena: super::node_arena::NodeArena::new(),
             ui_root_keys: Vec::new(),
+            popup_stack: super::popup_stack::PopupStack::new(),
             scroll_offsets: FxHashMap::default(),
             last_rsx_root: None,
             // M5: flag-on by default. Every failure mode in the

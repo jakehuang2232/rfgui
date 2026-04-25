@@ -481,6 +481,27 @@ impl Element {
                 anchor.y - parent_y
             };
 
+            if let Some(origin) = self.computed_style.position.self_origin() {
+                let ox = origin
+                    .x()
+                    .resolve_with_base(
+                        Some(target_width),
+                        proposal.viewport_width,
+                        proposal.viewport_height,
+                    )
+                    .unwrap_or(0.0);
+                let oy = origin
+                    .y()
+                    .resolve_with_base(
+                        Some(target_height),
+                        proposal.viewport_width,
+                        proposal.viewport_height,
+                    )
+                    .unwrap_or(0.0);
+                target_rel_x -= ox;
+                target_rel_y -= oy;
+            }
+
             let mut abs_x = parent_x + target_rel_x;
             let mut abs_y = parent_y + target_rel_y;
             let boundary = match self.computed_style.position.collision_boundary() {
@@ -501,7 +522,7 @@ impl Element {
                 }
             };
             let clip_mode = self.computed_style.position.clip_mode();
-            let has_anchor = self.computed_style.position.anchor_name().is_some();
+            let has_anchor = self.computed_style.position.anchor_ref().is_some();
             absolute_clip_rect = Some(match clip_mode {
                 ClipMode::Parent => parent_clip_rect,
                 ClipMode::Viewport => {
@@ -514,7 +535,9 @@ impl Element {
                     }
                 }
                 ClipMode::AnchorParent if has_anchor => anchor.parent_clip_rect,
-                ClipMode::AnchorParent => parent_clip_rect,
+                ClipMode::AnchorParent => PLACEMENT_RUNTIME
+                    .with(|r| r.borrow().ancestor_stack.last().map(|s| s.parent_clip_rect))
+                    .unwrap_or(parent_clip_rect),
             });
             apply_collision(
                 self.computed_style.position.collision_mode(),
@@ -676,8 +699,15 @@ impl Element {
             .unwrap_or(parent_clip_rect);
         self.hit_test_clip_rect = Some(if is_absolute {
             match self.computed_style.position.clip_mode() {
-                ClipMode::Viewport => absolute_clip_rect.unwrap_or(inherited_hit_test_clip),
-                ClipMode::Parent | ClipMode::AnchorParent => absolute_clip_rect
+                // Viewport / AnchorParent escape the immediate ancestor's hit
+                // test clip — their resolved rect already encodes the upstream
+                // chain. Intersecting with `inherited_hit_test_clip` would clip
+                // the hit region back to the immediate parent and undo the
+                // escape (mirrors the scissor handling in apply_self_clip_scissor).
+                ClipMode::Viewport | ClipMode::AnchorParent => {
+                    absolute_clip_rect.unwrap_or(inherited_hit_test_clip)
+                }
+                ClipMode::Parent => absolute_clip_rect
                     .map(|rect| intersect_rect(rect, inherited_hit_test_clip))
                     .unwrap_or(inherited_hit_test_clip),
             }
@@ -926,6 +956,7 @@ impl Element {
             let mut runtime = runtime.borrow_mut();
             if runtime.depth == 0 {
                 runtime.anchors.clear();
+                runtime.ancestor_stack.clear();
                 runtime.child_clip_stack.clear();
                 runtime.hit_test_clip_stack.clear();
                 runtime.viewport_width = placement.viewport_width.max(0.0);
@@ -943,6 +974,7 @@ impl Element {
             }
             if runtime.depth == 0 {
                 runtime.anchors.clear();
+                runtime.ancestor_stack.clear();
                 runtime.child_clip_stack.clear();
                 runtime.hit_test_clip_stack.clear();
             }
@@ -1007,17 +1039,79 @@ impl Element {
     }
 
     fn resolve_anchor_snapshot(&self, fallback: AnchorSnapshot) -> AnchorSnapshot {
-        let Some(anchor_name) = self.computed_style.position.anchor_name() else {
+        let Some(anchor_ref) = self.computed_style.position.anchor_ref() else {
             return fallback;
         };
         PLACEMENT_RUNTIME.with(|runtime| {
-            runtime
-                .borrow()
-                .anchors
-                .get(anchor_name.as_str())
-                .copied()
-                .unwrap_or(fallback)
+            let runtime = runtime.borrow();
+            match anchor_ref {
+                crate::Anchor::Name(name) => runtime
+                    .anchors
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(fallback),
+                crate::Anchor::Parent => {
+                    runtime.ancestor_stack.last().copied().unwrap_or(fallback)
+                }
+                crate::Anchor::Viewport => {
+                    let vw = runtime.viewport_width.max(0.0);
+                    let vh = runtime.viewport_height.max(0.0);
+                    if vw <= 0.0 && vh <= 0.0 {
+                        runtime.ancestor_stack.first().copied().unwrap_or(fallback)
+                    } else {
+                        AnchorSnapshot {
+                            x: 0.0,
+                            y: 0.0,
+                            width: vw,
+                            height: vh,
+                            parent_clip_rect: Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: vw,
+                                height: vh,
+                            },
+                        }
+                    }
+                }
+                crate::Anchor::Ancestor(n) => {
+                    let stack = &runtime.ancestor_stack;
+                    if *n == 0 {
+                        return stack.last().copied().unwrap_or(fallback);
+                    }
+                    stack
+                        .len()
+                        .checked_sub(*n)
+                        .and_then(|idx| stack.get(idx))
+                        .copied()
+                        .unwrap_or(fallback)
+                }
+            }
         })
+    }
+
+    pub(crate) fn push_ancestor_anchor_scope(&self) {
+        let parent_clip_rect = self.anchor_parent_clip_rect.unwrap_or(Rect {
+            x: self.last_parent_layout_x,
+            y: self.last_parent_layout_y,
+            width: 0.0,
+            height: 0.0,
+        });
+        let snapshot = AnchorSnapshot {
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.layout_state.layout_size.width.max(0.0),
+            height: self.layout_state.layout_size.height.max(0.0),
+            parent_clip_rect,
+        };
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().ancestor_stack.push(snapshot);
+        });
+    }
+
+    pub(crate) fn pop_ancestor_anchor_scope(&self) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().ancestor_stack.pop();
+        });
     }
 
     fn viewport_size_from_runtime(&self, fallback_width: f32, fallback_height: f32) -> (f32, f32) {
@@ -1095,10 +1189,12 @@ impl Element {
                     }
                     match el.computed_style.position.clip_mode() {
                         ClipMode::Parent => false,
-                        ClipMode::Viewport => true,
-                        ClipMode::AnchorParent => {
-                            el.computed_style.position.anchor_name().is_some()
-                        }
+                        // AnchorParent always escapes the immediate parent's
+                        // inner clip: with an anchor it clips to the anchor's
+                        // parent; without one it falls back to the grandparent
+                        // clip. Either way the immediate parent's stencil/
+                        // scissor must not constrain the child.
+                        ClipMode::Viewport | ClipMode::AnchorParent => true,
                     }
                 })
             })

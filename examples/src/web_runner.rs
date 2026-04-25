@@ -24,7 +24,7 @@ use rfgui::SurfaceFormatPreference;
 use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::web_backend::{CanvasCursorSink, InMemoryClipboard};
 use rfgui::platform::{
-    Clipboard, CursorSink, Key as RfKey, Modifiers, PlatformImePreedit, PlatformKeyEvent,
+    Clipboard, CursorSink, Modifiers, PlatformImePreedit, PlatformKeyEvent,
     PlatformPointerButton, PlatformPointerEvent, PlatformPointerEventKind, PlatformServices,
     PlatformTextInput, PlatformWheelEvent, PointerType, RedrawRequester,
 };

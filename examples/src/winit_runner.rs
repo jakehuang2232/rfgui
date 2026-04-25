@@ -78,6 +78,12 @@ struct Runner {
     /// is not inserted twice.
     ime_composing: bool,
     last_ime_rect: Option<(i32, i32, u32, u32)>,
+    /// True while the window is occluded / in background. Winit drops
+    /// `request_redraw` calls on hidden windows on some platforms, so the
+    /// runner must avoid consuming `redraw_flag` while occluded — otherwise
+    /// the flag clears, the OS swallows the redraw, and on un-occlude
+    /// nothing repaints.
+    occluded: bool,
 }
 
 impl Runner {
@@ -106,6 +112,7 @@ impl Runner {
             cursor_in_window: false,
             ime_composing: false,
             last_ime_rect: None,
+            occluded: false,
         }
     }
 
@@ -412,8 +419,15 @@ impl Runner {
                 window.set_cursor(winit_cursor_from(cursor));
             }
             if want_redraw {
-                *self.redraw_flag.lock().unwrap() = false;
-                window.request_redraw();
+                if self.occluded {
+                    // Keep the flag set so the un-occlude path picks it
+                    // up. request_redraw on a hidden window is a no-op
+                    // on some platforms.
+                    *self.redraw_flag.lock().unwrap() = true;
+                } else {
+                    *self.redraw_flag.lock().unwrap() = false;
+                    window.request_redraw();
+                }
             }
             for cmd in &requests.window_commands {
                 apply_window_command(window, cmd);
@@ -747,6 +761,8 @@ impl ApplicationHandler for Runner {
                 }
             }
             WindowEvent::Occluded(occluded) => {
+                let was_occluded = self.occluded;
+                self.occluded = occluded;
                 let ev = AppEvent::Occluded(occluded);
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport.dispatch_app_event(
@@ -757,6 +773,13 @@ impl ApplicationHandler for Runner {
                             redraw: &self.redraw,
                         },
                     );
+                }
+                // Returning to foreground: any redraw the app requested
+                // while hidden was swallowed by the OS. Force one now.
+                if was_occluded && !occluded {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::ThemeChanged(theme) => {
@@ -898,7 +921,10 @@ impl ApplicationHandler for Runner {
         // go through this path.
         let now = Instant::now();
         run_due_timers(now);
-        if *self.redraw_flag.lock().unwrap() {
+        // Skip while occluded: winit drops request_redraw on hidden
+        // windows on some platforms. Consuming the flag here would lose
+        // the pending frame; defer until Occluded(false) re-kicks.
+        if !self.occluded && *self.redraw_flag.lock().unwrap() {
             *self.redraw_flag.lock().unwrap() = false;
             if let Some(window) = &self.window {
                 window.request_redraw();

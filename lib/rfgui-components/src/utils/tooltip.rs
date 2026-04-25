@@ -2,8 +2,8 @@ use crate::use_theme;
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, props, rsx, use_state};
 use rfgui::view::Element;
 use rfgui::{
-    ClipMode, Collision, CollisionBoundary, Layout, Length, Operator, Padding, Position, Transform,
-    Translate,
+    Anchor, ClipMode, Collision, CollisionBoundary, Layout, Length, Operator, Origin, Padding,
+    Position,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,37 +151,35 @@ impl rfgui::ui::RsxTag for Tooltip {
 fn placement_position(placement: TooltipPlacement, gap: Length) -> Position {
     use TooltipPlacement::*;
     let base = Position::absolute()
+        .anchor(Anchor::Parent)
         .collision(Collision::FlipFit, CollisionBoundary::Viewport)
         .clip(ClipMode::Viewport);
     let gap_plus_full = Length::calc(Length::percent(100.0), Operator::plus, gap);
     match placement {
-        Top => base.bottom(gap_plus_full).left(Length::percent(50.0)),
+        Top => base
+            .bottom(gap_plus_full)
+            .left(Length::percent(50.0))
+            .origin(Origin::top_center()),
         TopStart => base.bottom(gap_plus_full).left(Length::px(0.0)),
         TopEnd => base.bottom(gap_plus_full).right(Length::px(0.0)),
-        Bottom => base.top(gap_plus_full).left(Length::percent(50.0)),
+        Bottom => base
+            .top(gap_plus_full)
+            .left(Length::percent(50.0))
+            .origin(Origin::top_center()),
         BottomStart => base.top(gap_plus_full).left(Length::px(0.0)),
         BottomEnd => base.top(gap_plus_full).right(Length::px(0.0)),
-        Left => base.right(gap_plus_full).top(Length::percent(50.0)),
+        Left => base
+            .right(gap_plus_full)
+            .top(Length::percent(50.0))
+            .origin(Origin::center_left()),
         LeftStart => base.right(gap_plus_full).top(Length::px(0.0)),
         LeftEnd => base.right(gap_plus_full).bottom(Length::px(0.0)),
-        Right => base.left(gap_plus_full).top(Length::percent(50.0)),
+        Right => base
+            .left(gap_plus_full)
+            .top(Length::percent(50.0))
+            .origin(Origin::center_left()),
         RightStart => base.left(gap_plus_full).top(Length::px(0.0)),
         RightEnd => base.left(gap_plus_full).bottom(Length::px(0.0)),
-    }
-}
-
-fn placement_centering_translate(placement: TooltipPlacement) -> Option<Transform> {
-    use TooltipPlacement::*;
-    match placement {
-        Top | Bottom => Some(Transform::new([Translate::xy(
-            Length::percent(-50.0),
-            Length::px(0.0),
-        )])),
-        Left | Right => Some(Transform::new([Translate::xy(
-            Length::px(0.0),
-            Length::percent(-50.0),
-        )])),
-        _ => None,
     }
 }
 
@@ -203,7 +201,6 @@ fn TooltipView(
     let theme = use_theme().0;
     let gap = Length::px(6.0);
     let position = placement_position(placement, gap);
-    let centering = placement_centering_translate(placement);
 
     rsx! {
         <Element
@@ -214,7 +211,6 @@ fn TooltipView(
                 border_radius: theme.radius.sm,
                 color: theme.color.layer.on_inverse.clone(),
                 font_size: theme.typography.size.xs,
-                transform: centering,
                 layout: Layout::flow().row().no_wrap(),
             }}
         >

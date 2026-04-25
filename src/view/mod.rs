@@ -8,6 +8,7 @@ pub mod frame_graph;
 pub(crate) mod image_resource;
 pub(crate) mod layout;
 pub mod node_arena;
+pub mod popup_stack;
 /// Layer promotion analysis and configuration APIs.
 pub mod promotion;
 mod promotion_builder;

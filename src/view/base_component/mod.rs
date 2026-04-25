@@ -631,7 +631,12 @@ pub fn hit_test(
         match element.clip_mode_for_hit_test() {
             crate::style::ClipMode::Parent => false,
             crate::style::ClipMode::Viewport => hit_test_point_in_rect(viewport_rect, x, y),
-            crate::style::ClipMode::AnchorParent => element.has_anchor_name_for_hit_test(),
+            // AnchorParent always escapes the immediate parent's hit region —
+            // with an explicit anchor it tracks the anchor's parent, without
+            // one it falls back to the grandparent clip. Either way the gate
+            // here must be open; the actual bounds check happens via the
+            // child's own `hit_test_clip_rect` inside `find()`.
+            crate::style::ClipMode::AnchorParent => true,
         }
     }
 
@@ -698,6 +703,40 @@ pub fn hit_test(
         return Some(k);
     }
     find(arena, root_key, viewport_x, viewport_y, viewport_rect)
+}
+
+/// Stack-priority hit-test.
+///
+/// Walks `popup_stack` top → bottom; for each id, resolves the slot key
+/// and runs [`find_deepest_in_viewport_clip_subtree`]. Returns the first
+/// `(owning_root_key, target_key)` whose bounding rect contains the
+/// point. Stack entries that no longer resolve (stale ids) are skipped;
+/// callers should already have run `PopupStack::compact` for the frame.
+///
+/// Returns `None` when no stacked popup contains the point — caller
+/// falls back to the per-root `hit_test`.
+pub fn hit_test_stacked(
+    arena: &crate::view::node_arena::NodeArena,
+    popup_stack: &crate::view::popup_stack::PopupStack,
+    viewport_x: f32,
+    viewport_y: f32,
+) -> Option<(
+    crate::view::node_arena::NodeKey,
+    crate::view::node_arena::NodeKey,
+)> {
+    for sid in popup_stack.iter_top_down() {
+        let Some(popup_key) = arena.find_by_stable_id(sid) else {
+            continue;
+        };
+        let Some(target_key) =
+            find_deepest_in_viewport_clip_subtree(arena, popup_key, viewport_x, viewport_y)
+        else {
+            continue;
+        };
+        let root_key = arena.root_for(popup_key);
+        return Some((root_key, target_key));
+    }
+    None
 }
 
 /// Hit-test across multiple UI roots in a single pass.
@@ -791,6 +830,53 @@ pub fn dispatch_pointer_down_from_hit_test(
         .meta
         .set_path(composed_path_for_target(arena, root_key, target_key));
     dispatch_pointer_down_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_pointer_down_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerDownEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_down_bubble(arena, target_key, event, control)
+}
+
+/// Walk the parent chain from `target` upward and return the `stable_id`
+/// of the nearest viewport-clip absolute ancestor (or `target` itself if
+/// it qualifies). Used by dispatch to promote the popup that absorbed
+/// the pointer event to the top of the popup stack.
+pub fn nearest_viewport_clip_ancestor_id(
+    arena: &crate::view::node_arena::NodeArena,
+    target: crate::view::node_arena::NodeKey,
+) -> Option<u64> {
+    let mut current = Some(target);
+    while let Some(k) = current {
+        let (sid_opt, parent) = {
+            let node = arena.get(k)?;
+            let parent = node.parent;
+            let sid = node
+                .element
+                .as_any()
+                .downcast_ref::<Element>()
+                .filter(|el| el.should_append_to_root_viewport_render())
+                .map(|el| el.stable_id())
+                .filter(|s| *s != 0);
+            (sid, parent)
+        };
+        if let Some(sid) = sid_opt {
+            return Some(sid);
+        }
+        current = parent;
+    }
+    None
 }
 
 pub fn dispatch_pointer_up_from_hit_test(
@@ -1916,6 +2002,23 @@ pub(crate) fn dispatch_wheel_from_hit_test(
     let Some(target_key) = hit_test(arena, root_key, event.viewport_x, event.viewport_y) else {
         return false;
     };
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_wheel_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_wheel_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::WheelEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
     event.meta.set_target_id(target_key);
     event
         .meta

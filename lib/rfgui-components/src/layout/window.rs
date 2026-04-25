@@ -4,16 +4,13 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::use_theme;
-use rfgui::ClipMode::Viewport;
+use rfgui::ClipMode::{AnchorParent, Parent};
 use rfgui::ui::{
     BlurHandlerProp, FocusHandlerProp, PointerButton, PointerDownHandlerProp, RsxComponent,
     RsxNode, ViewportListenerHandle, on_pointer_down, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{
-    Align, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout,
-    Length, Padding, Position, ScrollDirection,
-};
+use rfgui::{Align, Anchor, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout, Length, Padding, Position, ScrollDirection};
 
 const MIN_WIDTH: f32 = 220.0;
 const MIN_HEIGHT: f32 = 140.0;
@@ -586,7 +583,7 @@ fn WindowView(
     rsx! {
         <Element
             style={{
-                position: Position::absolute().left(Length::px(x)).top(Length::px(y)).anchor("root").clip(Viewport),
+                position: Position::absolute().left(Length::px(x)).top(Length::px(y)).anchor(Anchor::Parent).clip(Parent),
                 width: Length::px(width),
                 height: Length::px(height),
                 layout: Layout::flow().column().no_wrap(),
@@ -636,7 +633,7 @@ fn WindowView(
                         .left(Length::px(-RESIZE_EDGE_THICKNESS))
                         .top(Length::px(0.0))
                         .bottom(Length::px(0.0))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     width: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::EwResize,
                 }}
@@ -648,7 +645,7 @@ fn WindowView(
                         .right(Length::px(-RESIZE_EDGE_THICKNESS))
                         .top(Length::px(0.0))
                         .bottom(Length::px(0.0))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     width: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::EwResize,
                 }}
@@ -660,7 +657,7 @@ fn WindowView(
                         .left(Length::px(0.0))
                         .right(Length::px(0.0))
                         .top(Length::px(-RESIZE_EDGE_THICKNESS))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     height: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::NsResize,
                 }}
@@ -672,7 +669,7 @@ fn WindowView(
                         .left(Length::px(0.0))
                         .right(Length::px(0.0))
                         .bottom(Length::px(-RESIZE_EDGE_THICKNESS))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     height: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::NsResize,
                 }}
@@ -683,7 +680,7 @@ fn WindowView(
                     position: Position::absolute()
                         .left(Length::px(-RESIZE_CORNER_SIZE / 2.0))
                         .top(Length::px(-RESIZE_CORNER_SIZE / 2.0))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     width: Length::px(RESIZE_CORNER_SIZE),
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NwseResize,
@@ -695,7 +692,7 @@ fn WindowView(
                     position: Position::absolute()
                         .right(Length::px(-RESIZE_CORNER_SIZE / 2.0))
                         .top(Length::px(-RESIZE_CORNER_SIZE / 2.0))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     width: Length::px(RESIZE_CORNER_SIZE),
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NeswResize,
@@ -707,7 +704,7 @@ fn WindowView(
                     position: Position::absolute()
                         .left(Length::px(-RESIZE_CORNER_SIZE / 2.0))
                         .bottom(Length::px(-RESIZE_CORNER_SIZE / 2.0))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     width: Length::px(RESIZE_CORNER_SIZE),
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NeswResize,
@@ -719,7 +716,7 @@ fn WindowView(
                     position: Position::absolute()
                         .right(Length::px(-RESIZE_CORNER_SIZE / 2.0))
                         .bottom(Length::px(-RESIZE_CORNER_SIZE / 2.0))
-                        .clip(Viewport),
+                        .clip(AnchorParent),
                     width: Length::px(RESIZE_CORNER_SIZE),
                     height: Length::px(RESIZE_CORNER_SIZE),
                     cursor: Cursor::NwseResize,

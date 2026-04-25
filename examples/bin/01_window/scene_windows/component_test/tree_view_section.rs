@@ -4,19 +4,22 @@ use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::{
-    Button, ButtonSize, ButtonVariant, DropPosition, Switch, Theme, TreeMoveEvent, TreeNode,
-    TreeView,
+    BranchNode, Button, ButtonSize, ButtonVariant, DropPosition, LeafNode, Switch, Theme,
+    TreeMoveEvent, TreeNode, TreeView,
 };
 use rfgui_components::Accordion;
 
 fn default_tree_nodes() -> Vec<TreeNode> {
-    let folder = |id: &str, label: &str, children: Vec<TreeNode>| {
-        TreeNode::new(id, label)
+    let folder = |id: &str, label: &str, children: Vec<TreeNode>| -> TreeNode {
+        BranchNode::new(id, label)
             .with_icon("folder")
             .with_expanded_icon("folder_open")
             .with_children(children)
+            .into()
     };
-    let file = |id: &str, label: &str, icon: &str| TreeNode::new(id, label).with_icon(icon);
+    let file = |id: &str, label: &str, icon: &str| -> TreeNode {
+        LeafNode::new(id, label).with_icon(icon).into()
+    };
     vec![
         folder(
             "src",
@@ -54,31 +57,31 @@ fn default_tree_nodes() -> Vec<TreeNode> {
 
 fn collect_ids(nodes: &[TreeNode], out: &mut Vec<String>) {
     for node in nodes {
-        out.push(node.value.clone());
-        collect_ids(&node.children, out);
+        out.push(node.value().clone());
+        collect_ids(node.children(), out);
     }
 }
 
 fn collect_folder_ids(nodes: &[TreeNode], out: &mut Vec<String>) {
     for node in nodes {
-        if !node.children.is_empty() {
-            out.push(node.value.clone());
-            collect_folder_ids(&node.children, out);
+        if node.is_branch() {
+            out.push(node.value().clone());
+            collect_folder_ids(node.children(), out);
         }
     }
 }
 
 fn is_descendant_or_self(nodes: &[TreeNode], ancestor: &str, candidate: &str) -> bool {
     for node in nodes {
-        if node.value == ancestor {
-            if node.value == candidate {
+        if node.value() == ancestor {
+            if node.value() == candidate {
                 return true;
             }
             let mut ids = Vec::new();
-            collect_ids(&node.children, &mut ids);
+            collect_ids(node.children(), &mut ids);
             return ids.iter().any(|id| id == candidate);
         }
-        if is_descendant_or_self(&node.children, ancestor, candidate) {
+        if is_descendant_or_self(node.children(), ancestor, candidate) {
             return true;
         }
     }
@@ -86,11 +89,13 @@ fn is_descendant_or_self(nodes: &[TreeNode], ancestor: &str, candidate: &str) ->
 }
 
 fn remove_by_id(nodes: &mut Vec<TreeNode>, id: &str) -> Option<TreeNode> {
-    if let Some(pos) = nodes.iter().position(|n| n.value == id) {
+    if let Some(pos) = nodes.iter().position(|n| n.value() == id) {
         return Some(nodes.remove(pos));
     }
     for node in nodes.iter_mut() {
-        if let Some(removed) = remove_by_id(&mut node.children, id) {
+        if let Some(children) = node.children_mut()
+            && let Some(removed) = remove_by_id(children, id)
+        {
             return Some(removed);
         }
     }
@@ -103,17 +108,23 @@ fn insert_at(
     position: DropPosition,
     subtree: TreeNode,
 ) -> Result<(), TreeNode> {
-    if let Some(pos) = nodes.iter().position(|n| n.value == target) {
+    if let Some(pos) = nodes.iter().position(|n| n.value() == target) {
         match position {
             DropPosition::Before => nodes.insert(pos, subtree),
             DropPosition::After => nodes.insert(pos + 1, subtree),
-            DropPosition::Inside => nodes[pos].children.push(subtree),
+            DropPosition::Inside => match nodes[pos].children_mut() {
+                Some(children) => children.push(subtree),
+                None => return Err(subtree),
+            },
         }
         return Ok(());
     }
     let mut carry = subtree;
     for node in nodes.iter_mut() {
-        match insert_at(&mut node.children, target, position.clone(), carry) {
+        let Some(children) = node.children_mut() else {
+            continue;
+        };
+        match insert_at(children, target, position.clone(), carry) {
             Ok(()) => return Ok(()),
             Err(returned) => carry = returned,
         }
@@ -175,7 +186,7 @@ pub fn TreeViewSection(theme: Theme) -> RsxNode {
                 apply_tree_move(nodes, &ev);
                 fn dump(ns: &[TreeNode], depth: usize) {
                     for n in ns {
-                        dump(&n.children, depth + 1);
+                        dump(n.children(), depth + 1);
                     }
                 }
                 dump(nodes, 0);
