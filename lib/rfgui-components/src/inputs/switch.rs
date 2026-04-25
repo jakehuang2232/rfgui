@@ -1,7 +1,12 @@
 use crate::use_theme;
-use rfgui::ui::{Binding, RsxComponent, RsxNode, on_click, props, rsx, use_state};
+use rfgui::ui::{
+    Binding, PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxComponent, RsxNode, on_click,
+    props, rsx, use_state,
+};
 use rfgui::view::{Element, Text};
-use rfgui::{Align, Layout, Length, Operator, Transition, TransitionProperty};
+use rfgui::{
+    Align, ColorLike, Layout, Length, Operator, Transition, TransitionProperty, darken_color,
+};
 use std::rc::Rc;
 
 pub struct Switch;
@@ -58,11 +63,42 @@ impl RsxComponent<SwitchProps> for Switch {
             }
         });
 
+        let hover_state = use_state(|| false);
+        let hover_state_for_enter = hover_state.clone();
+        let hover_state_for_leave = hover_state.clone();
+        let hovered = hover_state.get();
+        let on_pointer_enter =
+            PointerEnterHandlerProp::new(move |_event| hover_state_for_enter.set(true));
+        let on_pointer_leave =
+            PointerLeaveHandlerProp::new(move |_event| hover_state_for_leave.set(false));
+
+        let track_base: Box<dyn ColorLike> = if disabled {
+            theme.color.state.disabled.clone()
+        } else if checked {
+            theme.color.primary.base.clone()
+        } else {
+            theme.color.border.clone()
+        };
+        let track_background: Box<dyn ColorLike> = if !disabled && hovered {
+            let amount = if checked {
+                theme.color.state.hover_darken
+            } else {
+                -theme.color.state.hover_darken
+            };
+            Box::new(darken_color(track_base.as_ref(), amount))
+        } else {
+            track_base
+        };
+
         rsx! {
             <Element style={{
                 layout: Layout::flow().row().align(Align::Center).no_wrap(),
                 gap: theme.spacing.md,
-            }} on_click={click}>
+            }}
+                on_click={click}
+                on_pointer_enter={on_pointer_enter}
+                on_pointer_leave={on_pointer_leave}
+            >
                 <Element style={{
                     layout: Layout::flow().row().align(Align::Center).no_wrap(),
                     width: switch_theme.track_width,
@@ -76,14 +112,9 @@ impl RsxComponent<SwitchProps> for Switch {
                         )
                         .ease_in_out(),
                     ],
-                    background: if disabled {
-                        theme.color.state.disabled.clone()
-                    } else if checked {
-                        theme.color.primary.base.clone()
-                    } else {
-                        theme.color.border.clone()
-                    },
-                }}>
+                    background: track_background,
+                }}
+                >
                     <Element style={{
                         width: if checked { thumb_travel } else { Length::Zero },
                         height: switch_theme.thumb_height,

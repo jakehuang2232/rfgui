@@ -264,6 +264,7 @@ struct PlacementRuntime {
     viewport_width: f32,
     viewport_height: f32,
     anchors: FxHashMap<String, AnchorSnapshot>,
+    ancestor_stack: Vec<AnchorSnapshot>,
     child_clip_stack: Vec<Rect>,
     hit_test_clip_stack: Vec<Rect>,
 }
@@ -702,6 +703,20 @@ impl UiBuildContext {
     pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
         let previous = self.state.scissor_rect;
         self.state.scissor_rect = intersect_scissor_rects(self.state.scissor_rect, scissor_rect);
+        previous
+    }
+
+    /// Replace the active scissor rect outright, returning the previous value
+    /// for later restoration. Use this when an element with
+    /// `ClipMode::Viewport` (or similar escape-hatch semantics) must paint
+    /// outside any ancestor scissor — `push_scissor_rect` would intersect
+    /// with the ancestor and re-clip the element back into the parent box.
+    pub(crate) fn replace_scissor_rect(
+        &mut self,
+        scissor_rect: Option<[u32; 4]>,
+    ) -> Option<[u32; 4]> {
+        let previous = self.state.scissor_rect;
+        self.state.scissor_rect = scissor_rect;
         previous
     }
 

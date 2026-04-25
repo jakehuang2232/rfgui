@@ -7,17 +7,23 @@
 //! testable without a full viewport and making selection / expansion
 //! semantics easy to reason about.
 //!
+//! Each row is either a [`BranchNode`] (has children, can expand) or a
+//! [`LeafNode`] (terminal). They share the [`TreeNode`] enum via `From`,
+//! so a `Vec<TreeNode<V>>` mixes both.
+//!
 //! `V` is the per-node value type used for selection + the expanded-set.
 //! Defaults to `String`, so the common path stays terse:
 //!
 //! ```ignore
-//! let nodes = vec![
-//!     TreeNode::new("root", "Root").with_children(vec![
-//!         TreeNode::new("child-a", "Child A"),
-//!         TreeNode::new("child-b", "Child B").with_children(vec![
-//!             TreeNode::new("leaf", "Leaf"),
-//!         ]),
-//!     ]),
+//! let nodes: Vec<TreeNode> = vec![
+//!     BranchNode::new("root", "Root")
+//!         .with_children(vec![
+//!             LeafNode::new("child-a", "Child A").into(),
+//!             BranchNode::new("child-b", "Child B")
+//!                 .with_children(vec![LeafNode::new("leaf", "Leaf").into()])
+//!                 .into(),
+//!         ])
+//!         .into(),
 //! ];
 //! rsx! {
 //!     <TreeView
@@ -34,7 +40,7 @@
 //! enum NavTarget { Inbox, Drafts, Sent }
 //! rsx! {
 //!     <TreeView::<NavTarget>
-//!         nodes={vec![TreeNode::new(NavTarget::Inbox, "Inbox")]}
+//!         nodes={vec![LeafNode::new(NavTarget::Inbox, "Inbox").into()]}
 //!     />
 //! }
 //! ```
@@ -59,16 +65,26 @@ use rfgui::{
 // Data
 // ---------------------------------------------------------------------------
 
-/// One row in a [`TreeView`].
+/// One row in a [`TreeView`] — either a [`BranchNode`] or a [`LeafNode`].
 ///
 /// `V` is the per-node value type — used as the identity in the expanded
 /// set and as the selected value. Must be `Clone + PartialEq + 'static`.
 ///
-/// `icon` / `expanded_icon` are Material Symbols ligatures (e.g. `"folder"`,
-/// `"folder_open"`, `"description"`). When both are set, `expanded_icon`
-/// shows while the row is expanded — handy for folder open/closed pairs.
+/// Construct via [`BranchNode::new`] / [`LeafNode::new`] then `.into()`,
+/// or use the [`TreeNode::branch`] / [`TreeNode::leaf`] shortcuts.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TreeNode<V = String> {
+pub enum TreeNode<V = String> {
+    Branch(BranchNode<V>),
+    Leaf(LeafNode<V>),
+}
+
+/// A row that owns children and can expand / collapse.
+///
+/// `icon` / `expanded_icon` are Material Symbols ligatures (e.g. `"folder"`,
+/// `"folder_open"`). When both are set, `expanded_icon` shows while the row
+/// is expanded — handy for folder open/closed pairs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BranchNode<V = String> {
     pub value: V,
     pub label: String,
     pub disabled: bool,
@@ -77,7 +93,16 @@ pub struct TreeNode<V = String> {
     pub children: Vec<TreeNode<V>>,
 }
 
-impl<V> TreeNode<V> {
+/// A terminal row — no children, no chevron, no expand toggle on click.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeafNode<V = String> {
+    pub value: V,
+    pub label: String,
+    pub disabled: bool,
+    pub icon: Option<String>,
+}
+
+impl<V> BranchNode<V> {
     pub fn new(value: impl Into<V>, label: impl Into<String>) -> Self {
         Self {
             value: value.into(),
@@ -99,16 +124,139 @@ impl<V> TreeNode<V> {
         self
     }
 
-    /// Material Symbols ligature for the resting / collapsed state.
+    /// Material Symbols ligature for the collapsed / resting state.
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
         self
     }
 
-    /// Material Symbols ligature shown when the row is expanded. Falls back
+    /// Material Symbols ligature shown while the row is expanded. Falls back
     /// to [`Self::with_icon`] when unset.
     pub fn with_expanded_icon(mut self, icon: impl Into<String>) -> Self {
         self.expanded_icon = Some(icon.into());
+        self
+    }
+}
+
+impl<V> LeafNode<V> {
+    pub fn new(value: impl Into<V>, label: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+            disabled: false,
+            icon: None,
+        }
+    }
+
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Material Symbols ligature shown beside the label.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+}
+
+impl<V> From<BranchNode<V>> for TreeNode<V> {
+    fn from(b: BranchNode<V>) -> Self {
+        TreeNode::Branch(b)
+    }
+}
+
+impl<V> From<LeafNode<V>> for TreeNode<V> {
+    fn from(l: LeafNode<V>) -> Self {
+        TreeNode::Leaf(l)
+    }
+}
+
+impl<V> TreeNode<V> {
+    /// Shortcut for `BranchNode::new(...).into()`.
+    pub fn branch(value: impl Into<V>, label: impl Into<String>) -> Self {
+        BranchNode::new(value, label).into()
+    }
+
+    /// Shortcut for `LeafNode::new(...).into()`.
+    pub fn leaf(value: impl Into<V>, label: impl Into<String>) -> Self {
+        LeafNode::new(value, label).into()
+    }
+
+    pub fn value(&self) -> &V {
+        match self {
+            TreeNode::Branch(b) => &b.value,
+            TreeNode::Leaf(l) => &l.value,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            TreeNode::Branch(b) => &b.label,
+            TreeNode::Leaf(l) => &l.label,
+        }
+    }
+
+    pub fn disabled(&self) -> bool {
+        match self {
+            TreeNode::Branch(b) => b.disabled,
+            TreeNode::Leaf(l) => l.disabled,
+        }
+    }
+
+    pub fn icon(&self) -> Option<&str> {
+        match self {
+            TreeNode::Branch(b) => b.icon.as_deref(),
+            TreeNode::Leaf(l) => l.icon.as_deref(),
+        }
+    }
+
+    /// Branch-only. `None` for leaves.
+    pub fn expanded_icon(&self) -> Option<&str> {
+        match self {
+            TreeNode::Branch(b) => b.expanded_icon.as_deref(),
+            TreeNode::Leaf(_) => None,
+        }
+    }
+
+    /// Empty slice for leaves.
+    pub fn children(&self) -> &[TreeNode<V>] {
+        match self {
+            TreeNode::Branch(b) => &b.children,
+            TreeNode::Leaf(_) => &[],
+        }
+    }
+
+    /// `Some(&mut Vec)` only for branches; `None` for leaves.
+    pub fn children_mut(&mut self) -> Option<&mut Vec<TreeNode<V>>> {
+        match self {
+            TreeNode::Branch(b) => Some(&mut b.children),
+            TreeNode::Leaf(_) => None,
+        }
+    }
+
+    pub fn is_branch(&self) -> bool {
+        matches!(self, TreeNode::Branch(_))
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        matches!(self, TreeNode::Leaf(_))
+    }
+
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        match &mut self {
+            TreeNode::Branch(b) => b.disabled = disabled,
+            TreeNode::Leaf(l) => l.disabled = disabled,
+        }
+        self
+    }
+
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        let icon = icon.into();
+        match &mut self {
+            TreeNode::Branch(b) => b.icon = Some(icon),
+            TreeNode::Leaf(l) => l.icon = Some(icon),
+        }
         self
     }
 }
@@ -290,10 +438,10 @@ fn emit_rows<V: Clone + PartialEq + std::hash::Hash + 'static>(
     drag_enabled: bool,
     out: &mut Vec<RsxNode>,
 ) {
-    let is_expanded = expanded_set.iter().any(|x| x == &node.value);
-    let is_selected = selected_value.map(|s| s == &node.value).unwrap_or(false);
+    let is_expanded = expanded_set.iter().any(|x| x == node.value());
+    let is_selected = selected_value.map(|s| s == node.value()).unwrap_or(false);
     let row_drop_position = drop_target_value
-        .filter(|(v, _)| v == &node.value)
+        .filter(|(v, _)| v == node.value())
         .map(|(_, p)| p.clone());
 
     out.push(render_row(
@@ -314,8 +462,8 @@ fn emit_rows<V: Clone + PartialEq + std::hash::Hash + 'static>(
 
     if is_expanded {
         let mut child_ancestors = ancestor_values.to_vec();
-        child_ancestors.push(node.value.clone());
-        for child in &node.children {
+        child_ancestors.push(node.value().clone());
+        for child in node.children() {
             emit_rows(
                 child,
                 depth + 1,
@@ -353,10 +501,10 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
 ) -> RsxNode {
     let theme = use_theme().0;
 
-    let value = node.value.clone();
-    let label = node.label.clone();
-    let disabled = node.disabled;
-    let has_children = !node.children.is_empty();
+    let value = node.value().clone();
+    let label = node.label().to_string();
+    let disabled = node.disabled();
+    let is_branch = node.is_branch();
 
     let value_for_click = value.clone();
     let click = ClickHandlerProp::new(move |_event| {
@@ -364,6 +512,10 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
             return;
         }
         selected_binding.set(Some(value_for_click.clone()));
+        // Leaves never expand — toggle only branches.
+        if !is_branch {
+            return;
+        }
         let mut next = expanded_binding.get();
         if let Some(pos) = next.iter().position(|x| x == &value_for_click) {
             next.remove(pos);
@@ -404,7 +556,7 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
         theme.color.text.secondary.clone()
     };
 
-    let chevron_slot = if has_children {
+    let chevron_slot = if is_branch {
         rsx! {
             <Element style={{
                 width: Length::px(TREE_ITEM_ICON_SLOT_PX),
@@ -442,9 +594,11 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
     // Resolve which Material Symbols ligature to render. `expanded_icon`
     // wins when expanded; otherwise fall back to `icon`.
     let active_icon_ligature: Option<String> = if is_expanded {
-        node.expanded_icon.clone().or_else(|| node.icon.clone())
+        node.expanded_icon()
+            .or_else(|| node.icon())
+            .map(str::to_string)
     } else {
-        node.icon.clone()
+        node.icon().map(str::to_string)
     };
 
     let icon_color: Box<dyn ColorLike> = if disabled {
@@ -601,10 +755,10 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
             }
             let y = event.pointer.local_y;
             let h = TREE_ITEM_ROW_HEIGHT_PX;
-            // Directory rows split into 3 equal zones so the "drop as last
-            // sibling" and "drop into the directory" zones are both
-            // distinct and big enough to hit. Leaves only need 2 zones.
-            let position = if has_children {
+            // Branch rows split into 3 equal zones so the "drop as last
+            // sibling" and "drop into the branch" zones are both distinct
+            // and big enough to hit. Leaves only need 2 zones.
+            let position = if is_branch {
                 if y < h * (1.0 / 3.0) {
                     DropPosition::Before
                 } else if y > h * (2.0 / 3.0) {

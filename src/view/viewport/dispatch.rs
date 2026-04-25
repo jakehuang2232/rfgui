@@ -73,27 +73,55 @@ impl Viewport {
             viewport: meta.viewport(),
         };
         let root_keys = self.scene.ui_root_keys.clone();
+        let stacked_hit = crate::view::base_component::hit_test_stacked(
+            &self.scene.node_arena,
+            &self.scene.popup_stack,
+            x,
+            y,
+        );
         let mut handled = false;
         {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
-            for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_pointer_down_from_hit_test(
+            if let Some((root_key, target_key)) = stacked_hit {
+                if crate::view::base_component::dispatch_pointer_down_to_target(
                     &arena,
                     root_key,
+                    target_key,
                     &mut event,
                     &mut control,
                 ) {
                     handled = true;
-                    break;
+                }
+            }
+            if !handled {
+                for &root_key in root_keys.iter().rev() {
+                    if crate::view::base_component::dispatch_pointer_down_from_hit_test(
+                        &arena,
+                        root_key,
+                        &mut event,
+                        &mut control,
+                    ) {
+                        handled = true;
+                        break;
+                    }
                 }
             }
         }
         event.meta.detach_dispatch_ctx();
         if handled {
+            // Promote the popup that absorbed the click to the top of the
+            // stack so subsequent renders + hit-tests treat it as topmost.
+            let target_id = event.meta.target_id();
+            if let Some(sid) = crate::view::base_component::nearest_viewport_clip_ancestor_id(
+                &self.scene.node_arena,
+                target_id,
+            ) {
+                self.scene.popup_stack.promote(sid);
+            }
             self.input_state.pending_click = Some(PendingClick {
                 button,
-                target_id: event.meta.target_id(),
+                target_id,
                 viewport_x: x,
                 viewport_y: y,
             });
@@ -178,6 +206,12 @@ impl Viewport {
             viewport: meta.viewport(),
         };
         let root_keys = self.scene.ui_root_keys.clone();
+        let stacked_hit = crate::view::base_component::hit_test_stacked(
+            &self.scene.node_arena,
+            &self.scene.popup_stack,
+            x,
+            y,
+        );
         let mut handled = false;
         {
             event.meta.attach_dispatch_ctx(&*self);
@@ -197,15 +231,28 @@ impl Viewport {
                 }
                 control.viewport.set_pointer_capture_node_id(None);
             } else {
-                for &root_key in root_keys.iter().rev() {
-                    if crate::view::base_component::dispatch_pointer_up_from_hit_test(
+                if let Some((root_key, target_key)) = stacked_hit {
+                    if crate::view::base_component::dispatch_pointer_up_to_target(
                         &arena,
                         root_key,
+                        target_key,
                         &mut event,
                         &mut control,
                     ) {
                         handled = true;
-                        break;
+                    }
+                }
+                if !handled {
+                    for &root_key in root_keys.iter().rev() {
+                        if crate::view::base_component::dispatch_pointer_up_from_hit_test(
+                            &arena,
+                            root_key,
+                            &mut event,
+                            &mut control,
+                        ) {
+                            handled = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -233,8 +280,16 @@ impl Viewport {
         }
         let redraw_requested_before = self.redraw_requested;
         let root_keys = self.scene.ui_root_keys.clone();
-        let hover_target = root_keys.iter().rev().find_map(|&root_key| {
-            crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+        let stacked_hit = crate::view::base_component::hit_test_stacked(
+            &self.scene.node_arena,
+            &self.scene.popup_stack,
+            x,
+            y,
+        );
+        let hover_target = stacked_hit.map(|(_, t)| t).or_else(|| {
+            root_keys.iter().rev().find_map(|&root_key| {
+                crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+            })
         });
         let buttons = self.current_ui_pointer_buttons();
         let pointer_data = PointerEventData {
@@ -284,15 +339,28 @@ impl Viewport {
                     control.viewport.set_pointer_capture_node_id(None);
                 }
             } else {
-                for &root_key in root_keys.iter().rev() {
-                    if crate::view::base_component::dispatch_pointer_move_from_hit_test(
+                if let Some((root_key, target_key)) = stacked_hit {
+                    if crate::view::base_component::dispatch_pointer_move_to_target(
                         &arena,
                         root_key,
+                        target_key,
                         &mut event,
                         &mut control,
                     ) {
                         handled = true;
-                        break;
+                    }
+                }
+                if !handled {
+                    for &root_key in root_keys.iter().rev() {
+                        if crate::view::base_component::dispatch_pointer_move_from_hit_test(
+                            &arena,
+                            root_key,
+                            &mut event,
+                            &mut control,
+                        ) {
+                            handled = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -322,8 +390,16 @@ impl Viewport {
         }
         let buttons = self.current_ui_pointer_buttons();
         let root_keys = self.scene.ui_root_keys.clone();
-        let hit_target = root_keys.iter().rev().find_map(|&root_key| {
-            crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+        let stacked_hit = crate::view::base_component::hit_test_stacked(
+            &self.scene.node_arena,
+            &self.scene.popup_stack,
+            x,
+            y,
+        );
+        let hit_target = stacked_hit.map(|(_, t)| t).or_else(|| {
+            root_keys.iter().rev().find_map(|&root_key| {
+                crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+            })
         });
         let is_valid_click = is_valid_click_candidate(pending_click, button, hit_target, x, y);
         if !is_valid_click {
@@ -464,19 +540,38 @@ impl Viewport {
             modifiers,
             timestamp: now,
         };
+        let stacked_wheel_hit = crate::view::base_component::hit_test_stacked(
+            &self.scene.node_arena,
+            &self.scene.popup_stack,
+            x,
+            y,
+        );
         let mut wheel_user_handled = false;
         {
             wheel_event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
-            for &root_key in wheel_root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_wheel_from_hit_test(
+            if let Some((root_key, target_key)) = stacked_wheel_hit {
+                if crate::view::base_component::dispatch_wheel_to_target(
                     arena,
                     root_key,
+                    target_key,
                     &mut wheel_event,
                     &mut control,
                 ) {
                     wheel_user_handled = true;
-                    break;
+                }
+            }
+            if !wheel_user_handled {
+                for &root_key in wheel_root_keys.iter().rev() {
+                    if crate::view::base_component::dispatch_wheel_from_hit_test(
+                        arena,
+                        root_key,
+                        &mut wheel_event,
+                        &mut control,
+                    ) {
+                        wheel_user_handled = true;
+                        break;
+                    }
                 }
             }
         }
@@ -493,6 +588,7 @@ impl Viewport {
         let root_keys = self.scene.ui_root_keys.clone();
         let Some((root_index, target_key)) = Self::find_scroll_handler_at_pointer(
             &self.scene.node_arena,
+            &self.scene.popup_stack,
             &root_keys,
             x,
             y,
@@ -582,16 +678,21 @@ impl Viewport {
 
     pub(super) fn find_scroll_handler_at_pointer(
         arena: &crate::view::node_arena::NodeArena,
+        popup_stack: &crate::view::popup_stack::PopupStack,
         root_keys: &[crate::view::node_arena::NodeKey],
         x: f32,
         y: f32,
         delta_x: f32,
         delta_y: f32,
     ) -> Option<(usize, crate::view::node_arena::NodeKey)> {
-        let hit_target = root_keys
-            .iter()
-            .rev()
-            .find_map(|&root_key| crate::view::base_component::hit_test(arena, root_key, x, y))?;
+        let hit_target = crate::view::base_component::hit_test_stacked(arena, popup_stack, x, y)
+            .map(|(_, t)| t)
+            .or_else(|| {
+                root_keys
+                    .iter()
+                    .rev()
+                    .find_map(|&root_key| crate::view::base_component::hit_test(arena, root_key, x, y))
+            })?;
 
         // Walk up from hit_target via arena.parent_of, stopping at the first
         // ancestor that reports `can_scroll_by`. Determine which root it sits
@@ -1210,9 +1311,14 @@ impl Viewport {
     fn handle_drag_move(&mut self, x: f32, y: f32) -> bool {
         let arena_view = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
-        let target = root_keys.iter().rev().find_map(|&root_key| {
-            crate::view::base_component::hit_test(&arena_view, root_key, x, y)
-        });
+        let target =
+            crate::view::base_component::hit_test_stacked(&arena_view, &self.scene.popup_stack, x, y)
+                .map(|(_, t)| t)
+                .or_else(|| {
+                    root_keys.iter().rev().find_map(|&root_key| {
+                        crate::view::base_component::hit_test(&arena_view, root_key, x, y)
+                    })
+                });
         self.scene.node_arena = arena_view;
 
         let prev_target = self
@@ -1265,8 +1371,17 @@ impl Viewport {
         let current_target = {
             let arena_view = std::mem::take(&mut self.scene.node_arena);
             let root_keys = self.scene.ui_root_keys.clone();
-            let target = root_keys.iter().rev().find_map(|&root_key| {
-                crate::view::base_component::hit_test(&arena_view, root_key, x, y)
+            let target = crate::view::base_component::hit_test_stacked(
+                &arena_view,
+                &self.scene.popup_stack,
+                x,
+                y,
+            )
+            .map(|(_, t)| t)
+            .or_else(|| {
+                root_keys.iter().rev().find_map(|&root_key| {
+                    crate::view::base_component::hit_test(&arena_view, root_key, x, y)
+                })
             });
             self.scene.node_arena = arena_view;
             target
@@ -1822,6 +1937,55 @@ impl Viewport {
         let pointer_changed = Self::cancel_pointer_interactions(&self.scene.node_arena, &root_keys);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
+        }
+    }
+
+    /// Re-run hover hit-test at current pointer position without a real
+    /// PointerMove. Used after layout-affecting changes (scroll, layout
+    /// transitions) move elements under a stationary pointer so that
+    /// PointerEnter/PointerLeave still fire.
+    pub(super) fn resync_pointer_hover(&mut self) -> bool {
+        if self.input_state.drag_state.is_some() {
+            return false;
+        }
+        if self.input_state.pointer_capture_node_id.is_some() {
+            return false;
+        }
+        let Some((x, y)) = self.pointer_position_viewport() else {
+            return false;
+        };
+        let root_keys = self.scene.ui_root_keys.clone();
+        let stacked_hit = crate::view::base_component::hit_test_stacked(
+            &self.scene.node_arena,
+            &self.scene.popup_stack,
+            x,
+            y,
+        );
+        let hover_target = stacked_hit.map(|(_, t)| t).or_else(|| {
+            root_keys.iter().rev().find_map(|&root_key| {
+                crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+            })
+        });
+        if hover_target == self.input_state.hovered_node_id {
+            return false;
+        }
+        let pointer_data = synthetic_pointer_data(
+            (x, y),
+            self.current_key_modifiers(),
+            self.current_ui_pointer_buttons(),
+        );
+        let (hover_changed, hover_event_dispatched) = Self::sync_hover_target(
+            &self.scene.node_arena,
+            &root_keys,
+            &mut self.input_state.hovered_node_id,
+            hover_target,
+            pointer_data,
+        );
+        if hover_changed || hover_event_dispatched {
+            self.request_redraw();
+            true
+        } else {
+            false
         }
     }
 }

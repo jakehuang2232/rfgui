@@ -773,10 +773,37 @@ pub enum CollisionBoundary {
     Parent,
 }
 
+/// Clip rect chosen for an absolutely-positioned element.
+///
+/// Only meaningful when [`Position::mode`] is [`PositionMode::Absolute`] (or
+/// `Fixed`). Static / relative elements always clip against their layout
+/// parent's inner box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipMode {
+    /// Clip against the **layout parent's** inner box — the element where this
+    /// node lives in the tree, regardless of where its anchor sits. Default
+    /// for `position: absolute` and matches CSS `overflow: hidden` on the
+    /// containing block.
+    ///
+    /// Use when the element should be visually trapped inside its sibling
+    /// context (e.g. a badge pinned to a card that must not bleed past the
+    /// card's edges).
     Parent,
+    /// Clip against the **viewport** — escape every ancestor clip, including
+    /// scroll containers and overflow-hidden boxes. Behaves like portaling
+    /// the element to the root.
+    ///
+    /// Use for modal-class overlays (dropdown menus, tooltips, dialogs) that
+    /// must remain visible even when their layout parent is scrolled or
+    /// clipped.
     Viewport,
+    /// Clip against the **anchor target's parent** clip rect — the box that
+    /// contains the element referenced by [`Position::anchor`]. Falls back to
+    /// `Parent` semantics when no anchor is set or the anchor is unresolved.
+    ///
+    /// Use for popovers anchored to a trigger inside a scroll container: the
+    /// popover lives in a portal (viewport-level rendering) but should still
+    /// disappear when the trigger scrolls out of its container.
     AnchorParent,
 }
 
@@ -805,14 +832,125 @@ impl From<String> for AnchorName {
     }
 }
 
+/// Reference to an anchor for absolute positioning.
+///
+/// `Name` looks up a registered `AnchorName` in the per-frame map.
+/// `Parent`, `Root`, `Ancestor(n)` walk the live ancestor stack — no
+/// declaration needed on the target.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Anchor {
+    Name(AnchorName),
+    Parent,
+    Viewport,
+    Ancestor(usize),
+}
+
+impl Anchor {
+    pub fn name(value: impl Into<AnchorName>) -> Self {
+        Self::Name(value.into())
+    }
+}
+
+impl From<AnchorName> for Anchor {
+    fn from(value: AnchorName) -> Self {
+        Self::Name(value)
+    }
+}
+
+impl From<&str> for Anchor {
+    fn from(value: &str) -> Self {
+        Self::Name(AnchorName::new(value))
+    }
+}
+
+impl From<String> for Anchor {
+    fn from(value: String) -> Self {
+        Self::Name(AnchorName::new(value))
+    }
+}
+
+/// Reference point on the positioned element itself.
+///
+/// Combined with `Position`'s anchor + `top/right/bottom/left` insets:
+/// `final_self.{origin_point} = anchor.{x,y} + {left,top}_inset`,
+/// then `final_self.top_left = origin_point - origin · self_size`.
+///
+/// `Length` percent base is `self_size`. Default semantics (no origin set on
+/// `Position`) match `top_left`. Only applied when `Position::mode` is
+/// `Absolute` or `Fixed`; ignored under `Static` / `Relative`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Origin {
+    x: Length,
+    y: Length,
+}
+
+impl Origin {
+    pub const fn new(x: Length, y: Length) -> Self {
+        Self { x, y }
+    }
+
+    pub const fn top_left() -> Self {
+        Self::new(Length::Zero, Length::Zero)
+    }
+
+    pub const fn top_center() -> Self {
+        Self::new(Length::percent(50.0), Length::Zero)
+    }
+
+    pub const fn top_right() -> Self {
+        Self::new(Length::percent(100.0), Length::Zero)
+    }
+
+    pub const fn center_left() -> Self {
+        Self::new(Length::Zero, Length::percent(50.0))
+    }
+
+    pub const fn center() -> Self {
+        Self::new(Length::percent(50.0), Length::percent(50.0))
+    }
+
+    pub const fn center_right() -> Self {
+        Self::new(Length::percent(100.0), Length::percent(50.0))
+    }
+
+    pub const fn bottom_left() -> Self {
+        Self::new(Length::Zero, Length::percent(100.0))
+    }
+
+    pub const fn bottom_center() -> Self {
+        Self::new(Length::percent(50.0), Length::percent(100.0))
+    }
+
+    pub const fn bottom_right() -> Self {
+        Self::new(Length::percent(100.0), Length::percent(100.0))
+    }
+
+    pub const fn px(x: f32, y: f32) -> Self {
+        Self::new(Length::px(x), Length::px(y))
+    }
+
+    pub const fn percent(x: f32, y: f32) -> Self {
+        Self::new(Length::percent(x), Length::percent(y))
+    }
+
+    pub const fn x(&self) -> Length {
+        self.x
+    }
+
+    pub const fn y(&self) -> Length {
+        self.y
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Position {
     mode: PositionMode,
-    anchor: Option<AnchorName>,
+    anchor: Option<Anchor>,
     top: Option<Length>,
     right: Option<Length>,
     bottom: Option<Length>,
     left: Option<Length>,
+    self_origin: Option<Origin>,
     collision: Collision,
     collision_boundary: CollisionBoundary,
     clip_mode: ClipMode,
@@ -839,7 +977,7 @@ impl Position {
         self.mode
     }
 
-    pub fn anchor(mut self, anchor: impl Into<AnchorName>) -> Self {
+    pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = Some(anchor.into());
         self
     }
@@ -875,8 +1013,28 @@ impl Position {
         self
     }
 
-    pub fn anchor_name(&self) -> Option<&AnchorName> {
+    /// Shifts self by `-origin · self_size` so the placement point
+    /// (anchor + insets) lands on `origin` of self instead of self's top-left.
+    /// Only applied when `mode` is `Absolute` or `Fixed`.
+    pub const fn origin(mut self, origin: Origin) -> Self {
+        self.self_origin = Some(origin);
+        self
+    }
+
+    pub const fn self_origin(&self) -> Option<Origin> {
+        self.self_origin
+    }
+
+    pub fn anchor_ref(&self) -> Option<&Anchor> {
         self.anchor.as_ref()
+    }
+
+    /// Convenience: returns `Some(name)` only when the reference is `Anchor::Name`.
+    pub fn anchor_name(&self) -> Option<&AnchorName> {
+        match self.anchor.as_ref()? {
+            Anchor::Name(n) => Some(n),
+            _ => None,
+        }
     }
 
     pub const fn top_inset(&self) -> Option<Length> {
@@ -915,6 +1073,7 @@ impl Position {
             right: None,
             bottom: None,
             left: None,
+            self_origin: None,
             collision: Collision::None,
             collision_boundary: CollisionBoundary::Viewport,
             clip_mode: ClipMode::Parent,

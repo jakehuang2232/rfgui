@@ -333,6 +333,13 @@ impl Viewport {
         }
         timings.relayout_ms = relayout_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        // Layout-affecting transitions (scroll, layout) can move elements
+        // under a stationary pointer — re-run hover hit-test so
+        // PointerEnter/PointerLeave fire without requiring a real PointerMove.
+        if post_layout_transition.relayout_required {
+            self.resync_pointer_hover();
+        }
+
         // --- Promotion ---
         let update_promotion_started_at = Instant::now();
         self.update_promotion_state();
@@ -386,6 +393,11 @@ impl Viewport {
         // without fighting the outer `&mut self` borrow. Put it back
         // before returning (any early-return below restores it first).
         let mut arena = std::mem::take(&mut self.scene.node_arena);
+        // Once per frame: compact the popup stack (drop unmounted ids),
+        // auto-register newly-mounted viewport-clip nodes at the top,
+        // then seed `ctx`'s deferred list bottom → top so the top of the
+        // stack is painted last (on top visually).
+        arena.seed_defer_render_with_stack(&mut self.scene.popup_stack, &mut ctx);
         let root_keys_for_build = self.scene.ui_root_keys.clone();
         for &root_key in &root_keys_for_build {
             // Peek at root id and promotion status without holding the
@@ -551,6 +563,13 @@ impl Viewport {
             }
         }
         let mut deferred_node_ids = ctx.take_deferred_node_ids();
+        // Drain dedup: `append_to_defer`'s in-state `contains` check stops
+        // working once we've taken the list out, so build-time re-appends
+        // (impl_render walks calling `append_to_defer` for viewport-clip
+        // children) would otherwise re-queue an id that was already seeded
+        // and produce a double-paint on top.
+        let mut seen_deferred: rustc_hash::FxHashSet<u64> =
+            deferred_node_ids.iter().copied().collect();
         let mut deferred_index = 0usize;
         while deferred_index < deferred_node_ids.len() {
             let node_id = deferred_node_ids[deferred_index];
@@ -572,8 +591,10 @@ impl Viewport {
                 }
             }
             let newly_deferred = ctx.take_deferred_node_ids();
-            if !newly_deferred.is_empty() {
-                deferred_node_ids.extend(newly_deferred);
+            for id in newly_deferred {
+                if seen_deferred.insert(id) {
+                    deferred_node_ids.push(id);
+                }
             }
         }
         // Build walk is done — give the arena back to the scene.
@@ -865,8 +886,17 @@ impl Viewport {
             transition_changed_after_layout = self.render_render_tree(dt, now_seconds);
         }
         let next_hover_target = self.pointer_position_viewport().and_then(|(x, y)| {
-            self.scene.ui_root_keys.iter().rev().find_map(|&root_key| {
-                crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+            crate::view::base_component::hit_test_stacked(
+                &self.scene.node_arena,
+                &self.scene.popup_stack,
+                x,
+                y,
+            )
+            .map(|(_, t)| t)
+            .or_else(|| {
+                self.scene.ui_root_keys.iter().rev().find_map(|&root_key| {
+                    crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
+                })
             })
         });
         let hover_changed = {

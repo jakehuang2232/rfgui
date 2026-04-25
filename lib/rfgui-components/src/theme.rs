@@ -3,6 +3,7 @@ use rfgui::{
     Border, BorderRadius, BoxShadow, Color, ColorLike, FontFamily, FontSize, Length, Padding,
     TransitionTiming,
 };
+
 #[derive(Clone)]
 pub struct Theme {
     pub color: ColorTheme,
@@ -90,6 +91,9 @@ pub struct StateColorSet {
     pub pressed: Box<dyn ColorLike>,
     pub focus: Box<dyn ColorLike>,
     pub disabled: Box<dyn ColorLike>,
+    /// Lightness shift applied to a widget's own background on hover (positive = darker).
+    /// Light themes use positive, dark themes use negative.
+    pub hover_darken: f32,
 }
 
 #[derive(Clone)]
@@ -384,6 +388,7 @@ impl Theme {
                     pressed: rgba(56, 58, 66, 44),
                     focus: atom.blue.clone(),
                     disabled: rgba(160, 161, 167, 128),
+                    hover_darken: -0.14,
                 },
             },
             typography: TypographyTheme {
@@ -588,6 +593,7 @@ impl Theme {
                     pressed: rgba(171, 178, 191, 66),
                     focus: atom.blue.clone(),
                     disabled: rgba(92, 99, 112, 128),
+                    hover_darken: 0.14,
                 },
             },
             typography: TypographyTheme {

@@ -940,32 +940,8 @@ impl Element {
         self.computed_style.position.clip_mode()
     }
 
-    pub(crate) fn has_anchor_name_for_hit_test(&self) -> bool {
-        self.computed_style.position.anchor_name().is_some()
-    }
-
     pub(crate) fn should_append_to_root_viewport_render(&self) -> bool {
         self.computed_style.position.mode() == PositionMode::Absolute
             && self.computed_style.position.clip_mode() == ClipMode::Viewport
-    }
-
-    /// Recurses through `Node.children` keys in the arena. Caller must
-    /// pass a live arena reference since children now live there rather
-    /// than nested under this element.
-    fn collect_root_viewport_deferred_descendants(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        ctx: &mut UiBuildContext,
-    ) {
-        for child_key in &self.children {
-            let Some(child_node) = arena.get(*child_key) else { continue };
-            let Some(element) = child_node.element.as_any().downcast_ref::<Element>() else {
-                continue;
-            };
-            if element.should_append_to_root_viewport_render() {
-                ctx.append_to_defer(element.stable_id());
-            }
-            element.collect_root_viewport_deferred_descendants(arena, ctx);
-        }
     }
 }

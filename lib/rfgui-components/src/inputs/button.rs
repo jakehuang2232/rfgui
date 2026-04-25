@@ -7,7 +7,7 @@ use rfgui::ui::{
 use rfgui::view::{Element, Text};
 use rfgui::{
     Align, Border, BorderRadius, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding,
-    Transition, TransitionProperty, Transitions,
+    Transition, TransitionProperty, Transitions, darken_color,
 };
 use std::time::Duration;
 
@@ -352,7 +352,10 @@ fn ButtonView(
         background.clone()
     } else {
         match variant {
-            ButtonVariant::Contained => theme.color.state.active.clone(),
+            ButtonVariant::Contained => Box::new(darken_color(
+                color_base.as_ref(),
+                theme.color.state.hover_darken,
+            )),
             ButtonVariant::Outlined | ButtonVariant::Text => theme.color.state.hover.clone(),
         }
     };

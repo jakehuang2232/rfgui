@@ -3,7 +3,7 @@ impl Renderable for Element {
         &mut self,
         graph: &mut FrameGraph,
         arena: &mut crate::view::node_arena::NodeArena,
-        mut ctx: UiBuildContext,
+        ctx: UiBuildContext,
     ) -> BuildState {
         if trace_layout_enabled() {
             eprintln!(
@@ -16,9 +16,9 @@ impl Renderable for Element {
             );
         }
         if !self.layout_state.should_render {
-            if self.has_absolute_descendant_for_hit_test {
-                self.collect_root_viewport_deferred_descendants(arena, &mut ctx);
-            }
+            // Viewport-clip descendants were already collected once at
+            // frame start via `NodeArena::refresh_defer_render_nodes`, so
+            // skipping the subtree here no longer drops them.
             return ctx.into_state();
         }
 

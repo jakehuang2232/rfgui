@@ -49,6 +49,13 @@ impl OklchColor {
     }
 }
 
+/// Shift `base` lightness in OKLCH space by `-amount` (positive = darker, negative = lighter).
+pub fn darken_color(base: &dyn ColorLike, amount: f32) -> OklchColor {
+    let rgba = base.to_rgba_f32();
+    let o = OklchColor::from_linear_rgba(rgba);
+    OklchColor::new((o.l() - amount).clamp(0.0, 1.0), o.c(), o.h(), o.a())
+}
+
 impl ColorLike for OklchColor {
     fn box_clone(&self) -> Box<dyn ColorLike> {
         Box::new(self.clone())

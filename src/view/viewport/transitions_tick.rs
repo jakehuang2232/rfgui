@@ -650,13 +650,16 @@ impl Viewport {
         let mut redraw_changed = false;
         let mut relayout_required = false;
         for sample in samples {
-            redraw_changed |= Self::apply_scroll_sample(
+            if Self::apply_scroll_sample(
                 &mut arena,
                 &root_keys,
                 sample.target,
                 sample.axis,
                 sample.value,
-            );
+            ) {
+                redraw_changed = true;
+                relayout_required = true;
+            }
         }
         let style_samples = self.transitions.style_transition_plugin.take_samples();
         for sample in style_samples {

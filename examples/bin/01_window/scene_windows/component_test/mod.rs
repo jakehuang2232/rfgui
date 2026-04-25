@@ -1,6 +1,7 @@
 mod button_section;
 mod material_symbols_section;
 mod number_field_section;
+mod snackbar_section;
 mod tooltip_section;
 mod tree_view_section;
 
@@ -12,6 +13,7 @@ use crate::rfgui_components::{Checkbox, Select, Slider, Switch, Theme};
 use button_section::ButtonSection;
 use material_symbols_section::MaterialSymbolsSection;
 use number_field_section::NumberFieldSection;
+use snackbar_section::SnackbarSection;
 use tooltip_section::TooltipSection;
 use tree_view_section::TreeViewSection;
 
@@ -45,6 +47,7 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
         }}>
             <ButtonSection theme={theme.clone()} />
             <TooltipSection theme={theme.clone()} />
+            <SnackbarSection theme={theme.clone()} />
             <NumberFieldSection theme={theme.clone()} />
             <MaterialSymbolsSection theme={theme.clone()} />
             <TreeViewSection theme={theme.clone()} />

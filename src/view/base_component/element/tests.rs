@@ -30,7 +30,7 @@ mod tests {
     use crate::{
         Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision,
         CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator,
-        Position, Rotate, Transform, TransformOrigin, Translate, Style,
+        Origin, Position, Rotate, Transform, TransformOrigin, Translate, Style,
     };
     use glam::{Mat4, Vec3};
     
@@ -1181,6 +1181,394 @@ mod tests {
     }
 
     #[test]
+    fn absolute_self_origin_center_centers_on_inset_point() {
+        let parent = Element::new(0.0, 0.0, 400.0, 300.0);
+        let mut child = Element::new(0.0, 0.0, 40.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(100.0))
+                    .top(Length::px(100.0))
+                    .origin(Origin::center()),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        assert_eq!(snapshot.x, 80.0);
+        assert_eq!(snapshot.y, 80.0);
+        assert_eq!(snapshot.width, 40.0);
+        assert_eq!(snapshot.height, 40.0);
+    }
+
+    #[test]
+    fn absolute_self_origin_bottom_right_aligns_to_anchor_corner() {
+        let parent = Element::new(0.0, 0.0, 400.0, 300.0);
+        let mut child = Element::new(0.0, 0.0, 50.0, 30.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(0.0))
+                    .top(Length::px(0.0))
+                    .origin(Origin::bottom_right()),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        assert_eq!(snapshot.x, -50.0);
+        assert_eq!(snapshot.y, -30.0);
+    }
+
+    #[test]
+    fn absolute_self_origin_px_offset() {
+        let parent = Element::new(0.0, 0.0, 400.0, 300.0);
+        let mut child = Element::new(0.0, 0.0, 60.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(100.0))
+                    .top(Length::px(100.0))
+                    .origin(Origin::px(20.0, 30.0)),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        assert_eq!(snapshot.x, 80.0);
+        assert_eq!(snapshot.y, 70.0);
+    }
+
+    #[test]
+    fn absolute_self_origin_top_center_for_popover_pattern() {
+        // Popover anchored to parent bottom-center: top: 100%, left: 50%,
+        // origin: top_center → self top edge centered at parent's bottom-center.
+        let parent = Element::new(0.0, 0.0, 200.0, 120.0);
+        let mut child = Element::new(0.0, 0.0, 80.0, 50.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::percent(50.0))
+                    .top(Length::percent(100.0))
+                    .origin(Origin::top_center()),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        // placement point = (50%, 100%) of parent = (100, 120)
+        // self top-left = placement - (50%, 0%) of self = (100-40, 120-0) = (60, 120)
+        assert_eq!(snapshot.x, 60.0);
+        assert_eq!(snapshot.y, 120.0);
+    }
+
+    #[test]
+    fn absolute_self_origin_with_auto_size_via_child() {
+        // Mirror tooltip pattern: absolute element with Auto width/height,
+        // size determined by a fixed-size child after measure pass. Origin
+        // shift must use the post-measure auto-size, not 0.
+        let parent = Element::new(0.0, 0.0, 200.0, 60.0);
+        let mut tooltip_box = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut tooltip_style = Style::new();
+        tooltip_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+        );
+        tooltip_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::calc(Length::percent(100.0), Operator::plus, Length::px(6.0)))
+                    .top(Length::percent(50.0))
+                    .origin(Origin::center_left()),
+            ),
+        );
+        tooltip_box.apply_style(tooltip_style);
+
+        // Fixed-size grand-child standing in for the tooltip's text.
+        let text_child = Element::new(0.0, 0.0, 80.0, 20.0);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let tooltip_key = commit_child(&mut arena, parent_key, Box::new(tooltip_box));
+        let _text_key = commit_child(&mut arena, tooltip_key, Box::new(text_child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        // parent 200x60. tooltip auto-sized to ~80x20 from text child.
+        // left = 100% + 6 → tooltip.x = 200 + 6 = 206
+        // top = 50% → 30; minus origin y (50% of 20 = 10) → tooltip.y = 20
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        assert_eq!(snapshot.x, 206.0);
+        assert_eq!(snapshot.width, 80.0);
+        assert_eq!(snapshot.height, 20.0);
+        assert_eq!(snapshot.y, 20.0);
+    }
+
+    #[test]
+    fn absolute_self_origin_left_placement_with_right_inset() {
+        // Tooltip Left placement: right inset + origin center_left.
+        // Right inset already shifts by self_w; origin x=0 leaves x alone,
+        // origin y=50% centers vertically.
+        let parent = Element::new(100.0, 100.0, 60.0, 30.0);
+        let mut tooltip_box = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut tooltip_style = Style::new();
+        tooltip_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+        );
+        tooltip_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .right(Length::calc(
+                        Length::percent(100.0),
+                        Operator::plus,
+                        Length::px(6.0),
+                    ))
+                    .top(Length::percent(50.0))
+                    .origin(Origin::center_left()),
+            ),
+        );
+        tooltip_box.apply_style(tooltip_style);
+        let text_child = Element::new(0.0, 0.0, 80.0, 20.0);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let tooltip_key = commit_child(&mut arena, parent_key, Box::new(tooltip_box));
+        let _text_key = commit_child(&mut arena, tooltip_key, Box::new(text_child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        assert_eq!(snapshot.width, 80.0);
+        assert_eq!(snapshot.height, 20.0);
+        // anchor (parent) = 100x100..160x130.
+        // right inset = 60+6 = 66 → target_rel_x = (100-0) + (60 - 66 - 80) = 100 - 86 = 14
+        // tooltip right edge = 14 + 80 = 94 → anchor.left (100) - tooltip.right (94) = 6 = gap ✓
+        assert_eq!(snapshot.x, 14.0);
+        // top = 50% → target_rel_y = 100 + 15 = 115. origin oy = 10 → 105.
+        // tooltip vertical center = 105 + 10 = 115 = anchor.y (100) + 0.5*30 = 115 ✓
+        assert_eq!(snapshot.y, 105.0);
+    }
+
+    #[test]
+    fn relative_mode_ignores_self_origin() {
+        let parent = Element::new(0.0, 0.0, 200.0, 120.0);
+        let mut child = Element::new(0.0, 0.0, 40.0, 30.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(Position::relative().origin(Origin::center())),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        // Relative element follows flow layout; origin must not shift it.
+        assert_eq!(snapshot.x, 0.0);
+        assert_eq!(snapshot.y, 0.0);
+    }
+
+    #[test]
     fn absolute_collision_fit_viewport_clamps_into_view() {
         let mut el = Element::new(0.0, 0.0, 50.0, 30.0);
         let mut style = Style::new();
@@ -1306,6 +1694,10 @@ mod tests {
         let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
+        // Mirror `Viewport::render_rsx`: seed the ctx defer list once
+        // from the arena.
+        let mut popup_stack = crate::view::popup_stack::PopupStack::new();
+        arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
         let ctx_for_build =
             UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
         let next_state = arena
@@ -1319,7 +1711,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_clip_anchor_parent_falls_back_to_parent_without_anchor() {
+    fn absolute_clip_anchor_parent_falls_back_to_grandparent_without_anchor() {
         let parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
@@ -1363,10 +1755,13 @@ mod tests {
             },
         );
 
+        // AnchorParent without explicit anchor uses grandparent (= proposal/viewport
+        // 400x300) as the clip rect. Child at x=130, y=10, size 30x20 fits inside
+        // the grandparent clip even though it overflows the immediate parent (100x80).
         let rendered = crate::view::test_support::get_element::<Element>(&arena, child_k)
             .layout_state
             .should_render;
-        assert!(!rendered);
+        assert!(rendered);
     }
 
     #[test]
@@ -1484,7 +1879,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_clip_anchor_parent_scissor_falls_back_to_parent_without_anchor() {
+    fn absolute_clip_anchor_parent_scissor_falls_back_to_grandparent_without_anchor() {
         let parent = Element::new(0.0, 0.0, 100.0, 80.0);
         let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
         let mut child_style = Style::new();
@@ -1528,8 +1923,10 @@ mod tests {
             },
         );
 
+        // AnchorParent without anchor → grandparent's clip. Root parent's
+        // grandparent clip falls back to the proposal viewport (400x300).
         let child_el = crate::view::test_support::get_element::<Element>(&arena, child_k);
-        assert_eq!(child_el.absolute_clip_scissor_rect(), Some([0, 0, 100, 80]));
+        assert_eq!(child_el.absolute_clip_scissor_rect(), Some([0, 0, 400, 300]));
     }
 
     #[test]
@@ -5522,4 +5919,1012 @@ mod tests {
         }
     }
 
+    fn place_grandparent_parent_child(
+        parent_box: (f32, f32, f32, f32),
+        child_anchor: crate::Anchor,
+        child_left: f32,
+        child_top: f32,
+    ) -> (
+        crate::view::node_arena::NodeArena,
+        crate::view::node_arena::NodeKey,
+    ) {
+        // grandparent (root) > parent (absolute @ parent_box) > child (absolute, anchor=...)
+        let grandparent = Element::new(0.0, 0.0, 800.0, 600.0);
+        let mut parent = Element::new(0.0, 0.0, parent_box.2, parent_box.3);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(parent_box.0))
+                    .top(Length::px(parent_box.1)),
+            ),
+        );
+        parent.apply_style(parent_style);
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(child_anchor)
+                    .left(Length::px(child_left))
+                    .top(Length::px(child_top)),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let gp_key = commit_element(&mut arena, Box::new(grandparent));
+        let parent_key = commit_child(&mut arena, gp_key, Box::new(parent));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            gp_key,
+            LayoutConstraints {
+                max_width: 800.0,
+                max_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 800.0,
+                available_height: 600.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(800.0),
+                percent_base_height: Some(600.0),
+                viewport_height: 600.0,
+            },
+        );
+        (arena, child_key)
+    }
+
+    #[test]
+    fn anchor_parent_resolves_to_immediate_parent_box() {
+        let (arena, child_k) = place_grandparent_parent_child(
+            (100.0, 50.0, 200.0, 120.0),
+            crate::Anchor::Parent,
+            10.0,
+            5.0,
+        );
+        let snap = child_snapshot(&arena, child_k);
+        // child positioned at parent.x + left, parent.y + top
+        assert!((snap.x - (100.0 + 10.0)).abs() < 0.01, "layout_x = {}", snap.x);
+        assert!((snap.y - (50.0 + 5.0)).abs() < 0.01, "layout_y = {}", snap.y);
+    }
+
+    #[test]
+    fn anchor_root_resolves_to_root_box() {
+        // root is grandparent at (0,0,800,600). left=12, top=8 → child at (12,8).
+        let (arena, child_k) = place_grandparent_parent_child(
+            (100.0, 50.0, 200.0, 120.0),
+            crate::Anchor::Viewport,
+            12.0,
+            8.0,
+        );
+        let snap = child_snapshot(&arena, child_k);
+        assert!((snap.x - 12.0).abs() < 0.01, "layout_x = {}", snap.x);
+        assert!((snap.y - 8.0).abs() < 0.01, "layout_y = {}", snap.y);
+    }
+
+    #[test]
+    fn anchor_ancestor_n_walks_up_n_levels() {
+        // Ancestor(1) == Parent.
+        let (arena, child_k) = place_grandparent_parent_child(
+            (100.0, 50.0, 200.0, 120.0),
+            crate::Anchor::Ancestor(1),
+            10.0,
+            5.0,
+        );
+        let snap = child_snapshot(&arena, child_k);
+        assert!((snap.x - 110.0).abs() < 0.01);
+        assert!((snap.y - 55.0).abs() < 0.01);
+
+        // Ancestor(2) == grandparent (root) at (0,0).
+        let (arena2, child_k2) = place_grandparent_parent_child(
+            (100.0, 50.0, 200.0, 120.0),
+            crate::Anchor::Ancestor(2),
+            12.0,
+            8.0,
+        );
+        let snap2 = child_snapshot(&arena2, child_k2);
+        assert!((snap2.x - 12.0).abs() < 0.01, "layout_x = {}", snap2.x);
+        assert!((snap2.y - 8.0).abs() < 0.01, "layout_y = {}", snap2.y);
+    }
+
+    #[test]
+    fn anchor_str_still_resolves_via_named_map() {
+        // Regression: From<&str> for Anchor still flows through the named-anchor map.
+        let parent = Element::new(0.0, 0.0, 500.0, 200.0);
+        let mut anchor = Element::new(0.0, 0.0, 40.0, 40.0);
+        let mut anchor_style = Style::new();
+        anchor_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(300.0))
+                    .top(Length::px(20.0)),
+            ),
+        );
+        anchor.apply_style(anchor_style);
+        anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
+        let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor("menu_button")
+                    .left(Length::px(5.0))
+                    .top(Length::px(0.0)),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _anchor_k = commit_child(&mut arena, parent_key, Box::new(anchor));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 600.0,
+                max_height: 300.0,
+                viewport_width: 600.0,
+                percent_base_width: Some(600.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 600.0,
+                available_height: 300.0,
+                viewport_width: 600.0,
+                percent_base_width: Some(600.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+        );
+
+        let snap = child_snapshot(&arena, child_k);
+        // Anchored to menu_button at (300,20). left=5, top=0 → child at (305, 20).
+        assert!((snap.x - 305.0).abs() < 0.01, "layout_x = {}", snap.x);
+        assert!((snap.y - 20.0).abs() < 0.01, "layout_y = {}", snap.y);
+    }
+
+    /// Repro for the user-reported bug: when an ancestor extends beyond the
+    /// viewport, an `absolute + Anchor::Viewport + clip:Viewport` descendant
+    /// (e.g. a snackbar pinned to the viewport bottom) gets clipped /
+    /// culled by the offscreen ancestor. Expected: the descendant should
+    /// render at its viewport-anchored position, full viewport scissor,
+    /// `should_render = true`, regardless of ancestor geometry.
+    #[test]
+    fn viewport_anchored_child_renders_when_ancestor_partly_offscreen() {
+        // Window-like parent: clip:Viewport, dragged so left half is
+        // offscreen — frame at (-200, 100), size 460x380.
+        let mut parent = Element::new(0.0, 0.0, 460.0, 380.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(-200.0))
+                    .top(Length::px(100.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        parent.apply_style(parent_style);
+
+        // Snackbar-like child: absolute, Anchor::Viewport, clip:Viewport,
+        // bottom=16 left=16 right=16 (spans width minus gaps), height=40.
+        let mut child = Element::new(0.0, 0.0, 0.0, 40.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(crate::Anchor::Viewport)
+                    .left(Length::px(16.0))
+                    .right(Length::px(16.0))
+                    .bottom(Length::px(16.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_k = commit_child(&mut arena, parent_key, Box::new(child));
+
+        // Viewport 1280x800.
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        // Expected: child anchored to viewport, NOT to parent.
+        // x = 16 (viewport left + 16), width = 1280 - 16 - 16 = 1248.
+        // y = 800 - 16 - 40 = 744.
+        let snap = child_snapshot(&arena, child_k);
+        eprintln!(
+            "[viewport-anchored snap] x={} y={} w={} h={}",
+            snap.x, snap.y, snap.width, snap.height
+        );
+        assert!(
+            (snap.x - 16.0).abs() < 0.5,
+            "child x should pin to viewport+16, got {}",
+            snap.x
+        );
+        assert!(
+            (snap.y - 744.0).abs() < 0.5,
+            "child y should pin to viewport bottom-16-40, got {}",
+            snap.y
+        );
+        assert!(
+            (snap.width - 1248.0).abs() < 0.5,
+            "child width should span viewport minus 2*16, got {}",
+            snap.width
+        );
+
+        // Should render — frame is fully inside viewport.
+        let child_el = crate::view::test_support::get_element::<Element>(&arena, child_k);
+        assert!(
+            child_el.layout_state.should_render,
+            "viewport-anchored child should render despite ancestor offscreen"
+        );
+
+        // absolute_clip_rect should be the full viewport rect (escape clip).
+        let abs_clip = child_el.absolute_clip_rect.expect("clip_rect set for absolute");
+        assert!(
+            (abs_clip.x - 0.0).abs() < 0.01
+                && (abs_clip.y - 0.0).abs() < 0.01
+                && (abs_clip.width - 1280.0).abs() < 0.01
+                && (abs_clip.height - 800.0).abs() < 0.01,
+            "absolute_clip_rect should be viewport rect, got {:?}",
+            abs_clip
+        );
+    }
+
+    /// Deeper repro: ancestor chain (Window > content > section > snackbar)
+    /// where Window is dragged so most of it sits offscreen. Verify the
+    /// viewport-anchored snackbar still computes correct viewport-aligned
+    /// frame and `should_render`.
+    #[test]
+    fn viewport_anchored_child_through_deep_offscreen_chain() {
+        // Window outer: clip:Viewport, position absolute at (-300, 50),
+        // size 460x380.
+        let mut window = Element::new(0.0, 0.0, 460.0, 380.0);
+        let mut window_style = Style::new();
+        window_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(-300.0))
+                    .top(Length::px(50.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        window.apply_style(window_style);
+
+        // Window content (column flow, 100% width/height of window, with
+        // padding to mimic the title bar etc).
+        let mut content = Element::new(0.0, 0.0, 460.0, 350.0);
+        let mut content_style = Style::new();
+        content_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().column().no_wrap().into()),
+        );
+        content.apply_style(content_style);
+
+        // Section wrapper inside content.
+        let section = Element::new(0.0, 0.0, 460.0, 200.0);
+
+        // Snackbar wrapper: absolute, Anchor::Viewport, clip:Viewport.
+        let mut snackbar = Element::new(0.0, 0.0, 0.0, 40.0);
+        let mut snackbar_style = Style::new();
+        snackbar_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(crate::Anchor::Viewport)
+                    .left(Length::px(16.0))
+                    .right(Length::px(16.0))
+                    .bottom(Length::px(16.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        snackbar.apply_style(snackbar_style);
+
+        let mut arena = new_test_arena();
+        let win_k = commit_element(&mut arena, Box::new(window));
+        let content_k = commit_child(&mut arena, win_k, Box::new(content));
+        let section_k = commit_child(&mut arena, content_k, Box::new(section));
+        let snackbar_k = commit_child(&mut arena, section_k, Box::new(snackbar));
+
+        // Viewport 1280x800.
+        measure_and_place(
+            &mut arena,
+            win_k,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        let snap = child_snapshot(&arena, snackbar_k);
+        assert!(
+            (snap.x - 16.0).abs() < 0.5,
+            "deep child x should pin to viewport, got {}",
+            snap.x
+        );
+        assert!(
+            (snap.y - 744.0).abs() < 0.5,
+            "deep child y should pin to viewport bottom-16-40, got {}",
+            snap.y
+        );
+
+        let snackbar_el = crate::view::test_support::get_element::<Element>(&arena, snackbar_k);
+        assert!(
+            snackbar_el.layout_state.should_render,
+            "deep viewport-anchored child should render"
+        );
+    }
+
+    /// Render-level repro: drive Element::build through the deep-offscreen
+    /// ancestor chain, then run the deferred build for the snackbar's
+    /// node id. Inspect the recorded FrameGraph pass count to confirm the
+    /// snackbar actually emitted draw passes.
+    #[test]
+    fn viewport_anchored_child_renders_passes_through_offscreen_ancestor() {
+        // Same scene as the layout-only test, but exercise the build/defer
+        // pipeline.
+        let mut window = Element::new(0.0, 0.0, 460.0, 380.0);
+        let mut window_style = Style::new();
+        window_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#222222")),
+        );
+        window_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(-300.0))
+                    .top(Length::px(50.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        window.apply_style(window_style);
+
+        let mut snackbar = Element::new(0.0, 0.0, 0.0, 40.0);
+        let mut snackbar_style = Style::new();
+        snackbar_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
+        snackbar_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(crate::Anchor::Viewport)
+                    .left(Length::px(16.0))
+                    .right(Length::px(16.0))
+                    .bottom(Length::px(16.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        snackbar.apply_style(snackbar_style);
+
+        let mut arena = new_test_arena();
+        let win_k = commit_element(&mut arena, Box::new(window));
+        let snackbar_k = commit_child(&mut arena, win_k, Box::new(snackbar));
+        let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
+
+        measure_and_place(
+            &mut arena,
+            win_k,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+
+        // Main walk.
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("window build returns state");
+        ctx.set_state(next_state);
+
+        let pass_count_before_defer = graph.pass_descriptors().len();
+
+        // Defer pass.
+        let deferred = ctx.take_deferred_node_ids();
+        assert!(
+            deferred.contains(&snackbar_id),
+            "snackbar should be in deferred list, got {:?}",
+            deferred
+        );
+        for id in &deferred {
+            let _ = arena.with_element_taken(win_k, |root, arena| {
+                crate::view::base_component::build_node_by_id(
+                    root.as_mut(),
+                    *id,
+                    &mut graph,
+                    arena,
+                    &mut ctx,
+                )
+            });
+        }
+
+        let pass_count_after_defer = graph.pass_descriptors().len();
+        assert!(
+            pass_count_after_defer > pass_count_before_defer,
+            "deferred snackbar should emit at least one render pass (before={}, after={})",
+            pass_count_before_defer,
+            pass_count_after_defer
+        );
+    }
+
+    /// Even when ancestor is FULLY offscreen (intersects viewport = false),
+    /// a viewport-anchored descendant must still render.
+    #[test]
+    fn viewport_anchored_child_renders_when_ancestor_fully_offscreen() {
+        let mut window = Element::new(0.0, 0.0, 460.0, 380.0);
+        let mut window_style = Style::new();
+        window_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(-2000.0)) // way off the left edge
+                    .top(Length::px(-2000.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        window.apply_style(window_style);
+
+        let mut snackbar = Element::new(0.0, 0.0, 0.0, 40.0);
+        let mut snackbar_style = Style::new();
+        snackbar_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#00ff00")),
+        );
+        snackbar_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(crate::Anchor::Viewport)
+                    .left(Length::px(16.0))
+                    .right(Length::px(16.0))
+                    .bottom(Length::px(16.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        snackbar.apply_style(snackbar_style);
+
+        let mut arena = new_test_arena();
+        let win_k = commit_element(&mut arena, Box::new(window));
+        let snackbar_k = commit_child(&mut arena, win_k, Box::new(snackbar));
+        let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
+
+        measure_and_place(
+            &mut arena,
+            win_k,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        // Window should NOT render (fully offscreen).
+        let window_el = crate::view::test_support::get_element::<Element>(&arena, win_k);
+        assert!(
+            !window_el.layout_state.should_render,
+            "fully offscreen window should NOT render"
+        );
+        drop(window_el);
+
+        // Snackbar should still render — it's anchored to viewport.
+        let snackbar_el = crate::view::test_support::get_element::<Element>(&arena, snackbar_k);
+        assert!(
+            snackbar_el.layout_state.should_render,
+            "viewport-anchored snackbar should render even when window is fully offscreen"
+        );
+        drop(snackbar_el);
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        // Mirror `Viewport::render_rsx`: seed the ctx defer list once
+        // from the arena.
+        let mut popup_stack = crate::view::popup_stack::PopupStack::new();
+        arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
+
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("window build returns state");
+        ctx.set_state(next_state);
+
+        // Window's build with should_render=false should still collect
+        // viewport-anchored descendants into the deferred list.
+        let deferred = ctx.take_deferred_node_ids();
+        assert!(
+            deferred.contains(&snackbar_id),
+            "snackbar should be deferred even when window not rendered, got {:?}",
+            deferred
+        );
+
+        let pass_count_before_defer = graph.pass_descriptors().len();
+        for id in &deferred {
+            let _ = arena.with_element_taken(win_k, |root, arena| {
+                crate::view::base_component::build_node_by_id(
+                    root.as_mut(),
+                    *id,
+                    &mut graph,
+                    arena,
+                    &mut ctx,
+                )
+            });
+        }
+        let pass_count_after_defer = graph.pass_descriptors().len();
+        assert!(
+            pass_count_after_defer > pass_count_before_defer,
+            "snackbar should emit passes even when ancestor is offscreen (before={}, after={})",
+            pass_count_before_defer,
+            pass_count_after_defer
+        );
+    }
+
+    /// Repro for the user's video bug: when a tree-ancestor's inner area
+    /// lies entirely outside the viewport (e.g. a Window dragged so its
+    /// content area sits below viewport), a viewport-anchored
+    /// `clip:Viewport` descendant gets dropped from the deferred list and
+    /// never rendered. The ancestor itself still passes
+    /// `should_render` (its frame intersects viewport at the top edge),
+    /// but `has_visible_inner_render_area` returns false because the
+    /// inner rect's intersection with the current scissor is empty —
+    /// the overflow loop is skipped and the descendant is never appended
+    /// via `append_to_defer`.
+    #[test]
+    fn viewport_anchored_descendant_collected_when_ancestor_inner_below_viewport() {
+        // Window: clip:Viewport, top in viewport, content stretches below.
+        let mut window = Element::new(0.0, 0.0, 460.0, 1500.0);
+        let mut window_style = Style::new();
+        window_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(100.0))
+                    .top(Length::px(700.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        window.apply_style(window_style);
+
+        // Section: positioned far down inside Window so its frame sits
+        // entirely below viewport y=800.
+        let section = Element::new(0.0, 1000.0, 460.0, 200.0);
+
+        // Snackbar wrapper: viewport-anchored + clip:Viewport, bottom-left.
+        let mut snackbar = Element::new(0.0, 0.0, 0.0, 40.0);
+        let mut snackbar_style = Style::new();
+        snackbar_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#00ff00")),
+        );
+        snackbar_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(crate::Anchor::Viewport)
+                    .left(Length::px(16.0))
+                    .right(Length::px(16.0))
+                    .bottom(Length::px(16.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        snackbar.apply_style(snackbar_style);
+
+        let mut arena = new_test_arena();
+        let win_k = commit_element(&mut arena, Box::new(window));
+        let section_k = commit_child(&mut arena, win_k, Box::new(section));
+        let snackbar_k = commit_child(&mut arena, section_k, Box::new(snackbar));
+        let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
+
+        // Viewport 1280x800.
+        measure_and_place(
+            &mut arena,
+            win_k,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        // Sanity: snackbar layout still anchored to viewport.
+        let snap = child_snapshot(&arena, snackbar_k);
+        assert!(
+            (snap.x - 16.0).abs() < 0.5 && (snap.y - 744.0).abs() < 0.5,
+            "snackbar should still be anchored to viewport, got ({}, {})",
+            snap.x,
+            snap.y
+        );
+
+        // Build via FrameGraph.
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        // Mirror `Viewport::render_rsx`: seed the ctx defer list once
+        // from the arena.
+        let mut popup_stack = crate::view::popup_stack::PopupStack::new();
+        arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
+
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("window build returns state");
+        ctx.set_state(next_state);
+
+        let deferred = ctx.take_deferred_node_ids();
+        assert!(
+            deferred.contains(&snackbar_id),
+            "BUG: snackbar should be in deferred list when ancestor inner is below viewport, got {:?}",
+            deferred
+        );
+    }
+
+    /// Closer repro of the user's video: Window with column flow content,
+    /// multiple sections in the column, snackbar nested inside one of the
+    /// later sections (Accordion-style). Window dragged down so the
+    /// section that holds the snackbar sits entirely below viewport.
+    /// Expected: snackbar (viewport-anchored) still rendered.
+    #[test]
+    fn viewport_anchored_snackbar_through_flow_column_below_viewport() {
+        // Window outer at y=700, height=1500 (extends well below viewport).
+        let mut window = Element::new(0.0, 0.0, 460.0, 1500.0);
+        let mut window_style = Style::new();
+        window_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(100.0))
+                    .top(Length::px(700.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        window_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().column().no_wrap().into()),
+        );
+        window.apply_style(window_style);
+
+        // 3 sections in the column (each 200 tall). With Window at y=700,
+        // section heights: 200/200/200 → bottoms at 900/1100/1300 — all
+        // below viewport=800.
+        let section1 = Element::new(0.0, 0.0, 460.0, 200.0);
+        let section2 = Element::new(0.0, 0.0, 460.0, 200.0);
+        let section3 = Element::new(0.0, 0.0, 460.0, 200.0);
+
+        let mut snackbar = Element::new(0.0, 0.0, 0.0, 40.0);
+        let mut snackbar_style = Style::new();
+        snackbar_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#00ff00")),
+        );
+        snackbar_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(crate::Anchor::Viewport)
+                    .left(Length::px(16.0))
+                    .right(Length::px(16.0))
+                    .bottom(Length::px(16.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        snackbar.apply_style(snackbar_style);
+
+        let mut arena = new_test_arena();
+        let win_k = commit_element(&mut arena, Box::new(window));
+        let _s1_k = commit_child(&mut arena, win_k, Box::new(section1));
+        let _s2_k = commit_child(&mut arena, win_k, Box::new(section2));
+        let s3_k = commit_child(&mut arena, win_k, Box::new(section3));
+        let snackbar_k = commit_child(&mut arena, s3_k, Box::new(snackbar));
+        let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
+
+        measure_and_place(
+            &mut arena,
+            win_k,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        // Section 3 should be below viewport (its parent Window is at y=700,
+        // section3 follows after section1+section2 = +400 → y=1100).
+        let s3_snap = child_snapshot(&arena, s3_k);
+        eprintln!(
+            "[s3] x={} y={} w={} h={} should_render? -- need internal access",
+            s3_snap.x, s3_snap.y, s3_snap.width, s3_snap.height
+        );
+
+        let snap = child_snapshot(&arena, snackbar_k);
+        eprintln!(
+            "[snackbar] x={} y={} w={} h={}",
+            snap.x, snap.y, snap.width, snap.height
+        );
+
+        // Snackbar must still anchor to viewport.
+        assert!(
+            (snap.x - 16.0).abs() < 0.5 && (snap.y - 744.0).abs() < 0.5,
+            "snackbar anchored to viewport, got ({}, {})",
+            snap.x,
+            snap.y
+        );
+
+        // Check render path: build then defer.
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        // Mirror `Viewport::render_rsx`: seed the ctx defer list once
+        // from the arena.
+        let mut popup_stack = crate::view::popup_stack::PopupStack::new();
+        arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
+
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("window build returns state");
+        ctx.set_state(next_state);
+
+        let deferred = ctx.take_deferred_node_ids();
+        eprintln!("[deferred ids] {:?}", deferred);
+        eprintln!("[snackbar id] {}", snackbar_id);
+        assert!(
+            deferred.contains(&snackbar_id),
+            "BUG: snackbar must be deferred when its tree-ancestor section is below viewport"
+        );
+    }
+
+    /// Even deeper: viewport-clip element nested 4+ levels under a section
+    /// that's below viewport (mimics `Window > content > Section >
+    /// Accordion > AccordionContent > Snackbar wrapper`). Each intermediate
+    /// ancestor's visibility gate fails because its inner is below viewport,
+    /// so we need RECURSIVE defer collection (collect_root walks subtree).
+    #[test]
+    fn viewport_anchored_snackbar_deeply_nested_under_offscreen_section() {
+        // Window outer.
+        let mut window = Element::new(0.0, 0.0, 460.0, 1500.0);
+        let mut window_style = Style::new();
+        window_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(100.0))
+                    .top(Length::px(700.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        window_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().column().no_wrap().into()),
+        );
+        window.apply_style(window_style);
+
+        // Section1 (placeholder, fills first 200).
+        let section1 = Element::new(0.0, 0.0, 460.0, 200.0);
+        // Section2 = Snackbar Section (after section1, so y=900, well below
+        // viewport=800).
+        let section2 = Element::new(0.0, 0.0, 460.0, 200.0);
+        // Inside section2: Accordion wrapper (~190 tall).
+        let accordion = Element::new(0.0, 0.0, 460.0, 190.0);
+        // Accordion content (after header).
+        let accordion_content = Element::new(0.0, 0.0, 460.0, 150.0);
+
+        let mut snackbar = Element::new(0.0, 0.0, 0.0, 40.0);
+        let mut snackbar_style = Style::new();
+        snackbar_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#00ff00")),
+        );
+        snackbar_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .anchor(crate::Anchor::Viewport)
+                    .left(Length::px(16.0))
+                    .right(Length::px(16.0))
+                    .bottom(Length::px(16.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        snackbar.apply_style(snackbar_style);
+
+        let mut arena = new_test_arena();
+        let win_k = commit_element(&mut arena, Box::new(window));
+        let _s1_k = commit_child(&mut arena, win_k, Box::new(section1));
+        let s2_k = commit_child(&mut arena, win_k, Box::new(section2));
+        let acc_k = commit_child(&mut arena, s2_k, Box::new(accordion));
+        let acc_content_k = commit_child(&mut arena, acc_k, Box::new(accordion_content));
+        let snackbar_k =
+            commit_child(&mut arena, acc_content_k, Box::new(snackbar));
+        let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
+
+        measure_and_place(
+            &mut arena,
+            win_k,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        let snap = child_snapshot(&arena, snackbar_k);
+        assert!(
+            (snap.x - 16.0).abs() < 0.5 && (snap.y - 744.0).abs() < 0.5,
+            "snackbar still anchored to viewport, got ({}, {})",
+            snap.x,
+            snap.y
+        );
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        // Mirror `Viewport::render_rsx`: seed the ctx defer list once
+        // from the arena.
+        let mut popup_stack = crate::view::popup_stack::PopupStack::new();
+        arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
+
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("window build returns state");
+        ctx.set_state(next_state);
+
+        let deferred = ctx.take_deferred_node_ids();
+        assert!(
+            deferred.contains(&snackbar_id),
+            "BUG: deeply nested snackbar must still be deferred. defer={:?} snackbar_id={}",
+            deferred,
+            snackbar_id
+        );
+    }
 }

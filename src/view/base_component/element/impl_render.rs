@@ -67,9 +67,8 @@ impl Element {
             ),
         );
         if !self.layout_state.should_render {
-            if self.has_absolute_descendant_for_hit_test {
-                self.collect_root_viewport_deferred_descendants(arena, &mut ctx);
-            }
+            // Viewport-clip descendants were already collected once at
+            // frame start via `NodeArena::refresh_defer_render_nodes`.
             return ctx.into_state();
         }
 
@@ -77,9 +76,7 @@ impl Element {
             return self.build_transformed_subtree(graph, arena, ctx, force_self_opaque);
         }
 
-        let previous_scissor_rect = self
-            .absolute_clip_scissor_rect()
-            .map(|scissor| ctx.push_scissor_rect(Some(scissor)));
+        let previous_scissor_rect = self.apply_self_clip_scissor(&mut ctx);
 
         let outer_radii = normalize_corner_radii(
             self.border_radii,
@@ -109,8 +106,16 @@ impl Element {
         };
         let should_render_children = !should_clip_children || child_clip_scope.is_some();
 
+        // Viewport-clip descendants (`should_append_to_root_viewport_render`)
+        // pin to the OS viewport and escape every ancestor scissor. The
+        // canonical defer list was seeded once per frame from
+        // `NodeArena::defer_render_nodes`, so skipping the children
+        // loops below no longer drops viewport-anchored descendants.
+        let inner_visible = self.has_visible_inner_render_area(&ctx);
+        let render_children_passes = should_render_children && inner_visible;
+
         let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-        if should_render_children && self.has_visible_inner_render_area(&ctx) {
+        if render_children_passes {
             for (idx, child_key) in child_keys.iter().copied().enumerate() {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                     continue;
@@ -141,7 +146,14 @@ impl Element {
             }
         }
 
-        if should_render_children && self.has_visible_inner_render_area(&ctx) {
+        // End the parent's child clip scope (stencil + scissor + clip_id)
+        // before rendering overflow children. Overflow children — Viewport-
+        // and AnchorParent-clipped descendants — must paint outside the
+        // immediate parent's inner clip, so the parent's stencil mask must
+        // not be active when they build their render passes.
+        self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
+
+        if render_children_passes {
             for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
                 if !is_overflow {
                     continue;
@@ -182,7 +194,6 @@ impl Element {
                 }
             }
         }
-        self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
 
         if let Some(previous) = previous_scissor_rect {
             ctx.restore_scissor_rect(previous);
@@ -929,9 +940,7 @@ impl Element {
         });
         let has_promoted_descendants = self.has_composited_promoted_descendants(arena, &ctx);
 
-        let previous_scissor_rect = self
-            .absolute_clip_scissor_rect()
-            .map(|scissor| ctx.push_scissor_rect(Some(scissor)));
+        let previous_scissor_rect = self.apply_self_clip_scissor(&mut ctx);
 
         if has_promoted_descendants || has_deferred_descendants {
             let overflow_child_indices: Vec<bool> = (0..self.children.len())
@@ -964,8 +973,14 @@ impl Element {
             let should_render_children =
                 !should_clip_promoted_descendants || child_clip_scope.is_some();
 
+            // Defer list seeded once per frame from
+            // `NodeArena::defer_render_nodes`; skipping the loops below
+            // no longer drops viewport-anchored descendants.
+            let inner_visible = self.has_visible_inner_render_area(&ctx);
+            let render_promoted_passes = should_render_children && inner_visible;
+
             let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-            if should_render_children && self.has_visible_inner_render_area(&ctx) {
+            if render_promoted_passes {
                 for (idx, child_key) in child_keys.iter().copied().enumerate() {
                     if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                         continue;
@@ -1003,7 +1018,14 @@ impl Element {
                 }
             }
 
-            if should_render_children && self.has_visible_inner_render_area(&ctx) {
+            // End the parent's child clip scope before rendering overflow
+            // descendants — see the matching note in the non-promoted path.
+            self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
+            if let Some(previous) = previous_inner_scissor {
+                ctx.restore_scissor_rect(previous);
+            }
+
+            if render_promoted_passes {
                 for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
                     if !is_overflow {
                         continue;
@@ -1054,11 +1076,6 @@ impl Element {
                         ctx = c;
                     }
                 }
-            }
-
-            self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
-            if let Some(previous) = previous_inner_scissor {
-                ctx.restore_scissor_rect(previous);
             }
         }
         let scrollbar_state = self.render_scrollbars(
@@ -1286,10 +1303,9 @@ impl Element {
             ),
         );
         let viewport = ctx.viewport();
-        let mut ctx = ctx;
-        if can_reuse_base {
-            self.collect_root_viewport_deferred_descendants(arena, &mut ctx);
-        }
+        // Defer list pre-seeded from `NodeArena::defer_render_nodes` at
+        // frame start, so reused promoted layers no longer need to walk
+        // their subtree to surface viewport-clip descendants.
         let base_target = ctx.current_target().expect("promoted layer target should exist");
         let base_state = if can_reuse_base {
             ctx.into_state()

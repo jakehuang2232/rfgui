@@ -304,6 +304,81 @@ impl NodeArena {
         }
     }
 
+    /// Collect the `stable_id()` of every element that must render through
+    /// the deferred root-viewport phase (`Position::absolute()` +
+    /// `ClipMode::Viewport`) in document order (DFS, root descendants only).
+    ///
+    /// Roots themselves are rendered through the main walk, so they are
+    /// **excluded** — appending them would render the same element twice
+    /// (once inline, once via the deferred phase) and scramble z-ordering
+    /// for top-level viewport-clip shells like `<Window>`.
+    pub fn collect_viewport_clip_node_ids(&self) -> Vec<u64> {
+        let mut out = Vec::new();
+        for &root_key in &self.roots {
+            let children: Vec<NodeKey> = self
+                .slots
+                .get(root_key)
+                .map(|cell| cell.borrow().children.clone())
+                .unwrap_or_default();
+            for child_key in children {
+                self.collect_viewport_clip_node_ids_subtree(child_key, &mut out);
+            }
+        }
+        out
+    }
+
+    fn collect_viewport_clip_node_ids_subtree(&self, key: NodeKey, out: &mut Vec<u64>) {
+        let Some(cell) = self.slots.get(key) else {
+            return;
+        };
+        let node = cell.borrow();
+        let children: Vec<NodeKey> = node.children.clone();
+        if let Some(element) = node
+            .element
+            .as_any()
+            .downcast_ref::<crate::view::base_component::Element>()
+        {
+            if element.should_append_to_root_viewport_render() {
+                let sid = element.stable_id();
+                if sid != 0 {
+                    out.push(sid);
+                }
+            }
+        }
+        drop(node);
+        for child_key in children {
+            self.collect_viewport_clip_node_ids_subtree(child_key, out);
+        }
+    }
+
+    /// Seed `ctx`'s deferred render list using the popup stack as
+    /// Render order is **document order** (DFS over root descendants,
+    /// parent before child, earlier sibling before later). z-order is a
+    /// property of tree position, not interaction history.
+    ///
+    /// As a side effect, mutates `popup_stack`:
+    ///
+    /// 1. Compact: drop ids that no longer resolve in the arena.
+    /// 2. Auto-register: every collected viewport-clip id is appended
+    ///    to the top of the stack if not already present.
+    ///
+    /// The stack drives **hit-test priority only** — render emits in
+    /// document order regardless of stack position.
+    pub fn seed_defer_render_with_stack(
+        &self,
+        popup_stack: &mut crate::view::popup_stack::PopupStack,
+        ctx: &mut crate::view::base_component::UiBuildContext,
+    ) {
+        popup_stack.compact(self);
+        let collected = self.collect_viewport_clip_node_ids();
+        for id in &collected {
+            popup_stack.register(*id);
+        }
+        for id in &collected {
+            ctx.append_to_defer(*id);
+        }
+    }
+
     fn collect_subtree_keys(&self, key: NodeKey, out: &mut Vec<NodeKey>) {
         let Some(cell) = self.slots.get(key) else {
             return;
@@ -347,6 +422,17 @@ impl NodeArena {
 
     pub fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
         self.slots.get(key).and_then(|cell| cell.borrow().parent)
+    }
+
+    /// Walk the parent chain from `key` until reaching a node with no
+    /// parent. Returns the topmost ancestor (the containing root) — or
+    /// `key` itself if it is already a root or not present in the arena.
+    pub fn root_for(&self, key: NodeKey) -> NodeKey {
+        let mut current = key;
+        while let Some(parent) = self.parent_of(current) {
+            current = parent;
+        }
+        current
     }
 
     pub fn set_parent(&self, key: NodeKey, parent: Option<NodeKey>) {

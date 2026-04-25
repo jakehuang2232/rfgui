@@ -109,6 +109,33 @@ impl Element {
         }
     }
 
+    /// Apply this element's own clip scissor on top of `ctx`. For most
+    /// modes the scissor is intersected with the ancestor scissor (so a
+    /// child cannot paint outside its parent). `ClipMode::Viewport` is the
+    /// escape hatch — it replaces the ancestor scissor outright so the
+    /// element can paint up to viewport edges even when an ancestor was
+    /// previously clipped (e.g. an off-screen window). Returns the previous
+    /// scissor rect packed in `Some(previous)` when a scissor was applied,
+    /// or `None` when this element does not contribute its own scissor.
+    pub(crate) fn apply_self_clip_scissor(
+        &self,
+        ctx: &mut UiBuildContext,
+    ) -> Option<Option<[u32; 4]>> {
+        let scissor = self.absolute_clip_scissor_rect()?;
+        let previous = match self.computed_style.position.clip_mode() {
+            // Viewport / AnchorParent must escape the immediate ancestor scissor
+            // chain. AnchorParent's resolved rect already encodes the upstream
+            // clip chain up to the anchor's parent (or, without an anchor, the
+            // grandparent), so replacing — not intersecting — is what gives the
+            // child the room to paint outside its immediate parent.
+            ClipMode::Viewport | ClipMode::AnchorParent => {
+                ctx.replace_scissor_rect(Some(scissor))
+            }
+            _ => ctx.push_scissor_rect(Some(scissor)),
+        };
+        Some(previous)
+    }
+
     fn inner_clip_rect(&self) -> Rect {
         let (frame_width, frame_height) = self.current_clip_layout_size();
         self.inner_rect_for_frame_size(frame_width, frame_height)

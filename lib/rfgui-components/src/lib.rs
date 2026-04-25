@@ -13,8 +13,8 @@ pub use utils::*;
 #[cfg(test)]
 mod tests {
     use crate::{
-        Accordion, Button, ButtonVariant, Checkbox, CloseIcon, NumberField, Select, Switch,
-        TreeNode, TreeView, Window,
+        Accordion, BranchNode, Button, ButtonVariant, Checkbox, CloseIcon, LeafNode, NumberField,
+        Select, Switch, TreeNode, TreeView, Window,
     };
     use rfgui::ui::{
         EventMeta, NodeId, PointerButton as UiPointerButton, PointerEventData, PropValue,
@@ -742,7 +742,11 @@ mod tests {
     }
 
     fn sample_tree_nodes() -> Vec<TreeNode> {
-        vec![TreeNode::new("root", "Root").with_children(vec![TreeNode::new("child", "Child")])]
+        vec![
+            BranchNode::new("root", "Root")
+                .with_children(vec![LeafNode::new("child", "Child").into()])
+                .into(),
+        ]
     }
 
     #[test]
@@ -821,20 +825,26 @@ mod tests {
     #[test]
     fn tree_view_reorder_keeps_labels_aligned_with_rows() {
         fn folder_layout(children: Vec<TreeNode>) -> Vec<TreeNode> {
-            vec![TreeNode::new("src", "src/").with_children(vec![
-                TreeNode::new("layout", "layout/").with_children(children),
-            ])]
+            vec![
+                BranchNode::new("src", "src/")
+                    .with_children(vec![
+                        BranchNode::new("layout", "layout/")
+                            .with_children(children)
+                            .into(),
+                    ])
+                    .into(),
+            ]
         }
 
         let pre_drag = folder_layout(vec![
-            TreeNode::new("accordion.rs", "accordion.rs"),
-            TreeNode::new("tree_view.rs", "tree_view.rs"),
-            TreeNode::new("window.rs", "window.rs"),
+            LeafNode::new("accordion.rs", "accordion.rs").into(),
+            LeafNode::new("tree_view.rs", "tree_view.rs").into(),
+            LeafNode::new("window.rs", "window.rs").into(),
         ]);
         let post_drag = folder_layout(vec![
-            TreeNode::new("tree_view.rs", "tree_view.rs"),
-            TreeNode::new("accordion.rs", "accordion.rs"),
-            TreeNode::new("window.rs", "window.rs"),
+            LeafNode::new("tree_view.rs", "tree_view.rs").into(),
+            LeafNode::new("accordion.rs", "accordion.rs").into(),
+            LeafNode::new("window.rs", "window.rs").into(),
         ]);
 
         let make_tree = |nodes: Vec<TreeNode>| {

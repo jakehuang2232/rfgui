@@ -27,7 +27,9 @@ pub(crate) fn new_test_arena() -> NodeArena {
 
 /// Commit a single element at the root of the arena. Returns its key.
 pub(crate) fn commit_element(arena: &mut NodeArena, element: Box<dyn ElementTrait>) -> NodeKey {
-    commit_descriptor_tree(arena, None, ElementDescriptor::leaf(element))
+    let key = commit_descriptor_tree(arena, None, ElementDescriptor::leaf(element));
+    arena.push_root(key);
+    key
 }
 
 /// Commit a single element as a child of `parent`. Returns the child's key.
