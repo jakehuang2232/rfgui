@@ -100,14 +100,17 @@ impl Element {
             .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
             .collect();
 
-        let child_clip_scope = if self.should_clip_children(&overflow_child_indices, inner_radii, arena) {
+        let should_clip_children =
+            self.should_clip_children(&overflow_child_indices, inner_radii, arena);
+        let child_clip_scope = if should_clip_children {
             self.begin_child_clip_scope(graph, &mut ctx, inner_radii)
         } else {
             None
         };
+        let should_render_children = !should_clip_children || child_clip_scope.is_some();
 
         let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-        if self.has_inner_render_area() {
+        if should_render_children && self.has_visible_inner_render_area(&ctx) {
             for (idx, child_key) in child_keys.iter().copied().enumerate() {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                     continue;
@@ -138,7 +141,7 @@ impl Element {
             }
         }
 
-        if self.has_inner_render_area() {
+        if should_render_children && self.has_visible_inner_render_area(&ctx) {
             for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
                 if !is_overflow {
                     continue;
@@ -1457,9 +1460,11 @@ impl Element {
             } else {
                 None
             };
+            let should_render_children =
+                !should_clip_promoted_descendants || child_clip_scope.is_some();
 
             let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-            if self.has_inner_render_area() {
+            if should_render_children && self.has_visible_inner_render_area(&ctx) {
                 for (idx, child_key) in child_keys.iter().copied().enumerate() {
                     if overflow_child_indices.get(idx).copied().unwrap_or(false) {
                         continue;
@@ -1497,7 +1502,7 @@ impl Element {
                 }
             }
 
-            if self.has_inner_render_area() {
+            if should_render_children && self.has_visible_inner_render_area(&ctx) {
                 for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
                     if !is_overflow {
                         continue;

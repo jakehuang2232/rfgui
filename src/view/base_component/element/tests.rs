@@ -2951,6 +2951,139 @@ mod tests {
     }
 
     #[test]
+    fn child_clip_scope_is_skipped_when_inner_scissor_is_outside_ancestor_scissor() {
+        let parent = Element::new(100.0, 100.0, 50.0, 50.0);
+        let mut child = Element::new(0.0, 0.0, 80.0, 20.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        child.apply_style(style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 100.0,
+                parent_y: 100.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+        );
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        ctx.push_scissor_rect(Some([0, 0, 20, 20]));
+
+        let inner_radii = {
+            let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_ref.inner_clip_radii(normalize_corner_radii(
+                parent_ref.border_radii,
+                parent_ref.core.layout_size.width.max(0.0),
+                parent_ref.core.layout_size.height.max(0.0),
+            ))
+        };
+
+        let mut parent_mut = crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+        let scope = parent_mut.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
+
+        assert!(scope.is_none());
+        assert_eq!(ctx.current_clip_id(), 0);
+        assert_eq!(ctx.scissor_rect(), Some([0, 0, 20, 20]));
+    }
+
+    #[test]
+    fn promoted_child_is_skipped_when_required_inner_clip_is_outside_ancestor_scissor() {
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(Element::new(0.0, 0.0, 200.0, 200.0)));
+
+        let mut container = Element::new(100.0, 100.0, 50.0, 50.0);
+        let mut container_style = Style::new();
+        container_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(100.0))
+                    .top(Length::px(100.0)),
+            ),
+        );
+        container.apply_style(container_style);
+        let container_key = commit_child(&mut arena, root_key, Box::new(container));
+
+        let mut promoted_child = Element::new(0.0, 0.0, 80.0, 20.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
+        promoted_child.apply_style(style);
+        let promoted_child_id = promoted_child.stable_id();
+        let _ = commit_child(&mut arena, container_key, Box::new(promoted_child));
+
+        measure_and_place(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+        );
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        ctx.push_scissor_rect(Some([0, 0, 20, 20]));
+        ctx.set_promoted_runtime(
+            Arc::new(FxHashSet::from_iter([promoted_child_id])),
+            Arc::new(FxHashMap::default()),
+            Arc::new(FxHashMap::default()),
+        );
+        reset_test_promoted_build_counts();
+
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(root_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("root build returns state");
+        ctx.set_state(next_state);
+
+        assert_eq!(test_promoted_build_count(promoted_child_id, "promoted-child"), 0);
+        assert_eq!(test_promoted_build_count(promoted_child_id, "promoted-layer"), 0);
+        assert_eq!(ctx.scissor_rect(), Some([0, 0, 20, 20]));
+    }
+
+    #[test]
     fn scrollbar_renders_with_promoted_child() {
         let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
         let mut parent_style = Style::new();

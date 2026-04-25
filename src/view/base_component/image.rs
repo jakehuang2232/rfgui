@@ -283,8 +283,7 @@ impl ElementTrait for Image {
         use crate::ui::FromPropValue;
         use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, as_element_style, commit_descriptor_tree,
-            convert_image_slot_desc,
+            InheritedTextStyle, as_element_style, commit_descriptor_tree, convert_image_slot_desc,
         };
 
         match name {
@@ -555,9 +554,7 @@ mod tests {
     use super::Image;
     use crate::Layout;
     use crate::view::ImageSource;
-    use crate::view::base_component::{
-        Element, LayoutConstraints, LayoutPlacement, Layoutable,
-    };
+    use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement, Layoutable};
     use crate::view::test_support::{commit_child, commit_element, new_test_arena};
     use crate::{Length, ParsedValue, PropertyId, Style};
 

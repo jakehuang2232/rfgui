@@ -1,4 +1,3 @@
-use rustc_hash::FxHashMap;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
@@ -13,11 +12,12 @@ use crate::view::text_layout::build_text_buffer;
 use cosmic_text::{
     Align, Buffer, CacheKey, Color as CosmicColor, FontSystem, SwashCache, SwashContent, SwashImage,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Mutex, OnceLock};
-use std::collections::{VecDeque};
+use rustc_hash::FxHashMap;
+use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 pub struct TextPass {
     params: TextPassParams,
@@ -1191,8 +1191,7 @@ impl PagedAtlas {
             }
         };
         let bpp = self.config.bytes_per_pixel;
-        let mut padded_data =
-            vec![0_u8; padded_w as usize * padded_h as usize * bpp as usize];
+        let mut padded_data = vec![0_u8; padded_w as usize * padded_h as usize * bpp as usize];
         for row in 0..height as usize {
             let row_bytes = width as usize * bpp as usize;
             let source_start = row * row_bytes;
@@ -1782,7 +1781,11 @@ impl TextResources {
                     opacity: 1.0,
                     fragment_index,
                 };
-                let bucket = if is_color { &mut *color_out } else { &mut *mask_out };
+                let bucket = if is_color {
+                    &mut *color_out
+                } else {
+                    &mut *mask_out
+                };
                 let idx = page_idx as usize;
                 if bucket.len() <= idx {
                     bucket.resize_with(idx + 1, Vec::new);

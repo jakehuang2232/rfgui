@@ -1,7 +1,10 @@
 use crate::inputs::button::{ButtonColor, ButtonSize};
 use crate::inputs::toggle_button::ToggleButton;
 use crate::use_theme;
-use rfgui::ui::{Binding, ClickEvent, Provider, RsxComponent, RsxNode, component, props, rsx, IntoOptionalProp, RsxTag, global_state};
+use rfgui::ui::{
+    Binding, ClickEvent, IntoOptionalProp, Provider, RsxComponent, RsxNode, RsxTag, component,
+    global_state, props, rsx,
+};
 use rfgui::view::Element;
 use rfgui::{Border, ClipMode, Color, ColorLike, CrossSize, Layout, Length, Position};
 use std::any::TypeId;
@@ -18,9 +21,9 @@ impl From<&str> for ToggleOrientation {
         match value.trim().to_ascii_lowercase().as_str() {
             "horizontal" => ToggleOrientation::Horizontal,
             "vertical" => ToggleOrientation::Vertical,
-            other => panic!(
-                "rsx build error on <ToggleButtonGroup>. unknown orientation `{other}`"
-            ),
+            other => {
+                panic!("rsx build error on <ToggleButtonGroup>. unknown orientation `{other}`")
+            }
         }
     }
 }
@@ -134,9 +137,7 @@ fn ToggleButtonGroupView(
     let full_width = full_width.unwrap_or(false);
     let disabled = disabled.unwrap_or(false);
 
-    let binding = value.unwrap_or_else(|| {
-        global_state::<Option<String>>(|| None).binding()
-    });
+    let binding = value.unwrap_or_else(|| global_state::<Option<String>>(|| None).binding());
 
     let ctx = ToggleButtonGroupContext {
         in_group: true,

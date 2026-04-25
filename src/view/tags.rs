@@ -4,11 +4,12 @@
 
 use crate::ui::RsxNode;
 use crate::ui::{
-    BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, FromPropValue, IntoPropValue,
-    KeyDownHandlerProp, KeyUpHandlerProp, PointerDownHandlerProp, PointerEnterHandlerProp,
-    PointerLeaveHandlerProp, PointerMoveHandlerProp, PointerUpHandlerProp,
-    RsxComponent, SharedPropValue, TextAreaFocusHandlerProp,
-    TextAreaRenderHandlerProp, TextChangeHandlerProp, props,
+    BlurHandlerProp, ClickHandlerProp, DragEndHandlerProp, DragLeaveHandlerProp,
+    DragOverHandlerProp, DragStartHandlerProp, DropHandlerProp, FocusHandlerProp, FromPropValue,
+    IntoPropValue, KeyDownHandlerProp, KeyUpHandlerProp, PointerDownHandlerProp,
+    PointerEnterHandlerProp, PointerLeaveHandlerProp, PointerMoveHandlerProp, PointerUpHandlerProp,
+    RsxComponent, SharedPropValue, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
+    TextChangeHandlerProp, props,
 };
 use crate::{
     Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
@@ -74,6 +75,11 @@ pub struct ElementPropSchema {
     pub on_pointer_enter: Option<PointerEnterHandlerProp>,
     pub on_pointer_leave: Option<PointerLeaveHandlerProp>,
     pub on_click: Option<ClickHandlerProp>,
+    pub on_drag_start: Option<DragStartHandlerProp>,
+    pub on_drag_over: Option<DragOverHandlerProp>,
+    pub on_drag_leave: Option<DragLeaveHandlerProp>,
+    pub on_drop: Option<DropHandlerProp>,
+    pub on_drag_end: Option<DragEndHandlerProp>,
     pub on_key_down: Option<KeyDownHandlerProp>,
     pub on_key_up: Option<KeyUpHandlerProp>,
     pub on_focus: Option<FocusHandlerProp>,
@@ -201,7 +207,6 @@ pub struct BorderStylePropSchema {
     pub color: Option<Box<dyn ColorLike>>,
 }
 
-
 #[props]
 pub struct TextPropSchema {
     pub style: Option<TextStylePropSchema>,
@@ -228,6 +233,7 @@ pub struct TextAreaPropSchema {
     pub font: Option<String>,
     pub opacity: Option<f64>,
     pub multiline: Option<bool>,
+    pub auto_wrap: Option<bool>,
     pub read_only: Option<bool>,
     pub max_length: Option<i64>,
 }
@@ -278,6 +284,21 @@ impl RsxComponent<ElementPropSchema> for Element {
         }
         if let Some(handler) = props.on_click {
             node = node.with_prop("on_click", handler);
+        }
+        if let Some(handler) = props.on_drag_start {
+            node = node.with_prop("on_drag_start", handler);
+        }
+        if let Some(handler) = props.on_drag_over {
+            node = node.with_prop("on_drag_over", handler);
+        }
+        if let Some(handler) = props.on_drag_leave {
+            node = node.with_prop("on_drag_leave", handler);
+        }
+        if let Some(handler) = props.on_drop {
+            node = node.with_prop("on_drop", handler);
+        }
+        if let Some(handler) = props.on_drag_end {
+            node = node.with_prop("on_drag_end", handler);
         }
         if let Some(handler) = props.on_key_down {
             node = node.with_prop("on_key_down", handler);
@@ -405,6 +426,9 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         }
         if let Some(multiline) = props.multiline {
             node = node.with_prop("multiline", multiline);
+        }
+        if let Some(auto_wrap) = props.auto_wrap {
+            node = node.with_prop("auto_wrap", auto_wrap);
         }
         if let Some(read_only) = props.read_only {
             node = node.with_prop("read_only", read_only);
@@ -567,9 +591,9 @@ pub mod v2_bench {
 #[cfg(test)]
 mod v2_poc_tests {
     use super::*;
-    use crate::ui::{__rsx_default_inner_option, create_element};
     #[allow(unused_imports)]
     use crate::ui::RsxTag;
+    use crate::ui::{__rsx_default_inner_option, create_element};
 
     // Test A: explicit type annotations — baseline.
     #[test]
@@ -647,8 +671,8 @@ mod v2_poc_tests {
     // Compile-time field checks survive the phantom-fallback inference.
 
     // ---------- rsx! macro end-to-end tests ----------
-    use crate::ui::rsx;
     use crate::Length;
+    use crate::ui::rsx;
 
     #[test]
     fn rsx_simple_element() {
@@ -864,9 +888,7 @@ impl Default for __ImagePropsInit {
 impl From<__ImagePropsInit> for ImagePropSchema {
     fn from(i: __ImagePropsInit) -> Self {
         Self {
-            source: i
-                .source
-                .expect("missing required prop `source` on <Image>"),
+            source: i.source.expect("missing required prop `source` on <Image>"),
             style: i.style,
             fit: i.fit,
             sampling: i.sampling,
@@ -924,9 +946,7 @@ impl Default for __SvgPropsInit {
 impl From<__SvgPropsInit> for SvgPropSchema {
     fn from(i: __SvgPropsInit) -> Self {
         Self {
-            source: i
-                .source
-                .expect("missing required prop `source` on <Svg>"),
+            source: i.source.expect("missing required prop `source` on <Svg>"),
             style: i.style,
             fit: i.fit,
             sampling: i.sampling,

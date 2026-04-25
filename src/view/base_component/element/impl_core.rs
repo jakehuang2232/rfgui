@@ -78,6 +78,11 @@ impl Element {
         inner.width > 0.0 && inner.height > 0.0
     }
 
+    fn has_visible_inner_render_area(&self, ctx: &UiBuildContext) -> bool {
+        self.has_inner_render_area()
+            && intersect_scissor_rects(ctx.scissor_rect(), self.inner_clip_scissor_rect()).is_some()
+    }
+
     pub(crate) fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         if self.computed_style.position.mode() != PositionMode::Absolute {
             return None;
@@ -287,11 +292,13 @@ impl Element {
         ctx: &mut UiBuildContext,
         inner_radii: CornerRadii,
     ) -> Option<ChildClipScope> {
+        let inner_scissor = self.inner_clip_scissor_rect();
+        intersect_scissor_rects(ctx.scissor_rect(), inner_scissor)?;
         let parent_clip_id = ctx.current_clip_id();
         let Some(child_clip_id) = ctx.push_clip_id() else {
             return None;
         };
-        let previous_scissor = ctx.push_scissor_rect(self.inner_clip_scissor_rect());
+        let previous_scissor = ctx.push_scissor_rect(inner_scissor);
 
         let inner = self.inner_clip_rect();
         let mut pass_params = RectPassParams {

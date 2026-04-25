@@ -1,5 +1,5 @@
-use rustc_hash::FxHashMap;
 use crate::view::ImageSource;
+use rustc_hash::FxHashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

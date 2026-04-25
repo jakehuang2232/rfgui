@@ -1,8 +1,8 @@
 use crate::{ButtonSizeSpec, Theme, use_theme};
 use rfgui::ui::{
     ClickEvent, ClickHandlerProp, EventMeta, NodeId, PointerButton, PointerDownHandlerProp,
-    PointerEnterHandlerProp, PointerEventData, PointerLeaveHandlerProp, RsxComponent,
-    RsxNode, component, props, rsx, use_interval, use_state,
+    PointerEnterHandlerProp, PointerEventData, PointerLeaveHandlerProp, RsxComponent, RsxNode,
+    component, props, rsx, use_interval, use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{
@@ -143,10 +143,7 @@ pub(crate) fn resolve_color_set(
             theme.color.secondary.base.clone(),
             theme.color.secondary.on.clone(),
         ),
-        ButtonColor::Error => (
-            theme.color.error.base.clone(),
-            theme.color.error.on.clone(),
-        ),
+        ButtonColor::Error => (theme.color.error.base.clone(), theme.color.error.on.clone()),
         ButtonColor::Warning => (
             theme.color.warning.base.clone(),
             theme.color.warning.on.clone(),
@@ -185,6 +182,7 @@ pub struct ButtonProps {
     pub start_icon: Option<RsxNode>,
     pub end_icon: Option<RsxNode>,
     pub on_click: Option<ClickHandlerProp>,
+    pub tooltip: Option<RsxNode>,
 }
 
 impl RsxComponent<ButtonProps> for Button {
@@ -200,6 +198,7 @@ impl RsxComponent<ButtonProps> for Button {
                 start_icon={props.start_icon}
                 end_icon={props.end_icon}
                 on_click={props.on_click}
+                tooltip={props.tooltip}
             >
                 {children}
             </ButtonView>
@@ -266,6 +265,7 @@ fn ButtonView(
     start_icon: Option<RsxNode>,
     end_icon: Option<RsxNode>,
     on_click: Option<ClickHandlerProp>,
+    tooltip: Option<RsxNode>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     const REPEAT_DELAY: Duration = Duration::from_millis(400);
@@ -396,7 +396,9 @@ fn ButtonView(
             let button_target_id = trigger.target_id;
             let repeat_state_for_move = repeat_state.clone();
             let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
-                if move_event.meta.target_id() == NodeId::default() && move_event.meta.current_target_id() == NodeId::default() {
+                if move_event.meta.target_id() == NodeId::default()
+                    && move_event.meta.current_target_id() == NodeId::default()
+                {
                     repeat_state_for_move.update(|state| {
                         if state.pressed {
                             state.hovered = false;
@@ -412,43 +414,77 @@ fn ButtonView(
             });
 
             let repeat_state_for_up = repeat_state.clone();
-            event.viewport.add_pointer_up_listener_until(move |up_event| {
-                up_event.viewport.remove_listener(move_listener);
-                repeat_state_for_up.update(|state| {
-                    state.pressed = false;
-                    state.hovered = false;
-                    state.repeating_started = false;
-                    state.remaining_until_fire = None;
-                    state.trigger = None;
+            event
+                .viewport
+                .add_pointer_up_listener_until(move |up_event| {
+                    up_event.viewport.remove_listener(move_listener);
+                    repeat_state_for_up.update(|state| {
+                        state.pressed = false;
+                        state.hovered = false;
+                        state.repeating_started = false;
+                        state.remaining_until_fire = None;
+                        state.trigger = None;
+                    });
+                    true
                 });
-                true
-            });
         }))
     } else {
         None
     };
 
-    let mouse_enter = if repeat_enabled {
-        let repeat_state = repeat_state.binding();
+    let tooltip_present = tooltip.is_some();
+    let tooltip_hover = use_state(|| false);
+    let tooltip_hovered = tooltip_present && tooltip_hover.get();
+
+    let mouse_enter = if repeat_enabled || tooltip_present {
+        let repeat_binding = if repeat_enabled {
+            Some(repeat_state.binding())
+        } else {
+            None
+        };
+        let tooltip_binding = if tooltip_present {
+            Some(tooltip_hover.binding())
+        } else {
+            None
+        };
         Some(PointerEnterHandlerProp::new(move |_event| {
-            repeat_state.update(|state| {
-                if state.pressed {
-                    state.hovered = true;
-                }
-            });
+            if let Some(rs) = repeat_binding.as_ref() {
+                rs.update(|state| {
+                    if state.pressed {
+                        state.hovered = true;
+                    }
+                });
+            }
+            if let Some(tb) = tooltip_binding.as_ref() {
+                tb.set(true);
+            }
         }))
     } else {
         None
     };
 
-    let mouse_leave = if repeat_enabled {
-        let repeat_state = repeat_state.binding();
+    let mouse_leave = if repeat_enabled || tooltip_present {
+        let repeat_binding = if repeat_enabled {
+            Some(repeat_state.binding())
+        } else {
+            None
+        };
+        let tooltip_binding = if tooltip_present {
+            Some(tooltip_hover.binding())
+        } else {
+            None
+        };
         Some(PointerLeaveHandlerProp::new(move |_event| {
-            repeat_state.update(|state| {
-                if state.pressed {
-                    state.hovered = false;
-                }
-            });
+            if let Some(rs) = repeat_binding.as_ref() {
+                rs.update(|state| {
+                    if state.pressed {
+                        state.hovered = false;
+                    }
+                });
+            }
+            if let Some(tb) = tooltip_binding.as_ref() {
+                tb.set(false);
+            }
         }))
     } else {
         None
@@ -498,6 +534,7 @@ fn ButtonView(
                 {children}
             </Text>
             {end_icon}
+            {if tooltip_hovered { tooltip } else { None }}
         </Element>
     }
 }

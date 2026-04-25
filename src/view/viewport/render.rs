@@ -83,10 +83,7 @@ impl Viewport {
         }
     }
 
-    fn push_debug_reuse_overlay_geometry(
-        &mut self,
-        reuse_records: &[DebugReusePathRecord],
-    ) {
+    fn push_debug_reuse_overlay_geometry(&mut self, reuse_records: &[DebugReusePathRecord]) {
         if !self.debug_options.trace_reuse_path {
             return;
         }
@@ -150,11 +147,9 @@ impl Viewport {
     /// Build the hierarchical trace tree from collected frame timings.
     fn build_frame_trace_tree(&self, t: &FrameTimings) -> TraceRenderNode {
         let opts = &self.debug_options;
-        let any_detail = opts.trace_layout_detail
-            || opts.trace_compile_detail
-            || opts.trace_execute_detail;
-        let layout_with_transition_ms =
-            t.layout_ms + t.post_layout_transition_ms + t.relayout_ms;
+        let any_detail =
+            opts.trace_layout_detail || opts.trace_compile_detail || opts.trace_execute_detail;
+        let layout_with_transition_ms = t.layout_ms + t.post_layout_transition_ms + t.relayout_ms;
 
         // --- begin_frame (expand when any detail flag is on) ---
         let begin_frame = if any_detail {
@@ -164,10 +159,7 @@ impl Viewport {
                 vec![
                     TraceRenderNode::new("acquire_surface_texture", t.begin_frame_acquire_ms),
                     TraceRenderNode::new("create_surface_view", t.begin_frame_create_view_ms),
-                    TraceRenderNode::new(
-                        "create_command_encoder",
-                        t.begin_frame_create_encoder_ms,
-                    ),
+                    TraceRenderNode::new("create_command_encoder", t.begin_frame_create_encoder_ms),
                 ],
             )
         } else {
@@ -192,14 +184,8 @@ impl Viewport {
                         t.layout_place_ms,
                         build_layout_place_trace_nodes(&t.layout_place_profile),
                     ),
-                    TraceRenderNode::new(
-                        "collect_box_models",
-                        t.layout_collect_box_models_ms,
-                    ),
-                    TraceRenderNode::new(
-                        "post_layout_transition",
-                        t.post_layout_transition_ms,
-                    ),
+                    TraceRenderNode::new("collect_box_models", t.layout_collect_box_models_ms),
+                    TraceRenderNode::new("post_layout_transition", t.post_layout_transition_ms),
                     TraceRenderNode::with_children(
                         "relayout_after_transition",
                         t.relayout_ms,
@@ -224,11 +210,7 @@ impl Viewport {
 
         // --- compile ---
         let compile = if opts.trace_compile_detail {
-            TraceRenderNode::with_children(
-                "compile",
-                t.compile_ms,
-                t.compile_children.clone(),
-            )
+            TraceRenderNode::with_children("compile", t.compile_ms, t.compile_children.clone())
         } else {
             TraceRenderNode::new("compile", t.compile_ms)
         };
@@ -354,8 +336,7 @@ impl Viewport {
         // --- Promotion ---
         let update_promotion_started_at = Instant::now();
         self.update_promotion_state();
-        timings.update_promotion_ms =
-            update_promotion_started_at.elapsed().as_secs_f64() * 1000.0;
+        timings.update_promotion_ms = update_promotion_started_at.elapsed().as_secs_f64() * 1000.0;
 
         // --- Build frame graph ---
         let build_graph_started_at = Instant::now();
@@ -451,9 +432,9 @@ impl Viewport {
                         );
                         let next_state = arena
                             .with_element_taken(root_key, |root, arena| {
-                                if let Some(element) = root
-                                    .as_any_mut()
-                                    .downcast_mut::<crate::view::base_component::Element>()
+                                if let Some(element) =
+                                    root.as_any_mut()
+                                        .downcast_mut::<crate::view::base_component::Element>()
                                 {
                                     element.build(&mut graph, arena, child_ctx)
                                 } else {
@@ -486,11 +467,8 @@ impl Viewport {
                         ctx.ancestor_clip_context(),
                     ),
                 );
-                let layer_target = root_ctx.allocate_promoted_layer_target(
-                    &mut graph,
-                    root_id,
-                    composite_bounds,
-                );
+                let layer_target =
+                    root_ctx.allocate_promoted_layer_target(&mut graph, root_id, composite_bounds);
                 root_ctx.set_current_target(layer_target);
                 let next_state = arena
                     .with_element_taken(root_key, |root, arena| {
@@ -524,30 +502,25 @@ impl Viewport {
                                 requested: update_kind,
                                 can_reuse,
                                 actual: PromotedLayerUpdateKind::Reraster,
-                                reason: if matches!(
-                                    update_kind,
-                                    PromotedLayerUpdateKind::Reuse
-                                ) {
+                                reason: if matches!(update_kind, PromotedLayerUpdateKind::Reuse) {
                                     Some("reuse-blocked")
                                 } else {
                                     None
                                 },
                                 clip_rect: None,
                             });
-                            graph.add_graphics_pass(
-                                crate::view::frame_graph::ClearPass::new(
-                                    crate::view::render_pass::clear_pass::ClearParams::new(
-                                        [0.0, 0.0, 0.0, 0.0],
-                                    ),
-                                    crate::view::render_pass::clear_pass::ClearInput {
-                                        pass_context: root_ctx.graphics_pass_context(),
-                                        clear_depth_stencil: true,
-                                    },
-                                    crate::view::render_pass::clear_pass::ClearOutput {
-                                        render_target: layer_target,
-                                    },
-                                ),
-                            );
+                            graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
+                                crate::view::render_pass::clear_pass::ClearParams::new([
+                                    0.0, 0.0, 0.0, 0.0,
+                                ]),
+                                crate::view::render_pass::clear_pass::ClearInput {
+                                    pass_context: root_ctx.graphics_pass_context(),
+                                    clear_depth_stencil: true,
+                                },
+                                crate::view::render_pass::clear_pass::ClearOutput {
+                                    render_target: layer_target,
+                                },
+                            ));
                             root.build(&mut graph, arena, root_ctx)
                         }
                     })
@@ -609,16 +582,18 @@ impl Viewport {
         self.push_debug_reuse_overlay_geometry(&reuse_records);
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
-            let present_pass = crate::view::render_pass::present_surface_pass::PresentSurfacePass::new(
-                crate::view::render_pass::present_surface_pass::PresentSurfaceParams,
-                crate::view::render_pass::present_surface_pass::PresentSurfaceInput {
-                    source: crate::view::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
-                        dep_handle,
-                    ),
-                    ..Default::default()
-                },
-                crate::view::render_pass::present_surface_pass::PresentSurfaceOutput::default(),
-            );
+            let present_pass =
+                crate::view::render_pass::present_surface_pass::PresentSurfacePass::new(
+                    crate::view::render_pass::present_surface_pass::PresentSurfaceParams,
+                    crate::view::render_pass::present_surface_pass::PresentSurfaceInput {
+                        source:
+                            crate::view::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
+                                dep_handle,
+                            ),
+                        ..Default::default()
+                    },
+                    crate::view::render_pass::present_surface_pass::PresentSurfaceOutput::default(),
+                );
             let present_handle = graph.add_graphics_pass(present_pass);
             graph
                 .add_pass_sink(
@@ -715,9 +690,7 @@ impl Viewport {
             || crate::view::svg_resource::take_svg_redraw_dirty();
         let root_changed = self.scene.last_rsx_root.as_ref() != Some(root);
         let mut needs_rebuild = state_dirty.needs_rebuild() || root_changed;
-        if root_changed
-            && self.try_apply_placement_updates(root)?
-        {
+        if root_changed && self.try_apply_placement_updates(root)? {
             needs_rebuild = false;
         }
         // Phase A M2: dark-launched incremental Fiber-commit path.
@@ -800,11 +773,10 @@ impl Viewport {
                 &self.scene.ui_root_keys,
                 &mut self.scene.scroll_offsets,
             );
-            let layout_snapshots =
-                crate::view::base_component::collect_layout_transition_snapshots(
-                    &self.scene.node_arena,
-                    &self.scene.ui_root_keys,
-                );
+            let layout_snapshots = crate::view::base_component::collect_layout_transition_snapshots(
+                &self.scene.node_arena,
+                &self.scene.ui_root_keys,
+            );
             let (converted_descriptors, conversion_errors) =
                 crate::view::renderer_adapter::rsx_to_descriptors_with_context(
                     root,
@@ -917,7 +889,10 @@ impl Viewport {
             self.request_redraw();
         }
         if self.scene.ui_root_keys.iter().any(|&root_key| {
-            crate::view::base_component::has_animation_frame_request(&self.scene.node_arena, root_key)
+            crate::view::base_component::has_animation_frame_request(
+                &self.scene.node_arena,
+                root_key,
+            )
         }) {
             self.request_redraw();
         }

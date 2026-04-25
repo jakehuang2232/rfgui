@@ -82,19 +82,27 @@ impl Viewport {
             claims: &mut self.transitions.transition_claims,
         };
         if owner == ScrollTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.transitions.scroll_transition_plugin.cancel_track(key, &mut host);
+            self.transitions
+                .scroll_transition_plugin
+                .cancel_track(key, &mut host);
             return true;
         }
         if owner == LayoutTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.transitions.layout_transition_plugin.cancel_track(key, &mut host);
+            self.transitions
+                .layout_transition_plugin
+                .cancel_track(key, &mut host);
             return true;
         }
         if owner == StyleTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.transitions.style_transition_plugin.cancel_track(key, &mut host);
+            self.transitions
+                .style_transition_plugin
+                .cancel_track(key, &mut host);
             return true;
         }
         if owner == VisualTransitionPlugin::BUILTIN_PLUGIN_ID {
-            self.transitions.visual_transition_plugin.cancel_track(key, &mut host);
+            self.transitions
+                .visual_transition_plugin
+                .cancel_track(key, &mut host);
             return true;
         }
         self.transitions.transition_claims.remove(&key);
@@ -106,7 +114,12 @@ impl Viewport {
             &self.scene.node_arena,
             &self.scene.ui_root_keys,
         );
-        let active_keys = self.transitions.transition_claims.keys().copied().collect::<Vec<_>>();
+        let active_keys = self
+            .transitions
+            .transition_claims
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         let mut canceled = false;
         for key in active_keys {
             if !Self::is_style_driven_transition_channel(key.channel) {
@@ -186,7 +199,12 @@ impl Viewport {
         let promoted_root = root_keys.iter().find_map(|&rk| {
             let root_node = arena.get(rk)?;
             let root_id = root_node.element.stable_id();
-            if !self.compositor.promotion_state.promoted_node_ids.contains(&root_id) {
+            if !self
+                .compositor
+                .promotion_state
+                .promoted_node_ids
+                .contains(&root_id)
+            {
                 return None;
             }
             if root_id == target
@@ -199,7 +217,9 @@ impl Viewport {
                         key: crate::view::node_arena::NodeKey,
                         target_stable: u64,
                     ) -> bool {
-                        let Some(node) = arena.get(key) else { return false };
+                        let Some(node) = arena.get(key) else {
+                            return false;
+                        };
                         if node.element.stable_id() == target_stable {
                             return true;
                         }
@@ -323,7 +343,14 @@ impl Viewport {
         if self
             .transitions
             .scroll_transition_plugin
-            .start_scroll_track(&mut host, target, axis, from, to, self.transitions.scroll_transition)
+            .start_scroll_track(
+                &mut host,
+                target,
+                axis,
+                from,
+                to,
+                self.transitions.scroll_transition,
+            )
             .is_err()
         {
             return false;
@@ -341,7 +368,9 @@ impl Viewport {
             registered_channels: &self.transitions.transition_channels,
             claims: &mut self.transitions.transition_claims,
         };
-        self.transitions.scroll_transition_plugin.cancel_track(key, &mut host);
+        self.transitions
+            .scroll_transition_plugin
+            .cancel_track(key, &mut host);
     }
 
     fn apply_scroll_sample(
@@ -380,11 +409,7 @@ impl Viewport {
         (dt, now_seconds)
     }
 
-    pub(super) fn run_pre_layout_transitions(
-        &mut self,
-        dt: f32,
-        now_seconds: f64,
-    ) -> bool {
+    pub(super) fn run_pre_layout_transitions(&mut self, dt: f32, now_seconds: f64) -> bool {
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut layout_requests = Vec::new();
@@ -401,14 +426,17 @@ impl Viewport {
                 claims: &mut self.transitions.transition_claims,
             };
             for request in layout_requests {
-                let _ = self.transitions.layout_transition_plugin.start_layout_track(
-                    &mut host,
-                    request.target,
-                    request.field,
-                    request.from,
-                    request.to,
-                    request.transition,
-                );
+                let _ = self
+                    .transitions
+                    .layout_transition_plugin
+                    .start_layout_track(
+                        &mut host,
+                        request.target,
+                        request.field,
+                        request.from,
+                        request.to,
+                        request.transition,
+                    );
             }
         }
         let layout_result = {
@@ -457,7 +485,9 @@ impl Viewport {
         let root_keys = self.scene.ui_root_keys.clone();
         let live_node_ids =
             crate::view::base_component::collect_node_id_allowlist(&arena, &root_keys);
-        self.transitions.animation_plugin.prune_targets(&live_node_ids);
+        self.transitions
+            .animation_plugin
+            .prune_targets(&live_node_ids);
         let mut animation_requests = Vec::new();
         for &root_key in &root_keys {
             crate::view::base_component::take_animation_requests(
@@ -526,14 +556,17 @@ impl Viewport {
                 claims: &mut self.transitions.transition_claims,
             };
             for request in layout_requests {
-                let _ = self.transitions.layout_transition_plugin.start_layout_track(
-                    &mut host,
-                    request.target,
-                    request.field,
-                    request.from,
-                    request.to,
-                    request.transition,
-                );
+                let _ = self
+                    .transitions
+                    .layout_transition_plugin
+                    .start_layout_track(
+                        &mut host,
+                        request.target,
+                        request.field,
+                        request.from,
+                        request.to,
+                        request.transition,
+                    );
             }
         }
         if !visual_requests.is_empty() {
@@ -542,14 +575,17 @@ impl Viewport {
                 claims: &mut self.transitions.transition_claims,
             };
             for request in visual_requests {
-                let _ = self.transitions.visual_transition_plugin.start_visual_track(
-                    &mut host,
-                    request.target,
-                    request.field,
-                    request.from,
-                    request.to,
-                    request.transition,
-                );
+                let _ = self
+                    .transitions
+                    .visual_transition_plugin
+                    .start_visual_track(
+                        &mut host,
+                        request.target,
+                        request.field,
+                        request.from,
+                        request.to,
+                        request.transition,
+                    );
             }
         }
 
@@ -579,7 +615,10 @@ impl Viewport {
                 &mut host,
             )
         };
-        let animation_result = self.transitions.animation_plugin.run_animations(dt, now_seconds);
+        let animation_result = self
+            .transitions
+            .animation_plugin
+            .run_animations(dt, now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transitions.transition_channels,
@@ -611,8 +650,13 @@ impl Viewport {
         let mut redraw_changed = false;
         let mut relayout_required = false;
         for sample in samples {
-            redraw_changed |=
-                Self::apply_scroll_sample(&mut arena, &root_keys, sample.target, sample.axis, sample.value);
+            redraw_changed |= Self::apply_scroll_sample(
+                &mut arena,
+                &root_keys,
+                sample.target,
+                sample.axis,
+                sample.value,
+            );
         }
         let style_samples = self.transitions.style_transition_plugin.take_samples();
         for sample in style_samples {
@@ -741,7 +785,9 @@ impl Viewport {
         let root_keys = self.scene.ui_root_keys.clone();
         let live_node_ids =
             crate::view::base_component::collect_node_id_allowlist(&arena, &root_keys);
-        self.transitions.animation_plugin.prune_targets(&live_node_ids);
+        self.transitions
+            .animation_plugin
+            .prune_targets(&live_node_ids);
         let now = Instant::now();
         let epoch = self.transitions.transition_epoch.get_or_insert(now);
         let frame = TransitionFrame {
@@ -753,29 +799,40 @@ impl Viewport {
                 registered_channels: &self.transitions.transition_channels,
                 claims: &mut self.transitions.transition_claims,
             };
-            self.transitions.scroll_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions
+                .scroll_transition_plugin
+                .run_tracks(frame, &mut host)
         };
         let style_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transitions.transition_channels,
                 claims: &mut self.transitions.transition_claims,
             };
-            self.transitions.style_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions
+                .style_transition_plugin
+                .run_tracks(frame, &mut host)
         };
-        let animation_result = self.transitions.animation_plugin.run_animations(0.0, frame.now_seconds);
+        let animation_result = self
+            .transitions
+            .animation_plugin
+            .run_animations(0.0, frame.now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transitions.transition_channels,
                 claims: &mut self.transitions.transition_claims,
             };
-            self.transitions.visual_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions
+                .visual_transition_plugin
+                .run_tracks(frame, &mut host)
         };
         let layout_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transitions.transition_channels,
                 claims: &mut self.transitions.transition_claims,
             };
-            self.transitions.layout_transition_plugin.run_tracks(frame, &mut host)
+            self.transitions
+                .layout_transition_plugin
+                .run_tracks(frame, &mut host)
         };
         self.sync_layout_transition_claims();
 

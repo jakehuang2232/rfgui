@@ -231,7 +231,6 @@ impl Transition<TrackTarget> for VisualTransitionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn transition(duration_ms: u32) -> VisualTransition {
         VisualTransition {

@@ -1,9 +1,7 @@
 use crate::view::ImageSampling;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::TextureResource;
-use crate::view::frame_graph::{
-    BufferDesc, BufferResource, PrepareContext,
-};
+use crate::view::frame_graph::{BufferDesc, BufferResource, PrepareContext};
 use crate::view::frame_graph::{
     BufferReadUsage, FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
     GraphicsPassMergePolicy, GraphicsRecordContext,
@@ -600,7 +598,8 @@ pub(crate) fn composite_immediate(
                 label: Some("TextureComposite Immediate Index"),
                 contents: bytemuck::cast_slice(&indices),
                 usage: wgpu::BufferUsages::INDEX,
-        });
+            },
+        );
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("TextureComposite Immediate Bind Group"),
             layout: &resources.bind_group_layout,

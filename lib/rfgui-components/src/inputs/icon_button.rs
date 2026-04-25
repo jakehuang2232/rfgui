@@ -1,8 +1,6 @@
 use crate::inputs::button::{ButtonColor, ButtonSize, resolve_color_set, size_spec};
 use crate::use_theme;
-use rfgui::ui::{
-    ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx,
-};
+use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx};
 use rfgui::view::Element;
 use rfgui::{
     Align, Color, ColorLike, Cursor, JustifyContent, Layout, Transition, TransitionProperty,

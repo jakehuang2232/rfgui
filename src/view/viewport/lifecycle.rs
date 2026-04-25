@@ -87,7 +87,10 @@ impl Viewport {
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         self.scale_factor = scale_factor.max(0.0001);
-        self.update_logical_size(self.gpu.surface_config.width, self.gpu.surface_config.height);
+        self.update_logical_size(
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+        );
         self.invalidate_promoted_layer_reuse();
     }
 
@@ -233,7 +236,8 @@ impl Viewport {
             };
             self.gpu.surface_config.format = storage_format;
             self.gpu.surface_target_format = target_format;
-            self.gpu.surface_config.alpha_mode = Self::alpha_mode_from_capabilities(&caps.alpha_modes);
+            self.gpu.surface_config.alpha_mode =
+                Self::alpha_mode_from_capabilities(&caps.alpha_modes);
             self.gpu.surface_config.view_formats = if storage_format == target_format {
                 vec![storage_format]
             } else {

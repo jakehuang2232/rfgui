@@ -3,8 +3,8 @@ use crate::view::frame_graph::{
     BufferDesc, BufferReadUsage, BufferResource, FrameGraph, FrameResourceContext,
 };
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    PrepareContext, TextureDesc,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
+    TextureDesc,
 };
 use crate::view::render_pass::ClearPass;
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};

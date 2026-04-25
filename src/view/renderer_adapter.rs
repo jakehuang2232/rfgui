@@ -14,9 +14,7 @@ use crate::view::node_arena::{Node, NodeArena, NodeKey};
 use crate::view::{
     ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, SvgSource, TextStylePropSchema,
 };
-use crate::{
-    AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap,
-};
+use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
 use std::any::TypeId;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -399,7 +397,11 @@ impl<'a> RenderBackend for ViewportRenderBackend<'a> {
                 let target = Self::node_mut_by_path(root_node, path)?;
                 *target = node.clone();
             }
-            Patch::UpdateElementProps { path, changed, removed } => {
+            Patch::UpdateElementProps {
+                path,
+                changed,
+                removed,
+            } => {
                 let target = Self::node_mut_by_path(root_node, path)?;
                 let RsxNode::Element(element) = target else {
                     return Err("cannot update props on non-element node".to_string());
@@ -1139,7 +1141,11 @@ fn convert_text_area_element(
             "on_render" => {
                 let handler = match value {
                     PropValue::OnTextAreaRender(v) => v.clone(),
-                    _ => return Err(format!("prop `{key}` expects text area render handler value")),
+                    _ => {
+                        return Err(format!(
+                            "prop `{key}` expects text area render handler value"
+                        ));
+                    }
                 };
                 text_area.replace_on_render_handler(handler);
             }
@@ -1175,6 +1181,7 @@ fn convert_text_area_element(
             }
             "opacity" => text_area.set_opacity(as_f32(value, key)?),
             "multiline" => text_area.set_multiline(as_bool(value, key)?),
+            "auto_wrap" => text_area.set_auto_wrap(as_bool(value, key)?),
             "read_only" => text_area.set_read_only(as_bool(value, key)?),
             "max_length" => text_area.set_max_length(as_usize(value, key)?),
             "source_text_start" => {
@@ -1245,7 +1252,6 @@ fn convert_text_area_element(
     }
     Ok(Box::new(text_area))
 }
-
 
 fn convert_image_element(
     node: &RsxElementNode,
@@ -1422,7 +1428,11 @@ fn convert_text_area_element_desc(
             "on_render" => {
                 let handler = match value {
                     PropValue::OnTextAreaRender(v) => v.clone(),
-                    _ => return Err(format!("prop `{key}` expects text area render handler value")),
+                    _ => {
+                        return Err(format!(
+                            "prop `{key}` expects text area render handler value"
+                        ));
+                    }
                 };
                 text_area.replace_on_render_handler(handler);
             }
@@ -1448,6 +1458,7 @@ fn convert_text_area_element_desc(
             }
             "opacity" => text_area.set_opacity(as_f32(value, key)?),
             "multiline" => text_area.set_multiline(as_bool(value, key)?),
+            "auto_wrap" => text_area.set_auto_wrap(as_bool(value, key)?),
             "read_only" => text_area.set_read_only(as_bool(value, key)?),
             "max_length" => text_area.set_max_length(as_usize(value, key)?),
             "source_text_start" => source_text_start = as_usize(value, key)?,
@@ -1649,22 +1660,24 @@ fn convert_image_element_desc(
 
     let has_slots = !loading_descs.is_empty() || !error_descs.is_empty();
     let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> = if has_slots {
-        Some(Box::new(move |arena: &mut NodeArena, image_key: NodeKey| {
-            let loading_keys: Vec<NodeKey> = loading_descs
-                .into_iter()
-                .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
-                .collect();
-            let error_keys: Vec<NodeKey> = error_descs
-                .into_iter()
-                .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
-                .collect();
-            arena.with_element_taken(image_key, |element, _arena_ref| {
-                if let Some(img) = element.as_any_mut().downcast_mut::<Image>() {
-                    img.set_loading_slot(loading_keys);
-                    img.set_error_slot(error_keys);
-                }
-            });
-        }))
+        Some(Box::new(
+            move |arena: &mut NodeArena, image_key: NodeKey| {
+                let loading_keys: Vec<NodeKey> = loading_descs
+                    .into_iter()
+                    .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
+                    .collect();
+                let error_keys: Vec<NodeKey> = error_descs
+                    .into_iter()
+                    .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
+                    .collect();
+                arena.with_element_taken(image_key, |element, _arena_ref| {
+                    if let Some(img) = element.as_any_mut().downcast_mut::<Image>() {
+                        img.set_loading_slot(loading_keys);
+                        img.set_error_slot(error_keys);
+                    }
+                });
+            },
+        ))
     } else {
         None
     };
@@ -1937,9 +1950,7 @@ fn next_identity_ordinal(
     ordinals: &mut FxHashMap<&'static str, usize>,
     identity: &RsxNodeIdentity,
 ) -> usize {
-    let entry = ordinals
-        .entry(identity.invocation_type)
-        .or_insert(0);
+    let entry = ordinals.entry(identity.invocation_type).or_insert(0);
     let ordinal = *entry;
     *entry += 1;
     ordinal
@@ -2337,17 +2348,57 @@ macro_rules! as_event_handler_fn {
     };
 }
 
-as_event_handler_fn!(as_ime_commit_handler, crate::ui::ImeCommitHandlerProp, OnImeCommit, "ime commit");
-as_event_handler_fn!(as_ime_enabled_handler, crate::ui::ImeEnabledHandlerProp, OnImeEnabled, "ime enabled");
-as_event_handler_fn!(as_ime_disabled_handler, crate::ui::ImeDisabledHandlerProp, OnImeDisabled, "ime disabled");
-as_event_handler_fn!(as_drag_start_handler, crate::ui::DragStartHandlerProp, OnDragStart, "drag start");
-as_event_handler_fn!(as_drag_over_handler, crate::ui::DragOverHandlerProp, OnDragOver, "drag over");
-as_event_handler_fn!(as_drag_leave_handler, crate::ui::DragLeaveHandlerProp, OnDragLeave, "drag leave");
+as_event_handler_fn!(
+    as_ime_commit_handler,
+    crate::ui::ImeCommitHandlerProp,
+    OnImeCommit,
+    "ime commit"
+);
+as_event_handler_fn!(
+    as_ime_enabled_handler,
+    crate::ui::ImeEnabledHandlerProp,
+    OnImeEnabled,
+    "ime enabled"
+);
+as_event_handler_fn!(
+    as_ime_disabled_handler,
+    crate::ui::ImeDisabledHandlerProp,
+    OnImeDisabled,
+    "ime disabled"
+);
+as_event_handler_fn!(
+    as_drag_start_handler,
+    crate::ui::DragStartHandlerProp,
+    OnDragStart,
+    "drag start"
+);
+as_event_handler_fn!(
+    as_drag_over_handler,
+    crate::ui::DragOverHandlerProp,
+    OnDragOver,
+    "drag over"
+);
+as_event_handler_fn!(
+    as_drag_leave_handler,
+    crate::ui::DragLeaveHandlerProp,
+    OnDragLeave,
+    "drag leave"
+);
 as_event_handler_fn!(as_drop_handler, crate::ui::DropHandlerProp, OnDrop, "drop");
-as_event_handler_fn!(as_drag_end_handler, crate::ui::DragEndHandlerProp, OnDragEnd, "drag end");
+as_event_handler_fn!(
+    as_drag_end_handler,
+    crate::ui::DragEndHandlerProp,
+    OnDragEnd,
+    "drag end"
+);
 as_event_handler_fn!(as_copy_handler, crate::ui::CopyHandlerProp, OnCopy, "copy");
 as_event_handler_fn!(as_cut_handler, crate::ui::CutHandlerProp, OnCut, "cut");
-as_event_handler_fn!(as_paste_handler, crate::ui::PasteHandlerProp, OnPaste, "paste");
+as_event_handler_fn!(
+    as_paste_handler,
+    crate::ui::PasteHandlerProp,
+    OnPaste,
+    "paste"
+);
 
 fn as_text_area_focus_handler(
     value: &PropValue,
@@ -2555,7 +2606,14 @@ pub fn rsx_to_descriptors_with_context(
     let inherited =
         InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
     let global_path = current_global_node_path(root, None);
-    append_nodes_with_path_desc(root, &mut out, &mut path, global_path, &inherited, &mut errors);
+    append_nodes_with_path_desc(
+        root,
+        &mut out,
+        &mut path,
+        global_path,
+        &inherited,
+        &mut errors,
+    );
     (out, errors)
 }
 
@@ -2573,13 +2631,17 @@ pub fn rsx_to_descriptors_scoped_with_context(
     let mut out = Vec::new();
     let mut errors = Vec::new();
     let mut path: Vec<u64> = scope.to_vec();
-    let inherited = InheritedTextStyle::from_viewport_style(
-        inherited_style,
-        viewport_width,
-        viewport_height,
-    );
+    let inherited =
+        InheritedTextStyle::from_viewport_style(inherited_style, viewport_width, viewport_height);
     let global_path = current_global_node_path(root, None);
-    append_nodes_with_path_desc(root, &mut out, &mut path, global_path, &inherited, &mut errors);
+    append_nodes_with_path_desc(
+        root,
+        &mut out,
+        &mut path,
+        global_path,
+        &inherited,
+        &mut errors,
+    );
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }
@@ -2601,7 +2663,14 @@ pub(crate) fn rsx_to_descriptors_with_inherited(
     let mut errors = Vec::new();
     let mut path: Vec<u64> = scope.to_vec();
     let global_path = current_global_node_path(root, None);
-    append_nodes_with_path_desc(root, &mut out, &mut path, global_path, inherited, &mut errors);
+    append_nodes_with_path_desc(
+        root,
+        &mut out,
+        &mut path,
+        global_path,
+        inherited,
+        &mut errors,
+    );
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }
@@ -2712,12 +2781,7 @@ fn convert_node_desc(
                 return convert_svg_element_desc(el, path, global_path, inherited_text_style);
             }
             if is_builtin_text_area_node(el) {
-                return convert_text_area_element_desc(
-                    el,
-                    path,
-                    global_path,
-                    inherited_text_style,
-                );
+                return convert_text_area_element_desc(el, path, global_path, inherited_text_style);
             }
             if is_builtin_text_node(el) {
                 return convert_node(node, path, global_path, inherited_text_style)
@@ -2839,9 +2903,7 @@ mod tests {
         GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx,
     };
     use crate::view::Viewport;
-    use crate::view::base_component::{
-        Element, Text, TextArea, get_cursor_by_id, hit_test,
-    };
+    use crate::view::base_component::{Element, Text, TextArea, get_cursor_by_id, hit_test};
     use crate::view::test_support::{commit_rsx_tree, measure_and_place};
     use crate::view::{
         Element as HostElement, ElementStylePropSchema, Svg as HostSvg, SvgSource,
@@ -3216,7 +3278,9 @@ mod tests {
         key: crate::view::node_arena::NodeKey,
         out: &mut Vec<(f32, f32, f32, f32)>,
     ) {
-        let Some(node) = arena.get(key) else { return; };
+        let Some(node) = arena.get(key) else {
+            return;
+        };
         let s = node.element.box_model_snapshot();
         out.push((s.x, s.y, s.width, s.height));
         let children = node.children.clone();
@@ -3231,7 +3295,9 @@ mod tests {
         key: crate::view::node_arena::NodeKey,
         out: &mut Vec<(f32, f32)>,
     ) {
-        let Some(node) = arena.get(key) else { return; };
+        let Some(node) = arena.get(key) else {
+            return;
+        };
         let el = node.element.as_ref();
         if el.as_any().is::<Text>() || el.as_any().is::<TextArea>() {
             let s = el.box_model_snapshot();
@@ -3719,13 +3785,15 @@ mod tests {
         let mut arena = crate::view::test_support::new_test_arena();
         let roots = commit_rsx_tree(&mut arena, &tree);
         assert_eq!(roots.len(), 1);
-        assert!(arena
-            .get(roots[0])
-            .unwrap()
-            .element
-            .as_any()
-            .downcast_ref::<TextArea>()
-            .is_some());
+        assert!(
+            arena
+                .get(roots[0])
+                .unwrap()
+                .element
+                .as_any()
+                .downcast_ref::<TextArea>()
+                .is_some()
+        );
     }
 
     #[test]
@@ -3779,10 +3847,7 @@ mod tests {
         let root = *roots.first().expect("single root");
         measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-        let ta_key = *arena
-            .children_of(root)
-            .first()
-            .expect("textarea child");
+        let ta_key = *arena.children_of(root).first().expect("textarea child");
         let snapshot = arena.get(ta_key).unwrap().element.box_model_snapshot();
         assert_eq!(snapshot.width, 200.0);
         assert_eq!(snapshot.height, 50.0);

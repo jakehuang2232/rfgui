@@ -39,16 +39,20 @@
 //! }
 //! ```
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 use crate::{ChevronRightIcon, MaterialSymbolIcon, use_theme};
 use rfgui::ui::{
-    Binding, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
+    Binding, ClickHandlerProp, DragEffect, RsxComponent, RsxNode, component, on_drag_end,
+    on_drag_leave, on_drag_over, on_drag_start, on_drop, on_pointer_down, on_pointer_move,
+    on_pointer_up, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{
-    Align, Angle, Border, Color, ColorLike, Cursor, Layout, Length, Padding, Rotate, Transform,
-    Transition, TransitionProperty, flex,
+    Align, Angle, Border, Color, ColorLike, Cursor, Layout, Length, Padding, Position, Rotate,
+    TextWrap, Transform, Transition, TransitionProperty, flex,
 };
 
 // ---------------------------------------------------------------------------
@@ -110,6 +114,32 @@ impl<V> TreeNode<V> {
 }
 
 // ---------------------------------------------------------------------------
+// Drag & drop
+// ---------------------------------------------------------------------------
+
+/// Where a drop lands relative to the target row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DropPosition {
+    /// Insert as a sibling *above* the target.
+    Before,
+    /// Insert as a child of the target (only emitted when the target row
+    /// has children or is the source's accepted container).
+    Inside,
+    /// Insert as a sibling *below* the target.
+    After,
+}
+
+/// Payload passed to `on_move` when a drop completes.
+#[derive(Clone, Debug)]
+pub struct TreeMoveEvent<V> {
+    pub source: V,
+    pub target: V,
+    pub position: DropPosition,
+}
+
+const DRAG_THRESHOLD_PX: f32 = 4.0;
+
+// ---------------------------------------------------------------------------
 // TreeView
 // ---------------------------------------------------------------------------
 
@@ -129,6 +159,11 @@ pub struct TreeViewProps<V: 'static> {
     pub default_selected_item: Option<V>,
     /// External binding that owns the currently selected `value`.
     pub selected_binding: Option<Binding<Option<V>>>,
+    /// When set, rows become draggable. Fires after a successful drop
+    /// with `{ source, target, position }`. The component does not
+    /// mutate `nodes` itself — the host is responsible for computing
+    /// the new tree and re-rendering.
+    pub on_move: Option<Rc<dyn Fn(TreeMoveEvent<V>)>>,
 }
 
 impl<V> RsxComponent<TreeViewProps<V>> for TreeView<V>
@@ -143,6 +178,7 @@ where
                 expanded_binding={props.expanded_binding}
                 default_selected_item={props.default_selected_item}
                 selected_binding={props.selected_binding}
+                on_move={props.on_move}
             />
         }
     }
@@ -182,6 +218,7 @@ fn TreeViewView<V: Clone + PartialEq + std::hash::Hash + 'static>(
     expanded_binding: Option<Binding<Vec<V>>>,
     default_selected_item: Option<V>,
     selected_binding: Option<Binding<Option<V>>>,
+    on_move: Option<Rc<dyn Fn(TreeMoveEvent<V>)>>,
 ) -> RsxNode {
     let theme = use_theme().0;
 
@@ -191,18 +228,37 @@ fn TreeViewView<V: Clone + PartialEq + std::hash::Hash + 'static>(
     let fallback_selected = use_state(|| default_selected_item.clone());
     let selected = selected_binding.unwrap_or_else(|| fallback_selected.binding());
 
+    // DnD state. `pending_drag` and `dragging` are non-reactive cells —
+    // mutating them must NOT trigger a rebuild, otherwise the rebuild
+    // mid-drag invalidates the pointer-down session before the threshold
+    // check can fire `start_drag`. Only `drop_target` is reactive because
+    // its value drives the indicator paint.
+    let pending_drag: Rc<RefCell<Option<(V, f32, f32)>>> =
+        use_state(|| Rc::new(RefCell::new(None::<(V, f32, f32)>))).get();
+    let dragging: Rc<RefCell<Option<V>>> = use_state(|| Rc::new(RefCell::new(None::<V>))).get();
+    let drop_target = use_state(|| None::<(V, DropPosition)>).binding();
+
     let expanded_set = expanded.get();
     let selected_value = selected.get();
+    let drop_target_value = drop_target.get();
+    let drag_enabled = on_move.is_some();
 
     let mut row_nodes: Vec<RsxNode> = Vec::new();
     for node in &nodes {
         emit_rows(
             node,
             0,
+            &[],
             &expanded_set,
             selected_value.as_ref(),
+            drop_target_value.as_ref(),
             &expanded,
             &selected,
+            &pending_drag,
+            &dragging,
+            &drop_target,
+            on_move.as_ref(),
+            drag_enabled,
             &mut row_nodes,
         );
     }
@@ -221,33 +277,59 @@ fn TreeViewView<V: Clone + PartialEq + std::hash::Hash + 'static>(
 fn emit_rows<V: Clone + PartialEq + std::hash::Hash + 'static>(
     node: &TreeNode<V>,
     depth: usize,
+    ancestor_values: &[V],
     expanded_set: &[V],
     selected_value: Option<&V>,
+    drop_target_value: Option<&(V, DropPosition)>,
     expanded_binding: &Binding<Vec<V>>,
     selected_binding: &Binding<Option<V>>,
+    pending_drag_cell: &Rc<RefCell<Option<(V, f32, f32)>>>,
+    dragging_cell: &Rc<RefCell<Option<V>>>,
+    drop_target_binding: &Binding<Option<(V, DropPosition)>>,
+    on_move: Option<&Rc<dyn Fn(TreeMoveEvent<V>)>>,
+    drag_enabled: bool,
     out: &mut Vec<RsxNode>,
 ) {
     let is_expanded = expanded_set.iter().any(|x| x == &node.value);
     let is_selected = selected_value.map(|s| s == &node.value).unwrap_or(false);
+    let row_drop_position = drop_target_value
+        .filter(|(v, _)| v == &node.value)
+        .map(|(_, p)| p.clone());
 
     out.push(render_row(
         node,
         depth,
+        ancestor_values.to_vec(),
         is_expanded,
         is_selected,
+        row_drop_position,
         expanded_binding.clone(),
         selected_binding.clone(),
+        pending_drag_cell.clone(),
+        dragging_cell.clone(),
+        drop_target_binding.clone(),
+        on_move.cloned(),
+        drag_enabled,
     ));
 
     if is_expanded {
+        let mut child_ancestors = ancestor_values.to_vec();
+        child_ancestors.push(node.value.clone());
         for child in &node.children {
             emit_rows(
                 child,
                 depth + 1,
+                &child_ancestors,
                 expanded_set,
                 selected_value,
+                drop_target_value,
                 expanded_binding,
                 selected_binding,
+                pending_drag_cell,
+                dragging_cell,
+                drop_target_binding,
+                on_move,
+                drag_enabled,
                 out,
             );
         }
@@ -257,10 +339,17 @@ fn emit_rows<V: Clone + PartialEq + std::hash::Hash + 'static>(
 fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
     node: &TreeNode<V>,
     depth: usize,
+    ancestor_values: Vec<V>,
     is_expanded: bool,
     is_selected: bool,
+    row_drop_position: Option<DropPosition>,
     expanded_binding: Binding<Vec<V>>,
     selected_binding: Binding<Option<V>>,
+    pending_drag_cell: Rc<RefCell<Option<(V, f32, f32)>>>,
+    dragging_cell: Rc<RefCell<Option<V>>>,
+    drop_target_binding: Binding<Option<(V, DropPosition)>>,
+    on_move: Option<Rc<dyn Fn(TreeMoveEvent<V>)>>,
+    drag_enabled: bool,
 ) -> RsxNode {
     let theme = use_theme().0;
 
@@ -284,7 +373,8 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
         expanded_binding.set(next);
     });
 
-    let row_pad_left = Length::px(TREE_ITEM_BASE_PAD_LEFT_PX + (depth as f32) * TREE_ITEM_INDENT_PX);
+    let row_pad_left =
+        Length::px(TREE_ITEM_BASE_PAD_LEFT_PX + (depth as f32) * TREE_ITEM_INDENT_PX);
 
     let row_background: Box<dyn ColorLike> = if disabled {
         Box::new(Color::transparent())
@@ -352,9 +442,7 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
     // Resolve which Material Symbols ligature to render. `expanded_icon`
     // wins when expanded; otherwise fall back to `icon`.
     let active_icon_ligature: Option<String> = if is_expanded {
-        node.expanded_icon
-            .clone()
-            .or_else(|| node.icon.clone())
+        node.expanded_icon.clone().or_else(|| node.icon.clone())
     } else {
         node.icon.clone()
     };
@@ -381,6 +469,213 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
             </Element>
         },
         None => RsxNode::fragment(vec![]),
+    };
+
+    // Drop indicator rendered as an absolutely-positioned overlay child so
+    // it never affects the row's layout (border / box-shadow alternatives
+    // either shift sibling content or are clipped by the parent's flex
+    // axis). The overlay is added as the last child below.
+    let drop_indicator: RsxNode = match &row_drop_position {
+        Some(DropPosition::Before) => rsx! {
+            <Element style={{
+                position: Position::absolute()
+                    .top(Length::Zero)
+                    .left(Length::Zero)
+                    .right(Length::Zero),
+                height: Length::px(2.0),
+                background: theme.color.primary.base.clone(),
+            }} />
+        },
+        Some(DropPosition::After) => rsx! {
+            <Element style={{
+                position: Position::absolute()
+                    .bottom(Length::Zero)
+                    .left(Length::Zero)
+                    .right(Length::Zero),
+                height: Length::px(2.0),
+                background: theme.color.primary.base.clone(),
+            }} />
+        },
+        Some(DropPosition::Inside) => rsx! {
+            <Element style={{
+                position: Position::absolute()
+                    .top(Length::Zero)
+                    .left(Length::Zero)
+                    .right(Length::Zero)
+                    .bottom(Length::Zero),
+                border: Border::uniform(Length::px(2.0), theme.color.primary.base.as_ref()),
+            }} />
+        },
+        None => RsxNode::fragment(vec![]),
+    };
+
+    // --- DnD handlers -------------------------------------------------------
+    // Attached unconditionally; they early-return when `drag_enabled` is
+    // false so callers that don't pass `on_move` get a plain TreeView.
+    //
+    // `pending_drag_cell` and `dragging_cell` are non-reactive — mutating
+    // them does NOT trigger a rebuild. This is critical: `pointer_down` →
+    // `pointer_move` → `start_drag` is a continuous gesture; rebuilding
+    // mid-gesture invalidates the pointer-down session and loses the drag.
+
+    let pointer_down = {
+        let pending = pending_drag_cell.clone();
+        let value = value.clone();
+        on_pointer_down(move |event| {
+            if !drag_enabled || disabled {
+                return;
+            }
+            *pending.borrow_mut() = Some((
+                value.clone(),
+                event.pointer.viewport_x,
+                event.pointer.viewport_y,
+            ));
+        })
+    };
+
+    let pointer_move = {
+        let pending = pending_drag_cell.clone();
+        let value = value.clone();
+        on_pointer_move(move |event| {
+            if !drag_enabled {
+                return;
+            }
+            let snapshot = pending.borrow().clone();
+            let Some((pending_value, start_x, start_y)) = snapshot else {
+                return;
+            };
+            if pending_value != value {
+                return;
+            }
+            let dx = event.pointer.viewport_x - start_x;
+            let dy = event.pointer.viewport_y - start_y;
+            if (dx * dx + dy * dy).sqrt() < DRAG_THRESHOLD_PX {
+                return;
+            }
+            *pending.borrow_mut() = None;
+            let source_id = event.meta.target_id();
+            event
+                .viewport
+                .start_drag(source_id, Vec::new(), DragEffect::Move);
+        })
+    };
+
+    let pointer_up = {
+        let pending = pending_drag_cell.clone();
+        on_pointer_up(move |_event| {
+            *pending.borrow_mut() = None;
+        })
+    };
+
+    let drag_start = {
+        let dragging = dragging_cell.clone();
+        let value = value.clone();
+        on_drag_start(move |_event| {
+            *dragging.borrow_mut() = Some(value.clone());
+        })
+    };
+
+    let drag_over = {
+        let dragging = dragging_cell.clone();
+        let drop_target = drop_target_binding.clone();
+        let value = value.clone();
+        let ancestor_values = ancestor_values.clone();
+        on_drag_over(move |event| {
+            if disabled {
+                drop_target.set(None);
+                return;
+            }
+            let source = dragging.borrow().clone();
+            let Some(source) = source else {
+                return;
+            };
+            if source == value {
+                // Reject dropping onto self.
+                drop_target.set(None);
+                return;
+            }
+            if ancestor_values.iter().any(|ancestor| ancestor == &source) {
+                // Reject dropping an ancestor into its own descendant.
+                drop_target.set(None);
+                return;
+            }
+            let y = event.pointer.local_y;
+            let h = TREE_ITEM_ROW_HEIGHT_PX;
+            // Directory rows split into 3 equal zones so the "drop as last
+            // sibling" and "drop into the directory" zones are both
+            // distinct and big enough to hit. Leaves only need 2 zones.
+            let position = if has_children {
+                if y < h * (1.0 / 3.0) {
+                    DropPosition::Before
+                } else if y > h * (2.0 / 3.0) {
+                    DropPosition::After
+                } else {
+                    DropPosition::Inside
+                }
+            } else if y < h * 0.5 {
+                DropPosition::Before
+            } else {
+                DropPosition::After
+            };
+            let next = Some((value.clone(), position));
+            if drop_target.get() != next {
+                drop_target.set(next);
+            }
+            event.accept(DragEffect::Move);
+        })
+    };
+
+    let drag_leave = {
+        let drop_target = drop_target_binding.clone();
+        let value = value.clone();
+        on_drag_leave(move |_event| {
+            if drop_target
+                .get()
+                .as_ref()
+                .is_some_and(|(target, _)| target == &value)
+            {
+                drop_target.set(None);
+            }
+        })
+    };
+
+    let drop_handler = {
+        let dragging = dragging_cell.clone();
+        let drop_target = drop_target_binding.clone();
+        let pending = pending_drag_cell.clone();
+        let on_move_cb = on_move.clone();
+        let value = value.clone();
+        on_drop(move |_event| {
+            let source = dragging.borrow().clone();
+            let target = drop_target.get();
+            *dragging.borrow_mut() = None;
+            *pending.borrow_mut() = None;
+            drop_target.set(None);
+            let (Some(src), Some((tgt, pos))) = (source, target) else {
+                return;
+            };
+            if tgt != value || src == tgt {
+                return;
+            }
+            if let Some(cb) = on_move_cb.as_ref() {
+                cb(TreeMoveEvent {
+                    source: src,
+                    target: tgt,
+                    position: pos,
+                });
+            }
+        })
+    };
+
+    let drag_end = {
+        let dragging = dragging_cell.clone();
+        let drop_target = drop_target_binding.clone();
+        let pending = pending_drag_cell.clone();
+        on_drag_end(move |_event| {
+            *dragging.borrow_mut() = None;
+            *pending.borrow_mut() = None;
+            drop_target.set(None);
+        })
     };
 
     rsx! {
@@ -411,16 +706,26 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
                 },
             }}
             on_click={click}
+            on_pointer_down={pointer_down}
+            on_pointer_move={pointer_move}
+            on_pointer_up={pointer_up}
+            on_drag_start={drag_start}
+            on_drag_over={drag_over}
+            on_drag_leave={drag_leave}
+            on_drop={drop_handler}
+            on_drag_end={drag_end}
         >
             {chevron_slot}
             {icon_slot}
             <Element style={{
                 flex: flex().grow(1.0).shrink(1.0),
+                min_width: Length::Zero,
                 color: row_text_color.clone(),
                 font_size: theme.typography.size.sm,
             }}>
-                <Text>{label}</Text>
+                <Text style={{ text_wrap: TextWrap::NoWrap }}>{label}</Text>
             </Element>
+            {drop_indicator}
         </Element>
     }
 }

@@ -2,11 +2,13 @@ mod icons;
 mod inputs;
 mod layout;
 mod theme;
+mod utils;
 
 pub use icons::*;
 pub use inputs::*;
 pub use layout::*;
 pub use theme::*;
+pub use utils::*;
 
 #[cfg(test)]
 mod tests {
@@ -33,12 +35,7 @@ mod tests {
     // (`commit_descriptor_tree`, `rsx_to_descriptors_with_context`).
 
     fn commit_rsx_tree_into(arena: &mut NodeArena, tree: &RsxNode) -> Vec<NodeKey> {
-        let (descs, errors) = rsx_to_descriptors_with_context(
-            tree,
-            &rfgui::Style::new(),
-            0.0,
-            0.0,
-        );
+        let (descs, errors) = rsx_to_descriptors_with_context(tree, &rfgui::Style::new(), 0.0, 0.0);
         assert!(
             errors.is_empty(),
             "commit_rsx_tree: rsx conversion errors: {errors:?}"
@@ -518,7 +515,11 @@ mod tests {
             } else {
                 "Element".to_string()
             };
-            (kind, node.element.box_model_snapshot(), node.children.clone())
+            (
+                kind,
+                node.element.box_model_snapshot(),
+                node.children.clone(),
+            )
         };
         out.push((depth, kind, snap.x, snap.y, snap.width, snap.height));
         for child in children {
@@ -693,9 +694,7 @@ mod tests {
 
         #[component]
         fn CtxConsumer() -> RsxNode {
-            let seen = use_context::<CtxValue>()
-                .map(|v| v.0)
-                .unwrap_or("<none>");
+            let seen = use_context::<CtxValue>().map(|v| v.0).unwrap_or("<none>");
             rsx! { <rfgui::view::Text>{seen}</rfgui::view::Text> }
         }
 
@@ -743,9 +742,7 @@ mod tests {
     }
 
     fn sample_tree_nodes() -> Vec<TreeNode> {
-        vec![TreeNode::new("root", "Root").with_children(vec![
-            TreeNode::new("child", "Child"),
-        ])]
+        vec![TreeNode::new("root", "Root").with_children(vec![TreeNode::new("child", "Child")])]
     }
 
     #[test]
@@ -756,7 +753,10 @@ mod tests {
         let RsxNode::Element(root) = tree else {
             panic!("TreeView should render element root");
         };
-        assert_eq!(root.tag_descriptor, Some(RsxTagDescriptor::of::<TreeView>()));
+        assert_eq!(
+            root.tag_descriptor,
+            Some(RsxTagDescriptor::of::<TreeView>())
+        );
     }
 
     #[test]
@@ -812,6 +812,98 @@ mod tests {
 
         assert_eq!(selected.get().as_deref(), Some("root"));
         assert_eq!(expanded.get(), vec![String::from("root")]);
+    }
+
+    /// Repro for the user-reported drag-reorder bug: dragging
+    /// `accordion.rs` after `tree_view.rs` in `layout/` mutates the
+    /// nodes prop. The incremental reconciler must reorder rows by
+    /// keyed identity so each row's nested label travels with it.
+    #[test]
+    fn tree_view_reorder_keeps_labels_aligned_with_rows() {
+        fn folder_layout(children: Vec<TreeNode>) -> Vec<TreeNode> {
+            vec![TreeNode::new("src", "src/").with_children(vec![
+                TreeNode::new("layout", "layout/").with_children(children),
+            ])]
+        }
+
+        let pre_drag = folder_layout(vec![
+            TreeNode::new("accordion.rs", "accordion.rs"),
+            TreeNode::new("tree_view.rs", "tree_view.rs"),
+            TreeNode::new("window.rs", "window.rs"),
+        ]);
+        let post_drag = folder_layout(vec![
+            TreeNode::new("tree_view.rs", "tree_view.rs"),
+            TreeNode::new("accordion.rs", "accordion.rs"),
+            TreeNode::new("window.rs", "window.rs"),
+        ]);
+
+        let make_tree = |nodes: Vec<TreeNode>| {
+            rsx! {
+                <TreeView
+                    nodes={nodes}
+                    default_expanded_items={vec![
+                        String::from("src"),
+                        String::from("layout"),
+                    ]}
+                />
+            }
+        };
+
+        let mut viewport = rfgui::view::Viewport::new();
+        viewport.set_use_incremental_commit(true);
+
+        viewport
+            .render_rsx(&make_tree(pre_drag))
+            .expect("cold render");
+        viewport
+            .render_rsx(&make_tree(post_drag))
+            .expect("incremental reorder render");
+
+        // Walk the arena and collect every Text host's content in
+        // pre-order so labels show up in their displayed sibling order.
+        fn collect(
+            arena: &rfgui::view::NodeArena,
+            key: rfgui::view::NodeKey,
+            out: &mut Vec<String>,
+        ) {
+            if let Some(node) = arena.get(key) {
+                if let Some(t) = node
+                    .element
+                    .as_any()
+                    .downcast_ref::<rfgui::view::base_component::Text>()
+                {
+                    out.push(t.content().to_string());
+                }
+            }
+            for child in arena.children_of(key) {
+                collect(arena, child, out);
+            }
+        }
+        let arena = viewport.node_arena();
+        let mut labels = Vec::new();
+        for &root in arena.roots() {
+            collect(arena, root, &mut labels);
+        }
+
+        let layout_idx = labels
+            .iter()
+            .position(|s| s == "layout/")
+            .expect("layout/ row label present");
+        let leaf_window_idx = labels
+            .iter()
+            .position(|s| s == "window.rs")
+            .expect("window.rs row label present");
+        let leaves: Vec<&str> = labels[layout_idx + 1..=leaf_window_idx]
+            .iter()
+            .filter(|s| ["accordion.rs", "tree_view.rs", "window.rs"].contains(&s.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(
+            leaves,
+            vec!["tree_view.rs", "accordion.rs", "window.rs"],
+            "after reorder, layout/ leaf labels must match new order; \
+             stale labels = keyed-row reconcile bug",
+        );
     }
 
     #[test]

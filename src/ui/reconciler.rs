@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 
 use crate::ui::{PropValue, RsxElementNode, RsxNode, RsxNodeIdentity};
 use std::cell::RefCell;
-use std::collections::{VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,11 +151,8 @@ struct ScratchGuard {
 
 impl ScratchGuard {
     fn acquire() -> Self {
-        let scratch = SCRATCH_POOL.with(|pool| {
-            pool.borrow_mut()
-                .pop()
-                .unwrap_or_else(ChildrenScratch::new)
-        });
+        let scratch =
+            SCRATCH_POOL.with(|pool| pool.borrow_mut().pop().unwrap_or_else(ChildrenScratch::new));
         ScratchGuard {
             scratch: Some(scratch),
         }
@@ -246,7 +243,10 @@ pub fn reconcile_multi(old: Option<&[&RsxNode]>, new: &[&RsxNode]) -> Vec<Rooted
     let mut by_identity: FxHashMap<RsxNodeIdentity, std::collections::VecDeque<usize>> =
         FxHashMap::default();
     for (i, o) in old.iter().enumerate() {
-        by_identity.entry(o.identity().clone()).or_default().push_back(i);
+        by_identity
+            .entry(o.identity().clone())
+            .or_default()
+            .push_back(i);
     }
 
     let mut mapping: Vec<usize> = Vec::with_capacity(new.len());
@@ -300,12 +300,7 @@ pub fn reconcile_multi(old: Option<&[&RsxNode]>, new: &[&RsxNode]) -> Vec<Rooted
 // Private recursive helpers
 // ---------------------------------------------------------------------------
 
-fn reconcile_node(
-    old: &RsxNode,
-    new: &RsxNode,
-    path: &mut Vec<usize>,
-    patches: &mut Vec<Patch>,
-) {
+fn reconcile_node(old: &RsxNode, new: &RsxNode, path: &mut Vec<usize>, patches: &mut Vec<Patch>) {
     // Fast path: if both variants hold the exact same `Rc` allocation, the
     // entire subtree is guaranteed structurally identical — no patches needed.
     // Enables memoized components (Step D) and any caller that reuses an
@@ -542,8 +537,7 @@ fn reconcile_children(
     // be moved; only the remaining n − |LIS| nodes require a MoveChild patch.
     // This reduces worst-case patch count while the O(n log n) LIS algorithm
     // keeps the total work sub-quadratic.
-    s.target_seq
-        .extend(s.matches.iter().filter_map(|m| *m));
+    s.target_seq.extend(s.matches.iter().filter_map(|m| *m));
     let stable_mask = lis_stable_mask(&s.target_seq);
 
     // Build an O(1) position lookup so we can find each node's current index
@@ -644,8 +638,10 @@ mod bailout_tests {
         // Build shared props: an `Rc<Vec<_>>` reused across two distinct
         // element allocations. The reconciler must take the `Rc::ptr_eq`
         // fast path and emit NO `UpdateElementProps` patch.
-        let shared_props: RsxElementProps =
-            Rc::new(vec![("width", PropValue::I64(100)), ("color", PropValue::I64(1))]);
+        let shared_props: RsxElementProps = Rc::new(vec![
+            ("width", PropValue::I64(100)),
+            ("color", PropValue::I64(1)),
+        ]);
 
         let make = |children: Vec<RsxNode>| {
             RsxNode::Element(Rc::new(RsxElementNode {

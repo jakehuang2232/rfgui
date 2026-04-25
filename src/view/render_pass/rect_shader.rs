@@ -25,10 +25,7 @@ pub(crate) struct RectShaderKey {
     pub has_border_gradient: bool,
 }
 
-pub(crate) fn build_rect_shader(
-    device: &wgpu::Device,
-    key: RectShaderKey,
-) -> wgpu::ShaderModule {
+pub(crate) fn build_rect_shader(device: &wgpu::Device, key: RectShaderKey) -> wgpu::ShaderModule {
     let mut composer = Composer::default();
     let mut defs: FxHashMap<String, ShaderDefValue> = FxHashMap::default();
     let set = |defs: &mut FxHashMap<String, ShaderDefValue>, name: &str| {
@@ -60,8 +57,7 @@ pub(crate) fn build_rect_shader(
         set(&mut defs, "HAS_BORDER_GRADIENT");
     }
 
-    let shader_defs: std::collections::HashMap<String, ShaderDefValue> =
-        defs.into_iter().collect();
+    let shader_defs: std::collections::HashMap<String, ShaderDefValue> = defs.into_iter().collect();
 
     let module = composer
         .make_naga_module(NagaModuleDescriptor {

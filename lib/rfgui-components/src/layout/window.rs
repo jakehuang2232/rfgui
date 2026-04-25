@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::use_theme;
 use rfgui::ClipMode::Viewport;
 use rfgui::ui::{
-    BlurHandlerProp, FocusHandlerProp, PointerButton, PointerDownHandlerProp,
-    RsxComponent, RsxNode, ViewportListenerHandle, on_pointer_down, props, rsx, use_state,
+    BlurHandlerProp, FocusHandlerProp, PointerButton, PointerDownHandlerProp, RsxComponent,
+    RsxNode, ViewportListenerHandle, on_pointer_down, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{
@@ -191,6 +191,7 @@ pub struct WindowProps {
     pub on_focus: Option<FocusHandlerProp>,
     pub on_blur: Option<BlurHandlerProp>,
     pub window_slots: Option<WindowSlotsProp>,
+    pub scrollable: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -236,6 +237,7 @@ impl RsxComponent<WindowProps> for Window {
     fn render(props: WindowProps, children: Vec<RsxNode>) -> RsxNode {
         let width = props.width.unwrap_or(360.0).max(MIN_WIDTH as f64) as f32;
         let height = props.height.unwrap_or(240.0).max(MIN_HEIGHT as f64) as f32;
+        let scrollable = props.scrollable.unwrap_or(true);
 
         rsx! {
             <WindowView
@@ -249,6 +251,7 @@ impl RsxComponent<WindowProps> for Window {
                 on_focus={props.on_focus}
                 on_blur={props.on_blur}
                 window_slots={props.window_slots}
+                scrollable={scrollable}
             >
                 {children}
             </WindowView>
@@ -287,6 +290,7 @@ fn WindowView(
     on_focus: Option<FocusHandlerProp>,
     on_blur: Option<BlurHandlerProp>,
     window_slots: Option<WindowSlotsProp>,
+    scrollable: bool,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     let theme = use_theme().0;
@@ -385,41 +389,42 @@ fn WindowView(
             let interaction_for_move = interaction.clone();
             let position_for_move = position_state.clone();
             let on_move_for_move = on_move.clone();
-            let move_listener =
-                event.viewport.add_pointer_move_listener(
-                    move |move_event| match interaction_for_move.get() {
-                        WindowInteraction::Dragging {
-                            start_mouse_x,
-                            start_mouse_y,
-                            start_x,
-                            start_y,
-                        } => {
-                            let next_x = start_x + (move_event.pointer.viewport_x - start_mouse_x);
-                            let next_y = start_y + (move_event.pointer.viewport_y - start_mouse_y);
-                            if !controlled {
-                                position_for_move.set((next_x, next_y));
-                            }
-                            if let Some(handler) = &on_move_for_move {
-                                handler.call(next_x, next_y);
-                            }
-                            move_event.meta.stop_propagation();
+            let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
+                match interaction_for_move.get() {
+                    WindowInteraction::Dragging {
+                        start_mouse_x,
+                        start_mouse_y,
+                        start_x,
+                        start_y,
+                    } => {
+                        let next_x = start_x + (move_event.pointer.viewport_x - start_mouse_x);
+                        let next_y = start_y + (move_event.pointer.viewport_y - start_mouse_y);
+                        if !controlled {
+                            position_for_move.set((next_x, next_y));
                         }
-                        WindowInteraction::Resizing { .. } => {}
-                        WindowInteraction::Idle => {}
-                    },
-                );
+                        if let Some(handler) = &on_move_for_move {
+                            handler.call(next_x, next_y);
+                        }
+                        move_event.meta.stop_propagation();
+                    }
+                    WindowInteraction::Resizing { .. } => {}
+                    WindowInteraction::Idle => {}
+                }
+            });
             let interaction_for_up = interaction.clone();
             let viewport_listeners_for_up = viewport_listeners.clone();
-            let up_listener = event.viewport.add_pointer_up_listener_until(move |up_event| {
-                if up_event.pointer.button != Some(PointerButton::Left) {
-                    return false;
-                }
-                up_event.viewport.remove_listener(move_listener);
-                interaction_for_up.set(WindowInteraction::Idle);
-                viewport_listeners_for_up.set(WindowViewportListenerState::default());
-                up_event.meta.stop_propagation();
-                true
-            });
+            let up_listener = event
+                .viewport
+                .add_pointer_up_listener_until(move |up_event| {
+                    if up_event.pointer.button != Some(PointerButton::Left) {
+                        return false;
+                    }
+                    up_event.viewport.remove_listener(move_listener);
+                    interaction_for_up.set(WindowInteraction::Idle);
+                    viewport_listeners_for_up.set(WindowViewportListenerState::default());
+                    up_event.meta.stop_propagation();
+                    true
+                });
             viewport_listeners.set(WindowViewportListenerState {
                 move_listener: Some(move_listener),
                 up_listener: Some(up_listener),
@@ -547,19 +552,21 @@ fn WindowView(
             });
             let interaction_for_up = interaction.clone();
             let viewport_listeners_for_up = viewport_listeners.clone();
-            let up_listener = event.viewport.add_pointer_up_listener_until(move |up_event| {
-                if up_event.pointer.button != Some(PointerButton::Left) {
-                    return false;
-                }
-                up_event.viewport.remove_listener(move_listener);
-                if let WindowInteraction::Resizing { .. } = interaction_for_up.get() {
-                    up_event.viewport.set_cursor(None);
-                }
-                interaction_for_up.set(WindowInteraction::Idle);
-                viewport_listeners_for_up.set(WindowViewportListenerState::default());
-                up_event.meta.stop_propagation();
-                true
-            });
+            let up_listener = event
+                .viewport
+                .add_pointer_up_listener_until(move |up_event| {
+                    if up_event.pointer.button != Some(PointerButton::Left) {
+                        return false;
+                    }
+                    up_event.viewport.remove_listener(move_listener);
+                    if let WindowInteraction::Resizing { .. } = interaction_for_up.get() {
+                        up_event.viewport.set_cursor(None);
+                    }
+                    interaction_for_up.set(WindowInteraction::Idle);
+                    viewport_listeners_for_up.set(WindowViewportListenerState::default());
+                    up_event.meta.stop_propagation();
+                    true
+                });
             viewport_listeners.set(WindowViewportListenerState {
                 move_listener: Some(move_listener),
                 up_listener: Some(up_listener),
@@ -618,7 +625,7 @@ fn WindowView(
                     layout: Layout::flow().column(),
                     background: content_background,
                     color: content_text_color,
-                    scroll_direction: ScrollDirection::Both,
+                    scroll_direction: if scrollable { ScrollDirection::Both } else { ScrollDirection::None },
                 }}
             >
                 {children}

@@ -259,7 +259,6 @@ impl Transition<TrackTarget> for LayoutTransitionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     struct TestHost {
         registered_channels: FxHashSet<ChannelId>,

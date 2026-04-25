@@ -13,9 +13,11 @@
 #![cfg(test)]
 
 use super::Viewport;
-use crate::ui::{RsxNode, RsxTagDescriptor, rsx};
+use crate::ui::{
+    Binding, DragEffect, RsxNode, RsxTagDescriptor, global_state, on_drag_over, on_drop, rsx,
+};
 use crate::view::Element as HostElement;
-use crate::Length;
+use crate::{Layout, Length};
 
 fn host_el() -> RsxNode {
     RsxNode::tagged("Element", RsxTagDescriptor::of::<HostElement>())
@@ -34,6 +36,65 @@ fn text_leaf(content: &str) -> RsxNode {
     RsxNode::text(content)
 }
 
+fn collect_text_contents(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    out: &mut Vec<String>,
+) {
+    if let Some(node) = arena.get(key) {
+        if let Some(text) = node
+            .element
+            .as_any()
+            .downcast_ref::<crate::view::base_component::Text>()
+        {
+            out.push(text.content().to_string());
+        }
+        for child in arena.children_of(key) {
+            collect_text_contents(arena, child, out);
+        }
+    }
+}
+
+fn drag_drop_rerender_tree(hovering: bool, dropped: Binding<Vec<String>>) -> RsxNode {
+    let target_over = on_drag_over(move |event| {
+        event.accept(DragEffect::Move);
+    });
+    let target_drop = {
+        let dropped = dropped.clone();
+        on_drop(move |_event| {
+            dropped.update(|items| items.push("target".to_string()));
+        })
+    };
+    let target_label = if hovering { "target-hover" } else { "target" };
+
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flow().column().no_wrap(),
+            width: Length::px(200.0),
+            height: Length::px(60.0),
+        }}>
+            <HostElement
+                style={{
+                    width: Length::px(200.0),
+                    height: Length::px(30.0),
+                }}
+            >
+                {text_leaf("source")}
+            </HostElement>
+            <HostElement
+                style={{
+                    width: Length::px(200.0),
+                    height: Length::px(30.0),
+                }}
+                on_drag_over={target_over}
+                on_drop={target_drop}
+            >
+                {text_leaf(target_label)}
+            </HostElement>
+        </HostElement>
+    }
+}
+
 /// 軌 A #9: tests that build their own `FiberWork` and call
 /// `apply_fiber_works` directly need an `ApplyContext`. The viewport
 /// dimensions / style here mirror the defaults the integration tests
@@ -47,6 +108,43 @@ fn test_apply_ctx() -> crate::view::fiber_work::ApplyContext<'static> {
         viewport_width: 800.0,
         viewport_height: 600.0,
     }
+}
+
+#[test]
+fn drag_drop_retargets_after_drag_over_rerender() {
+    let dropped = global_state(|| Vec::<String>::new());
+    let mut viewport = Viewport::new();
+    viewport.set_size(200, 120);
+
+    viewport
+        .render_rsx(&drag_drop_rerender_tree(false, dropped.binding()))
+        .expect("cold render");
+    let old_target = viewport
+        .scene
+        .ui_root_keys
+        .iter()
+        .rev()
+        .find_map(|&root_key| {
+            crate::view::base_component::hit_test(&viewport.scene.node_arena, root_key, 20.0, 45.0)
+        })
+        .expect("initial target should hit-test");
+
+    viewport.input_state.drag_state = Some(super::DragState {
+        source_id: old_target,
+        data: crate::ui::DataTransfer::default(),
+        effect_allowed: DragEffect::Move,
+        last_over_target: Some(old_target),
+        last_drop_effect: Some(DragEffect::Move),
+    });
+    viewport.set_pointer_position_viewport(20.0, 45.0);
+
+    viewport
+        .render_rsx(&drag_drop_rerender_tree(true, dropped.binding()))
+        .expect("drag-over indicator render");
+
+    viewport.dispatch_pointer_up_event(crate::view::viewport::PointerButton::Left);
+
+    assert_eq!(dropped.get(), vec!["target".to_string()]);
 }
 
 /// Structure-identical re-render: reconcile produces an empty patch
@@ -195,9 +293,7 @@ fn incremental_commit_applies_replace_root() {
 #[test]
 fn incremental_commit_replace_node_rebuilds_child_preserves_parent_key() {
     use crate::style::Style;
-    use crate::view::fiber_work::{
-        DescriptorContext, apply_fiber_works, patch_to_fiber_work,
-    };
+    use crate::view::fiber_work::{DescriptorContext, apply_fiber_works, patch_to_fiber_work};
 
     // Seed: parent with two children. Snapshot keys before we mutate.
     let seed = host_el().with_child(host_el()).with_child(host_el());
@@ -211,7 +307,9 @@ fn incremental_commit_replace_node_rebuilds_child_preserves_parent_key() {
     // Build a synthetic ReplaceNode at path [0] — swap the first
     // child for a text leaf. New rsx root mirrors the same parent
     // structure so `walk_rsx_by_index_path` and resolve_path line up.
-    let new_root = host_el().with_child(text_leaf("swapped")).with_child(host_el());
+    let new_root = host_el()
+        .with_child(text_leaf("swapped"))
+        .with_child(host_el());
     let patch = crate::ui::Patch::ReplaceNode {
         path: vec![0],
         node: text_leaf("swapped"),
@@ -241,7 +339,10 @@ fn incremental_commit_replace_node_rebuilds_child_preserves_parent_key() {
     let children = arena.children_of(parent_key);
     assert_eq!(children.len(), 2);
     assert_eq!(children[1], kept_child_key);
-    assert_ne!(children[0], old_first_key, "replaced slot must mint a new key");
+    assert_ne!(
+        children[0], old_first_key,
+        "replaced slot must mint a new key"
+    );
     assert!(
         arena.get(old_first_key).is_none(),
         "old child slot must be dropped",
@@ -400,11 +501,7 @@ fn incremental_commit_removes_event_handler_prop_clears_handler_list() {
     {
         let arena = &viewport.scene.node_arena;
         let node = arena.get(original_key).unwrap();
-        let el = node
-            .element
-            .as_any()
-            .downcast_ref::<ElementHost>()
-            .unwrap();
+        let el = node.element.as_any().downcast_ref::<ElementHost>().unwrap();
         assert_eq!(el.rsx_event_handler_count("on_pointer_down"), 1);
     }
 
@@ -419,11 +516,7 @@ fn incremental_commit_removes_event_handler_prop_clears_handler_list() {
     );
     let arena = &viewport.scene.node_arena;
     let node = arena.get(original_key).unwrap();
-    let el = node
-        .element
-        .as_any()
-        .downcast_ref::<ElementHost>()
-        .unwrap();
+    let el = node.element.as_any().downcast_ref::<ElementHost>().unwrap();
     assert_eq!(
         el.rsx_event_handler_count("on_pointer_down"),
         0,
@@ -458,6 +551,107 @@ fn incremental_commit_applies_set_text_preserves_node_key() {
     );
 }
 
+#[test]
+fn incremental_commit_reorders_unkeyed_text_rows_without_duplicate_content() {
+    use crate::view::Text as HostText;
+
+    fn tree(labels: &[&str]) -> RsxNode {
+        rsx! {
+            <HostElement>
+                {labels
+                    .iter()
+                    .map(|label| rsx! { <HostText>{(*label).to_string()}</HostText> })
+                    .collect::<Vec<_>>()}
+            </HostElement>
+        }
+    }
+
+    let first = tree(&["window.rs", "accordion.rs", "tree_view.rs"]);
+    let second = tree(&["accordion.rs", "window.rs", "tree_view.rs"]);
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+
+    viewport.render_rsx(&first).expect("cold render");
+    viewport
+        .render_rsx(&second)
+        .expect("text sibling reorder should render without duplicates");
+
+    let mut labels = Vec::new();
+    collect_text_contents(
+        &viewport.scene.node_arena,
+        viewport.scene.ui_root_keys[0],
+        &mut labels,
+    );
+    assert_eq!(labels, vec!["accordion.rs", "window.rs", "tree_view.rs"]);
+}
+
+/// Regression for the TreeView drag-drop "duplicate row" bug.
+///
+/// Reconciler emits, for the same parent that's about to reorder via
+/// keyed match, a per-child `RemoveChild + InsertChild` (because that
+/// row's *internal* shape changed — e.g. a drop-indicator slot
+/// switching from `Element` to `Fragment`). The InsertChild path uses
+/// the OLD parent-relative index; after the keyed reorder happens
+/// above it, walking NEW by that OLD index lands on a different keyed
+/// sibling. The translator's `fallback_replace_node_patch` used to
+/// blindly take `NEW[old_path]` as the replacement node, clobbering
+/// the row at that arena slot with an unrelated row's contents → the
+/// later MoveChild then duplicates that wrong content.
+#[test]
+fn keyed_row_internal_shape_change_plus_reorder_does_not_duplicate() {
+    use crate::view::Text as HostText;
+
+    fn row(label: &str, indicator: bool) -> RsxNode {
+        let s = label.to_string();
+        let inner = rsx! { <HostText>{s.clone()}</HostText> };
+        let slot = if indicator {
+            rsx! { <HostElement /> }
+        } else {
+            RsxNode::fragment(vec![])
+        };
+        rsx! {
+            <HostElement key={s.clone()}>
+                {inner}
+                {slot}
+            </HostElement>
+        }
+    }
+
+    fn tree(rows: Vec<RsxNode>) -> RsxNode {
+        rsx! { <HostElement>{rows}</HostElement> }
+    }
+
+    // Pre-drop snapshot the reconciler will diff against: order [A, B, C],
+    // row "B" is showing the indicator slot as Element.
+    let first = tree(vec![row("A", false), row("B", true), row("C", false)]);
+    // Post-drop: order [B, A, C] (keyed reorder above), AND B's
+    // indicator slot collapses back to Fragment.
+    let second = tree(vec![row("B", false), row("A", false), row("C", false)]);
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+
+    viewport.render_rsx(&first).expect("cold render");
+    viewport
+        .render_rsx(&second)
+        .expect("reorder + shape-change must commit cleanly");
+
+    let mut labels = Vec::new();
+    collect_text_contents(
+        &viewport.scene.node_arena,
+        viewport.scene.ui_root_keys[0],
+        &mut labels,
+    );
+    assert_eq!(
+        labels,
+        vec!["B", "A", "C"],
+        "labels must follow keyed reorder; duplicates here mean \
+         fallback ReplaceNode clobbered an arena slot whose OLD/NEW \
+         identity diverged because of the surrounding keyed shuffle",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // M4 #1: non-additive replace_style
 // ---------------------------------------------------------------------------
@@ -468,9 +662,9 @@ fn incremental_commit_applies_set_text_preserves_node_key() {
 /// merge. Asserts directly against `Element::parsed_style()`.
 #[test]
 fn incremental_commit_replace_style_drops_absent_declaration() {
+    use crate::Color;
     use crate::style::PropertyId;
     use crate::view::base_component::Element as ElementHost;
-    use crate::Color;
 
     let with_bg = rsx! {
         <HostElement style={{
@@ -601,9 +795,7 @@ fn incremental_commit_inserts_appended_child_preserves_sibling_keys() {
     // Parent with one child vs parent with two children, sharing child_a
     // as the stable first child (identity-matched by the reconciler).
     let parent_with_one = host_el().with_child(child_a.clone());
-    let parent_with_two = host_el()
-        .with_child(child_a.clone())
-        .with_child(host_el());
+    let parent_with_two = host_el().with_child(child_a.clone()).with_child(host_el());
 
     let mut viewport = Viewport::new();
     viewport.set_use_incremental_commit(true);
@@ -667,8 +859,8 @@ fn incremental_commit_inserts_appended_child_preserves_sibling_keys() {
 /// child's `font_size` matches the cold-path cascade.
 #[test]
 fn incremental_commit_applies_text_cascading_style_change_recascades_descendants() {
-    use crate::view::base_component::Text as TextHost;
     use crate::view::Text as HostText;
+    use crate::view::base_component::Text as TextHost;
 
     let parent_20 = rsx! {
         <HostElement style={{
@@ -694,10 +886,7 @@ fn incremental_commit_applies_text_cascading_style_change_recascades_descendants
 
     viewport.render_rsx(&parent_20).expect("cold render");
     let original_parent_key = viewport.scene.ui_root_keys[0];
-    let original_text_key = viewport
-        .scene
-        .node_arena
-        .children_of(original_parent_key)[0];
+    let original_text_key = viewport.scene.node_arena.children_of(original_parent_key)[0];
 
     viewport
         .render_rsx(&parent_30)
@@ -728,8 +917,8 @@ fn incremental_commit_applies_text_cascading_style_change_recascades_descendants
 /// when the ancestor's cascading font_size changes.
 #[test]
 fn incremental_commit_recascade_preserves_explicit_text_font_size() {
-    use crate::view::base_component::Text as TextHost;
     use crate::view::Text as HostText;
+    use crate::view::base_component::Text as TextHost;
 
     let parent_20_explicit_14 = rsx! {
         <HostElement style={{
@@ -830,8 +1019,8 @@ fn incremental_commit_applies_text_cascading_style_change_on_leaf() {
 /// would have resolved to the default 16.0.
 #[test]
 fn incremental_commit_insert_child_inherits_parent_font_size_from_cascade() {
-    use crate::view::base_component::Text as TextHost;
     use crate::view::Text as HostText;
+    use crate::view::base_component::Text as TextHost;
 
     // Parent Element authors a font-cascading style. Children inherit
     // font_size 22 through the cascade.
@@ -993,8 +1182,8 @@ fn incremental_commit_applies_padding_change_via_setter() {
 fn incremental_commit_applies_image_fit_and_source_swap() {
     use crate::view::base_component::Image;
     use crate::view::fiber_work::{apply_fiber_works, patch_to_fiber_work};
-    use crate::view::{ImageFit, ImageSource};
     use crate::view::test_support::{commit_element, new_test_arena};
+    use crate::view::{ImageFit, ImageSource};
 
     fn rgba(width: u32, height: u32, byte: u8) -> ImageSource {
         ImageSource::Rgba {
@@ -1033,7 +1222,10 @@ fn incremental_commit_applies_image_fit_and_source_swap() {
         .expect("source patch must translate");
     assert!(work.is_committable(&arena));
     apply_fiber_works(&mut arena, test_apply_ctx(), vec![work]);
-    assert!(arena.get(key).is_some(), "Image slot must survive source swap");
+    assert!(
+        arena.get(key).is_some(),
+        "Image slot must survive source swap"
+    );
 }
 
 use crate::ui::IntoPropValue;
@@ -1043,9 +1235,7 @@ use crate::ui::IntoPropValue;
 /// `arena_insert_child` calls. Parent NodeKey survives.
 #[test]
 fn incremental_commit_applies_fragment_insert_child_creates_many() {
-    use crate::view::fiber_work::{
-        DescriptorContext, apply_fiber_works, patch_to_fiber_work,
-    };
+    use crate::view::fiber_work::{DescriptorContext, apply_fiber_works, patch_to_fiber_work};
 
     // Seed: empty parent. NEW rsx mirror has the same parent +
     // a Fragment child (which itself holds N children) at index 0.
@@ -1097,11 +1287,11 @@ fn incremental_commit_applies_fragment_insert_child_creates_many() {
 /// the arena) instead of falling back to the full-rebuild pipeline.
 #[test]
 fn incremental_commit_resolves_em_font_size_via_inherited_cascade() {
-    use crate::ui::{IntoPropValue, Patch, PropValue};
-    use crate::view::fiber_work::{apply_fiber_works, patch_to_fiber_work};
-    use crate::view::base_component::Text as TextHost;
-    use crate::view::Text as HostText;
     use crate::FontSize;
+    use crate::ui::{IntoPropValue, Patch, PropValue};
+    use crate::view::Text as HostText;
+    use crate::view::base_component::Text as TextHost;
+    use crate::view::fiber_work::{apply_fiber_works, patch_to_fiber_work};
 
     // Parent Element has font_size=20 in its style; Text child
     // initially has font_size 14 explicit.
@@ -1165,9 +1355,7 @@ fn incremental_commit_resolves_em_font_size_via_inherited_cascade() {
 /// subtree is removed and N new keys land in its place.
 #[test]
 fn incremental_commit_replace_node_with_fragment_expands_to_n_descriptors() {
-    use crate::view::fiber_work::{
-        DescriptorContext, apply_fiber_works, patch_to_fiber_work,
-    };
+    use crate::view::fiber_work::{DescriptorContext, apply_fiber_works, patch_to_fiber_work};
 
     // Seed: parent with two children, snapshot keys.
     let seed = host_el().with_child(host_el()).with_child(host_el());
@@ -1263,10 +1451,10 @@ fn incremental_commit_path_drift_identity_check_rejects_misaligned_walk() {
 /// new slot subtree is committed under the Svg's arena key.
 #[test]
 fn incremental_commit_applies_svg_loading_slot_swap() {
+    use crate::view::SvgSource;
     use crate::view::base_component::Svg;
     use crate::view::fiber_work::{apply_fiber_works, patch_to_fiber_work};
     use crate::view::test_support::{commit_element, new_test_arena};
-    use crate::view::SvgSource;
 
     let source = SvgSource::Content(
         r##"<svg width="40" height="40"><rect width="40" height="40"/></svg>"##.to_string(),
@@ -1413,7 +1601,9 @@ fn incremental_commit_element_root_to_fragment_root_swaps_via_replace_all_roots(
     let mut viewport = Viewport::new();
     viewport.set_use_incremental_commit(true);
 
-    viewport.render_rsx(&first).expect("cold render (single root)");
+    viewport
+        .render_rsx(&first)
+        .expect("cold render (single root)");
     assert_eq!(viewport.scene.ui_root_keys.len(), 1);
 
     viewport
@@ -1429,7 +1619,7 @@ fn incremental_commit_element_root_to_fragment_root_swaps_via_replace_all_roots(
 
 #[test]
 fn rsx_to_arena_path_flattens_mid_tree_fragment() {
-    use crate::view::fiber_work::{rsx_to_arena_path, ArenaPathResolution};
+    use crate::view::fiber_work::{ArenaPathResolution, rsx_to_arena_path};
 
     // Element { children: [A, Fragment([B]), C] }
     // B lives at rsx path [1, 0]; arena flattens Fragment, so B's
@@ -1449,7 +1639,7 @@ fn rsx_to_arena_path_flattens_mid_tree_fragment() {
 
 #[test]
 fn rsx_to_arena_path_handles_nested_fragments() {
-    use crate::view::fiber_work::{rsx_to_arena_path, ArenaPathResolution};
+    use crate::view::fiber_work::{ArenaPathResolution, rsx_to_arena_path};
 
     // Element { children: [A, Fragment([Fragment([B]), C]), D] }
     let root = host_el()
@@ -1461,7 +1651,9 @@ fn rsx_to_arena_path_handles_nested_fragments() {
         .with_child(host_el());
 
     assert!(matches!(rsx_to_arena_path(&root, &[0]), ArenaPathResolution::Arena(p) if p == [0]));
-    assert!(matches!(rsx_to_arena_path(&root, &[1, 0, 0]), ArenaPathResolution::Arena(p) if p == [1]));
+    assert!(
+        matches!(rsx_to_arena_path(&root, &[1, 0, 0]), ArenaPathResolution::Arena(p) if p == [1])
+    );
     assert!(matches!(rsx_to_arena_path(&root, &[1, 1]), ArenaPathResolution::Arena(p) if p == [2]));
     assert!(matches!(rsx_to_arena_path(&root, &[2]), ArenaPathResolution::Arena(p) if p == [3]));
 }
@@ -1475,8 +1667,8 @@ fn rsx_to_arena_path_handles_nested_fragments() {
 /// `apply_update_to_text`.
 #[test]
 fn incremental_commit_text_style_color_change_preserves_node_key() {
-    use crate::view::Text as HostText;
     use crate::Color;
+    use crate::view::Text as HostText;
 
     let first = rsx! {
         <HostElement>
@@ -1519,8 +1711,8 @@ fn incremental_commit_text_style_drops_font_size_keeps_prior_explicit_value() {
     // alone therefore does not refill from the ancestor cascade;
     // it keeps whatever the prior explicit value was. Cold-path
     // rebuild is still responsible for wholesale defaults.
-    use crate::view::base_component::Text as TextHost;
     use crate::view::Text as HostText;
+    use crate::view::base_component::Text as TextHost;
 
     let first = rsx! {
         <HostElement style={{
@@ -1601,7 +1793,10 @@ fn incremental_commit_text_style_prop_removed_preserves_node_key() {
         .expect("Text.style prop removal must commit incrementally");
 
     assert_eq!(viewport.scene.ui_root_keys, vec![parent_key]);
-    assert_eq!(viewport.scene.node_arena.children_of(parent_key), vec![text_key]);
+    assert_eq!(
+        viewport.scene.node_arena.children_of(parent_key),
+        vec![text_key]
+    );
 }
 
 /// Fragment-root SetText on a deep descendant under root[1] must route

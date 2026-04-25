@@ -1,15 +1,14 @@
-use rustc_hash::FxHashSet;
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    PrepareContext,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
     render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
+use rustc_hash::FxHashSet;
 use std::num::NonZeroU64;
 use wgpu::util::DeviceExt;
 
@@ -766,7 +765,11 @@ fn rect_resource_cache_key(
     let fill_id = if shape.has_fill { 1_u64 } else { 0_u64 };
     let round_id = if shape.rounded { 1_u64 } else { 0_u64 };
     let gradient_id = if shape.has_gradient { 1_u64 } else { 0_u64 };
-    let border_gradient_id = if shape.has_border_gradient { 1_u64 } else { 0_u64 };
+    let border_gradient_id = if shape.has_border_gradient {
+        1_u64
+    } else {
+        0_u64
+    };
     RECT_RESOURCES_BASE
         + variant_id * 1_000_000
         + border_gradient_id * 400_000
@@ -812,21 +815,19 @@ impl RectShaderShape {
             RectBorderKind::None
         } else {
             let c0 = effective_sides[0];
-            let uniform = effective_sides
-                .iter()
-                .all(|c| (c[0] - c0[0]).abs() < 1e-6
+            let uniform = effective_sides.iter().all(|c| {
+                (c[0] - c0[0]).abs() < 1e-6
                     && (c[1] - c0[1]).abs() < 1e-6
                     && (c[2] - c0[2]).abs() < 1e-6
-                    && (c[3] - c0[3]).abs() < 1e-6);
+                    && (c[3] - c0[3]).abs() < 1e-6
+            });
             if uniform {
                 RectBorderKind::Uniform
             } else {
                 RectBorderKind::PerSide
             }
         };
-        let rounded = border_radii
-            .iter()
-            .any(|r| r[0] > 0.0 || r[1] > 0.0);
+        let rounded = border_radii.iter().any(|r| r[0] > 0.0 || r[1] > 0.0);
         let has_fill = fill_color[3] > 0.0 || has_gradient;
         // Narrow per render_mode so unused axes don't bloat pipeline cache.
         match render_mode {
@@ -1678,11 +1679,7 @@ fn upload_gradient_paint_stops(
     viewport.upload_gradient_stops(&scratch)
 }
 
-fn scaled_gradient_axis(
-    paint: &GradientPaint,
-    scale: f32,
-    origin: [f32; 2],
-) -> [f32; 4] {
+fn scaled_gradient_axis(paint: &GradientPaint, scale: f32, origin: [f32; 2]) -> [f32; 4] {
     let a = paint.axis;
     match paint.kind {
         GradientKindGpu::Linear => [

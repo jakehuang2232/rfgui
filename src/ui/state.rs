@@ -101,9 +101,22 @@ impl<T: Clone + PartialEq + 'static> Binding<T> {
     }
 
     pub fn set(&self, value: T) {
-        let mut current = self.cell().borrow_mut();
-        if *current != value {
-            *current = value;
+        // Drop the borrow before notifying: notify_state_changed fires the
+        // redraw callback synchronously, which re-enters render and may
+        // call .get() on the same cell. Holding borrow_mut across notify
+        // turns that re-entry into a "RefCell already mutably borrowed"
+        // panic — common when an event handler writes one binding that
+        // another binding's render scope reads in the same dispatch.
+        let changed = {
+            let mut current = self.cell().borrow_mut();
+            if *current != value {
+                *current = value;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
             notify_state_changed(
                 self.dirty_state(),
                 self.prop_payload.owner_component.clone(),
@@ -112,10 +125,13 @@ impl<T: Clone + PartialEq + 'static> Binding<T> {
     }
 
     pub fn update(&self, updater: impl FnOnce(&mut T)) {
-        let mut current = self.cell().borrow_mut();
-        let previous = current.clone();
-        updater(&mut current);
-        if *current != previous {
+        let changed = {
+            let mut current = self.cell().borrow_mut();
+            let previous = current.clone();
+            updater(&mut current);
+            *current != previous
+        };
+        if changed {
             notify_state_changed(
                 self.dirty_state(),
                 self.prop_payload.owner_component.clone(),
@@ -147,9 +163,18 @@ impl<T: Clone + PartialEq + 'static> State<T> {
     }
 
     pub fn set(&self, value: T) {
-        let mut current = self.payload.cell.borrow_mut();
-        if *current != value {
-            *current = value;
+        // See `Binding::set` — release borrow before notify so re-entrant
+        // render reads of this same cell do not panic.
+        let changed = {
+            let mut current = self.payload.cell.borrow_mut();
+            if *current != value {
+                *current = value;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
             notify_state_changed(
                 self.payload.dirty_state,
                 self.payload.owner_component.clone(),
@@ -158,10 +183,13 @@ impl<T: Clone + PartialEq + 'static> State<T> {
     }
 
     pub fn update(&self, updater: impl FnOnce(&mut T)) {
-        let mut current = self.payload.cell.borrow_mut();
-        let previous = current.clone();
-        updater(&mut current);
-        if *current != previous {
+        let changed = {
+            let mut current = self.payload.cell.borrow_mut();
+            let previous = current.clone();
+            updater(&mut current);
+            *current != previous
+        };
+        if changed {
             notify_state_changed(
                 self.payload.dirty_state,
                 self.payload.owner_component.clone(),
@@ -416,9 +444,18 @@ impl<T: Clone + PartialEq + 'static> GlobalState<T> {
     }
 
     pub fn set(&self, value: T) {
-        let mut current = self.payload.cell.borrow_mut();
-        if *current != value {
-            *current = value;
+        // See `Binding::set` — release borrow before notify so re-entrant
+        // render reads of this same cell do not panic.
+        let changed = {
+            let mut current = self.payload.cell.borrow_mut();
+            if *current != value {
+                *current = value;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
             notify_state_changed(
                 self.payload.dirty_state,
                 self.payload.owner_component.clone(),
@@ -427,10 +464,13 @@ impl<T: Clone + PartialEq + 'static> GlobalState<T> {
     }
 
     pub fn update(&self, updater: impl FnOnce(&mut T)) {
-        let mut current = self.payload.cell.borrow_mut();
-        let previous = current.clone();
-        updater(&mut current);
-        if *current != previous {
+        let changed = {
+            let mut current = self.payload.cell.borrow_mut();
+            let previous = current.clone();
+            updater(&mut current);
+            *current != previous
+        };
+        if changed {
             notify_state_changed(
                 self.payload.dirty_state,
                 self.payload.owner_component.clone(),
@@ -1107,9 +1147,8 @@ pub fn use_global_state<T: Clone + PartialEq + 'static>() -> GlobalState<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        UiDirtyState, build_scope, next_timer_deadline, render_memoized_component,
-        run_due_timers, take_state_dirty, use_interval, use_mount, use_state, use_timeout,
-        with_component_key,
+        UiDirtyState, build_scope, next_timer_deadline, render_memoized_component, run_due_timers,
+        take_state_dirty, use_interval, use_mount, use_state, use_timeout, with_component_key,
     };
     use crate::time::{Duration, Instant};
     use crate::ui::{GlobalKey, RsxKey, RsxNode};

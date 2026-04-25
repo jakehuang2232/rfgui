@@ -1,7 +1,7 @@
 use crate::{Button, use_theme};
 use rfgui::ui::{
-    Binding, BlurHandlerProp, ClickHandlerProp, RsxComponent, RsxNode,
-    TextChangeHandlerProp, props, rsx, use_state,
+    Binding, BlurHandlerProp, ClickHandlerProp, RsxComponent, RsxNode, TextChangeHandlerProp,
+    props, rsx, use_state,
 };
 use rfgui::view::{Element, TextArea};
 use rfgui::{Align, Layout, Length, Padding, TextWrap, flex};

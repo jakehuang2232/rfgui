@@ -119,7 +119,9 @@ impl Viewport {
     // (Fragment-at-root, multi-descriptor Replace, Text cascade
     // boundary, em/rem font_size) accept the documented state loss.
 
-    pub(super) fn extract_style_prop(props: &[(&'static str, PropValue)]) -> Result<Option<Style>, String> {
+    pub(super) fn extract_style_prop(
+        props: &[(&'static str, PropValue)],
+    ) -> Result<Option<Style>, String> {
         let Some((_, value)) = props.iter().find(|(key, _)| *key == "style") else {
             return Ok(None);
         };
@@ -130,7 +132,9 @@ impl Viewport {
         Self::extract_style_from_value_owned(value.clone())
     }
 
-    pub(super) fn extract_style_from_value_owned(value: PropValue) -> Result<Option<Style>, String> {
+    pub(super) fn extract_style_from_value_owned(
+        value: PropValue,
+    ) -> Result<Option<Style>, String> {
         let schema = ElementStylePropSchema::from_prop_value(value)
             .map_err(|_| "prop `style` expects ElementStylePropSchema value".to_string())?;
         Ok(Some(schema.to_style()))
@@ -168,15 +172,19 @@ impl Viewport {
             return Ok(false);
         };
         let new_style = new_style.unwrap_or_default();
-        if old_style.clone().without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
-            != new_style.clone().without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
+        if old_style
+            .clone()
+            .without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
+            != new_style
+                .clone()
+                .without_properties_recursive(&Self::PLACEMENT_SAFE_PROPERTIES)
         {
             return Ok(false);
         }
         // At least one placement-safe property must have actually changed.
-        let any_changed = Self::PLACEMENT_SAFE_PROPERTIES.iter().any(|id| {
-            old_style.get(*id) != new_style.get(*id)
-        });
+        let any_changed = Self::PLACEMENT_SAFE_PROPERTIES
+            .iter()
+            .any(|id| old_style.get(*id) != new_style.get(*id));
         if !any_changed {
             return Ok(false);
         }
@@ -190,8 +198,12 @@ impl Viewport {
         style: &Style,
     ) -> bool {
         for &root_key in root_keys {
-            let Some(mut root_node) = arena.get_mut(root_key) else { continue };
-            if let Some(element) = Self::element_by_id_mut(root_node.element.as_mut(), node_id, arena) {
+            let Some(mut root_node) = arena.get_mut(root_key) else {
+                continue;
+            };
+            if let Some(element) =
+                Self::element_by_id_mut(root_node.element.as_mut(), node_id, arena)
+            {
                 let mut patch_style = Style::new();
                 if let Some(crate::ParsedValue::Transform(transform)) =
                     style.get(PropertyId::Transform)
@@ -230,7 +242,12 @@ impl Viewport {
 
         let mut updates = Vec::new();
         for patch in &patches {
-            let Patch::UpdateElementProps { path, changed, removed } = patch else {
+            let Patch::UpdateElementProps {
+                path,
+                changed,
+                removed,
+            } = patch
+            else {
                 return Ok(false);
             };
             let old_node = Self::rsx_node_by_index_path(previous_root, path)
@@ -246,8 +263,9 @@ impl Viewport {
                 return Ok(false);
             };
             let style = style.unwrap_or_default();
-            let node_id = crate::view::renderer_adapter::rendered_node_id_by_index_path(root, path)?
-                .ok_or_else(|| "target redraw patch resolved to a fragment".to_string())?;
+            let node_id =
+                crate::view::renderer_adapter::rendered_node_id_by_index_path(root, path)?
+                    .ok_or_else(|| "target redraw patch resolved to a fragment".to_string())?;
             updates.push((node_id, style));
         }
 
@@ -265,7 +283,10 @@ impl Viewport {
         Ok(true)
     }
 
-    pub(super) fn rsx_node_by_index_path<'a>(node: &'a RsxNode, path: &[usize]) -> Option<&'a RsxNode> {
+    pub(super) fn rsx_node_by_index_path<'a>(
+        node: &'a RsxNode,
+        path: &[usize],
+    ) -> Option<&'a RsxNode> {
         if path.is_empty() {
             return Some(node);
         }
@@ -296,8 +317,7 @@ impl Viewport {
         let arena = &self.scene.node_arena;
         let root_keys = self.scene.ui_root_keys.clone();
         for &root_key in &root_keys {
-            let snapshots =
-                crate::view::base_component::collect_box_models(root_key, arena);
+            let snapshots = crate::view::base_component::collect_box_models(root_key, arena);
             self.compositor.frame_box_models.extend(snapshots);
         }
         for &root_key in &root_keys {

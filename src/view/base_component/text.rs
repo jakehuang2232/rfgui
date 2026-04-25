@@ -2,6 +2,7 @@ use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use crate::time::Instant;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::TextPass;
@@ -13,7 +14,6 @@ use cosmic_text::{Align, Buffer as GlyphBuffer, Hinting, ShapeLine, Wrap};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::time::Instant;
 
 use super::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, InlineMeasureContext,
@@ -151,7 +151,6 @@ struct LruCache<K: Eq + std::hash::Hash + Clone, V> {
 const LRU_CACHE_MAX_ENTRIES: usize = 4096;
 
 impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
-
     fn new() -> Self {
         Self {
             map: FxHashMap::default(),
@@ -192,7 +191,6 @@ impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
         let cutoff = gens.get(evict_count).copied().unwrap_or(0);
         self.map.retain(|_, (_, g)| *g > cutoff);
     }
-
 }
 
 thread_local! {
@@ -867,6 +865,10 @@ impl Text {
         }
     }
 
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
         self.color = Box::new(color);
         self.color_explicit = true;
@@ -1054,9 +1056,7 @@ impl Text {
             }
             if let Some(font_size) = crate::view::renderer_adapter::resolve_font_size_from_style(
                 style,
-                inherited
-                    .font_size
-                    .unwrap_or(inherited.root_font_size),
+                inherited.font_size.unwrap_or(inherited.root_font_size),
                 inherited.root_font_size,
                 inherited.viewport_width,
                 inherited.viewport_height,
@@ -1101,33 +1101,39 @@ impl Text {
         inherited: &crate::view::renderer_adapter::InheritedTextStyle,
     ) -> bool {
         let mut changed = false;
-        if !self.font_family_explicit && !inherited.font_families.is_empty()
+        if !self.font_family_explicit
+            && !inherited.font_families.is_empty()
             && self.font_families != inherited.font_families
         {
             self.font_families = inherited.font_families.clone();
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.font_size_explicit && let Some(fs) = inherited.font_size
+        if !self.font_size_explicit
+            && let Some(fs) = inherited.font_size
             && (self.font_size - fs).abs() > f32::EPSILON
         {
             self.font_size = fs;
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.font_weight_explicit && let Some(fw) = inherited.font_weight
+        if !self.font_weight_explicit
+            && let Some(fw) = inherited.font_weight
             && self.font_weight != fw
         {
             self.font_weight = fw;
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.color_explicit && let Some(color) = &inherited.color {
+        if !self.color_explicit
+            && let Some(color) = &inherited.color
+        {
             self.color = Box::new(color.clone());
             self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
             changed = true;
         }
-        if !self.text_wrap_explicit && let Some(tw) = inherited.text_wrap
+        if !self.text_wrap_explicit
+            && let Some(tw) = inherited.text_wrap
             && self.text_wrap != tw
         {
             self.text_wrap = tw;
@@ -1135,7 +1141,9 @@ impl Text {
             self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
             changed = true;
         }
-        if !self.cursor_explicit && let Some(cursor) = inherited.cursor {
+        if !self.cursor_explicit
+            && let Some(cursor) = inherited.cursor
+        {
             let mut style = Style::new();
             style.set_cursor(cursor);
             self.element.apply_style(style);
@@ -1180,7 +1188,8 @@ fn measure_text_layout(
         align,
         font_families,
     );
-    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow_mut().get_cloned(&cache_key)) {
+    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow_mut().get_cloned(&cache_key))
+    {
         if let Some(started_at) = started_at {
             let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
             record_text_measure_profile(|profile| {
@@ -1476,8 +1485,16 @@ impl Layoutable for Text {
         let (measured_w, measured_h) = self.measured_size();
         let base = self.element.flex_props();
         crate::view::base_component::FlexProps {
-            width: if self.auto_width { crate::SizeValue::Auto } else { base.width },
-            height: if self.auto_height { crate::SizeValue::Auto } else { base.height },
+            width: if self.auto_width {
+                crate::SizeValue::Auto
+            } else {
+                base.width
+            },
+            height: if self.auto_height {
+                crate::SizeValue::Auto
+            } else {
+                base.height
+            },
             allows_cross_stretch_when_row: self.auto_height,
             allows_cross_stretch_when_col: self.auto_width,
             intrinsic_width: Some(measured_w),
@@ -1902,26 +1919,32 @@ mod tests {
         let mut a = arena();
         let mut text = Text::new(0.0, 0.0, 10_000.0, 10_000.0, "demo");
         text.set_position(8.0, 4.0);
-        text.measure(LayoutConstraints {
-            max_width: 240.0,
-            max_height: 140.0,
-            viewport_width: 240.0,
-            percent_base_width: Some(240.0),
-            percent_base_height: Some(140.0),
-            viewport_height: 140.0,
-        }, &mut a);
-        text.place(LayoutPlacement {
-            parent_x: 40.0,
-            parent_y: 40.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 240.0,
-            available_height: 140.0,
-            viewport_width: 240.0,
-            percent_base_width: Some(240.0),
-            percent_base_height: Some(140.0),
-            viewport_height: 140.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 240.0,
+                max_height: 140.0,
+                viewport_width: 240.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(140.0),
+                viewport_height: 140.0,
+            },
+            &mut a,
+        );
+        text.place(
+            LayoutPlacement {
+                parent_x: 40.0,
+                parent_y: 40.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 240.0,
+                available_height: 140.0,
+                viewport_width: 240.0,
+                percent_base_width: Some(240.0),
+                percent_base_height: Some(140.0),
+                viewport_height: 140.0,
+            },
+            &mut a,
+        );
 
         let snapshot = text.box_model_snapshot();
         assert_eq!(snapshot.x, 48.0);
@@ -1936,26 +1959,32 @@ mod tests {
         let mut text = Text::from_content("123456789012345678901234567890");
         text.set_width(60.0);
         text.set_auto_height(true);
-        text.measure(LayoutConstraints {
-            max_width: 60.0,
-            max_height: 200.0,
-            viewport_width: 60.0,
-            percent_base_width: Some(60.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
-        text.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 60.0,
-            available_height: 200.0,
-            viewport_width: 60.0,
-            percent_base_width: Some(60.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 60.0,
+                max_height: 200.0,
+                viewport_width: 60.0,
+                percent_base_width: Some(60.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
+        text.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 60.0,
+                available_height: 200.0,
+                viewport_width: 60.0,
+                percent_base_width: Some(60.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         let snapshot = text.box_model_snapshot();
         assert_eq!(snapshot.width, 60.0);
@@ -1969,26 +1998,32 @@ mod tests {
         text.set_width(60.0);
         text.set_auto_height(true);
         text.set_text_wrap(TextWrap::NoWrap);
-        text.measure(LayoutConstraints {
-            max_width: 60.0,
-            max_height: 200.0,
-            viewport_width: 60.0,
-            percent_base_width: Some(60.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
-        text.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 60.0,
-            available_height: 200.0,
-            viewport_width: 60.0,
-            percent_base_width: Some(60.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 60.0,
+                max_height: 200.0,
+                viewport_width: 60.0,
+                percent_base_width: Some(60.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
+        text.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 60.0,
+                available_height: 200.0,
+                viewport_width: 60.0,
+                percent_base_width: Some(60.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         let snapshot = text.box_model_snapshot();
         assert_eq!(snapshot.width, 60.0);
@@ -2010,39 +2045,48 @@ mod tests {
             style
         });
 
-        text.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 40.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 40.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut a,
+        );
         assert_eq!(text.measured_size().0, 10.0);
 
         text.set_layout_width(80.0);
-        text.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 200.0,
-            available_height: 40.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut a);
+        text.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 40.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut a,
+        );
         assert_eq!(text.box_model_snapshot().width, 80.0);
 
-        text.measure(LayoutConstraints {
-            max_width: 200.0,
-            max_height: 40.0,
-            viewport_width: 200.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(40.0),
-            viewport_height: 40.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 40.0,
+                viewport_width: 200.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 40.0,
+            },
+            &mut a,
+        );
         assert_eq!(text.measured_size().0, 10.0);
     }
 
@@ -2050,26 +2094,32 @@ mod tests {
     fn auto_width_for_cjk_text_is_not_underestimated() {
         let mut a = arena();
         let mut text = Text::from_content("This is a Chinese text segment");
-        text.measure(LayoutConstraints {
-            max_width: 300.0,
-            max_height: 200.0,
-            viewport_width: 300.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
-        text.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 300.0,
-            available_height: 200.0,
-            viewport_width: 300.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 300.0,
+                max_height: 200.0,
+                viewport_width: 300.0,
+                percent_base_width: Some(300.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
+        text.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 300.0,
+                available_height: 200.0,
+                viewport_width: 300.0,
+                percent_base_width: Some(300.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
         let snapshot = text.box_model_snapshot();
         assert!(snapshot.width >= 80.0);
     }
@@ -2078,48 +2128,60 @@ mod tests {
     fn auto_width_with_space_includes_following_word() {
         let mut a = arena();
         let mut single = Text::from_content("Click");
-        single.measure(LayoutConstraints {
-            max_width: 400.0,
-            max_height: 200.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
-        single.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 400.0,
-            available_height: 200.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        single.measure(
+            LayoutConstraints {
+                max_width: 400.0,
+                max_height: 200.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
+        single.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 400.0,
+                available_height: 200.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         let mut spaced = Text::from_content("Click Me");
-        spaced.measure(LayoutConstraints {
-            max_width: 400.0,
-            max_height: 200.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
-        spaced.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 400.0,
-            available_height: 200.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(400.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        spaced.measure(
+            LayoutConstraints {
+                max_width: 400.0,
+                max_height: 200.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
+        spaced.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 400.0,
+                available_height: 200.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(400.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         let a = single.box_model_snapshot().width;
         let b = spaced.box_model_snapshot().width;
@@ -2135,26 +2197,32 @@ mod tests {
         let mut text = Text::from_content("Click Me Click Me");
         text.set_auto_width(true);
         text.set_auto_height(true);
-        text.measure(LayoutConstraints {
-            max_width: 60.0,
-            max_height: 200.0,
-            viewport_width: 60.0,
-            percent_base_width: None,
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
-        text.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 400.0,
-            available_height: 200.0,
-            viewport_width: 400.0,
-            percent_base_width: None,
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 60.0,
+                max_height: 200.0,
+                viewport_width: 60.0,
+                percent_base_width: None,
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
+        text.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 400.0,
+                available_height: 200.0,
+                viewport_width: 400.0,
+                percent_base_width: None,
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         let snapshot = text.box_model_snapshot();
         assert!(snapshot.width > 60.0);
@@ -2169,48 +2237,60 @@ mod tests {
         text.set_auto_width(true);
         text.set_auto_height(true);
 
-        text.measure(LayoutConstraints {
-            max_width: 220.0,
-            max_height: 300.0,
-            viewport_width: 220.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        }, &mut a);
-        text.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 220.0,
-            available_height: 300.0,
-            viewport_width: 220.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 300.0,
+                viewport_width: 220.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            &mut a,
+        );
+        text.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 300.0,
+                viewport_width: 220.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            &mut a,
+        );
         let h_wide = text.box_model_snapshot().height;
 
-        text.measure(LayoutConstraints {
-            max_width: 90.0,
-            max_height: 300.0,
-            viewport_width: 90.0,
-            percent_base_width: Some(90.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        }, &mut a);
-        text.place(LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 90.0,
-            available_height: 300.0,
-            viewport_width: 90.0,
-            percent_base_width: Some(90.0),
-            percent_base_height: Some(300.0),
-            viewport_height: 300.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 90.0,
+                max_height: 300.0,
+                viewport_width: 90.0,
+                percent_base_width: Some(90.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            &mut a,
+        );
+        text.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 90.0,
+                available_height: 300.0,
+                viewport_width: 90.0,
+                percent_base_width: Some(90.0),
+                percent_base_height: Some(300.0),
+                viewport_height: 300.0,
+            },
+            &mut a,
+        );
         let h_narrow = text.box_model_snapshot().height;
 
         assert!(
@@ -2223,14 +2303,17 @@ mod tests {
     fn inline_measure_clears_layout_dirty() {
         let mut a = arena();
         let mut text = Text::from_content("inline text");
-        text.measure_inline(InlineMeasureContext {
-            first_available_width: 200.0,
-            full_available_width: 200.0,
-            viewport_width: 200.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(200.0),
-            percent_base_height: Some(120.0),
-        }, &mut a);
+        text.measure_inline(
+            InlineMeasureContext {
+                first_available_width: 200.0,
+                full_available_width: 200.0,
+                viewport_width: 200.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(120.0),
+            },
+            &mut a,
+        );
 
         assert!(!text.local_dirty_flags().intersects(DirtyFlags::LAYOUT));
     }
@@ -2239,14 +2322,17 @@ mod tests {
     fn auto_measured_text_size_preserves_fractional_precision() {
         let mut a = arena();
         let mut text = Text::from_content("rounded measurement");
-        text.measure(LayoutConstraints {
-            max_width: 300.0,
-            max_height: 200.0,
-            viewport_width: 300.0,
-            percent_base_width: Some(300.0),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: 300.0,
+                max_height: 200.0,
+                viewport_width: 300.0,
+                percent_base_width: Some(300.0),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         let (width, height) = text.measured_size();
         assert!(width.fract() > 0.0 || height.fract() > 0.0);
@@ -2261,14 +2347,17 @@ mod tests {
         assert!(precise_width.fract() > 0.0);
 
         let mut text = Text::from_content(content);
-        text.measure(LayoutConstraints {
-            max_width: precise_width.ceil(),
-            max_height: 200.0,
-            viewport_width: precise_width.ceil(),
-            percent_base_width: Some(precise_width.ceil()),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: precise_width.ceil(),
+                max_height: 200.0,
+                viewport_width: precise_width.ceil(),
+                percent_base_width: Some(precise_width.ceil()),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         let (measured_width, measured_height) = text.measured_size();
         assert!(
@@ -2288,14 +2377,17 @@ mod tests {
         let (precise_width, _) =
             measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
         let mut text = Text::from_content(content);
-        text.measure_inline(InlineMeasureContext {
-            first_available_width: precise_width,
-            full_available_width: precise_width,
-            viewport_width: 400.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(precise_width),
-            percent_base_height: Some(200.0),
-        }, &mut a);
+        text.measure_inline(
+            InlineMeasureContext {
+                first_available_width: precise_width,
+                full_available_width: precise_width,
+                viewport_width: 400.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(precise_width),
+                percent_base_height: Some(200.0),
+            },
+            &mut a,
+        );
 
         let nodes = text.get_inline_nodes_size(&a);
         assert_eq!(
@@ -2311,14 +2403,17 @@ mod tests {
         let content = "alpha beta gamma delta";
         let available_width = 64.0;
         let mut text = Text::from_content(content);
-        text.measure_inline(InlineMeasureContext {
-            first_available_width: available_width,
-            full_available_width: available_width,
-            viewport_width: 400.0,
-            viewport_height: 200.0,
-            percent_base_width: Some(available_width),
-            percent_base_height: Some(200.0),
-        }, &mut a);
+        text.measure_inline(
+            InlineMeasureContext {
+                first_available_width: available_width,
+                full_available_width: available_width,
+                viewport_width: 400.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(available_width),
+                percent_base_height: Some(200.0),
+            },
+            &mut a,
+        );
 
         let nodes = text.get_inline_nodes_size(&a);
         assert!(
@@ -2337,14 +2432,17 @@ mod tests {
         let mut a = arena();
         let content = "alpha beta gamma";
         let mut text = Text::from_content(content);
-        text.measure_inline(InlineMeasureContext {
-            first_available_width: 48.0,
-            full_available_width: 160.0,
-            viewport_width: 200.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(120.0),
-        }, &mut a);
+        text.measure_inline(
+            InlineMeasureContext {
+                first_available_width: 48.0,
+                full_available_width: 160.0,
+                viewport_width: 200.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(120.0),
+            },
+            &mut a,
+        );
 
         let nodes = text.get_inline_nodes_size(&a);
         assert!(
@@ -2361,14 +2459,17 @@ mod tests {
         let (precise_width, precise_height) =
             measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
         let mut text = Text::from_content(content);
-        text.measure(LayoutConstraints {
-            max_width: precise_width.ceil(),
-            max_height: 200.0,
-            viewport_width: 400.0,
-            percent_base_width: Some(precise_width.ceil()),
-            percent_base_height: Some(200.0),
-            viewport_height: 200.0,
-        }, &mut a);
+        text.measure(
+            LayoutConstraints {
+                max_width: precise_width.ceil(),
+                max_height: 200.0,
+                viewport_width: 400.0,
+                percent_base_width: Some(precise_width.ceil()),
+                percent_base_height: Some(200.0),
+                viewport_height: 200.0,
+            },
+            &mut a,
+        );
 
         assert!((text.measured_size().1 - precise_height).abs() < 0.01);
     }
@@ -2377,18 +2478,21 @@ mod tests {
     fn placed_text_box_preserves_fractional_layout_coordinates() {
         let mut a = arena();
         let mut text = Text::new(1.4, 2.6, 10.4, 20.6, "demo");
-        text.place(LayoutPlacement {
-            parent_x: 3.2,
-            parent_y: 4.7,
-            visual_offset_x: 0.3,
-            visual_offset_y: -0.2,
-            available_width: 100.0,
-            available_height: 100.0,
-            viewport_width: 100.0,
-            percent_base_width: Some(100.0),
-            percent_base_height: Some(100.0),
-            viewport_height: 100.0,
-        }, &mut a);
+        text.place(
+            LayoutPlacement {
+                parent_x: 3.2,
+                parent_y: 4.7,
+                visual_offset_x: 0.3,
+                visual_offset_y: -0.2,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+                viewport_height: 100.0,
+            },
+            &mut a,
+        );
 
         let snapshot = text.box_model_snapshot();
         assert!((snapshot.x - 4.9).abs() < 0.01);

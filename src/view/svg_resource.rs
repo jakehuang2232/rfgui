@@ -1,8 +1,8 @@
-use rustc_hash::FxHashMap;
 use crate::view::SvgSource;
 use crate::view::image_resource::{ImageAssetRetentionInfo, ImageSnapshot, ReadyImage};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{Options, Tree};
+use rustc_hash::FxHashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};

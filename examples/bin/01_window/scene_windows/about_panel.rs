@@ -4,9 +4,11 @@ use crate::rfgui::{Layout, Length, Padding};
 use crate::rfgui_components::Theme;
 use crate::utils::output_image_source;
 use rfgui::Align;
+use rfgui::ui::component;
 use rfgui::view::{Image, ImageFit, ImageSampling};
 
-pub fn build(theme: &Theme) -> RsxNode {
+#[component]
+pub fn Build(theme: Theme) -> RsxNode {
     rsx! {
             <Element style={{
                 width: Length::percent(100.0),

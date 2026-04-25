@@ -1,8 +1,8 @@
 use crate::use_theme;
 
 use rfgui::ui::{
-    Binding, RsxComponent, RsxNode, on_pointer_down, on_pointer_move, on_pointer_up,
-    props, rsx, use_state,
+    Binding, RsxComponent, RsxNode, on_pointer_down, on_pointer_move, on_pointer_up, props, rsx,
+    use_state,
 };
 use rfgui::view::{Element, Text};
 use rfgui::{

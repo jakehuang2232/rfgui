@@ -2712,10 +2712,7 @@ impl Style {
                 let _ = self.remove(PropertyId::BackgroundImage);
             }
             Background::Gradient(gradient) => {
-                self.insert(
-                    PropertyId::BackgroundImage,
-                    ParsedValue::Gradient(gradient),
-                );
+                self.insert(PropertyId::BackgroundImage, ParsedValue::Gradient(gradient));
             }
         }
     }
@@ -2726,10 +2723,7 @@ impl Style {
     }
 
     pub fn set_background_image(&mut self, gradient: Gradient) {
-        self.insert(
-            PropertyId::BackgroundImage,
-            ParsedValue::Gradient(gradient),
-        );
+        self.insert(PropertyId::BackgroundImage, ParsedValue::Gradient(gradient));
     }
 
     pub fn with_background_image(mut self, gradient: Gradient) -> Self {

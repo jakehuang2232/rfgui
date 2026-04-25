@@ -13,7 +13,8 @@ impl Viewport {
     ) -> Option<RenderTargetBundle> {
         let device = self.gpu.device.as_ref()?;
         let sample_count = desc.sample_count().max(1);
-        self.frame.offscreen_render_target_pool
+        self.frame
+            .offscreen_render_target_pool
             .acquire(device, allocation_id, desc, sample_count)
     }
 
@@ -24,8 +25,12 @@ impl Viewport {
     ) -> Option<RenderTargetBundle> {
         let device = self.gpu.device.as_ref()?;
         let sample_count = desc.sample_count().max(1);
-        self.frame.offscreen_render_target_pool
-            .acquire_persistent(device, stable_key, desc, sample_count)
+        self.frame.offscreen_render_target_pool.acquire_persistent(
+            device,
+            stable_key,
+            desc,
+            sample_count,
+        )
     }
 
     pub(crate) fn upload_sampled_texture_rgba(
@@ -111,13 +116,15 @@ impl Viewport {
     }
 
     pub(crate) fn sampled_texture_view(&self, stable_key: u64) -> Option<wgpu::TextureView> {
-        self.frame.sampled_texture_cache
+        self.frame
+            .sampled_texture_cache
             .get(&stable_key)
             .map(|entry| entry.view.clone())
     }
 
     fn total_sampled_texture_bytes(&self) -> u64 {
-        self.frame.sampled_texture_cache
+        self.frame
+            .sampled_texture_cache
             .values()
             .map(|entry| entry.byte_size)
             .sum()
@@ -144,7 +151,9 @@ impl Viewport {
             let newest_tick = candidates.iter().map(|(_, t)| *t).max().unwrap_or(0);
             let stale_keys: Vec<u64> = candidates
                 .iter()
-                .filter(|(_, tick)| newest_tick.saturating_sub(*tick) > Self::SAMPLED_TEXTURE_STALE_TICKS)
+                .filter(|(_, tick)| {
+                    newest_tick.saturating_sub(*tick) > Self::SAMPLED_TEXTURE_STALE_TICKS
+                })
                 .map(|(key, _)| *key)
                 .collect();
             for key in &stale_keys {
@@ -205,7 +214,8 @@ impl Viewport {
                 old.buffer.destroy();
             }
         }
-        self.frame.frame_buffer_pool
+        self.frame
+            .frame_buffer_pool
             .get(&key)
             .map(|entry| entry.buffer.clone())
     }
@@ -297,7 +307,11 @@ impl Viewport {
             .get(self.frame.draw_rect_uniform_cursor)
             .is_some_and(|entry| {
                 entry.size >= required_size
-                    && self.frame.draw_rect_uniform_offset.saturating_add(slot_size) <= entry.size
+                    && self
+                        .frame
+                        .draw_rect_uniform_offset
+                        .saturating_add(slot_size)
+                        <= entry.size
             });
         if !has_current_capacity
             && self
@@ -306,7 +320,8 @@ impl Viewport {
                 .get(self.frame.draw_rect_uniform_cursor)
                 .is_some()
         {
-            self.frame.draw_rect_uniform_cursor = self.frame.draw_rect_uniform_cursor.saturating_add(1);
+            self.frame.draw_rect_uniform_cursor =
+                self.frame.draw_rect_uniform_cursor.saturating_add(1);
             self.frame.draw_rect_uniform_offset = 0;
         }
         let target_index = self.frame.draw_rect_uniform_cursor;
@@ -317,11 +332,13 @@ impl Viewport {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.frame.draw_rect_uniform_pool.push(DrawRectUniformBufferEntry {
-                buffer,
-                size: required_size,
-                bind_groups: FxHashMap::default(),
-            });
+            self.frame
+                .draw_rect_uniform_pool
+                .push(DrawRectUniformBufferEntry {
+                    buffer,
+                    size: required_size,
+                    bind_groups: FxHashMap::default(),
+                });
         } else if self.frame.draw_rect_uniform_pool[target_index].size < required_size {
             // Buffer reallocated — invalidate all cached bind groups for this slot.
             let old = std::mem::replace(
@@ -340,7 +357,9 @@ impl Viewport {
             old.buffer.destroy();
         }
         let dynamic_offset = self.frame.draw_rect_uniform_offset;
-        let buffer = self.frame.draw_rect_uniform_pool[target_index].buffer.clone();
+        let buffer = self.frame.draw_rect_uniform_pool[target_index]
+            .buffer
+            .clone();
         #[cfg(target_arch = "wasm32")]
         {
             let queue = self.gpu.queue.as_ref()?;
@@ -361,7 +380,10 @@ impl Viewport {
             mapped.slice(..data.len()).copy_from_slice(data);
             drop(mapped);
         }
-        self.frame.draw_rect_uniform_offset = self.frame.draw_rect_uniform_offset.saturating_add(slot_size);
+        self.frame.draw_rect_uniform_offset = self
+            .frame
+            .draw_rect_uniform_offset
+            .saturating_add(slot_size);
         Some((buffer, dynamic_offset as u32, target_index))
     }
 
@@ -373,7 +395,7 @@ impl Viewport {
         stops: &[crate::view::render_pass::draw_rect_pass::GradientStopGpu],
     ) -> Option<u32> {
         use crate::view::render_pass::draw_rect_pass::{
-            GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY, GRADIENT_STOP_STRIDE,
+            GRADIENT_STOP_STRIDE, GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY,
         };
         if stops.is_empty() {
             return None;
@@ -381,7 +403,10 @@ impl Viewport {
         let device = self.gpu.device.as_ref()?.clone();
         let stop_bytes: &[u8] = bytemuck::cast_slice(stops);
         let byte_len = stop_bytes.len() as u64;
-        let needed_end = self.frame.gradient_stops_byte_cursor.saturating_add(byte_len);
+        let needed_end = self
+            .frame
+            .gradient_stops_byte_cursor
+            .saturating_add(byte_len);
 
         let current_size = self
             .frame
@@ -391,7 +416,9 @@ impl Viewport {
             .unwrap_or(0);
         let mut buffer_grew = false;
         if needed_end > current_size {
-            let mut new_size = current_size.max(GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY).max(1);
+            let mut new_size = current_size
+                .max(GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY)
+                .max(1);
             while new_size < needed_end {
                 new_size = new_size.saturating_mul(2);
             }
@@ -482,7 +509,12 @@ impl Viewport {
         // Ensure the gradient stops buffer exists so binding 1 can resolve.
         self.ensure_gradient_stops_buffer();
         let stops_buffer = self.frame.gradient_stops_buffer.as_ref()?.buffer.clone();
-        let uniform_buffer = self.frame.draw_rect_uniform_pool.get(pool_index)?.buffer.clone();
+        let uniform_buffer = self
+            .frame
+            .draw_rect_uniform_pool
+            .get(pool_index)?
+            .buffer
+            .clone();
         let device = self.gpu.device.as_ref()?;
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("DrawRect Bind Group (Cached)"),
@@ -502,7 +534,8 @@ impl Viewport {
                 },
             ],
         });
-        self.frame.draw_rect_uniform_pool
+        self.frame
+            .draw_rect_uniform_pool
             .get_mut(pool_index)?
             .bind_groups
             .insert(layout_cache_key, bg.clone());

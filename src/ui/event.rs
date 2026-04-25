@@ -8,11 +8,11 @@ use crate::platform::input::{Key, PointerType, WheelDeltaMode, WheelPhase};
 /// Re-export so `crate::ui` users don't need a separate platform import.
 pub use crate::platform::input::Modifiers;
 use crate::ui::node_id::{EventTarget, NodeId, Rect};
-use std::ptr::NonNull;
 use crate::view::base_component::TextAreaRenderString;
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::fmt;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -434,10 +434,7 @@ impl EventMeta {
     /// Arena access goes through `viewport.node_arena()` — single source
     /// of truth under Approach C.
     #[allow(dead_code)]
-    pub(crate) fn attach_dispatch_ctx(
-        &mut self,
-        viewport: &crate::view::viewport::Viewport,
-    ) {
+    pub(crate) fn attach_dispatch_ctx(&mut self, viewport: &crate::view::viewport::Viewport) {
         self.state.borrow_mut().viewport_ptr = Some(NonNull::from(viewport));
     }
 
@@ -685,9 +682,10 @@ impl EventViewport {
     {
         let handler_prop = PointerUpUntilHandler::new(handler);
         let handle = ViewportListenerHandle(handler_prop.id());
-        self.state.borrow_mut().viewport_listener_actions.push(
-            EventCommand::AddPointerUpListenerUntil(handler_prop),
-        );
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(EventCommand::AddPointerUpListenerUntil(handler_prop));
         handle
     }
 
@@ -726,10 +724,7 @@ impl EventViewport {
     /// Scroll the given node into view inside its nearest scrollable
     /// ancestor, using `options` for alignment / smoothness.
     pub fn scroll_into_view(&mut self, target_id: NodeId, options: ScrollIntoViewOptions) {
-        self.push_action(EventCommand::ScrollIntoView {
-            target_id,
-            options,
-        });
+        self.push_action(EventCommand::ScrollIntoView { target_id, options });
     }
 
     /// Take keyboard capture for `node_id`. All subsequent key events
@@ -1118,13 +1113,14 @@ impl TextSelectionTarget {
     }
 
     pub fn select_range(&mut self, start: usize, end: usize) {
-        self.state.borrow_mut().viewport_listener_actions.push(
-            EventCommand::SelectTextRange {
+        self.state
+            .borrow_mut()
+            .viewport_listener_actions
+            .push(EventCommand::SelectTextRange {
                 target_id: self.target_id,
                 start,
                 end,
-            },
-        );
+            });
     }
 }
 
@@ -1157,10 +1153,7 @@ pub enum DragPayload {
     Files(Vec<std::path::PathBuf>),
     /// Arbitrary mime-tagged binary blob (e.g. `image/png`,
     /// `application/json`).
-    Custom {
-        mime: SmolStr,
-        bytes: Vec<u8>,
-    },
+    Custom { mime: SmolStr, bytes: Vec<u8> },
 }
 
 /// Operations the source allows for a drag — mirrors HTML5
@@ -1714,7 +1707,11 @@ impl_into_event_handler_prop!(
     PointerDownEvent,
     into_pointer_down_handler
 );
-impl_into_event_handler_prop!(PointerUpHandlerProp, PointerUpEvent, into_pointer_up_handler);
+impl_into_event_handler_prop!(
+    PointerUpHandlerProp,
+    PointerUpEvent,
+    into_pointer_up_handler
+);
 impl_into_event_handler_prop!(
     PointerMoveHandlerProp,
     PointerMoveEvent,
@@ -1756,9 +1753,17 @@ impl_into_event_handler_prop!(
     ImeDisabledEvent,
     into_ime_disabled_handler
 );
-impl_into_event_handler_prop!(DragStartHandlerProp, DragStartEvent, into_drag_start_handler);
+impl_into_event_handler_prop!(
+    DragStartHandlerProp,
+    DragStartEvent,
+    into_drag_start_handler
+);
 impl_into_event_handler_prop!(DragOverHandlerProp, DragOverEvent, into_drag_over_handler);
-impl_into_event_handler_prop!(DragLeaveHandlerProp, DragLeaveEvent, into_drag_leave_handler);
+impl_into_event_handler_prop!(
+    DragLeaveHandlerProp,
+    DragLeaveEvent,
+    into_drag_leave_handler
+);
 impl_into_event_handler_prop!(DropHandlerProp, DropEvent, into_drop_handler);
 impl_into_event_handler_prop!(DragEndHandlerProp, DragEndEvent, into_drag_end_handler);
 impl_into_event_handler_prop!(CopyHandlerProp, CopyEvent, into_copy_handler);
@@ -1981,7 +1986,10 @@ mod tests {
         let mut meta2 = new_meta();
         meta2.set_cancelable(false);
         meta2.prevent_default();
-        assert!(!meta2.default_prevented(), "non-cancelable must ignore prevent_default");
+        assert!(
+            !meta2.default_prevented(),
+            "non-cancelable must ignore prevent_default"
+        );
     }
 
     #[test]
@@ -2018,7 +2026,10 @@ mod tests {
         assert_eq!(KeyLocation::from_key(Key::ShiftRight), KeyLocation::Right);
         assert_eq!(KeyLocation::from_key(Key::ControlLeft), KeyLocation::Left);
         assert_eq!(KeyLocation::from_key(Key::NumberPad7), KeyLocation::Numpad);
-        assert_eq!(KeyLocation::from_key(Key::NumberPadEnter), KeyLocation::Numpad);
+        assert_eq!(
+            KeyLocation::from_key(Key::NumberPadEnter),
+            KeyLocation::Numpad
+        );
         assert_eq!(KeyLocation::from_key(Key::KeyA), KeyLocation::Standard);
         assert_eq!(KeyLocation::from_key(Key::Enter), KeyLocation::Standard);
     }

@@ -16,8 +16,8 @@
 
 use crate::Color;
 use crate::platform::{
-    PlatformImePreedit, PlatformKeyEvent, PlatformPointerEvent, PlatformServices, PlatformTextInput,
-    PlatformWheelEvent,
+    PlatformImePreedit, PlatformKeyEvent, PlatformPointerEvent, PlatformServices,
+    PlatformTextInput, PlatformWheelEvent,
 };
 use crate::ui::RsxNode;
 use crate::view::viewport::ViewportControl;
