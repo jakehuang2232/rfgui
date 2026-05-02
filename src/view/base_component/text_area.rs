@@ -8,10 +8,7 @@ use crate::view::render_pass::text_pass::{
 };
 use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
-use crate::{
-    ColorLike, Cursor as UiCursor, FontFamily, FontSize, HexColor, IntoColor, Layout, Length,
-    ParsedValue, PropertyId, Style,
-};
+use crate::style::{ColorLike, Cursor as UiCursor, FontFamily, FontSize, HexColor, IntoColor, Layout, Length, ParsedValue, PropertyId, Style};
 use cosmic_text::{
     Affinity, Align, Attrs, Buffer as GlyphBuffer, Cursor, Family, FontSystem, Metrics, Motion,
     Shaping, Wrap,
@@ -293,7 +290,7 @@ impl TextArea {
             should_render: true,
             content: String::new(),
             color: Box::new(HexColor::new("#111111")),
-            selection_background_color: Box::new(crate::Color::rgba(71, 133, 240, 89)),
+            selection_background_color: Box::new(crate::style::Color::rgba(71, 133, 240, 89)),
             placeholder_color: Box::new(HexColor::new("#7d8596")),
             font_families: Vec::new(),
             font_size: 16.0,
@@ -2372,7 +2369,7 @@ impl TextArea {
             .collect();
         for (key, range) in ranges {
             find_first_text_area_with_arena(arena, key, |nested, _nested_arena| {
-                nested.set_selection_background_color(crate::Color::rgba(
+                nested.set_selection_background_color(crate::style::Color::rgba(
                     (selection_color[0] * 255.0).round().clamp(0.0, 255.0) as u8,
                     (selection_color[1] * 255.0).round().clamp(0.0, 255.0) as u8,
                     (selection_color[2] * 255.0).round().clamp(0.0, 255.0) as u8,
@@ -3972,8 +3969,8 @@ impl EventTarget for TextArea {
         self.cached_ime_cursor_rect
     }
 
-    fn cursor(&self) -> crate::Cursor {
-        crate::Cursor::Text
+    fn cursor(&self) -> crate::style::Cursor {
+        crate::style::Cursor::Text
     }
 
     fn wants_animation_frame(&self) -> bool {
@@ -4137,12 +4134,12 @@ impl Layoutable for TextArea {
         let base = self.element.flex_props();
         crate::view::base_component::FlexProps {
             width: if self.auto_width {
-                crate::SizeValue::Auto
+                crate::style::SizeValue::Auto
             } else {
                 base.width
             },
             height: if self.auto_height {
-                crate::SizeValue::Auto
+                crate::style::SizeValue::Auto
             } else {
                 base.height
             },
@@ -4882,8 +4879,8 @@ mod tests {
         TextArea, TextAreaRenderFragment, TextAreaRenderFragmentKind,
         find_first_text_area_with_arena_ref,
     };
-    use crate::ColorLike;
-    use crate::Length;
+    use crate::style::ColorLike;
+    use crate::style::Length;
     use crate::platform::PointerType;
     use crate::platform::input::Key;
     use crate::ui::{
@@ -5024,7 +5021,7 @@ mod tests {
     fn on_render_single_text_area_projection_inherits_text_style() {
         let mut area = TextArea::from_content("{{x}}");
         area.set_font_size(13.0);
-        area.set_color(crate::Color::hex("#aabbcc"));
+        area.set_color(crate::style::Color::hex("#aabbcc"));
         area.on_render(|render| {
             render.range(0..5, |text_area_node| text_area_node);
         });
@@ -5041,7 +5038,7 @@ mod tests {
         assert!((nested.font_size - 13.0).abs() < 0.01);
         assert_eq!(
             nested.color.to_rgba_f32(),
-            crate::Color::hex("#aabbcc").to_rgba_f32()
+            crate::style::Color::hex("#aabbcc").to_rgba_f32()
         );
     }
 

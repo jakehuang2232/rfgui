@@ -1,8 +1,6 @@
 use crate::rfgui::ui::{GlobalKey, RsxNode, component, on_click, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{
-    Border, Layout, Length, Padding, ScrollDirection, Transition, TransitionProperty,
-};
+use crate::rfgui::style::{Border, Layout, Length, Padding, ScrollDirection, Transition, TransitionProperty};
 use crate::rfgui_components::{Button, ButtonVariant, use_theme};
 
 #[component]

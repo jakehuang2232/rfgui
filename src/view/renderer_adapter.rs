@@ -3,18 +3,20 @@
 //! Adapters that convert RSX trees into low-level retained host elements.
 use rustc_hash::FxHashMap;
 
-use crate::Style;
+use crate::style::Style;
 use crate::ui::{
-    Binding, FromPropValue, GlobalKey, Patch, PropValue, RenderBackend, RsxElementNode, RsxKey,
-    RsxNode, RsxNodeIdentity, RsxTagDescriptor,
+    Binding, FromPropValue, GlobalKey, PropValue, RsxElementNode, RsxKey, RsxNode,
+    RsxNodeIdentity, RsxTagDescriptor, use_context,
 };
-use crate::view::Viewport;
-use crate::view::base_component::{Element, ElementTrait, Image, Svg, Text, TextArea};
+use crate::view::base_component::{
+    Element, ElementTrait, Image, Svg, Text, TextArea, TextArea2, TextAreaImeContext,
+};
+use crate::view::base_component::text_area_v2::TextAreaTextRun;
 use crate::view::node_arena::{Node, NodeArena, NodeKey};
 use crate::view::{
     ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, SvgSource, TextStylePropSchema,
 };
-use crate::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
+use crate::style::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
 use std::any::TypeId;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -34,12 +36,6 @@ fn typed_element_factories() -> &'static RwLock<FxHashMap<TypeId, ElementFactory
 pub fn register_element_factory(tag: impl Into<String>, factory: ElementFactory) {
     if let Ok(mut map) = element_factories().write() {
         map.insert(tag.into(), factory);
-    }
-}
-
-pub fn register_tag_element_factory<T: 'static>(factory: ElementFactory) {
-    if let Ok(mut map) = typed_element_factories().write() {
-        map.insert(TypeId::of::<T>(), factory);
     }
 }
 
@@ -63,6 +59,11 @@ fn is_text_area_descriptor(descriptor: RsxTagDescriptor) -> bool {
     name.ends_with("::TextArea") || name == "TextArea"
 }
 
+fn is_text_area_v2_descriptor(descriptor: RsxTagDescriptor) -> bool {
+    let name = descriptor.type_name;
+    name.ends_with("::TextArea2") || name == "TextArea2"
+}
+
 fn is_image_descriptor(descriptor: RsxTagDescriptor) -> bool {
     let name = descriptor.type_name;
     name.ends_with("::Image") || name == "Image"
@@ -84,6 +85,13 @@ fn is_builtin_text_area_node(node: &RsxElementNode) -> bool {
         || node.tag == "TextArea"
 }
 
+fn is_builtin_text_area_v2_node(node: &RsxElementNode) -> bool {
+    node.tag_descriptor
+        .map(is_text_area_v2_descriptor)
+        .unwrap_or(false)
+        || node.tag == "TextArea2"
+}
+
 fn is_builtin_image_node(node: &RsxElementNode) -> bool {
     node.tag_descriptor
         .map(is_image_descriptor)
@@ -93,87 +101,6 @@ fn is_builtin_image_node(node: &RsxElementNode) -> bool {
 
 fn is_builtin_svg_node(node: &RsxElementNode) -> bool {
     node.tag_descriptor.map(is_svg_descriptor).unwrap_or(false) || node.tag == "Svg"
-}
-
-pub fn rsx_to_element(root: &RsxNode) -> Result<Box<dyn ElementTrait>, String> {
-    let mut nodes = rsx_to_elements(root)?;
-    if nodes.len() != 1 {
-        return Err("expected single root element".to_string());
-    }
-    Ok(nodes.remove(0))
-}
-
-pub fn rsx_to_element_scoped(
-    root: &RsxNode,
-    scope_path: &[u64],
-) -> Result<Box<dyn ElementTrait>, String> {
-    let inherited = InheritedTextStyle::from_viewport_style(&Style::new(), 0.0, 0.0);
-    convert_node(root, scope_path, None, &inherited)
-}
-
-pub fn rsx_to_elements(root: &RsxNode) -> Result<Vec<Box<dyn ElementTrait>>, String> {
-    rsx_to_elements_with_context(root, &Style::new(), 0.0, 0.0)
-}
-
-pub fn rsx_to_elements_with_context(
-    root: &RsxNode,
-    viewport_style: &Style,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Result<Vec<Box<dyn ElementTrait>>, String> {
-    let mut out = Vec::new();
-    append_nodes(
-        root,
-        &mut out,
-        viewport_style,
-        viewport_width,
-        viewport_height,
-    )?;
-    Ok(out)
-}
-
-pub fn rsx_to_elements_scoped_with_context(
-    root: &RsxNode,
-    scope_path: &[u64],
-    viewport_style: &Style,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Result<Vec<Box<dyn ElementTrait>>, String> {
-    let mut out = Vec::new();
-    let mut path = Vec::with_capacity(scope_path.len().saturating_add(8));
-    path.extend_from_slice(scope_path);
-    let inherited =
-        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
-    let global_path = current_global_node_path(root, None);
-    append_nodes_with_path(root, &mut out, &mut path, global_path, &inherited)?;
-    Ok(out)
-}
-
-pub fn rsx_to_elements_lossy(root: &RsxNode) -> (Vec<Box<dyn ElementTrait>>, Vec<String>) {
-    rsx_to_elements_lossy_with_context(root, &Style::new(), 0.0, 0.0)
-}
-
-pub fn rsx_to_elements_lossy_with_context(
-    root: &RsxNode,
-    viewport_style: &Style,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> (Vec<Box<dyn ElementTrait>>, Vec<String>) {
-    let mut out = Vec::new();
-    let mut errors = Vec::new();
-    let mut path = Vec::new();
-    let inherited =
-        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
-    let global_path = current_global_node_path(root, None);
-    append_nodes_with_path_lossy(
-        root,
-        &mut out,
-        &mut path,
-        global_path,
-        &inherited,
-        &mut errors,
-    );
-    (out, errors)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -269,19 +196,6 @@ impl InheritedTextStyle {
     }
 }
 
-pub struct ViewportRenderBackend<'a> {
-    viewport: &'a mut Viewport,
-    current_root: Option<RsxNode>,
-    global_key_registry: FxHashMap<GlobalKey, RenderedGlobalKeyEntry>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RenderedGlobalKeyEntry {
-    path: Vec<u64>,
-    node_id: Option<u64>,
-    invocation_type: &'static str,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GlobalNodePath {
     key: GlobalKey,
@@ -300,242 +214,12 @@ enum NodeIdSeed<'a> {
     },
 }
 
-impl<'a> ViewportRenderBackend<'a> {
-    pub fn new(viewport: &'a mut Viewport) -> Self {
-        Self {
-            viewport,
-            current_root: None,
-            global_key_registry: FxHashMap::default(),
-        }
-    }
-
-    fn root_mut(&mut self, root: u64) -> Result<&mut RsxNode, String> {
-        if root != 0 {
-            return Err(format!("invalid root id: {root}"));
-        }
-        self.current_root
-            .as_mut()
-            .ok_or_else(|| "root is not initialized".to_string())
-    }
-
-    fn node_mut_by_path<'b>(
-        node: &'b mut RsxNode,
-        path: &[usize],
-    ) -> Result<&'b mut RsxNode, String> {
-        if path.is_empty() {
-            return Ok(node);
-        }
-        let Some(children) = node.children_mut() else {
-            return Err("path traverses through a leaf node".to_string());
-        };
-        let index = path[0];
-        let child = children
-            .get_mut(index)
-            .ok_or_else(|| format!("invalid node path index: {index}"))?;
-        Self::node_mut_by_path(child, &path[1..])
-    }
-
-    fn children_mut_by_path<'b>(
-        node: &'b mut RsxNode,
-        path: &[usize],
-    ) -> Result<&'b mut Vec<RsxNode>, String> {
-        let target = Self::node_mut_by_path(node, path)?;
-        target
-            .children_mut()
-            .ok_or_else(|| "target node does not accept children".to_string())
-    }
-
-    fn rebuild_global_key_registry(&mut self) -> Result<(), String> {
-        self.global_key_registry = if let Some(root) = self.current_root.as_ref() {
-            collect_global_key_registry(root)?
-        } else {
-            FxHashMap::default()
-        };
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn rendered_global_key(&self, key: GlobalKey) -> Option<&RenderedGlobalKeyEntry> {
-        self.global_key_registry.get(&key)
-    }
-}
-
-impl<'a> RenderBackend for ViewportRenderBackend<'a> {
-    type NodeId = u64;
-
-    fn create_root(&mut self, node: &RsxNode) -> Result<Self::NodeId, String> {
-        self.current_root = Some(node.clone());
-        self.rebuild_global_key_registry()?;
-        Ok(0)
-    }
-
-    fn replace_root(&mut self, root: Self::NodeId, node: &RsxNode) -> Result<(), String> {
-        if root != 0 {
-            return Err(format!("invalid root id: {root}"));
-        }
-        self.current_root = Some(node.clone());
-        self.rebuild_global_key_registry()?;
-        Ok(())
-    }
-
-    fn apply_patch(&mut self, root: Self::NodeId, patch: &Patch) -> Result<(), String> {
-        let root_node = self.root_mut(root)?;
-        match patch {
-            Patch::ReplaceRoot(node) => {
-                *root_node = node.clone();
-            }
-            Patch::ReplaceAllRoots(_) | Patch::ReorderRoots(_) => {
-                // Emitted only by `reconcile_multi`; the legacy
-                // UiRuntime `apply_patches` path is single-root and
-                // never sees them.
-                return Err(
-                    "multi-root patches are not supported in legacy UiRuntime apply_patch path"
-                        .to_string(),
-                );
-            }
-            Patch::ReplaceNode { path, node } => {
-                let target = Self::node_mut_by_path(root_node, path)?;
-                *target = node.clone();
-            }
-            Patch::UpdateElementProps {
-                path,
-                changed,
-                removed,
-            } => {
-                let target = Self::node_mut_by_path(root_node, path)?;
-                let RsxNode::Element(element) = target else {
-                    return Err("cannot update props on non-element node".to_string());
-                };
-                let element = std::rc::Rc::make_mut(element);
-                let props = std::rc::Rc::make_mut(&mut element.props);
-                props.retain(|(k, _)| !removed.contains(k));
-                for &(key, ref value) in changed {
-                    if let Some((_, v)) = props.iter_mut().find(|(k, _)| *k == key) {
-                        *v = value.clone();
-                    } else {
-                        props.push((key, value.clone()));
-                    }
-                }
-            }
-            Patch::SetText { path, text } => {
-                let target = Self::node_mut_by_path(root_node, path)?;
-                let RsxNode::Text(node) = target else {
-                    return Err("cannot set text on non-text node".to_string());
-                };
-                std::rc::Rc::make_mut(node).content = text.clone();
-            }
-            Patch::InsertChild {
-                parent_path,
-                index,
-                node,
-            } => {
-                let children = Self::children_mut_by_path(root_node, parent_path)?;
-                if *index > children.len() {
-                    return Err(format!("invalid child insert index: {index}"));
-                }
-                children.insert(*index, node.clone());
-            }
-            Patch::RemoveChild { parent_path, index } => {
-                let children = Self::children_mut_by_path(root_node, parent_path)?;
-                if *index >= children.len() {
-                    return Err(format!("invalid child remove index: {index}"));
-                }
-                children.remove(*index);
-            }
-            Patch::MoveChild {
-                parent_path,
-                from,
-                to,
-            } => {
-                let children = Self::children_mut_by_path(root_node, parent_path)?;
-                if *from >= children.len() || *to > children.len() {
-                    return Err("invalid child move indices".to_string());
-                }
-                let node = children.remove(*from);
-                children.insert(*to, node);
-            }
-        }
-        self.rebuild_global_key_registry()?;
-        Ok(())
-    }
-
-    fn draw_frame(&mut self) -> Result<(), String> {
-        let Some(root) = self.current_root.as_ref() else {
-            return Ok(());
-        };
-        self.viewport.render_rsx(root)
-    }
-
-    fn request_redraw(&mut self) -> Result<(), String> {
-        self.viewport.request_redraw();
-        Ok(())
-    }
-}
-
-fn append_nodes(
-    node: &RsxNode,
-    out: &mut Vec<Box<dyn ElementTrait>>,
-    viewport_style: &Style,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Result<(), String> {
-    let mut path = Vec::new();
-    let inherited =
-        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
-    let global_path = current_global_node_path(node, None);
-    append_nodes_with_path(node, out, &mut path, global_path, &inherited)
-}
-
 pub(crate) fn rendered_node_id_by_index_path(
     root: &RsxNode,
     index_path: &[usize],
 ) -> Result<Option<u64>, String> {
     let mut token_path = Vec::new();
     rendered_node_id_by_index_path_impl(root, index_path, &mut token_path, None)
-}
-
-fn collect_global_key_registry(
-    root: &RsxNode,
-) -> Result<FxHashMap<GlobalKey, RenderedGlobalKeyEntry>, String> {
-    let mut registry = FxHashMap::default();
-    let mut path = Vec::new();
-    let global_path = current_global_node_path(root, None);
-    collect_global_key_registry_with_path(root, &mut path, global_path, &mut registry)?;
-    Ok(registry)
-}
-
-fn collect_global_key_registry_with_path(
-    node: &RsxNode,
-    path: &mut Vec<u64>,
-    global_path: Option<GlobalNodePath>,
-    registry: &mut FxHashMap<GlobalKey, RenderedGlobalKeyEntry>,
-) -> Result<(), String> {
-    let current_global_path = current_global_node_path(node, global_path.as_ref());
-    if let Some(RsxKey::Global(global_key)) = node.identity().key {
-        let entry = RenderedGlobalKeyEntry {
-            path: path.clone(),
-            node_id: rendered_node_id(node, path, current_global_path.as_ref()),
-            invocation_type: node.identity().invocation_type,
-        };
-        if registry.insert(global_key, entry).is_some() {
-            return Err("duplicate GlobalKey detected in renderer registry".to_string());
-        }
-    }
-
-    if let Some(children) = node.children() {
-        let mut ordinals = FxHashMap::<&'static str, usize>::default();
-        for child in children {
-            let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-            let token = child_identity_token(child, ordinal);
-            path.push(token);
-            let child_global_path =
-                child_global_node_path(current_global_path.as_ref(), child, token);
-            collect_global_key_registry_with_path(child, path, child_global_path, registry)?;
-            path.pop();
-        }
-    }
-
-    Ok(())
 }
 
 fn rendered_node_id_by_index_path_impl(
@@ -601,80 +285,6 @@ fn rendered_node_id(
     }
 }
 
-fn append_nodes_with_path(
-    node: &RsxNode,
-    out: &mut Vec<Box<dyn ElementTrait>>,
-    path: &mut Vec<u64>,
-    global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
-) -> Result<(), String> {
-    match node {
-        RsxNode::Fragment(fragment) => {
-            let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = FxHashMap::<&'static str, usize>::default();
-            for child in &fragment.children {
-                let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-                let token = child_identity_token(child, ordinal);
-                path.push(token);
-                let child_global_path =
-                    child_global_node_path(current_global_path.as_ref(), child, token);
-                append_nodes_with_path(child, out, path, child_global_path, inherited_text_style)?;
-                path.pop();
-            }
-            Ok(())
-        }
-        _ => {
-            let current_global_path = current_global_node_path(node, global_path.as_ref());
-            out.push(convert_node(
-                node,
-                path,
-                current_global_path,
-                inherited_text_style,
-            )?);
-            Ok(())
-        }
-    }
-}
-
-fn append_nodes_with_path_lossy(
-    node: &RsxNode,
-    out: &mut Vec<Box<dyn ElementTrait>>,
-    path: &mut Vec<u64>,
-    global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
-    errors: &mut Vec<String>,
-) {
-    match node {
-        RsxNode::Fragment(fragment) => {
-            let current_global_path = current_global_node_path(node, global_path.as_ref());
-            let mut ordinals = FxHashMap::<&'static str, usize>::default();
-            for child in &fragment.children {
-                let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-                let token = child_identity_token(child, ordinal);
-                path.push(token);
-                let child_global_path =
-                    child_global_node_path(current_global_path.as_ref(), child, token);
-                append_nodes_with_path_lossy(
-                    child,
-                    out,
-                    path,
-                    child_global_path,
-                    inherited_text_style,
-                    errors,
-                );
-                path.pop();
-            }
-        }
-        _ => {
-            let current_global_path = current_global_node_path(node, global_path.as_ref());
-            match convert_node(node, path, current_global_path, inherited_text_style) {
-                Ok(element) => out.push(element),
-                Err(err) => errors.push(format!("node_path={path:?}: {err}")),
-            }
-        }
-    }
-}
-
 fn convert_node(
     node: &RsxNode,
     path: &[u64],
@@ -683,9 +293,10 @@ fn convert_node(
 ) -> Result<Box<dyn ElementTrait>, String> {
     match node {
         RsxNode::Text(text) => {
+            let content = text_with_text_area_ime_preedit(text.content.clone());
             let mut text_node = Text::from_content_with_id(
                 stable_node_id_from_parts("TextNode", path, global_path.as_ref()),
-                text.content.clone(),
+                content,
             );
             // 軌 A #7: a bare text leaf has no explicit style. Route
             // all inherited props through `apply_inherited` so the
@@ -1011,8 +622,26 @@ fn convert_text_element(
         append_text_children(&mut text_content, child)?;
     }
 
-    text.set_text(text_content);
+    text.set_text(text_with_text_area_ime_preedit(text_content));
     Ok(Box::new(text))
+}
+
+fn text_with_text_area_ime_preedit(mut content: String) -> String {
+    let Some(ctx) = use_context::<TextAreaImeContext>() else {
+        return content;
+    };
+    if ctx.preedit.is_empty() {
+        return content;
+    }
+    let char_len = content.chars().count();
+    let insert_at = ctx.local_cursor_in_projection.min(char_len);
+    let byte = content
+        .char_indices()
+        .nth(insert_at)
+        .map(|(byte, _)| byte)
+        .unwrap_or(content.len());
+    content.insert_str(byte, ctx.preedit.as_str());
+    content
 }
 
 pub(crate) fn length_from_parsed_value(
@@ -1542,6 +1171,180 @@ fn convert_text_area_element_desc(
     })
 }
 
+/// TextArea v2 descriptor builder.
+///
+/// P1+ acked the prop schema. P2 spawns a single `TextAreaTextRun` child
+/// at descriptor-build time for the no-`on_render` case (and the
+/// placeholder fallback when content is empty). Wires the same text-side
+/// style sources as v1's `convert_text_area_element_desc`:
+/// - explicit `font_size` / `font` props
+/// - `style.color` → text_area.color (cascaded to the Run)
+/// - inherited font-family / font-size / font-weight / color
+///
+/// Box-model props (`background` / `border` / `border_radius` / `padding`
+/// / `width` / `height`) deliberately do *not* apply to TextArea2 — per
+/// design A1 the user wraps `<TextArea2>` in an `<Element>` for those.
+/// Real handler wiring + projection plumbing land in P3+ / P5. See
+/// `docs/design/textarea-v2.md`.
+fn convert_text_area_v2_element_desc(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<ElementDescriptor, String> {
+    let stable_id = stable_node_id_from_parts("TextArea2", path, global_path.as_ref());
+    let mut text_area = TextArea2::with_stable_id(stable_id);
+    let mut style: Option<Style> = None;
+    let mut explicit_font_size: Option<f32> = None;
+    let mut explicit_font: Option<String> = None;
+
+    for (key, value) in node.props.iter() {
+        if *key == "key" {
+            continue;
+        }
+        match *key {
+            "content" => text_area.content = as_owned_string(value, key)?,
+            "placeholder" => text_area.placeholder = as_owned_string(value, key)?,
+            "binding" => text_area.text_binding = Some(as_binding_string(value, key)?),
+            "multiline" => text_area.multiline = as_bool(value, key)?,
+            "auto_wrap" => text_area.auto_wrap = as_bool(value, key)?,
+            "read_only" => text_area.read_only = as_bool(value, key)?,
+            "max_length" => text_area.max_length = as_usize(value, key)?,
+            "style" => style = Some(as_element_style(value, key)?),
+            "font_size" => {
+                explicit_font_size = Some(as_font_size_px(
+                    value,
+                    key,
+                    inherited_text_style
+                        .font_size
+                        .unwrap_or(inherited_text_style.root_font_size),
+                    inherited_text_style.root_font_size,
+                    inherited_text_style.viewport_width,
+                    inherited_text_style.viewport_height,
+                )?);
+            }
+            "font" => explicit_font = Some(as_owned_string(value, key)?),
+            "on_focus" => text_area
+                .on_focus_handlers
+                .push(as_text_area_focus_handler(value, key)?),
+            "on_blur" => text_area
+                .on_blur_handlers
+                .push(as_blur_handler(value, key)?),
+            "on_change" => text_area
+                .on_change_handlers
+                .push(as_text_change_handler(value, key)?),
+            "on_render" => {
+                let handler =
+                    crate::ui::TextAreaRenderHandlerProp::from_prop_value(value.clone())
+                        .map_err(|_| {
+                            format!("prop `{key}` expects text area render handler value")
+                        })?;
+                text_area.on_render_handler = Some(handler);
+            }
+            _ => return Err(format!("unknown prop `{}` on <TextArea2>", key)),
+        }
+    }
+
+    // Mirror apply_prop's normalization: collapse `\n` when single-line,
+    // and truncate to `max_length`. Order matches v1 setter semantics.
+    if !text_area.multiline && text_area.content.contains('\n') {
+        text_area.content = text_area.content.replace('\n', " ");
+    }
+    if let Some(limit) = text_area.max_length
+        && text_area.content.chars().count() > limit
+    {
+        text_area.content = text_area.content.chars().take(limit).collect();
+    }
+
+    // Inherited cascade first (fills only what the author didn't set).
+    if text_area.font_families.is_empty() {
+        text_area.font_families = inherited_text_style.font_families.clone();
+    }
+    if let Some(inherited_size) = inherited_text_style.font_size {
+        text_area.font_size = inherited_size;
+    }
+    text_area.font_weight = inherited_text_style.font_weight.unwrap_or(400);
+    if let Some(inherited_color) = inherited_text_style.color {
+        text_area.color = inherited_color;
+    }
+
+    // Style block (v1-style extraction): only text-side properties apply.
+    if let Some(style) = &style {
+        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
+            text_area.color = color.to_color();
+        }
+        if let Some(ParsedValue::FontSize(size)) = style.get(PropertyId::FontSize) {
+            text_area.font_size = size.resolve_px(
+                inherited_text_style
+                    .font_size
+                    .unwrap_or(inherited_text_style.root_font_size),
+                inherited_text_style.root_font_size,
+                inherited_text_style.viewport_width,
+                inherited_text_style.viewport_height,
+            );
+        }
+        if let Some(ParsedValue::FontFamily(family)) = style.get(PropertyId::FontFamily) {
+            text_area.font_families = family.as_slice().to_vec();
+        }
+        if let Some(ParsedValue::FontWeight(fw)) = style.get(PropertyId::FontWeight) {
+            text_area.font_weight = fw.value();
+        }
+    }
+
+    // Explicit `font_size` / `font` props win over `style.*` and
+    // inherited (mirrors v1's setter-priority semantics).
+    if let Some(size) = explicit_font_size {
+        text_area.font_size = size;
+    }
+    if let Some(family) = explicit_font {
+        text_area.font_families = vec![family];
+    }
+
+    let mut child_descriptors: Vec<ElementDescriptor> = Vec::new();
+    let (display_text, is_placeholder) = if !text_area.content.is_empty() {
+        (text_area.content.clone(), false)
+    } else if !text_area.placeholder.is_empty() {
+        (text_area.placeholder.clone(), true)
+    } else {
+        (String::new(), false)
+    };
+    if !display_text.is_empty() {
+        let char_count = display_text.chars().count();
+        let mut run = TextAreaTextRun::new(display_text, 0..char_count);
+        run.is_placeholder = is_placeholder;
+        run.cascade_style(
+            text_area.font_families.clone(),
+            text_area.font_size,
+            text_area.line_height,
+            text_area.font_weight,
+            if is_placeholder {
+                text_area.placeholder_color
+            } else {
+                text_area.color
+            },
+            text_area.auto_wrap,
+        );
+        child_descriptors.push(ElementDescriptor::leaf(
+            Box::new(run) as Box<dyn ElementTrait>
+        ));
+    }
+
+    let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> =
+        Some(Box::new(|arena: &mut NodeArena, text_area_key: NodeKey| {
+            arena.with_element_taken(text_area_key, |element, _arena_ref| {
+                if let Some(ta) = element.as_any_mut().downcast_mut::<TextArea2>() {
+                    ta.set_self_node_key(text_area_key);
+                }
+            });
+        }));
+
+    Ok(ElementDescriptor {
+        element: Box::new(text_area) as Box<dyn ElementTrait>,
+        children: child_descriptors,
+        post_commit,
+    })
+}
+
 pub(crate) fn convert_image_slot_desc(
     value: &PropValue,
     path: &[u64],
@@ -2037,26 +1840,26 @@ pub(crate) fn as_owned_string(value: &PropValue, key: &str) -> Result<String, St
     Ok(as_string(value, key)?.to_string())
 }
 
-pub(crate) fn as_text_align(value: &PropValue, key: &str) -> Result<crate::TextAlign, String> {
+pub(crate) fn as_text_align(value: &PropValue, key: &str) -> Result<crate::style::TextAlign, String> {
     match value {
         PropValue::TextAlign(v) => Ok(*v),
         _ => Err(format!("prop `{key}` expects TextAlign value")),
     }
 }
 
-fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
+pub(crate) fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
     Binding::<String>::from_prop_value(value.clone())
         .map_err(|_| format!("prop `{key}` expects Binding<String> value"))
 }
 
-fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {
+pub(crate) fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {
     match value {
         PropValue::Bool(v) => Ok(*v),
         _ => Err(format!("prop `{key}` expects bool value")),
     }
 }
 
-fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
+pub(crate) fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
     match value {
         PropValue::I64(v) => {
             if *v < 0 {
@@ -2442,6 +2245,9 @@ fn as_text_change_handler(
 /// Holds a fully-populated element plus its child descriptors. Committed
 /// into a `NodeArena` by [`commit_descriptor_tree`], which inserts nodes
 /// depth-first and wires parent/child links.
+///
+/// Exposed for downstream test fixtures only; not part of the stable API.
+#[doc(hidden)]
 pub struct ElementDescriptor {
     pub element: Box<dyn ElementTrait>,
     pub children: Vec<ElementDescriptor>,
@@ -2469,6 +2275,9 @@ impl ElementDescriptor {
 /// list on both `Node.children` and the parent element's
 /// `Element.children` mirror (when the element is an `Element`). Returns
 /// the freshly allocated root key.
+///
+/// Exposed for downstream test fixtures only; not part of the stable API.
+#[doc(hidden)]
 pub fn commit_descriptor_tree(
     arena: &mut NodeArena,
     parent: Option<NodeKey>,
@@ -2494,7 +2303,10 @@ pub fn commit_descriptor_tree(
     arena.with_element_taken(key, |element, arena_ref| {
         if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
             let _previous = el.replace_children(arena_ref, child_keys);
+        } else if let Some(mirror) = element.children_mut() {
+            *mirror = child_keys;
         }
+        let _ = arena_ref;
     });
     if let Some(cb) = post_commit {
         cb(arena, key);
@@ -2503,7 +2315,7 @@ pub fn commit_descriptor_tree(
 }
 
 /// Walk `path` indices through `arena.children_of` to resolve the target key.
-pub fn resolve_path(arena: &NodeArena, root: NodeKey, path: &[usize]) -> Option<NodeKey> {
+pub(crate) fn resolve_path(arena: &NodeArena, root: NodeKey, path: &[usize]) -> Option<NodeKey> {
     let mut current = root;
     for &idx in path {
         let children = arena.children_of(current);
@@ -2515,7 +2327,7 @@ pub fn resolve_path(arena: &NodeArena, root: NodeKey, path: &[usize]) -> Option<
 /// Commit `desc` as a new child of `parent` at `index`, keeping both
 /// `Node.children` and the parent element's `Element.children` mirror in
 /// sync.
-pub fn arena_insert_child(
+pub(crate) fn arena_insert_child(
     arena: &mut NodeArena,
     parent: NodeKey,
     index: usize,
@@ -2540,7 +2352,7 @@ pub fn arena_insert_child(
 
 /// Remove the child of `parent` at `index` (and its whole subtree),
 /// keeping both child-list stores in sync.
-pub fn arena_remove_child(arena: &mut NodeArena, parent: NodeKey, index: usize) {
+pub(crate) fn arena_remove_child(arena: &mut NodeArena, parent: NodeKey, index: usize) {
     let mut children = arena.children_of(parent);
     if index >= children.len() {
         return;
@@ -2555,45 +2367,14 @@ pub fn arena_remove_child(arena: &mut NodeArena, parent: NodeKey, index: usize) 
     arena.remove_subtree(child_key);
 }
 
-/// Replace the child of `parent` at `index` with a freshly-committed
-/// descriptor. Returns the new child's NodeKey.
-pub fn arena_replace_child(
-    arena: &mut NodeArena,
-    parent: NodeKey,
-    index: usize,
-    desc: ElementDescriptor,
-) -> NodeKey {
-    let old_key = {
-        let children = arena.children_of(parent);
-        children.get(index).copied()
-    };
-    if let Some(old) = old_key {
-        arena.remove_subtree(old);
-    }
-    let new_key = commit_descriptor_tree(arena, Some(parent), desc);
-    let mut children = arena.children_of(parent);
-    if let Some(old) = old_key {
-        // remove_subtree drops the slot but not the parent's child entry.
-        if let Some(pos) = children.iter().position(|&k| k == old) {
-            children.remove(pos);
-        }
-    }
-    let insert_at = index.min(children.len());
-    children.insert(insert_at, new_key);
-    arena.set_children(parent, children.clone());
-    arena.with_element_taken(parent, |element, arena_ref| {
-        if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
-            let _previous = el.replace_children(arena_ref, children);
-        }
-    });
-    new_key
-}
-
 // --- RSX → ElementDescriptor conversion -------------------------------------
 
 /// Top-level: convert an `RsxNode` tree into a list of root descriptors
 /// (fragments flattened). Inherited text style derived from the provided
 /// viewport style.
+///
+/// Exposed for downstream test fixtures only; not part of the stable API.
+#[doc(hidden)]
 pub fn rsx_to_descriptors_with_context(
     root: &RsxNode,
     viewport_style: &Style,
@@ -2621,7 +2402,7 @@ pub fn rsx_to_descriptors_with_context(
 /// path scope + inherited style (not a viewport style). Used by
 /// TextArea projection rebuilding to emit descriptor trees that
 /// commit into an existing arena under the owning TextArea.
-pub fn rsx_to_descriptors_scoped_with_context(
+pub(crate) fn rsx_to_descriptors_scoped_with_context(
     root: &RsxNode,
     scope: &[u64],
     inherited_style: &Style,
@@ -2783,6 +2564,14 @@ fn convert_node_desc(
             if is_builtin_text_area_node(el) {
                 return convert_text_area_element_desc(el, path, global_path, inherited_text_style);
             }
+            if is_builtin_text_area_v2_node(el) {
+                return convert_text_area_v2_element_desc(
+                    el,
+                    path,
+                    global_path,
+                    inherited_text_style,
+                );
+            }
             if is_builtin_text_node(el) {
                 return convert_node(node, path, global_path, inherited_text_style)
                     .map(ElementDescriptor::leaf);
@@ -2894,26 +2683,18 @@ fn append_child_nodes_flattening_fragments_desc(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RenderedGlobalKeyEntry, ViewportRenderBackend, element_runtime_name,
-        identity_token_from_node_identity, register_tag_element_factory, rendered_node_id,
-        rsx_to_elements, rsx_to_elements_lossy, stable_node_id_from_parts,
-    };
-    use crate::ui::{
-        GlobalKey, RenderBackend, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx,
-    };
-    use crate::view::Viewport;
-    use crate::view::base_component::{Element, Text, TextArea, get_cursor_by_id, hit_test};
+    use super::{identity_token_from_node_identity, rendered_node_id};
+    use crate::ui::{GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx};
+    use crate::view::base_component::{Text, TextArea, get_cursor_by_id, hit_test};
     use crate::view::test_support::{commit_rsx_tree, measure_and_place};
     use crate::view::{
-        Element as HostElement, ElementStylePropSchema, Svg as HostSvg, SvgSource,
-        Text as HostText, TextArea as HostTextArea, TextStylePropSchema,
+        Element as HostElement, ElementStylePropSchema, Text as HostText,
+        TextArea as HostTextArea, TextStylePropSchema,
     };
-    use crate::{
+    use crate::style::{
         Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length,
         ParsedValue, PropertyId, Style, Unit,
     };
-    use std::sync::Arc;
 
     fn host_element_node() -> RsxNode {
         RsxNode::tagged("Element", RsxTagDescriptor::of::<HostElement>())
@@ -2925,10 +2706,6 @@ mod tests {
 
     fn host_text_area_node() -> RsxNode {
         RsxNode::tagged("TextArea", RsxTagDescriptor::of::<HostTextArea>())
-    }
-
-    fn host_svg_node() -> RsxNode {
-        RsxNode::tagged("Svg", RsxTagDescriptor::of::<HostSvg>())
     }
 
     fn empty_element_style() -> ElementStylePropSchema {
@@ -2969,15 +2746,6 @@ mod tests {
     }
 
     #[test]
-    fn key_prop_is_accepted_for_element_node() {
-        let node = host_element_node()
-            .with_prop("key", "feature-1")
-            .with_prop("style", empty_element_style());
-        let converted = rsx_to_elements(&node);
-        assert!(converted.is_ok());
-    }
-
-    #[test]
     fn rendered_node_id_prefers_tag_descriptor_type_name() {
         struct DescriptorA;
         struct DescriptorB;
@@ -2992,215 +2760,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn typed_factory_registration_uses_tag_descriptor_type_id() {
-        struct CustomContainer;
-
-        register_tag_element_factory::<CustomContainer>(Arc::new(|node, path| {
-            let mut element = Element::new_with_id(
-                stable_node_id_from_parts(element_runtime_name(node), path, None),
-                0.0,
-                0.0,
-                64.0,
-                32.0,
-            );
-            element.apply_style(Style::new());
-            Ok(Box::new(element))
-        }));
-
-        let node = RsxNode::tagged(
-            "CustomContainer",
-            crate::ui::RsxTagDescriptor::of::<CustomContainer>(),
-        );
-        let converted = rsx_to_elements(&node).expect("typed factory should convert");
-        assert_eq!(converted.len(), 1);
-    }
-
-    #[test]
-    fn metadata_key_is_accepted_for_element_node() {
-        let node = host_element_node()
-            .with_key(GlobalKey::from("feature-1"))
-            .with_invocation_type("Button")
-            .with_prop("style", empty_element_style());
-        let converted = rsx_to_elements(&node);
-        assert!(converted.is_ok());
-    }
-
-    #[test]
-    fn svg_node_accepts_typed_source_prop() {
-        let node = host_svg_node()
-            .with_prop(
-                "source",
-                SvgSource::Content(
-                    r#"<svg width="8" height="4" xmlns="http://www.w3.org/2000/svg"></svg>"#
-                        .to_string(),
-                ),
-            )
-            .with_prop("style", empty_element_style());
-        let converted = rsx_to_elements(&node);
-        assert!(converted.is_ok());
-    }
-
-    #[test]
-    fn global_key_registry_keeps_fragment_path_without_node_id() {
-        let global_key = GlobalKey::from("fragment-root");
-        let node = RsxNode::fragment(vec![
-            host_element_node().with_prop("style", empty_element_style()),
-        ])
-        .with_key(global_key)
-        .with_invocation_type("Button");
-
-        let registry = super::collect_global_key_registry(&node).expect("registry should build");
-        let entry = registry.get(&global_key).expect("global key entry");
-        assert_eq!(
-            entry,
-            &RenderedGlobalKeyEntry {
-                path: Vec::new(),
-                node_id: None,
-                invocation_type: "Button",
-            }
-        );
-    }
-
-    #[test]
-    fn backend_rebuilds_global_key_registry_after_replace_root() {
-        let global_key = GlobalKey::from("moving-root");
-        let first_root = host_element_node()
-            .with_prop("style", empty_element_style())
-            .with_child(
-                host_element_node()
-                    .with_prop("style", empty_element_style())
-                    .with_child(
-                        host_element_node()
-                            .with_key(global_key)
-                            .with_invocation_type("Button")
-                            .with_prop("style", empty_element_style()),
-                    ),
-            );
-        let second_root = host_element_node()
-            .with_prop("style", empty_element_style())
-            .with_child(host_element_node().with_prop("style", empty_element_style()))
-            .with_child(
-                host_element_node()
-                    .with_prop("style", empty_element_style())
-                    .with_child(
-                        host_element_node()
-                            .with_key(global_key)
-                            .with_invocation_type("Button")
-                            .with_prop("style", empty_element_style()),
-                    ),
-            );
-
-        let mut viewport = Viewport::new();
-        let mut backend = ViewportRenderBackend::new(&mut viewport);
-        backend.create_root(&first_root).expect("create root");
-        let first = backend
-            .rendered_global_key(global_key)
-            .expect("first registry entry")
-            .clone();
-        backend
-            .replace_root(0, &second_root)
-            .expect("replace root should rebuild registry");
-        let second = backend
-            .rendered_global_key(global_key)
-            .expect("second registry entry")
-            .clone();
-        let second_global_node = &second_root.children().unwrap()[1].children().unwrap()[0];
-
-        assert_ne!(first.path, second.path);
-        assert_eq!(first.invocation_type, "Button");
-        assert_eq!(second.invocation_type, "Button");
-        assert_eq!(first.node_id, second.node_id);
-        assert_eq!(
-            second.node_id,
-            rendered_node_id(
-                second_global_node,
-                &second.path,
-                super::current_global_node_path(second_global_node, None).as_ref(),
-            )
-        );
-    }
-
-    #[test]
-    fn global_key_subtree_node_id_is_stable_across_parent_move() {
-        let global_key = GlobalKey::from("stable-subtree");
-        let first_root = host_element_node()
-            .with_prop("style", empty_element_style())
-            .with_child(
-                host_element_node()
-                    .with_prop("style", empty_element_style())
-                    .with_child(
-                        host_element_node()
-                            .with_key(global_key)
-                            .with_invocation_type("Card")
-                            .with_prop("style", empty_element_style())
-                            .with_child(
-                                host_element_node().with_prop("style", empty_element_style()),
-                            ),
-                    ),
-            );
-        let second_root = host_element_node()
-            .with_prop("style", empty_element_style())
-            .with_child(host_element_node().with_prop("style", empty_element_style()))
-            .with_child(
-                host_element_node()
-                    .with_prop("style", empty_element_style())
-                    .with_child(
-                        host_element_node()
-                            .with_key(global_key)
-                            .with_invocation_type("Card")
-                            .with_prop("style", empty_element_style())
-                            .with_child(
-                                host_element_node().with_prop("style", empty_element_style()),
-                            ),
-                    ),
-            );
-
-        let first_registry =
-            super::collect_global_key_registry(&first_root).expect("first registry");
-        let second_registry =
-            super::collect_global_key_registry(&second_root).expect("second registry");
-        let first_entry = first_registry.get(&global_key).expect("first global entry");
-        let second_entry = second_registry
-            .get(&global_key)
-            .expect("second global entry");
-
-        assert_ne!(first_entry.path, second_entry.path);
-        assert_eq!(first_entry.node_id, second_entry.node_id);
-    }
-
-    #[test]
-    fn element_anchor_prop_and_style_position_are_supported() {
-        let root_style = ElementStylePropSchema {
-            width: Some(Length::px(120.0)),
-            height: Some(Length::px(80.0)),
-            ..empty_element_style()
-        };
-        let child_style = ElementStylePropSchema {
-            position: Some(
-                crate::Position::absolute()
-                    .anchor("card_anchor")
-                    .top(Length::px(8.0)),
-            ),
-            width: Some(Length::px(20.0)),
-            height: Some(Length::px(10.0)),
-            ..empty_element_style()
-        };
-        let tree = host_element_node()
-            .with_prop("anchor", "card_anchor")
-            .with_prop("style", root_style)
-            .with_child(host_element_node().with_prop("style", child_style));
-        let converted = rsx_to_elements(&tree);
-        assert!(converted.is_ok());
-    }
-
     fn style_bg_border(
         bg_hex: &str,
         border_hex: &str,
         border_width: f32,
     ) -> ElementStylePropSchema {
         ElementStylePropSchema {
-            background: Some(crate::Background::Color(Box::new(
+            background: Some(crate::style::Background::Color(Box::new(
                 IntoColor::<Color>::into_color(Color::hex(bg_hex)),
             ))),
             border: Some(Border::uniform(
@@ -3469,41 +3035,11 @@ mod tests {
     }
 
     #[test]
-    fn nested_fragment_children_are_flattened_during_conversion() {
-        let tree = host_element_node()
-            .with_prop("style", style_with_size(empty_element_style(), 120.0, 60.0))
-            .with_child(RsxNode::fragment(vec![
-                host_text_node()
-                    .with_prop("style", text_style_with_size(16.0, 16.0))
-                    .with_child(RsxNode::text("A")),
-                RsxNode::fragment(vec![
-                    host_text_node()
-                        .with_prop("style", text_style_with_size(16.0, 16.0))
-                        .with_child(RsxNode::text("B")),
-                ]),
-            ]));
-
-        let converted = rsx_to_elements(&tree);
-        assert!(converted.is_ok());
-    }
-
-    #[test]
-    fn lossy_conversion_skips_bad_nodes_and_keeps_good_nodes() {
-        let good = host_element_node().with_prop("style", empty_element_style());
-        let bad = host_element_node().with_prop("not_exists", true);
-        let tree = RsxNode::fragment(vec![good, bad]);
-
-        let (converted, errors) = rsx_to_elements_lossy(&tree);
-        assert_eq!(converted.len(), 1);
-        assert_eq!(errors.len(), 1);
-    }
-
-    #[test]
     fn cursor_style_inherits_to_child_when_child_has_no_cursor() {
         let parent_style = ElementStylePropSchema {
             width: Some(Length::px(100.0)),
             height: Some(Length::px(100.0)),
-            background: Some(crate::Background::Color(Box::new(
+            background: Some(crate::style::Background::Color(Box::new(
                 IntoColor::<Color>::into_color(Color::hex("#101010")),
             ))),
             cursor: Some(Cursor::Pointer),
@@ -3513,7 +3049,7 @@ mod tests {
         let child_style = ElementStylePropSchema {
             width: Some(Length::px(40.0)),
             height: Some(Length::px(40.0)),
-            background: Some(crate::Background::Color(Box::new(
+            background: Some(crate::style::Background::Color(Box::new(
                 IntoColor::<Color>::into_color(Color::hex("#ff0000")),
             ))),
             ..empty_element_style()
@@ -3539,7 +3075,7 @@ mod tests {
         let parent_style = ElementStylePropSchema {
             width: Some(Length::px(200.0)),
             height: Some(Length::px(80.0)),
-            background: Some(crate::Background::Color(Box::new(
+            background: Some(crate::style::Background::Color(Box::new(
                 IntoColor::<Color>::into_color(Color::hex("#101010")),
             ))),
             cursor: Some(Cursor::Pointer),
@@ -3760,19 +3296,6 @@ mod tests {
     }
 
     #[test]
-    fn textarea_rejects_legacy_color_prop() {
-        let tree = host_text_area_node()
-            .with_prop("color", "#ff0000")
-            .with_prop("content", "hello")
-            .with_prop("multiline", false);
-
-        let error = rsx_to_elements(&tree)
-            .err()
-            .expect("legacy color prop should fail");
-        assert!(error.contains("unknown prop `color` on <TextArea>"));
-    }
-
-    #[test]
     fn textarea_accepts_on_blur_prop() {
         let tree = rsx! {
             <crate::view::TextArea
@@ -3879,5 +3402,140 @@ mod tests {
         let child_snapshot = arena.get(child_key).unwrap().element.box_model_snapshot();
         assert_eq!(root_snapshot.height, 0.0);
         assert_eq!(child_snapshot.height, 0.0);
+    }
+
+    // ---------- TextArea v2 (P2 acceptance) ----------
+
+    fn host_text_area_v2_node() -> RsxNode {
+        RsxNode::tagged(
+            "TextArea2",
+            RsxTagDescriptor::of::<crate::view::TextArea2>(),
+        )
+    }
+
+    fn measured_run_size(
+        arena: &crate::view::node_arena::NodeArena,
+        text_area_key: crate::view::node_arena::NodeKey,
+    ) -> (f32, f32, bool) {
+        let child_keys = arena.children_of(text_area_key);
+        let run_key = *child_keys.first().expect("TextArea2 spawns one Run");
+        let snapshot = arena.get(run_key).unwrap().element.box_model_snapshot();
+        let is_run = arena
+            .get(run_key)
+            .unwrap()
+            .element
+            .as_any()
+            .is::<crate::view::base_component::text_area_v2::TextAreaTextRun>();
+        (snapshot.width, snapshot.height, is_run)
+    }
+
+    fn subtree_has_text_descendant(
+        arena: &crate::view::node_arena::NodeArena,
+        root: crate::view::node_arena::NodeKey,
+    ) -> bool {
+        let mut stack = arena.children_of(root);
+        while let Some(key) = stack.pop() {
+            if arena
+                .get(key)
+                .is_some_and(|node| node.element.as_any().is::<Text>())
+            {
+                return true;
+            }
+            stack.extend(arena.children_of(key));
+        }
+        false
+    }
+
+    #[test]
+    fn text_area_v2_content_spawns_a_text_run_and_shapes() {
+        let tree = host_text_area_v2_node().with_prop("content", "hello world");
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
+
+        let (w, h, is_run) = measured_run_size(&arena, root);
+        assert!(is_run, "TextArea2's first child must be a TextAreaTextRun");
+        assert!(w > 0.0, "Run must have shaped width, got {w}");
+        assert!(h > 0.0, "Run must have shaped height, got {h}");
+
+        // TextArea2 itself wraps the run and reports the same content extent.
+        let ta_snapshot = arena.get(root).unwrap().element.box_model_snapshot();
+        assert!(ta_snapshot.width >= w - 0.5);
+        assert!(ta_snapshot.height >= h - 0.5);
+    }
+
+    #[test]
+    fn text_area_v2_projection_applies_on_first_measure() {
+        let tree = host_text_area_v2_node()
+            .with_prop("content", "abXYZcd")
+            .with_prop(
+                "on_render",
+                crate::ui::on_text_area_render(
+                    |render: &mut crate::view::base_component::TextAreaRenderString| {
+                        render.range(2..5, |_text_area_node| {
+                            host_element_node()
+                                .with_child(host_text_node().with_child(RsxNode::text("XYZ")))
+                        });
+                    },
+                ),
+            );
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
+
+        let children = arena.children_of(root);
+        assert_eq!(
+            children.len(),
+            3,
+            "first measure should rebuild into Run / projection / Run",
+        );
+        assert!(
+            !arena
+                .get(children[1])
+                .unwrap()
+                .element
+                .as_any()
+                .is::<crate::view::base_component::text_area_v2::TextAreaTextRun>(),
+            "middle child should be projection output, not the original plain Run",
+        );
+        assert!(
+            subtree_has_text_descendant(&arena, children[1]),
+            "projection subtree should contain the projected Text on the first frame",
+        );
+    }
+
+    #[test]
+    fn text_area_v2_empty_content_with_placeholder_spawns_placeholder_run() {
+        let tree = host_text_area_v2_node().with_prop("placeholder", "type here");
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
+
+        let (_, _, is_run) = measured_run_size(&arena, root);
+        assert!(is_run, "Placeholder fallback must spawn a Run");
+        let run_key = *arena.children_of(root).first().unwrap();
+        let is_placeholder = arena
+            .get(run_key)
+            .unwrap()
+            .element
+            .as_any()
+            .downcast_ref::<crate::view::base_component::text_area_v2::TextAreaTextRun>()
+            .unwrap()
+            .is_placeholder;
+        assert!(is_placeholder, "placeholder Run must carry is_placeholder=true");
+    }
+
+    #[test]
+    fn text_area_v2_no_content_no_placeholder_has_no_children() {
+        let tree = host_text_area_v2_node();
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = *roots.first().expect("single root");
+        measure_and_place(&mut arena, root, std_constraints(), std_placement());
+
+        assert!(arena.children_of(root).is_empty());
     }
 }

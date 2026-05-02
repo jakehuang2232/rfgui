@@ -7,7 +7,7 @@ use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams,
 };
 use crate::view::{ImageFit, ImageSampling, ImageSource};
-use crate::{ParsedValue, PropertyId, Style};
+use crate::style::{ParsedValue, PropertyId, Style};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -71,7 +71,7 @@ impl Image {
         self.source_handle = acquire_image_resource(&source);
     }
 
-    pub fn apply_style(&mut self, style: crate::Style) {
+    pub fn apply_style(&mut self, style: crate::style::Style) {
         self.element.apply_style(style);
     }
 
@@ -552,11 +552,11 @@ pub(crate) fn compute_image_mapping(
 #[cfg(test)]
 mod tests {
     use super::Image;
-    use crate::Layout;
+    use crate::style::Layout;
     use crate::view::ImageSource;
     use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement, Layoutable};
     use crate::view::test_support::{commit_child, commit_element, new_test_arena};
-    use crate::{Length, ParsedValue, PropertyId, Style};
+    use crate::style::{Length, ParsedValue, PropertyId, Style};
 
     fn rgba_source(width: u32, height: u32) -> ImageSource {
         ImageSource::Rgba {
@@ -601,7 +601,7 @@ mod tests {
         let mut image_style = Style::new();
         image_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().shrink(1.0)),
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
         );
         image.apply_style(image_style);
 
@@ -611,7 +611,7 @@ mod tests {
         sibling_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
         sibling_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().shrink(1.0)),
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
         );
         sibling.apply_style(sibling_style);
 

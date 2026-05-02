@@ -20,16 +20,15 @@
 #![cfg(target_arch = "wasm32")]
 
 use crate::winit_key_map::{physical_key_to_rf, winit_modifiers_to_rf};
-use rfgui::SurfaceFormatPreference;
 use rfgui::app::{App, AppConfig, AppEvent, WheelConfig};
 use rfgui::platform::web_backend::{CanvasCursorSink, InMemoryClipboard};
 use rfgui::platform::{
-    Clipboard, CursorSink, Modifiers, PlatformImePreedit, PlatformKeyEvent,
-    PlatformPointerButton, PlatformPointerEvent, PlatformPointerEventKind, PlatformServices,
-    PlatformTextInput, PlatformWheelEvent, PointerType, RedrawRequester,
+    Clipboard, CursorSink, PlatformImePreedit, PlatformKeyEvent, PlatformPointerButton,
+    PlatformPointerEvent, PlatformPointerEventKind, PlatformServices, PlatformTextInput,
+    PlatformWheelEvent, PointerType, RedrawRequester,
 };
 use rfgui::ui::run_due_timers;
-use rfgui::view::viewport::{RenderFrameResult, Viewport};
+use rfgui::view::viewport::{RenderFrameResult, SurfaceFormatPreference, Viewport};
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -224,7 +223,13 @@ impl Runner {
                 paste_needed = true;
             }
             let _ = requests.window_commands;
-            let _ = requests.ime_commands;
+            if !requests.ime_commands.is_empty()
+                && let Some(window) = self.window.as_ref()
+            {
+                for cmd in &requests.ime_commands {
+                    apply_ime_command(window, cmd);
+                }
+            }
             let _ = requests.pending_drags;
         }
         if paste_needed {
@@ -821,7 +826,7 @@ impl RedrawRequester for WebRedrawRequester {
 /// Stand-in cursor sink used while the canvas isn't available yet.
 struct NoopCursorSink;
 impl CursorSink for NoopCursorSink {
-    fn set_cursor(&mut self, _cursor: rfgui::Cursor) {}
+    fn set_cursor(&mut self, _cursor: rfgui::style::Cursor) {}
 }
 
 fn lookup_app_canvas() -> Option<HtmlCanvasElement> {
@@ -896,5 +901,25 @@ fn platform_button_to_viewport(
         PlatformPointerButton::Back => Vb::Back,
         PlatformPointerButton::Forward => Vb::Forward,
         PlatformPointerButton::Other(code) => Vb::Other(code),
+    }
+}
+
+fn apply_ime_command(window: &Window, cmd: &rfgui::platform::ImeCommand) {
+    use rfgui::platform::ImeCommand;
+    match cmd {
+        ImeCommand::Enable => {
+            window.set_ime_allowed(true);
+        }
+        ImeCommand::Disable => {
+            window.set_ime_allowed(false);
+        }
+        ImeCommand::SetCursorRect(x, y, w, h) => {
+            use winit::dpi::LogicalPosition;
+            use winit::dpi::LogicalSize;
+            window.set_ime_cursor_area(
+                LogicalPosition::new(*x as f64, *y as f64),
+                LogicalSize::new(*w as f64, *h as f64),
+            );
+        }
     }
 }

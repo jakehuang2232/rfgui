@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{Layout, Length, Padding};
+use crate::rfgui::style::{Layout, Length, Padding};
 use crate::rfgui_components::{
     BranchNode, Button, ButtonSize, ButtonVariant, DropPosition, LeafNode, Switch, Theme,
     TreeMoveEvent, TreeNode, TreeView,

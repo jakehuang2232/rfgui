@@ -699,7 +699,7 @@ impl Element {
         to: TransformOrigin,
         progress: f32,
     ) {
-        self.transform_origin = crate::interpolate_transform_origin_with_reference_box(
+        self.transform_origin = crate::style::interpolate_transform_origin_with_reference_box(
             from,
             to,
             progress,
@@ -932,7 +932,7 @@ impl Element {
         }
         let animator = next_animator
             .clone()
-            .unwrap_or_else(|| crate::Animator::from_vec(Vec::new()));
+            .unwrap_or_else(|| crate::style::Animator::from_vec(Vec::new()));
         self.transition_requests.get_or_insert_with(Default::default).animation
             .push(crate::transition::AnimationRequest {
                 target: self.core.id,

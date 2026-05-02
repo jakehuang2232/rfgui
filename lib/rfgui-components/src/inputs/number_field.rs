@@ -4,7 +4,8 @@ use rfgui::ui::{
     props, rsx, use_state,
 };
 use rfgui::view::{Element, TextArea};
-use rfgui::{Align, Layout, Length, Padding, TextWrap, flex};
+use rfgui::style::flex;
+use rfgui::style::{Align, Layout, Length, Padding, TextWrap};
 
 pub struct NumberField<T: NumberFieldValue = f64>(std::marker::PhantomData<T>);
 

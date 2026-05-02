@@ -4,7 +4,7 @@
 //! real window, clipboard, or cursor. Zero external dependencies.
 
 use super::{Clipboard, CursorSink, RedrawRequester};
-use crate::Cursor;
+use crate::style::Cursor;
 
 #[derive(Default)]
 pub struct NullClipboard {

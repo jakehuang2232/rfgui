@@ -1,4 +1,4 @@
-use crate::rfgui::ColorLike;
+use crate::rfgui::style::ColorLike;
 use crate::rfgui::ui::{RsxNode, component, rsx, use_mount, use_state, use_viewport};
 use crate::rfgui_components::use_theme;
 use crate::scene_windows::about_panel::Build as AboutPanel;
@@ -8,6 +8,7 @@ use crate::scene_windows::inspector_panel::build as build_inspector_panel;
 use crate::scene_windows::particle_demo::ParticleDemo;
 use crate::scene_windows::render_test::RenderTest;
 use crate::scene_windows::textarea_test::TextareaTest;
+use crate::scene_windows::textarea_v2_test::TextareaV2Test;
 use crate::scene_windows::transition_lab::TransitionLab;
 use crate::window_manager::WindowManager;
 
@@ -52,6 +53,13 @@ pub fn MainScene() -> RsxNode {
         "Textarea Test",
         vec![rsx! {
             <TextareaTest theme={theme.clone()} />
+        }],
+        (520.0, 360.0),
+    );
+    window_manager.push(
+        "Textarea V2 Test",
+        vec![rsx! {
+            <TextareaV2Test theme={theme.clone()} />
         }],
         (520.0, 360.0),
     );

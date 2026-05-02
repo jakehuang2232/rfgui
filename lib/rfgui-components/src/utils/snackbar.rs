@@ -1,7 +1,7 @@
 use crate::use_theme;
 use rfgui::ui::{RsxComponent, RsxNode, component, props, rsx, use_timeout, RsxKey};
 use rfgui::view::Element;
-use rfgui::{Align, Anchor, ClipMode, JustifyContent, Layout, Length, Padding, Position};
+use rfgui::style::{Align, Anchor, ClipMode, JustifyContent, Layout, Length, Padding, Position};
 use std::rc::Rc;
 use std::time::Duration;
 

@@ -6,7 +6,7 @@ use rfgui::ui::{
     global_state, props, rsx,
 };
 use rfgui::view::Element;
-use rfgui::{Border, ClipMode, Color, ColorLike, CrossSize, Layout, Length, Position};
+use rfgui::style::{Border, ClipMode, Color, ColorLike, CrossSize, Layout, Length, Position};
 use std::any::TypeId;
 use std::rc::Rc;
 

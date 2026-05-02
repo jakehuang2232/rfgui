@@ -1,9 +1,9 @@
 use crate::rfgui::ui::{RsxNode, rsx};
 use crate::rfgui::view::Element;
-use crate::rfgui::{Layout, Length, Padding};
+use crate::rfgui::style::{Layout, Length, Padding};
 use crate::rfgui_components::Theme;
 use crate::utils::output_image_source;
-use rfgui::Align;
+use rfgui::style::Align;
 use rfgui::ui::component;
 use rfgui::view::{Image, ImageFit, ImageSampling};
 

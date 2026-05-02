@@ -1,9 +1,9 @@
 use crate::rfgui::ui::{RsxNode, component, rsx};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{Angle, Layout, Length, Rotate, Transform};
+use crate::rfgui::style::{Angle, Layout, Length, Rotate, Transform};
 use crate::rfgui_components::{CloseIcon, Theme};
-use rfgui::Repeat::Infinite;
-use rfgui::{Animation, Animator, FillMode, Keyframe};
+use rfgui::style::Repeat::Infinite;
+use rfgui::style::{Animation, Animator, FillMode, Keyframe};
 use rfgui_components::Accordion;
 
 #[component]

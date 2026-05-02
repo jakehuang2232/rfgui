@@ -147,6 +147,7 @@ pub(crate) fn compute_flex_info(
                 cross: child_sizes[child_index].1,
                 main_offset: 0.0,
                 cross_offset: 0.0,
+                force_break_after: false,
             })
             .collect::<Vec<_>>();
         return FlexLayoutInfo {
@@ -183,7 +184,11 @@ pub(crate) fn compute_flex_info(
                 child_node.element.get_inline_nodes_size(arena)
             } else {
                 let (w, h) = child_node.element.measured_size();
-                vec![InlineNodeSize { width: w, height: h }]
+                vec![InlineNodeSize {
+                    width: w,
+                    height: h,
+                    ..Default::default()
+                }]
             }
         };
         if node_sizes.is_empty() {
@@ -194,6 +199,7 @@ pub(crate) fn compute_flex_info(
                 cross: 0.0,
                 main_offset: 0.0,
                 cross_offset: 0.0,
+                force_break_after: false,
             });
             continue;
         }
@@ -215,6 +221,7 @@ pub(crate) fn compute_flex_info(
                 cross: node_cross,
                 main_offset: 0.0,
                 cross_offset: 0.0,
+                force_break_after: node.force_break_after,
             });
         }
     }
@@ -225,6 +232,7 @@ pub(crate) fn compute_flex_info(
     let mut current = Vec::new();
     let mut current_main = 0.0;
     let mut current_cross = 0.0;
+    let mut force_break_pending = false;
 
     for item in inline_nodes {
         let item_main = item.main;
@@ -239,7 +247,9 @@ pub(crate) fn compute_flex_info(
         } else {
             current_main + item_main
         };
-        if wrap && !current.is_empty() && next_main > main_limit {
+        let must_wrap = !current.is_empty()
+            && (force_break_pending || (wrap && next_main > main_limit));
+        if must_wrap {
             lines.push(current);
             line_main_sum.push(current_main);
             line_cross_max.push(current_cross);
@@ -247,6 +257,7 @@ pub(crate) fn compute_flex_info(
             current_main = 0.0;
             current_cross = 0.0;
         }
+        force_break_pending = item.force_break_after;
         if current.is_empty() {
             current_main = item_main;
             current_cross = item_cross;

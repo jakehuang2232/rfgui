@@ -5,10 +5,7 @@ use rfgui::ui::{
     ClickEvent, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_context,
 };
 use rfgui::view::Element;
-use rfgui::{
-    Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition,
-    TransitionProperty, Transitions,
-};
+use rfgui::style::{Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition, TransitionProperty, Transitions};
 
 pub struct ToggleButton;
 

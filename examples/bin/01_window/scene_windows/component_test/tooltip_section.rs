@@ -1,6 +1,7 @@
+use rfgui::style::Padding;
 use crate::rfgui::ui::{PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxNode, component, rsx};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{Layout, Length};
+use crate::rfgui::style::{Layout, Length};
 use crate::rfgui_components::{
     Button, ButtonVariant, FavoriteIcon, Theme, Tooltip, TooltipPlacement, use_tooltip_ref,
 };
@@ -23,9 +24,9 @@ pub fn TooltipSection(theme: Theme) -> RsxNode {
             <Text style={{ color: theme.color.text.secondary.clone() }}>Button with tooltip (placement)</Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.lg,
-                padding: rfgui::Padding::uniform(theme.spacing.md),
+                padding: Padding::uniform(theme.spacing.md),
             }}>
                 <Button
                     tooltip={Some(rsx! {
@@ -52,9 +53,9 @@ pub fn TooltipSection(theme: Theme) -> RsxNode {
             <Text style={{ color: theme.color.text.secondary.clone() }}>Start / End variants</Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.lg,
-                padding: rfgui::Padding::uniform(theme.spacing.md),
+                padding: Padding::uniform(theme.spacing.md),
             }}>
                 <Button
                     variant={Some(ButtonVariant::Outlined)}
@@ -87,14 +88,14 @@ pub fn TooltipSection(theme: Theme) -> RsxNode {
             </Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.lg,
-                padding: rfgui::Padding::uniform(theme.spacing.md),
+                padding: Padding::uniform(theme.spacing.md),
             }}>
                 <Element
                     style={{
-                        padding: rfgui::Padding::uniform(theme.spacing.sm),
-                        border: rfgui::Border::uniform(Length::px(0.5), theme.color.border.as_ref()),
+                        padding: rfgui::style::Padding::uniform(theme.spacing.sm),
+                        border: rfgui::style::Border::uniform(Length::px(0.5), theme.color.border.as_ref()),
                         border_radius: theme.radius.sm,
                     }}
                     on_pointer_enter={on_enter}
@@ -106,7 +107,7 @@ pub fn TooltipSection(theme: Theme) -> RsxNode {
                         placement={TooltipPlacement::Bottom}
                     >
                         <Element style={{
-                            layout: Layout::flow().row().no_wrap().align(rfgui::Align::Center),
+                            layout: Layout::flow().row().no_wrap().align(rfgui::style::Align::Center),
                             gap: theme.spacing.xs,
                         }}>
                             <FavoriteIcon style={{ font_size: theme.typography.size.xs }} />

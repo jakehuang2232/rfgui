@@ -6,7 +6,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::{
     LayoutField, LayoutSample, RunResult, StyleField, StyleSample, StyleValue, TimeFunction,
 };
-use crate::TransitionTiming;
+use crate::style::TransitionTiming;
 use crate::style::{
     Animator, Direction, FillMode, ParsedValue, PlayState, PropertyId, Repeat, Style,
 };
@@ -247,7 +247,7 @@ struct ProgressSample {
     keep_running: bool,
 }
 
-fn compile_keyframes(keyframes: &[crate::Keyframe]) -> Vec<CompiledKeyframe> {
+fn compile_keyframes(keyframes: &[crate::style::Keyframe]) -> Vec<CompiledKeyframe> {
     keyframes
         .iter()
         .map(|keyframe| CompiledKeyframe {
@@ -374,10 +374,10 @@ fn compile_layout_fields(style: &Style) -> FxHashMap<LayoutField, f32> {
     out
 }
 
-fn resolve_numeric_length(length: crate::Length) -> Option<f32> {
+fn resolve_numeric_length(length: crate::style::Length) -> Option<f32> {
     match length {
-        crate::Length::Px(value) => Some(value),
-        crate::Length::Zero => Some(0.0),
+        crate::style::Length::Px(value) => Some(value),
+        crate::style::Length::Zero => Some(0.0),
         _ => None,
     }
 }
@@ -624,9 +624,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Animation, Animator, Color, Keyframe, Opacity, ParsedValue, PropertyId, Repeat, Style,
-    };
+    use crate::style::{Animation, Animator, Color, Keyframe, Opacity, ParsedValue, PropertyId, Repeat, Style};
 
     fn opacity_style(value: f32) -> Style {
         let mut style = Style::new();

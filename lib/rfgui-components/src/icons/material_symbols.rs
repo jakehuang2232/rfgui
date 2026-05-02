@@ -1,6 +1,7 @@
 use rfgui::ui::{RsxComponent, RsxNode, props, rsx};
 use rfgui::view::{Element, ElementStylePropSchema, Text};
-use rfgui::{FontFamily, FontSize, TextWrap, register_font_bytes};
+use rfgui::style::{FontFamily, FontSize, TextWrap};
+use rfgui::view::register_font_bytes;
 use std::sync::Once;
 
 const MATERIAL_SYMBOLS_OUTLINED_FONT_BYTES: &[u8] =

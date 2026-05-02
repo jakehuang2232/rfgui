@@ -7,11 +7,8 @@ use rfgui::ui::{
     PointerDownHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{
-    Align, Angle, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout,
-    Length, Operator, Position, Rotate, ScrollDirection, Transform, Transition, TransitionProperty,
-    flex,
-};
+use rfgui::style::flex;
+use rfgui::style::{Align, Angle, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout, Length, Operator, Position, Rotate, ScrollDirection, Transform, Transition, TransitionProperty};
 
 pub struct Select<DataType = (), ValueType = ()>(std::marker::PhantomData<(DataType, ValueType)>)
 where

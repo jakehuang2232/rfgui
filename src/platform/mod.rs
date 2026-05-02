@@ -9,7 +9,7 @@
 //! (re-exported via `wgpu::rwh`), because the wgpu surface creation API is
 //! expressed in its terms and is itself cross-platform.
 
-use crate::Cursor;
+use crate::style::Cursor;
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 
 pub mod callback;

@@ -1067,8 +1067,29 @@ impl FrameGraph {
             }
         }
         self.external_sinks.hash(&mut hasher);
+        // Hash the (handle index → stable_key) mapping for persistent
+        // resources. Pass-internal handle references compile down to a
+        // `texture_stable_keys[handle]` lookup; if the mapping reshuffles
+        // between frames (e.g. window-order swap changes declaration order
+        // so two persistent stable_keys exchange handle indices), a stale
+        // cache would resolve a pass's handle to the OLD frame's
+        // stable_key — connecting the pass to the wrong physical texture.
+        // Folding the mapping into the topology hash forces a recompile
+        // exactly when the resolution would otherwise drift.
         self.textures.len().hash(&mut hasher);
+        for (idx, metadata) in self.texture_metadata.iter().enumerate() {
+            if let Some(stable_key) = metadata.stable_key {
+                idx.hash(&mut hasher);
+                stable_key.hash(&mut hasher);
+            }
+        }
         self.buffers.len().hash(&mut hasher);
+        for (idx, metadata) in self.buffer_metadata.iter().enumerate() {
+            if let Some(stable_key) = metadata.stable_key {
+                idx.hash(&mut hasher);
+                stable_key.hash(&mut hasher);
+            }
+        }
         hasher.finish()
     }
 

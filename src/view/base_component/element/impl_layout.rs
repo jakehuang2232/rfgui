@@ -1045,15 +1045,15 @@ impl Element {
         PLACEMENT_RUNTIME.with(|runtime| {
             let runtime = runtime.borrow();
             match anchor_ref {
-                crate::Anchor::Name(name) => runtime
+                crate::style::Anchor::Name(name) => runtime
                     .anchors
                     .get(name.as_str())
                     .copied()
                     .unwrap_or(fallback),
-                crate::Anchor::Parent => {
+                crate::style::Anchor::Parent => {
                     runtime.ancestor_stack.last().copied().unwrap_or(fallback)
                 }
-                crate::Anchor::Viewport => {
+                crate::style::Anchor::Viewport => {
                     let vw = runtime.viewport_width.max(0.0);
                     let vh = runtime.viewport_height.max(0.0);
                     if vw <= 0.0 && vh <= 0.0 {
@@ -1073,7 +1073,7 @@ impl Element {
                         }
                     }
                 }
-                crate::Anchor::Ancestor(n) => {
+                crate::style::Anchor::Ancestor(n) => {
                     let stack = &runtime.ancestor_stack;
                     if *n == 0 {
                         return stack.last().copied().unwrap_or(fallback);

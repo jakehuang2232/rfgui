@@ -1,8 +1,6 @@
 use crate::rfgui::ui::{RsxNode, rsx};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{
-    Border, BorderRadius, Color, ColorLike, Layout, Length, Padding,
-};
+use crate::rfgui::style::{Border, BorderRadius, Color, ColorLike, Layout, Length, Padding};
 use crate::rfgui_components::Theme;
 
 fn inline_chip(

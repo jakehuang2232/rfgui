@@ -46,7 +46,8 @@ use crate::view::promotion_builder::{
     collect_debug_subtree_signatures, collect_promoted_layer_updates, collect_promotion_candidates,
 };
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
-use crate::{ColorLike, Cursor, ElementStylePropSchema, HexColor, PropertyId, Style};
+use crate::style::{ColorLike, Cursor, HexColor, PropertyId, Style};
+use crate::view::ElementStylePropSchema;
 
 use std::ops::Sub;
 use std::sync::Arc;
@@ -644,12 +645,12 @@ impl Viewport {
         self.gpu.surface_target_format
     }
 
-    /// Format for intermediate/offscreen render targets. Stays non-sRGB so
-    /// the pipeline performs blending in a single color space; the final
-    /// linear→sRGB conversion only happens when writing the surface via
-    /// `present_surface_pass`.
+    /// Format for intermediate/offscreen render targets. Matches the surface
+    /// (sRGB-suffixed when the surface is sRGB) so 8-bit storage keeps dark
+    /// precision. HW auto-decodes sampled values to linear and auto-encodes
+    /// stored values, so blending math still runs in linear space.
     pub fn offscreen_format(&self) -> wgpu::TextureFormat {
-        self.gpu.surface_target_format.remove_srgb_suffix()
+        self.gpu.surface_target_format
     }
 
     pub fn surface_size(&self) -> (u32, u32) {

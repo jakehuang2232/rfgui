@@ -1,4 +1,4 @@
-use crate::rfgui::register_element_factory;
+use crate::rfgui::view::register_element_factory;
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
     PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent, RsxNode, ViewportHandle,
@@ -569,8 +569,8 @@ impl Layoutable for ParticleCanvas {
         self.target_h = h;
     }
 
-    fn flex_props(&self) -> rfgui::base_component::FlexProps {
-        rfgui::base_component::FlexProps {
+    fn flex_props(&self) -> rfgui::view::base_component::FlexProps {
+        rfgui::view::base_component::FlexProps {
             grow: 1.0,
             allows_cross_stretch_when_row: true,
             allows_cross_stretch_when_col: true,
@@ -609,6 +609,7 @@ impl Layoutable for ParticleCanvas {
         vec![InlineNodeSize {
             width: self.target_w,
             height: self.target_h,
+            ..Default::default()
         }]
     }
     fn place_inline(&mut self, p: InlinePlacement, arena: &mut rfgui::view::NodeArena) {

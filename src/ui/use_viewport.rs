@@ -16,7 +16,7 @@
 //! `ViewportAction`s into a thread-local buffer; the viewport drains and
 //! applies the buffer at the top of each render pass.
 
-use crate::Color;
+use crate::style::Color;
 use std::cell::RefCell;
 
 thread_local! {

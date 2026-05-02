@@ -1,6 +1,6 @@
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{Layout, Length};
+use crate::rfgui::style::{Layout, Length};
 use crate::rfgui_components::{
     Alert, AlertSeverity, Button, ButtonColor, Snackbar, SnackbarHorizontal,
     SnackbarOrigin, SnackbarVertical, Theme, snackbar_close_binding,
@@ -43,9 +43,9 @@ pub fn SnackbarSection(theme: Theme) -> RsxNode {
             </Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.lg,
-                padding: rfgui::Padding::uniform(theme.spacing.md),
+                padding: rfgui::style::Padding::uniform(theme.spacing.md),
             }}>
                 <Button on_click={show_info}>Info</Button>
                 <Button

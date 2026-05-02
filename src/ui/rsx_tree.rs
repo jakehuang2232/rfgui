@@ -2,8 +2,8 @@
 
 //! Core RSX node and prop data structures.
 
-use crate::FontSize;
-use crate::TextAlign;
+use crate::style::FontSize;
+use crate::style::TextAlign;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, ContextMenuHandlerProp, CopyHandlerProp, CutHandlerProp,
     DragEndHandlerProp, DragLeaveHandlerProp, DragOverHandlerProp, DragStartHandlerProp,

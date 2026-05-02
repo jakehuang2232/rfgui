@@ -11,7 +11,7 @@ use crate::view::svg_resource::{
     snapshot_svg_raster,
 };
 use crate::view::{ImageFit, ImageSampling, SvgSource};
-use crate::{ParsedValue, PropertyId, Style};
+use crate::style::{ParsedValue, PropertyId, Style};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -71,7 +71,7 @@ impl Svg {
         self.sampling = sampling;
     }
 
-    pub fn apply_style(&mut self, style: crate::Style) {
+    pub fn apply_style(&mut self, style: crate::style::Style) {
         self.element.apply_style(style);
     }
 
@@ -586,7 +586,7 @@ impl Renderable for Svg {
 #[cfg(test)]
 mod tests {
     use super::Svg;
-    use crate::Style;
+    use crate::style::Style;
     use crate::time::{Duration, Instant};
     use crate::view::SvgSource;
     use crate::view::base_component::{LayoutConstraints, Layoutable};

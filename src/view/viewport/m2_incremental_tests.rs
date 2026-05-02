@@ -17,7 +17,7 @@ use crate::ui::{
     Binding, DragEffect, RsxNode, RsxTagDescriptor, global_state, on_drag_over, on_drop, rsx,
 };
 use crate::view::Element as HostElement;
-use crate::{Layout, Length};
+use crate::style::{Layout, Length};
 
 fn host_el() -> RsxNode {
     RsxNode::tagged("Element", RsxTagDescriptor::of::<HostElement>())
@@ -662,7 +662,7 @@ fn keyed_row_internal_shape_change_plus_reorder_does_not_duplicate() {
 /// merge. Asserts directly against `Element::parsed_style()`.
 #[test]
 fn incremental_commit_replace_style_drops_absent_declaration() {
-    use crate::Color;
+    use crate::style::Color;
     use crate::style::PropertyId;
     use crate::view::base_component::Element as ElementHost;
 
@@ -1287,7 +1287,7 @@ fn incremental_commit_applies_fragment_insert_child_creates_many() {
 /// the arena) instead of falling back to the full-rebuild pipeline.
 #[test]
 fn incremental_commit_resolves_em_font_size_via_inherited_cascade() {
-    use crate::FontSize;
+    use crate::style::FontSize;
     use crate::ui::{IntoPropValue, Patch, PropValue};
     use crate::view::Text as HostText;
     use crate::view::base_component::Text as TextHost;
@@ -1667,7 +1667,7 @@ fn rsx_to_arena_path_handles_nested_fragments() {
 /// `apply_update_to_text`.
 #[test]
 fn incremental_commit_text_style_color_change_preserves_node_key() {
-    use crate::Color;
+    use crate::style::Color;
     use crate::view::Text as HostText;
 
     let first = rsx! {

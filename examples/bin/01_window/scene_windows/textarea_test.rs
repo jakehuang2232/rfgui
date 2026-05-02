@@ -1,6 +1,6 @@
 use crate::rfgui::ui::{RsxNode, component, on_text_area_render, rsx, use_state};
 use crate::rfgui::view::{Element, Text, TextArea};
-use crate::rfgui::{Border, BorderRadius, Color, Layout, Length, Padding};
+use crate::rfgui::style::{Border, BorderRadius, Color, Layout, Length, Padding};
 use crate::rfgui_components::{Switch, Theme};
 
 fn projection_token_ranges(content: &str) -> Vec<(usize, usize)> {
