@@ -35,7 +35,7 @@ mod tests {
     // (`commit_descriptor_tree`, `rsx_to_descriptors_with_context`).
 
     fn commit_rsx_tree_into(arena: &mut NodeArena, tree: &RsxNode) -> Vec<NodeKey> {
-        let (descs, errors) = rsx_to_descriptors_with_context(tree, &rfgui::Style::new(), 0.0, 0.0);
+        let (descs, errors) = rsx_to_descriptors_with_context(tree, &rfgui::style::Style::new(), 0.0, 0.0);
         assert!(
             errors.is_empty(),
             "commit_rsx_tree: rsx conversion errors: {errors:?}"
@@ -292,7 +292,7 @@ mod tests {
         );
         assert_eq!(
             style.font_size,
-            Some(rfgui::FontSize::px(24.0)),
+            Some(rfgui::style::FontSize::px(24.0)),
             "icon should default to 24px"
         );
 
@@ -723,10 +723,10 @@ mod tests {
                 title="Panel"
                 window_slots={{
                     root_style: {
-                        background: rfgui::Color::hex("#ffffff"),
+                        background: rfgui::style::Color::hex("#ffffff"),
                     },
                     title_bar_style: {
-                        height: rfgui::Length::px(28.0),
+                        height: rfgui::style::Length::px(28.0),
                     },
                 }}
             >

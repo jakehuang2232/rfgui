@@ -9,11 +9,8 @@ use crate::view::base_component::{
     Element, LayoutConstraints, LayoutPlacement, Layoutable, get_scroll_offset_by_id,
     set_scroll_offset_by_id,
 };
-use crate::viewport::debug::append_overlay_label_geometry;
-use crate::{
-    Length, ParsedValue, PropertyId, ScrollDirection, Style, Transform, Transition,
-    TransitionProperty, Transitions, Translate,
-};
+use crate::view::viewport::debug::append_overlay_label_geometry;
+use crate::style::{Length, ParsedValue, PropertyId, ScrollDirection, Style, Transform, Transition, TransitionProperty, Transitions, Translate};
 
 fn place_root(root: &mut Element, width: f32, height: f32) {
     root.measure(LayoutConstraints {

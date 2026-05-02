@@ -3,7 +3,7 @@ extern crate rfgui_components;
 
 mod scene;
 
-use rfgui::Color;
+use rfgui::style::Color;
 use rfgui::app::{App, AppConfig, AppContext, WheelConfig};
 use rfgui::ui::{RsxNode, rsx};
 

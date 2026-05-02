@@ -19,6 +19,7 @@ mod image;
 mod svg;
 mod text;
 mod text_area;
+pub(crate) mod text_area_v2;
 
 pub(crate) use core::*;
 pub use element::*;
@@ -26,6 +27,7 @@ pub use image::*;
 pub use svg::*;
 pub use text::*;
 pub use text_area::*;
+pub use text_area_v2::{TextArea2, TextAreaImeContext};
 
 fn next_ui_node_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -2760,7 +2762,7 @@ pub fn get_cursor_by_id(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     stable_id: u64,
-) -> Option<crate::Cursor> {
+) -> Option<crate::style::Cursor> {
     let node = arena.get(root_key)?;
     if node.element.stable_id() == stable_id {
         return Some(node.element.cursor());
@@ -2892,7 +2894,7 @@ macro_rules! forward_event_target {
     };
     (dispatch_only $field:ident) => {
         $crate::view::base_component::forward_event_target!(@dispatch $field);
-        fn cursor(&self) -> $crate::Cursor {
+        fn cursor(&self) -> $crate::style::Cursor {
             self.$field.cursor()
         }
     };
@@ -3122,7 +3124,7 @@ macro_rules! forward_event_target {
         fn set_scroll_offset(&mut self, offset: (f32, f32)) {
             self.$field.set_scroll_offset(offset);
         }
-        fn cursor(&self) -> $crate::Cursor {
+        fn cursor(&self) -> $crate::style::Cursor {
             self.$field.cursor()
         }
         fn wants_animation_frame(&self) -> bool {
@@ -3167,7 +3169,7 @@ mod tests {
         commit_child, commit_element, measure_and_place, new_test_arena,
     };
     use crate::view::{Viewport, ViewportControl};
-    use crate::{AnchorName, Color, Layout};
+    use crate::style::{AnchorName, Color, Layout};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 

@@ -4,9 +4,7 @@ use rfgui::ui::{
     props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{
-    Align, ColorLike, Layout, Length, Operator, Transition, TransitionProperty, darken_color,
-};
+use rfgui::style::{Align, ColorLike, Layout, Length, Operator, Transition, TransitionProperty, darken_color};
 use std::rc::Rc;
 
 pub struct Switch;

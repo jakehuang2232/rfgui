@@ -1,6 +1,6 @@
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::{Layout, Length};
+use crate::rfgui::style::{Layout, Length};
 use crate::rfgui_components::{
     Button, ButtonColor, ButtonSize, ButtonVariant, DeleteIcon, EditIcon, FavoriteIcon,
     FormatAlignCenterIcon, FormatAlignLeftIcon, FormatAlignRightIcon, FormatBoldIcon,
@@ -57,7 +57,7 @@ pub fn ButtonSection(theme: Theme) -> RsxNode {
             <Text style={{ color: theme.color.text.secondary.clone() }}>Size</Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.sm,
             }}>
                 <Button size={Some(ButtonSize::Small)}>Small</Button>
@@ -102,7 +102,7 @@ pub fn ButtonSection(theme: Theme) -> RsxNode {
             <Text style={{ color: theme.color.text.secondary.clone() }}>Repeat / Full width</Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.sm,
             }}>
                 <Button repeat on_click={count_increment.clone()}>Hold to Repeat</Button>
@@ -117,7 +117,7 @@ pub fn ButtonSection(theme: Theme) -> RsxNode {
             <Text style={{ color: theme.color.text.secondary.clone() }}>IconButton</Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.sm,
             }}>
                 <IconButton size={Some(ButtonSize::Small)}><EditIcon /></IconButton>
@@ -131,7 +131,7 @@ pub fn ButtonSection(theme: Theme) -> RsxNode {
             <Text style={{ color: theme.color.text.secondary.clone() }}>ToggleButton</Text>
             <Element style={{
                 width: Length::percent(100.0),
-                layout: Layout::flow().row().wrap().align(rfgui::Align::Center),
+                layout: Layout::flow().row().wrap().align(rfgui::style::Align::Center),
                 gap: theme.spacing.sm,
             }}>
                 <ToggleButton
@@ -172,7 +172,7 @@ pub fn ButtonSection(theme: Theme) -> RsxNode {
                 width: Length::percent(100.0),
                 layout: Layout::flow().row().wrap(),
                 gap: theme.spacing.md,
-                align: rfgui::Align::Start,
+                align: rfgui::style::Align::Start,
             }}>
                 <ToggleButtonGroup value={align.binding()}>
                     <ToggleButton value="left"><FormatAlignLeftIcon /></ToggleButton>

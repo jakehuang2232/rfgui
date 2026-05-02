@@ -544,8 +544,8 @@ fn resolve_gradient_paint(
     gradient: &crate::style::Gradient,
     width: f32,
     height: f32,
-) -> crate::render_pass::draw_rect_pass::GradientPaint {
-    use crate::render_pass::draw_rect_pass::{GradientKindGpu, GradientPaint, GradientStopGpu};
+) -> crate::view::render_pass::draw_rect_pass::GradientPaint {
+    use crate::view::render_pass::draw_rect_pass::{GradientKindGpu, GradientPaint, GradientStopGpu};
     use crate::style::{ColorLike, Gradient, GradientLine, Length as L};
 
     let mut paint = GradientPaint::default();

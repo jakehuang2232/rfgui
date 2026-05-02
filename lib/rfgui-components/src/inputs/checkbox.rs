@@ -4,7 +4,7 @@ use rfgui::ui::{
     RsxNode, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};
+use rfgui::style::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};
 use std::rc::Rc;
 
 pub struct Checkbox;

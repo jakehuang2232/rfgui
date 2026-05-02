@@ -92,6 +92,7 @@ pub(crate) struct FlexLineItem {
     pub cross: f32,
     pub main_offset: f32,
     pub cross_offset: f32,
+    pub force_break_after: bool,
 }
 
 #[cfg(test)]

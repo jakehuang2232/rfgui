@@ -13,6 +13,15 @@ pub(crate) fn collect_promotion_candidates(
     active_channels: &FxHashMap<u64, FxHashSet<crate::transition::ChannelId>>,
     viewport_size: (f32, f32),
 ) -> Vec<PromotionCandidate> {
+    /// Walk and collect candidates.
+    ///
+    /// `ancestor_supports_promotion`: every host on the path from the root
+    /// down to (but not including) `node` reports
+    /// `supports_promoted_descendants() == true`. When `false`, the
+    /// candidate is dropped — promoting it would create an orphan layer
+    /// (allocated but never composited by its non-aware ancestor), and the
+    /// `is_node_promoted` flag would also make ancestor base-walks skip
+    /// the subtree.
     fn walk(
         node: &dyn ElementTrait,
         active_animator_hints: &FxHashMap<u64, AnimationPromotionHint>,
@@ -20,12 +29,15 @@ pub(crate) fn collect_promotion_candidates(
         viewport_size: (f32, f32),
         arena: &crate::view::node_arena::NodeArena,
         out: &mut Vec<PromotionCandidate>,
+        ancestor_supports_promotion: bool,
     ) -> (usize, usize) {
         let snapshot = node.box_model_snapshot();
         let info = node.promotion_node_info();
         let mut subtree_node_count = 1usize;
         let mut estimated_pass_count = info.estimated_pass_count.max(1) as usize;
 
+        let descendants_supported =
+            ancestor_supports_promotion && node.supports_promoted_descendants();
         for child_key in node.children() {
             let Some(child_node) = arena.get(*child_key) else {
                 continue;
@@ -37,9 +49,14 @@ pub(crate) fn collect_promotion_candidates(
                 viewport_size,
                 arena,
                 out,
+                descendants_supported,
             );
             subtree_node_count += child_nodes;
             estimated_pass_count += child_passes;
+        }
+
+        if !ancestor_supports_promotion {
+            return (subtree_node_count, estimated_pass_count);
         }
 
         let (visible_area_ratio, viewport_coverage, distance_to_viewport) =
@@ -82,6 +99,7 @@ pub(crate) fn collect_promotion_candidates(
             viewport_size,
             arena,
             &mut out,
+            true,
         );
     }
     out
@@ -621,7 +639,7 @@ mod tests {
         let mut scroll_style = Style::new();
         scroll_style.insert(
             PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
         );
         scroll_root.apply_style(scroll_style);
         let scroll_child = Element::new_with_id(2, 0.0, 0.0, 240.0, 480.0);
@@ -944,5 +962,302 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].has_active_animator);
         assert!(candidates[0].has_composite_only_animator);
+    }
+}
+
+#[cfg(test)]
+mod aware_filter_tests {
+    use super::*;
+    use crate::view::base_component::{Element, ElementTrait};
+    use crate::view::node_arena::{Node, NodeArena, NodeKey};
+
+    /// Minimal non-aware host: claims `supports_promoted_descendants() ==
+    /// false` so its subtree must be filtered out of the candidate list.
+    /// Sized + `should_render` so without the filter it would itself be a
+    /// candidate (hits the size/area thresholds).
+    struct NonAwareHost {
+        sid: u64,
+        children: Vec<NodeKey>,
+        width: f32,
+        height: f32,
+    }
+
+    impl crate::view::base_component::Layoutable for NonAwareHost {
+        fn measure(
+            &mut self,
+            _c: crate::view::base_component::LayoutConstraints,
+            _a: &mut NodeArena,
+        ) {
+        }
+        fn place(&mut self, _p: crate::view::base_component::LayoutPlacement, _a: &mut NodeArena) {}
+        fn measured_size(&self) -> (f32, f32) {
+            (self.width, self.height)
+        }
+        fn set_layout_width(&mut self, _w: f32) {}
+        fn set_layout_height(&mut self, _h: f32) {}
+    }
+    impl crate::view::base_component::EventTarget for NonAwareHost {}
+    impl crate::view::base_component::Renderable for NonAwareHost {
+        fn build(
+            &mut self,
+            _g: &mut crate::view::frame_graph::FrameGraph,
+            _a: &mut NodeArena,
+            ctx: crate::view::base_component::UiBuildContext,
+        ) -> crate::view::base_component::BuildState {
+            ctx.into_state()
+        }
+    }
+    impl ElementTrait for NonAwareHost {
+        fn stable_id(&self) -> u64 {
+            self.sid
+        }
+        fn box_model_snapshot(&self) -> crate::view::base_component::BoxModelSnapshot {
+            crate::view::base_component::BoxModelSnapshot {
+                node_id: self.sid,
+                parent_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: self.width,
+                height: self.height,
+                border_radius: 0.0,
+                should_render: true,
+            }
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn children(&self) -> &[NodeKey] {
+            &self.children
+        }
+        fn children_mut(&mut self) -> Option<&mut Vec<NodeKey>> {
+            Some(&mut self.children)
+        }
+        // supports_promoted_descendants: default false — the point of the test.
+    }
+
+    fn insert_element(arena: &mut NodeArena, el: Element) -> NodeKey {
+        arena.insert(Node::new(Box::new(el)))
+    }
+
+    fn insert_non_aware(arena: &mut NodeArena, sid: u64, w: f32, h: f32) -> NodeKey {
+        arena.insert(Node::new(Box::new(NonAwareHost {
+            sid,
+            children: Vec::new(),
+            width: w,
+            height: h,
+        })))
+    }
+
+    fn append_child(arena: &mut NodeArena, parent: NodeKey, child: NodeKey) {
+        // Mirror the trait's children list so collect_promotion_candidates
+        // walks via `node.children()`.
+        if let Some(mut parent_node) = arena.get_mut(parent) {
+            parent_node.children.push(child);
+            if let Some(children_mut) = parent_node.element.children_mut() {
+                children_mut.push(child);
+            }
+        }
+    }
+
+    /// Control: a fully `Element`-only subtree promotes everything as
+    /// before. Establishes the baseline so the next test's exclusion is
+    /// attributable to the non-aware filter, not to candidate scoring.
+    #[test]
+    fn element_only_subtree_all_eligible() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, Element::new_with_id(1, 0.0, 0.0, 320.0, 240.0));
+        let child = insert_element(&mut arena, Element::new_with_id(2, 0.0, 0.0, 200.0, 200.0));
+        append_child(&mut arena, root, child);
+
+        let candidates = collect_promotion_candidates(
+            &arena,
+            &[root],
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            (320.0, 240.0),
+        );
+        let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
+        assert!(ids.contains(&1), "Element root should be candidate");
+        assert!(ids.contains(&2), "Element child should be candidate");
+    }
+
+    /// Core invariant: descendants of a host whose
+    /// `supports_promoted_descendants()` returns `false` are removed from
+    /// the candidate list. Without this filter, the descendant would be
+    /// orphaned at build time — base-walk skips it (`is_node_promoted`
+    /// early return) and the non-aware host's render path never invokes
+    /// `build_promoted_child`, so the layer is allocated but never
+    /// composited.
+    #[test]
+    fn descendants_under_non_aware_host_filtered_out() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, Element::new_with_id(1, 0.0, 0.0, 320.0, 240.0));
+        let mid = insert_non_aware(&mut arena, 2, 200.0, 160.0);
+        let leaf = insert_element(&mut arena, Element::new_with_id(3, 0.0, 0.0, 160.0, 120.0));
+        append_child(&mut arena, root, mid);
+        append_child(&mut arena, mid, leaf);
+
+        let candidates = collect_promotion_candidates(
+            &arena,
+            &[root],
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            (320.0, 240.0),
+        );
+        let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
+        assert!(ids.contains(&1), "aware root remains a candidate");
+        assert!(
+            ids.contains(&2),
+            "the non-aware host itself is still a candidate (its parent is aware, so its layer can be composited by the parent)"
+        );
+        assert!(
+            !ids.contains(&3),
+            "Element grandchild under non-aware host must be filtered out, got candidates={:?}",
+            ids
+        );
+    }
+
+    /// Two-level non-aware nesting still filters. Only ancestors of a
+    /// non-aware host carry the promotion-aware chain; once broken, no
+    /// deeper node can re-enter it.
+    #[test]
+    fn nested_non_aware_filters_entire_subtree() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, Element::new_with_id(1, 0.0, 0.0, 320.0, 240.0));
+        let mid = insert_non_aware(&mut arena, 2, 200.0, 160.0);
+        let inner_el = insert_element(&mut arena, Element::new_with_id(3, 0.0, 0.0, 180.0, 140.0));
+        let inner_inner = insert_element(&mut arena, Element::new_with_id(4, 0.0, 0.0, 140.0, 100.0));
+        append_child(&mut arena, root, mid);
+        append_child(&mut arena, mid, inner_el);
+        append_child(&mut arena, inner_el, inner_inner);
+
+        let candidates = collect_promotion_candidates(
+            &arena,
+            &[root],
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            (320.0, 240.0),
+        );
+        let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
+        assert!(!ids.contains(&3), "Element under non-aware host filtered");
+        assert!(
+            !ids.contains(&4),
+            "deeper Element under non-aware host also filtered"
+        );
+    }
+
+    /// Same shape as `NonAwareHost` but reports
+    /// `supports_promoted_descendants() == true` — the Phase 2 contract a
+    /// host like `TextArea2` opts into once it dispatches promoted
+    /// children through `Element::build_promoted_child` and exposes its
+    /// subtree to the ancestor's `has_composited_promoted_descendants`
+    /// recursion.
+    struct AwareHost {
+        sid: u64,
+        children: Vec<NodeKey>,
+        width: f32,
+        height: f32,
+    }
+
+    impl crate::view::base_component::Layoutable for AwareHost {
+        fn measure(
+            &mut self,
+            _c: crate::view::base_component::LayoutConstraints,
+            _a: &mut NodeArena,
+        ) {
+        }
+        fn place(&mut self, _p: crate::view::base_component::LayoutPlacement, _a: &mut NodeArena) {}
+        fn measured_size(&self) -> (f32, f32) {
+            (self.width, self.height)
+        }
+        fn set_layout_width(&mut self, _w: f32) {}
+        fn set_layout_height(&mut self, _h: f32) {}
+    }
+    impl crate::view::base_component::EventTarget for AwareHost {}
+    impl crate::view::base_component::Renderable for AwareHost {
+        fn build(
+            &mut self,
+            _g: &mut crate::view::frame_graph::FrameGraph,
+            _a: &mut NodeArena,
+            ctx: crate::view::base_component::UiBuildContext,
+        ) -> crate::view::base_component::BuildState {
+            ctx.into_state()
+        }
+    }
+    impl ElementTrait for AwareHost {
+        fn stable_id(&self) -> u64 {
+            self.sid
+        }
+        fn box_model_snapshot(&self) -> crate::view::base_component::BoxModelSnapshot {
+            crate::view::base_component::BoxModelSnapshot {
+                node_id: self.sid,
+                parent_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: self.width,
+                height: self.height,
+                border_radius: 0.0,
+                should_render: true,
+            }
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn children(&self) -> &[NodeKey] {
+            &self.children
+        }
+        fn children_mut(&mut self) -> Option<&mut Vec<NodeKey>> {
+            Some(&mut self.children)
+        }
+        fn supports_promoted_descendants(&self) -> bool {
+            true
+        }
+    }
+
+    fn insert_aware(arena: &mut NodeArena, sid: u64, w: f32, h: f32) -> NodeKey {
+        arena.insert(Node::new(Box::new(AwareHost {
+            sid,
+            children: Vec::new(),
+            width: w,
+            height: h,
+        })))
+    }
+
+    /// Phase 2 inverse of `descendants_under_non_aware_host_filtered_out`:
+    /// once the host opts in via `supports_promoted_descendants() ==
+    /// true`, its subtree IS exposed to the candidate walker. Without
+    /// this guarantee TextArea2's projection `<Element>` children would
+    /// never get the chance to promote even when scoring would warrant
+    /// it.
+    #[test]
+    fn descendants_under_aware_host_remain_eligible() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, Element::new_with_id(1, 0.0, 0.0, 320.0, 240.0));
+        let mid = insert_aware(&mut arena, 2, 200.0, 160.0);
+        let leaf = insert_element(&mut arena, Element::new_with_id(3, 0.0, 0.0, 160.0, 120.0));
+        append_child(&mut arena, root, mid);
+        append_child(&mut arena, mid, leaf);
+
+        let candidates = collect_promotion_candidates(
+            &arena,
+            &[root],
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            (320.0, 240.0),
+        );
+        let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
+        assert!(ids.contains(&1), "Element root candidate");
+        assert!(ids.contains(&2), "aware host itself is a candidate");
+        assert!(
+            ids.contains(&3),
+            "Element grandchild under aware host MUST remain a candidate (Phase 2 contract), got={:?}",
+            ids
+        );
     }
 }

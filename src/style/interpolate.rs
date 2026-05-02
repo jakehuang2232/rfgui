@@ -23,9 +23,9 @@ impl Interpolate for Length {
         let t = t.clamp(0.0, 1.0);
         let from_weight = 1.0 - t;
         Length::calc(
-            Length::calc(*from, crate::Operator::multiply, from_weight),
-            crate::Operator::plus,
-            Length::calc(*to, crate::Operator::multiply, t),
+            Length::calc(*from, crate::style::Operator::multiply, from_weight),
+            crate::style::Operator::plus,
+            Length::calc(*to, crate::style::Operator::multiply, t),
         )
     }
 }
@@ -88,7 +88,7 @@ impl Interpolate for TransformEntry {
                     y: to_y,
                     z: to_z,
                 },
-            ) => crate::Translate::xy(
+            ) => crate::style::Translate::xy(
                 Length::interpolate(&from_x, &to_x, t),
                 Length::interpolate(&from_y, &to_y, t),
             )
@@ -104,7 +104,7 @@ impl Interpolate for TransformEntry {
                     y: to_y,
                     z: to_z,
                 },
-            ) => crate::Scale::xy(
+            ) => crate::style::Scale::xy(
                 f32::interpolate(&from_x, &to_x, t),
                 f32::interpolate(&from_y, &to_y, t),
             )
@@ -120,13 +120,13 @@ impl Interpolate for TransformEntry {
                     y: to_y,
                     z: to_z,
                 },
-            ) => crate::Rotate::x(Angle::interpolate(&from_x, &to_x, t))
+            ) => crate::style::Rotate::x(Angle::interpolate(&from_x, &to_x, t))
                 .y(Angle::interpolate(&from_y, &to_y, t))
                 .z(Angle::interpolate(&from_z, &to_z, t)),
             (
                 TransformKind::Perspective { depth: from_depth },
                 TransformKind::Perspective { depth: to_depth },
-            ) => crate::Perspective::px(f32::interpolate(&from_depth, &to_depth, t)),
+            ) => crate::style::Perspective::px(f32::interpolate(&from_depth, &to_depth, t)),
             (
                 TransformKind::Matrix {
                     matrix: from_matrix,
@@ -412,7 +412,7 @@ fn compose_canonical_transform_entries(
     let mut entries = Vec::new();
     if translation.length_squared() > 0.000_001 {
         entries.push(
-            crate::Translate::xy(Length::px(translation.x), Length::px(translation.y))
+            crate::style::Translate::xy(Length::px(translation.x), Length::px(translation.y))
                 .with_z(translation.z),
         );
     }
@@ -420,7 +420,7 @@ fn compose_canonical_transform_entries(
     let (rx, ry, rz) = rotation.to_euler(EulerRot::XYZ);
     if rx.abs() > 0.000_001 || ry.abs() > 0.000_001 || rz.abs() > 0.000_001 {
         entries.push(
-            crate::Rotate::x(Angle::rad(rx))
+            crate::style::Rotate::x(Angle::rad(rx))
                 .y(Angle::rad(ry))
                 .z(Angle::rad(rz)),
         );
@@ -430,7 +430,7 @@ fn compose_canonical_transform_entries(
         || (scale.y - 1.0).abs() > 0.000_001
         || (scale.z - 1.0).abs() > 0.000_001
     {
-        entries.push(crate::Scale::xy(scale.x, scale.y).with_z(scale.z));
+        entries.push(crate::style::Scale::xy(scale.x, scale.y).with_z(scale.z));
     }
 
     entries
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn perspective_mismatch_falls_back_to_matrix_entry_interpolation() {
-        let from = Transform::new([crate::Perspective::px(200.0)]);
+        let from = Transform::new([crate::style::Perspective::px(200.0)]);
         let to = Transform::new([Rotate::z(Angle::deg(45.0))]);
 
         let value = Transform::interpolate(&from, &to, 0.5);

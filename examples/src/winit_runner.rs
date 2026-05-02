@@ -495,6 +495,16 @@ fn apply_ime_command(window: &Window, cmd: &rfgui::platform::ImeCommand) {
         }
         ImeCommand::Disable => {
             window.set_ime_allowed(false);
+            // winit 0.30's macOS `set_ime_allowed(false)` calls `unmarkText`
+            // on the view, which clears the *client*-side marked range but
+            // doesn't tell the IME engine to abandon the in-flight
+            // composition. Without this, blurring during composition
+            // leaves stale state inside the IME engine — the candidate /
+            // preedit reappears on the next focus session. Firefox /
+            // Chromium call `discardMarkedText` on the input context for
+            // exactly this reason; do the same here.
+            #[cfg(target_os = "macos")]
+            macos_discard_marked_text();
         }
         ImeCommand::SetCursorRect(x, y, w, h) => {
             use winit::dpi::LogicalPosition;
@@ -504,6 +514,18 @@ fn apply_ime_command(window: &Window, cmd: &rfgui::platform::ImeCommand) {
                 LogicalSize::new(*w as f64, *h as f64),
             );
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_discard_marked_text() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSTextInputContext;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(ctx) = NSTextInputContext::currentInputContext(mtm) {
+        ctx.discardMarkedText();
     }
 }
 
@@ -1035,8 +1057,8 @@ fn winit_button_to_platform(button: WinitMouseButton) -> Option<PlatformPointerB
     })
 }
 
-fn winit_cursor_from(cursor: rfgui::Cursor) -> winit::window::Cursor {
-    use rfgui::Cursor as C;
+fn winit_cursor_from(cursor: rfgui::style::Cursor) -> winit::window::Cursor {
+    use rfgui::style::Cursor as C;
     use winit::window::CursorIcon;
     let icon = match cursor {
         C::Default => CursorIcon::Default,

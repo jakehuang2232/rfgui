@@ -263,7 +263,7 @@ impl Viewport {
                     crate::view::render_pass::prewarm_text_pipeline(
                         device,
                         queue,
-                        self.gpu.surface_config.format,
+                        self.gpu.surface_target_format,
                         self.gpu.msaa_sample_count,
                     );
                 }

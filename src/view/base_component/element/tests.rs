@@ -26,12 +26,8 @@ mod tests {
         new_test_arena, nth_child_snapshot,
     };
     use crate::view::frame_graph::FrameGraph;
-    use crate::Layout;
-    use crate::{
-        Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision,
-        CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator,
-        Origin, Position, Rotate, Transform, TransformOrigin, Translate, Style,
-    };
+    use crate::style::Layout;
+    use crate::style::{Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator, Origin, Position, Rotate, Transform, TransformOrigin, Translate, Style};
     use glam::{Mat4, Vec3};
     
     use std::sync::Arc;
@@ -165,7 +161,7 @@ mod tests {
     fn element_layout_preserves_fractional_box_metrics() {
         let mut root = Element::new(1.2, 2.4, 100.5, 50.5);
         let mut style = Style::new();
-        style.set_padding(crate::Padding::new().xy(Length::px(3.25), Length::px(2.5)));
+        style.set_padding(crate::style::Padding::new().xy(Length::px(3.25), Length::px(2.5)));
         root.apply_style(style);
 
         let mut arena = new_test_arena();
@@ -577,7 +573,7 @@ mod tests {
         child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
         child_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().grow(1.0).shrink(1.0)),
+            ParsedValue::Flex(crate::style::flex().grow(1.0).shrink(1.0)),
         );
         child_style.set_border_radius(BorderRadius::uniform(Length::px(4.0)));
         child.apply_style(child_style);
@@ -913,7 +909,7 @@ mod tests {
         let mut first_style = Style::new();
         first_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().basis(Length::px(40.0)).grow(1.0)),
+            ParsedValue::Flex(crate::style::flex().basis(Length::px(40.0)).grow(1.0)),
         );
         first.apply_style(first_style);
 
@@ -921,7 +917,7 @@ mod tests {
         let mut second_style = Style::new();
         second_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().basis(Length::px(40.0)).grow(2.0)),
+            ParsedValue::Flex(crate::style::flex().basis(Length::px(40.0)).grow(2.0)),
         );
         second.apply_style(second_style);
 
@@ -979,7 +975,7 @@ mod tests {
         let mut first_style = Style::new();
         first_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().basis(Length::px(100.0)).shrink(1.0)),
+            ParsedValue::Flex(crate::style::flex().basis(Length::px(100.0)).shrink(1.0)),
         );
         first.apply_style(first_style);
 
@@ -987,7 +983,7 @@ mod tests {
         let mut second_style = Style::new();
         second_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().basis(Length::px(100.0)).shrink(1.0)),
+            ParsedValue::Flex(crate::style::flex().basis(Length::px(100.0)).shrink(1.0)),
         );
         second.apply_style(second_style);
 
@@ -2448,12 +2444,12 @@ mod tests {
 
         let mut first = Element::new(0.0, 0.0, 20.0, 20.0);
         let mut first_style = Style::new();
-        first_style.set_flex(crate::flex().grow(1.0).basis(Length::px(50.0)));
+        first_style.set_flex(crate::style::flex().grow(1.0).basis(Length::px(50.0)));
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 20.0, 20.0);
         let mut second_style = Style::new();
-        second_style.set_flex(crate::flex().grow(1.0).basis(Length::px(50.0)));
+        second_style.set_flex(crate::style::flex().grow(1.0).basis(Length::px(50.0)));
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
@@ -2568,14 +2564,14 @@ mod tests {
         let mut first_style = Style::new();
         first_style.insert(PropertyId::Width, ParsedValue::Auto);
         first_style.insert(PropertyId::Height, ParsedValue::Auto);
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 120.0, 20.0);
         let mut second_style = Style::new();
         second_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
         second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
@@ -2634,13 +2630,13 @@ mod tests {
 
         let mut first = Element::new(0.0, 0.0, 20.0, 20.0);
         let mut first_style = Style::new();
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().grow(1.0)));
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().grow(1.0)));
         first_style.insert(PropertyId::MaxWidth, ParsedValue::Length(Length::px(30.0)));
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 20.0, 20.0);
         let mut second_style = Style::new();
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().grow(1.0)));
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().grow(1.0)));
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
@@ -2692,13 +2688,13 @@ mod tests {
 
         let mut first = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut first_style = Style::new();
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
         first_style.insert(PropertyId::MinWidth, ParsedValue::Length(Length::px(50.0)));
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut second_style = Style::new();
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
@@ -2752,14 +2748,14 @@ mod tests {
         let mut first_style = Style::new();
         first_style.insert(PropertyId::Width, ParsedValue::Auto);
         first_style.insert(PropertyId::Height, ParsedValue::Auto);
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut second_style = Style::new();
         second_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(60.0)));
         second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::flex().shrink(1.0)));
+        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
@@ -2820,7 +2816,7 @@ mod tests {
         );
         first_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().shrink(1.0)),
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
         );
         first.apply_style(first_style);
 
@@ -2830,7 +2826,7 @@ mod tests {
         second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
         second_style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().shrink(1.0)),
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
         );
         second.apply_style(second_style);
 
@@ -3490,7 +3486,7 @@ mod tests {
         );
         parent_style.insert(
             PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
         );
         parent.apply_style(parent_style);
         let _ = parent.set_hovered(true);
@@ -3570,7 +3566,7 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(
             PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
         );
         parent.apply_style(parent_style);
         let _ = parent.set_hovered(true);
@@ -3667,7 +3663,7 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(
             PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
         );
         parent.apply_style(parent_style);
         let child = Element::new(0.0, 0.0, 120.0, 360.0);
@@ -3739,7 +3735,7 @@ mod tests {
         parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(120.0)));
         parent_style.insert(
             PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
         );
         parent.apply_style(parent_style);
 
@@ -4039,7 +4035,7 @@ mod tests {
         );
         container_style.insert(
             PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::ScrollDirection::Vertical),
+            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
         );
         container.apply_style(container_style);
         let container_key = commit_child(&mut arena, root_key, Box::new(container));
@@ -5257,7 +5253,7 @@ mod tests {
             PropertyId::BackgroundColor,
             ParsedValue::color_like(Color::hex("#93c5fd")),
         );
-        wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+        wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
         commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
@@ -5313,7 +5309,7 @@ mod tests {
         wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
-        wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+        wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
         commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
@@ -5468,7 +5464,7 @@ mod tests {
         wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
-        wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+        wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
         commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
@@ -5525,7 +5521,7 @@ mod tests {
         wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
-        wrapper_style.set_padding(crate::Padding::new().xy(
+        wrapper_style.set_padding(crate::style::Padding::new().xy(
             Length::px(8.0),
             Length::px(12.0),
         ));
@@ -5602,7 +5598,7 @@ mod tests {
             let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
             let mut wrapper_style = Style::new();
             wrapper_style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(Color::hex("#93c5fd")));
-            wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+            wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
             wrapper.apply_style(wrapper_style);
             let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
             commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
@@ -5664,7 +5660,7 @@ mod tests {
         wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
-        wrapper_style.set_padding(crate::Padding::uniform(Length::px(6.0)));
+        wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(6.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
         commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("first child text that wraps")));
@@ -5844,7 +5840,7 @@ mod tests {
             let mut wrapper_style = Style::new();
             wrapper_style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(Color::hex("#93c5fd")));
             wrapper_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#ffffff")));
-            wrapper_style.set_padding(crate::Padding::uniform(Length::px(8.0)));
+            wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
             wrapper.apply_style(wrapper_style);
             let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
             commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
@@ -5921,7 +5917,7 @@ mod tests {
 
     fn place_grandparent_parent_child(
         parent_box: (f32, f32, f32, f32),
-        child_anchor: crate::Anchor,
+        child_anchor: crate::style::Anchor,
         child_left: f32,
         child_top: f32,
     ) -> (
@@ -5990,7 +5986,7 @@ mod tests {
     fn anchor_parent_resolves_to_immediate_parent_box() {
         let (arena, child_k) = place_grandparent_parent_child(
             (100.0, 50.0, 200.0, 120.0),
-            crate::Anchor::Parent,
+            crate::style::Anchor::Parent,
             10.0,
             5.0,
         );
@@ -6005,7 +6001,7 @@ mod tests {
         // root is grandparent at (0,0,800,600). left=12, top=8 → child at (12,8).
         let (arena, child_k) = place_grandparent_parent_child(
             (100.0, 50.0, 200.0, 120.0),
-            crate::Anchor::Viewport,
+            crate::style::Anchor::Viewport,
             12.0,
             8.0,
         );
@@ -6019,7 +6015,7 @@ mod tests {
         // Ancestor(1) == Parent.
         let (arena, child_k) = place_grandparent_parent_child(
             (100.0, 50.0, 200.0, 120.0),
-            crate::Anchor::Ancestor(1),
+            crate::style::Anchor::Ancestor(1),
             10.0,
             5.0,
         );
@@ -6030,7 +6026,7 @@ mod tests {
         // Ancestor(2) == grandparent (root) at (0,0).
         let (arena2, child_k2) = place_grandparent_parent_child(
             (100.0, 50.0, 200.0, 120.0),
-            crate::Anchor::Ancestor(2),
+            crate::style::Anchor::Ancestor(2),
             12.0,
             8.0,
         );
@@ -6135,7 +6131,7 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .anchor(crate::Anchor::Viewport)
+                    .anchor(crate::style::Anchor::Viewport)
                     .left(Length::px(16.0))
                     .right(Length::px(16.0))
                     .bottom(Length::px(16.0))
@@ -6258,7 +6254,7 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .anchor(crate::Anchor::Viewport)
+                    .anchor(crate::style::Anchor::Viewport)
                     .left(Length::px(16.0))
                     .right(Length::px(16.0))
                     .bottom(Length::px(16.0))
@@ -6353,7 +6349,7 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .anchor(crate::Anchor::Viewport)
+                    .anchor(crate::style::Anchor::Viewport)
                     .left(Length::px(16.0))
                     .right(Length::px(16.0))
                     .bottom(Length::px(16.0))
@@ -6461,7 +6457,7 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .anchor(crate::Anchor::Viewport)
+                    .anchor(crate::style::Anchor::Viewport)
                     .left(Length::px(16.0))
                     .right(Length::px(16.0))
                     .bottom(Length::px(16.0))
@@ -6602,7 +6598,7 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .anchor(crate::Anchor::Viewport)
+                    .anchor(crate::style::Anchor::Viewport)
                     .left(Length::px(16.0))
                     .right(Length::px(16.0))
                     .bottom(Length::px(16.0))
@@ -6718,7 +6714,7 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .anchor(crate::Anchor::Viewport)
+                    .anchor(crate::style::Anchor::Viewport)
                     .left(Length::px(16.0))
                     .right(Length::px(16.0))
                     .bottom(Length::px(16.0))
@@ -6852,7 +6848,7 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .anchor(crate::Anchor::Viewport)
+                    .anchor(crate::style::Anchor::Viewport)
                     .left(Length::px(16.0))
                     .right(Length::px(16.0))
                     .bottom(Length::px(16.0))

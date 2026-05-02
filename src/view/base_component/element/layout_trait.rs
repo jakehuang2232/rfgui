@@ -426,6 +426,7 @@ impl Layoutable for Element {
                             // Match CSS inline formatting: vertical padding/border paints
                             // outside the line box and must not increase line height.
                             height: info.line_cross_max[line_idx].max(0.0),
+                            ..Default::default()
                         })
                         .collect();
                 }
@@ -450,7 +451,11 @@ impl Layoutable for Element {
             return nodes;
         }
         let (width, height) = self.measured_size();
-        vec![InlineNodeSize { width, height }]
+        vec![InlineNodeSize {
+            width,
+            height,
+            ..Default::default()
+        }]
     }
 
     fn place_inline(

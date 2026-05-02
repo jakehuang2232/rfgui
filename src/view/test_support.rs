@@ -13,7 +13,7 @@
 #![cfg(test)]
 #![allow(dead_code)]
 
-use crate::Style;
+use crate::style::Style;
 use crate::view::base_component::{ElementTrait, LayoutConstraints, LayoutPlacement};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{

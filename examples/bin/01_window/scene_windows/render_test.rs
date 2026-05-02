@@ -1,17 +1,18 @@
 use crate::components::GlobalKeyRenderTestBlock;
 use crate::rfgui::ui::{RsxNode, component, on_click, rsx, use_state};
 use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text};
-use crate::rfgui::{
+use crate::rfgui::style::{
     Align, Angle, Animation, Animator, Border, BorderRadius, ClipMode, Collision,
-    CollisionBoundary, Color, CrossSize, Direction, JustifyContent, Keyframe, Layout, Length,
-    Opacity, Padding, ParsedValue, Perspective, Position, PropertyId, Repeat, Rotate, Scale,
-    ScrollDirection, Style, Transform, TransformOrigin, Transition, TransitionProperty, Translate,
+    CollisionBoundary, Color, ColorLike, CrossSize, Direction, JustifyContent, Keyframe, Layout,
+    Length, Opacity, Padding, Perspective, Position, Repeat, Rotate, Scale, ScrollDirection,
+    Style, Transform, TransformOrigin, Transition, TransitionProperty, Translate,
 };
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
 use crate::utils::output_image_source;
-use rfgui::{FillMode, Gradient, SideOrCorner};
+use rfgui::style;
+use rfgui::style::{FillMode, Gradient, SideOrCorner};
 
-fn animator_demo_keyframe<T: crate::rfgui::ColorLike>(
+fn animator_demo_keyframe<T: ColorLike + 'static>(
     background: T,
     width: f32,
     height: f32,
@@ -20,24 +21,18 @@ fn animator_demo_keyframe<T: crate::rfgui::ColorLike>(
     rotate_deg: f32,
     scale: f32,
 ) -> Style {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(background),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-    style.insert(
-        PropertyId::Opacity,
-        ParsedValue::Opacity(Opacity::new(opacity)),
-    );
-    style.set_border_radius(BorderRadius::uniform(Length::px(18.0)));
-    style.set_transform(Transform::new([
-        Translate::x(Length::px(offset_x)),
-        Rotate::z(Angle::deg(rotate_deg)),
-        Scale::xy(scale, scale),
-    ]));
-    style
+    style! {
+        background_color: Box::new(background) as Box<dyn ColorLike>,
+        width: Length::px(width),
+        height: Length::px(height),
+        opacity: Opacity::new(opacity),
+        border_radius: BorderRadius::uniform(Length::px(18.0)),
+        transform: Transform::new([
+            Translate::x(Length::px(offset_x)),
+            Rotate::z(Angle::deg(rotate_deg)),
+            Scale::xy(scale, scale),
+        ]),
+    }
 }
 
 #[component]

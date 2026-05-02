@@ -56,10 +56,8 @@ use rfgui::ui::{
     on_pointer_up, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{
-    Align, Angle, Border, Color, ColorLike, Cursor, Layout, Length, Padding, Position, Rotate,
-    TextWrap, Transform, Transition, TransitionProperty, flex,
-};
+use rfgui::style::flex;
+use rfgui::style::{Align, Angle, Border, Color, ColorLike, Cursor, Layout, Length, Padding, Position, Rotate, TextWrap, Transform, Transition, TransitionProperty};
 
 // ---------------------------------------------------------------------------
 // Data

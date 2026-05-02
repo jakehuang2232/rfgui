@@ -4,13 +4,13 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::use_theme;
-use rfgui::ClipMode::{AnchorParent, Parent};
+use rfgui::style::ClipMode::{AnchorParent, Parent};
 use rfgui::ui::{
     BlurHandlerProp, FocusHandlerProp, PointerButton, PointerDownHandlerProp, RsxComponent,
     RsxNode, ViewportListenerHandle, on_pointer_down, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{Align, Anchor, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout, Length, Padding, Position, ScrollDirection};
+use rfgui::style::{Align, Anchor, Border, BorderRadius, Color, ColorLike, Cursor, FontWeight, JustifyContent, Layout, Length, Padding, Position, ScrollDirection};
 
 const MIN_WIDTH: f32 = 220.0;
 const MIN_HEIGHT: f32 = 140.0;

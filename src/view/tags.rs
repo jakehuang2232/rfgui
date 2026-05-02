@@ -11,12 +11,7 @@ use crate::ui::{
     RsxComponent, SharedPropValue, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
     TextChangeHandlerProp, props,
 };
-use crate::{
-    Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
-    FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position,
-    ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin,
-    Transitions,
-};
+use crate::style::{Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position, ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin, Transitions};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -27,6 +22,10 @@ pub struct Element;
 pub struct Text;
 /// The built-in editable text host tag.
 pub struct TextArea;
+/// The built-in editable text host tag (v2). Coexists with [`TextArea`]
+/// during the v1→v2 migration; renamed to `TextArea` in P7. See
+/// `docs/design/textarea-v2.md`.
+pub struct TextArea2;
 /// The built-in image host tag.
 pub struct Image;
 /// The built-in svg host tag.
@@ -104,11 +103,11 @@ pub struct ElementStylePropSchema {
     pub scroll_direction: Option<ScrollDirection>,
     pub cursor: Option<Cursor>,
     pub color: Option<Box<dyn ColorLike>>,
-    pub border: Option<crate::Border>,
-    pub background: Option<crate::Background>,
+    pub border: Option<crate::style::Border>,
+    pub background: Option<crate::style::Background>,
     pub background_color: Option<Box<dyn ColorLike>>,
-    pub background_image: Option<crate::Gradient>,
-    pub border_image: Option<crate::Gradient>,
+    pub background_image: Option<crate::style::Gradient>,
+    pub border_image: Option<crate::style::Gradient>,
     pub font: Option<FontFamily>,
     pub font_size: Option<FontSize>,
     pub font_weight: Option<FontWeight>,
@@ -143,11 +142,11 @@ pub struct HoverElementStylePropSchema {
     pub scroll_direction: Option<ScrollDirection>,
     pub cursor: Option<Cursor>,
     pub color: Option<Box<dyn ColorLike>>,
-    pub border: Option<crate::Border>,
-    pub background: Option<crate::Background>,
+    pub border: Option<crate::style::Border>,
+    pub background: Option<crate::style::Background>,
     pub background_color: Option<Box<dyn ColorLike>>,
-    pub background_image: Option<crate::Gradient>,
-    pub border_image: Option<crate::Gradient>,
+    pub background_image: Option<crate::style::Gradient>,
+    pub border_image: Option<crate::style::Gradient>,
     pub font: Option<FontFamily>,
     pub font_size: Option<FontSize>,
     pub font_weight: Option<FontWeight>,
@@ -197,7 +196,7 @@ pub struct HoverTextStylePropSchema {
 #[derive(Clone)]
 #[props]
 pub struct SelectionStylePropSchema {
-    pub background: Option<crate::Background>,
+    pub background: Option<crate::style::Background>,
 }
 
 #[derive(Clone)]
@@ -232,6 +231,24 @@ pub struct TextAreaPropSchema {
     pub font_size: Option<FontSize>,
     pub font: Option<String>,
     pub opacity: Option<f64>,
+    pub multiline: Option<bool>,
+    pub auto_wrap: Option<bool>,
+    pub read_only: Option<bool>,
+    pub max_length: Option<i64>,
+}
+
+#[props]
+pub struct TextArea2PropSchema {
+    pub content: Option<String>,
+    pub binding: Option<crate::ui::Binding<String>>,
+    pub style: Option<ElementStylePropSchema>,
+    pub on_focus: Option<TextAreaFocusHandlerProp>,
+    pub on_render: Option<TextAreaRenderHandlerProp>,
+    pub on_blur: Option<BlurHandlerProp>,
+    pub on_change: Option<TextChangeHandlerProp>,
+    pub placeholder: Option<String>,
+    pub font_size: Option<FontSize>,
+    pub font: Option<String>,
     pub multiline: Option<bool>,
     pub auto_wrap: Option<bool>,
     pub read_only: Option<bool>,
@@ -450,6 +467,84 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
     }
 }
 
+impl RsxComponent<TextArea2PropSchema> for crate::view::TextArea2 {
+    fn render(props: TextArea2PropSchema, children: Vec<RsxNode>) -> RsxNode {
+        let mut resolved_content = props
+            .binding
+            .as_ref()
+            .map(crate::ui::Binding::get)
+            .or(props.content.clone());
+        if resolved_content.is_none() {
+            let mut content = String::new();
+            for child in &children {
+                append_text_area_content_child(&mut content, child);
+            }
+            resolved_content = Some(content);
+        }
+
+        let mut node = RsxNode::tagged(
+            "TextArea2",
+            crate::ui::RsxTagDescriptor::of::<crate::view::TextArea2>(),
+        );
+        if let Some(content) = resolved_content
+            && !content.is_empty()
+        {
+            node = node.with_prop("content", content);
+        }
+        if let Some(binding) = props.binding {
+            node = node.with_prop(
+                "binding",
+                crate::ui::IntoPropValue::into_prop_value(binding),
+            );
+        }
+        if let Some(style) = props.style {
+            node = node.with_prop("style", style);
+        }
+        if let Some(handler) = props.on_focus {
+            node = node.with_prop("on_focus", handler);
+        }
+        if let Some(handler) = props.on_blur {
+            node = node.with_prop("on_blur", handler);
+        }
+        if let Some(handler) = props.on_change {
+            node = node.with_prop("on_change", handler);
+        }
+        if let Some(placeholder) = props.placeholder
+            && !placeholder.is_empty()
+        {
+            node = node.with_prop("placeholder", placeholder);
+        }
+        if let Some(font_size) = props.font_size
+            && !is_unset_font_size(font_size)
+        {
+            node = node.with_prop("font_size", font_size);
+        }
+        if let Some(font) = props.font
+            && !font.is_empty()
+        {
+            node = node.with_prop("font", font);
+        }
+        if let Some(multiline) = props.multiline {
+            node = node.with_prop("multiline", multiline);
+        }
+        if let Some(auto_wrap) = props.auto_wrap {
+            node = node.with_prop("auto_wrap", auto_wrap);
+        }
+        if let Some(read_only) = props.read_only {
+            node = node.with_prop("read_only", read_only);
+        }
+        if let Some(max_length) = props.max_length
+            && max_length != 0
+        {
+            node = node.with_prop("max_length", max_length);
+        }
+        if let Some(handler) = props.on_render {
+            node = node.with_prop("on_render", handler);
+        }
+        node
+    }
+}
+
 fn append_text_area_content_child(out: &mut String, node: &RsxNode) {
     match node {
         RsxNode::Text(content) => out.push_str(&content.content),
@@ -527,66 +622,6 @@ impl RsxComponent<SvgPropSchema> for Svg {
     }
 }
 
-#[doc(hidden)]
-pub mod v2_bench {
-    use super::*;
-
-    #[inline(never)]
-    pub fn bench_v1_20() -> RsxNode {
-        crate::ui::rsx! {
-            <Element>
-                <Element>a00</Element>
-                <Element>a01</Element>
-                <Element>a02</Element>
-                <Element>a03</Element>
-                <Element>a04</Element>
-                <Element>a05</Element>
-                <Element>a06</Element>
-                <Element>a07</Element>
-                <Element>a08</Element>
-                <Element>a09</Element>
-                <Element>a10</Element>
-                <Element>a11</Element>
-                <Element>a12</Element>
-                <Element>a13</Element>
-                <Element>a14</Element>
-                <Element>a15</Element>
-                <Element>a16</Element>
-                <Element>a17</Element>
-                <Element>a18</Element>
-                <Element>a19</Element>
-            </Element>
-        }
-    }
-
-    #[inline(never)]
-    pub fn bench_v2_20() -> RsxNode {
-        crate::ui::rsx! {
-            <Element>
-                <Element>a00</Element>
-                <Element>a01</Element>
-                <Element>a02</Element>
-                <Element>a03</Element>
-                <Element>a04</Element>
-                <Element>a05</Element>
-                <Element>a06</Element>
-                <Element>a07</Element>
-                <Element>a08</Element>
-                <Element>a09</Element>
-                <Element>a10</Element>
-                <Element>a11</Element>
-                <Element>a12</Element>
-                <Element>a13</Element>
-                <Element>a14</Element>
-                <Element>a15</Element>
-                <Element>a16</Element>
-                <Element>a17</Element>
-                <Element>a18</Element>
-                <Element>a19</Element>
-            </Element>
-        }
-    }
-}
 
 #[cfg(test)]
 mod v2_poc_tests {
@@ -603,7 +638,7 @@ mod v2_poc_tests {
                 let mut init: ElementPropSchema = Default::default();
                 init.style = Some({
                     let mut s: ElementStylePropSchema = Default::default();
-                    s.background_color = Some(Box::new(crate::Color::hex("#000000")));
+                    s.background_color = Some(Box::new(crate::style::Color::hex("#000000")));
                     s
                 });
                 init
@@ -625,7 +660,7 @@ mod v2_poc_tests {
                 let mut init: ElementPropSchema = Default::default();
                 init.style = Some({
                     let mut s = __rsx_default_inner_option(&init.style);
-                    s.background_color = Some(Box::new(crate::Color::hex("#000000")));
+                    s.background_color = Some(Box::new(crate::style::Color::hex("#000000")));
                     s
                 });
                 init
@@ -647,10 +682,10 @@ mod v2_poc_tests {
                 let mut init: ElementPropSchema = Default::default();
                 init.style = Some({
                     let mut s = __rsx_default_inner_option(&init.style);
-                    s.background_color = Some(Box::new(crate::Color::hex("#111111")));
+                    s.background_color = Some(Box::new(crate::style::Color::hex("#111111")));
                     s.hover = Some({
                         let mut h = __rsx_default_inner_option(&s.hover);
-                        h.background_color = Some(Box::new(crate::Color::hex("#222222")));
+                        h.background_color = Some(Box::new(crate::style::Color::hex("#222222")));
                         h
                     });
                     s
@@ -671,7 +706,7 @@ mod v2_poc_tests {
     // Compile-time field checks survive the phantom-fallback inference.
 
     // ---------- rsx! macro end-to-end tests ----------
-    use crate::Length;
+    use crate::style::Length;
     use crate::ui::rsx;
 
     #[test]
@@ -684,11 +719,21 @@ mod v2_poc_tests {
     }
 
     #[test]
+    fn rsx_text_area_v2_skeleton_builds() {
+        // P1 acceptance: `<TextArea2/>` compiles and produces a tagged node.
+        let node = rsx! { <TextArea2 /> };
+        match node {
+            RsxNode::Element(ref el) => assert_eq!(el.tag, "TextArea2"),
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
     fn rsx_element_with_style_object() {
         let node = rsx! {
             <Element style={{
                 width: Length::px(100.0),
-                background_color: crate::Color::hex("#111111"),
+                background_color: crate::style::Color::hex("#111111"),
             }}>
                 <Element />
                 <Element />
@@ -706,9 +751,9 @@ mod v2_poc_tests {
     fn rsx_nested_hover_object() {
         let node = rsx! {
             <Element style={{
-                background_color: crate::Color::hex("#111111"),
+                background_color: crate::style::Color::hex("#111111"),
                 hover: {
-                    background_color: crate::Color::hex("#222222"),
+                    background_color: crate::style::Color::hex("#222222"),
                 },
             }} />
         };
@@ -718,22 +763,10 @@ mod v2_poc_tests {
         }
     }
 
-    #[test]
-    fn bench_v1_v2_produce_equivalent_output() {
-        let a = super::v2_bench::bench_v1_20();
-        let b = super::v2_bench::bench_v2_20();
-        match (&a, &b) {
-            (RsxNode::Element(ae), RsxNode::Element(be)) => {
-                assert_eq!(ae.children.len(), be.children.len());
-            }
-            _ => panic!("expected elements"),
-        }
-    }
-
     // ---------- #[component] + rsx end-to-end ----------
 
     #[crate::ui::component]
-    pub fn V2PanelLabel(text: String, color: Option<crate::Color>) -> RsxNode {
+    pub fn V2PanelLabel(text: String, color: Option<crate::style::Color>) -> RsxNode {
         // Render path doesn't matter for this test; just return an empty element.
         // Intentionally use old `rsx!` inside component body to confirm
         // v1 body still compiles within a v2-tagged component.
@@ -763,7 +796,7 @@ mod v2_poc_tests {
         let node = rsx! {
             <V2PanelLabel
                 text={"greet".to_string()}
-                color={crate::Color::hex("#aabbcc")} />
+                color={crate::style::Color::hex("#aabbcc")} />
         };
         match node {
             RsxNode::Element(_) => {}
@@ -860,6 +893,7 @@ macro_rules! impl_rsx_tag_v2_trivial {
 impl_rsx_tag_v2_trivial!(Element, ElementPropSchema, true);
 impl_rsx_tag_v2_trivial!(Text, TextPropSchema, true);
 impl_rsx_tag_v2_trivial!(TextArea, TextAreaPropSchema, true);
+impl_rsx_tag_v2_trivial!(crate::view::TextArea2, TextArea2PropSchema, true);
 
 // ---------- v2 path: Init struct pattern for tags with required props ----------
 #[doc(hidden)]
@@ -1027,29 +1061,29 @@ impl_shared_style_prop_value!(BorderStylePropSchema, "BorderStylePropSchema");
 
 fn apply_box_color(
     style: &mut Style,
-    property: crate::PropertyId,
+    property: crate::style::PropertyId,
     color: &Option<Box<dyn ColorLike>>,
 ) {
     if let Some(color) = color {
-        style.insert(property, crate::style_color_value(color.clone()));
+        style.insert(property, crate::style::style_color_value(color.clone()));
     }
 }
 
-fn apply_background(style: &mut Style, background: Option<&crate::Background>) {
+fn apply_background(style: &mut Style, background: Option<&crate::style::Background>) {
     let Some(background) = background else {
         return;
     };
     match background {
-        crate::Background::Color(color) => {
+        crate::style::Background::Color(color) => {
             style.insert(
-                crate::PropertyId::BackgroundColor,
-                crate::style_color_value(color.clone()),
+                crate::style::PropertyId::BackgroundColor,
+                crate::style::style_color_value(color.clone()),
             );
         }
-        crate::Background::Gradient(gradient) => {
+        crate::style::Background::Gradient(gradient) => {
             style.insert(
-                crate::PropertyId::BackgroundImage,
-                crate::ParsedValue::Gradient(gradient.clone()),
+                crate::style::PropertyId::BackgroundImage,
+                crate::style::ParsedValue::Gradient(gradient.clone()),
             );
         }
     }
@@ -1060,8 +1094,8 @@ fn apply_selection(selection: &Option<SelectionStylePropSchema>) -> Option<Selec
     let mut output = SelectionStyle::new();
     if let Some(background) = &selection.background {
         match background {
-            crate::Background::Color(color) => output.set_background(color.clone()),
-            crate::Background::Gradient(_) => {
+            crate::style::Background::Color(color) => output.set_background(color.clone()),
+            crate::style::Background::Gradient(_) => {
                 // Selection highlight only supports solid colors; gradients are ignored.
             }
         }
@@ -1072,78 +1106,78 @@ fn apply_selection(selection: &Option<SelectionStylePropSchema>) -> Option<Selec
 fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropSchema) {
     if let Some(position) = schema.position.clone() {
         style.insert(
-            crate::PropertyId::Position,
-            crate::ParsedValue::Position(position),
+            crate::style::PropertyId::Position,
+            crate::style::ParsedValue::Position(position),
         );
     }
     if let Some(width) = schema.width {
-        crate::insert_style_length(style, crate::PropertyId::Width, width);
+        crate::style::insert_style_length(style, crate::style::PropertyId::Width, width);
     }
     if let Some(height) = schema.height {
-        crate::insert_style_length(style, crate::PropertyId::Height, height);
+        crate::style::insert_style_length(style, crate::style::PropertyId::Height, height);
     }
     if let Some(min_width) = schema.min_width {
-        crate::insert_style_length(style, crate::PropertyId::MinWidth, min_width);
+        crate::style::insert_style_length(style, crate::style::PropertyId::MinWidth, min_width);
     }
     if let Some(max_width) = schema.max_width {
-        crate::insert_style_length(style, crate::PropertyId::MaxWidth, max_width);
+        crate::style::insert_style_length(style, crate::style::PropertyId::MaxWidth, max_width);
     }
     if let Some(min_height) = schema.min_height {
-        crate::insert_style_length(style, crate::PropertyId::MinHeight, min_height);
+        crate::style::insert_style_length(style, crate::style::PropertyId::MinHeight, min_height);
     }
     if let Some(max_height) = schema.max_height {
-        crate::insert_style_length(style, crate::PropertyId::MaxHeight, max_height);
+        crate::style::insert_style_length(style, crate::style::PropertyId::MaxHeight, max_height);
     }
     if let Some(layout) = schema.layout {
         style.insert(
-            crate::PropertyId::Layout,
-            crate::ParsedValue::Layout(layout),
+            crate::style::PropertyId::Layout,
+            crate::style::ParsedValue::Layout(layout),
         );
     }
     if let Some(cross_size) = schema.cross_size {
         style.insert(
-            crate::PropertyId::CrossSize,
-            crate::ParsedValue::CrossSize(cross_size),
+            crate::style::PropertyId::CrossSize,
+            crate::style::ParsedValue::CrossSize(cross_size),
         );
     }
     if let Some(align) = schema.align {
-        style.insert(crate::PropertyId::Align, crate::ParsedValue::Align(align));
+        style.insert(crate::style::PropertyId::Align, crate::style::ParsedValue::Align(align));
     }
     if let Some(flex) = schema.flex {
-        crate::insert_style_flex(style, crate::PropertyId::Flex, flex);
+        crate::style::insert_style_flex(style, crate::style::PropertyId::Flex, flex);
     }
     if let Some(gap) = schema.gap {
-        crate::insert_style_length(style, crate::PropertyId::Gap, gap);
+        crate::style::insert_style_length(style, crate::style::PropertyId::Gap, gap);
     }
     if let Some(scroll_direction) = schema.scroll_direction {
         style.insert(
-            crate::PropertyId::ScrollDirection,
-            crate::ParsedValue::ScrollDirection(scroll_direction),
+            crate::style::PropertyId::ScrollDirection,
+            crate::style::ParsedValue::ScrollDirection(scroll_direction),
         );
     }
     if let Some(cursor) = schema.cursor {
         style.insert(
-            crate::PropertyId::Cursor,
-            crate::ParsedValue::Cursor(cursor),
+            crate::style::PropertyId::Cursor,
+            crate::style::ParsedValue::Cursor(cursor),
         );
     }
-    apply_box_color(style, crate::PropertyId::Color, &schema.color);
+    apply_box_color(style, crate::style::PropertyId::Color, &schema.color);
     apply_background(style, schema.background.as_ref());
     apply_box_color(
         style,
-        crate::PropertyId::BackgroundColor,
+        crate::style::PropertyId::BackgroundColor,
         &schema.background_color,
     );
     if let Some(gradient) = &schema.background_image {
         style.insert(
-            crate::PropertyId::BackgroundImage,
-            crate::ParsedValue::Gradient(gradient.clone()),
+            crate::style::PropertyId::BackgroundImage,
+            crate::style::ParsedValue::Gradient(gradient.clone()),
         );
     }
     if let Some(gradient) = &schema.border_image {
         style.insert(
-            crate::PropertyId::BorderImage,
-            crate::ParsedValue::Gradient(gradient.clone()),
+            crate::style::PropertyId::BorderImage,
+            crate::style::ParsedValue::Gradient(gradient.clone()),
         );
     }
     if let Some(border) = &schema.border {
@@ -1151,32 +1185,32 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
     }
     if let Some(font) = &schema.font {
         style.insert(
-            crate::PropertyId::FontFamily,
-            crate::ParsedValue::FontFamily(font.clone()),
+            crate::style::PropertyId::FontFamily,
+            crate::style::ParsedValue::FontFamily(font.clone()),
         );
     }
     if let Some(font_size) = schema.font_size {
-        crate::insert_style_font_size(style, crate::PropertyId::FontSize, font_size);
+        crate::style::insert_style_font_size(style, crate::style::PropertyId::FontSize, font_size);
     }
     if let Some(font_weight) = schema.font_weight {
-        crate::insert_style_font_weight(style, crate::PropertyId::FontWeight, font_weight);
+        crate::style::insert_style_font_weight(style, crate::style::PropertyId::FontWeight, font_weight);
     }
     if let Some(text_wrap) = schema.text_wrap {
-        crate::insert_style_text_wrap(style, crate::PropertyId::TextWrap, text_wrap);
+        crate::style::insert_style_text_wrap(style, crate::style::PropertyId::TextWrap, text_wrap);
     }
     if let Some(border_radius) = schema.border_radius {
         style.set_border_radius(border_radius);
     }
     if let Some(opacity) = schema.opacity {
         style.insert(
-            crate::PropertyId::Opacity,
-            crate::ParsedValue::Opacity(opacity),
+            crate::style::PropertyId::Opacity,
+            crate::style::ParsedValue::Opacity(opacity),
         );
     }
     if let Some(box_shadow) = &schema.box_shadow {
         style.insert(
-            crate::PropertyId::BoxShadow,
-            crate::ParsedValue::BoxShadow(box_shadow.clone()),
+            crate::style::PropertyId::BoxShadow,
+            crate::style::ParsedValue::BoxShadow(box_shadow.clone()),
         );
     }
     if let Some(padding) = schema.padding {
@@ -1190,14 +1224,14 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
     }
     if let Some(transition) = &schema.transition {
         style.insert(
-            crate::PropertyId::Transition,
-            crate::ParsedValue::Transition(transition.clone()),
+            crate::style::PropertyId::Transition,
+            crate::style::ParsedValue::Transition(transition.clone()),
         );
     }
     if let Some(animator) = &schema.animator {
         style.insert(
-            crate::PropertyId::Animator,
-            crate::ParsedValue::Animator(animator.clone()),
+            crate::style::PropertyId::Animator,
+            crate::style::ParsedValue::Animator(animator.clone()),
         );
     }
     if let Some(selection) = apply_selection(&schema.selection) {
@@ -1269,43 +1303,43 @@ impl HoverTextStylePropSchema {
     pub fn to_style(&self) -> Style {
         let mut style = Style::new();
         if let Some(width) = self.width {
-            crate::insert_style_length(&mut style, crate::PropertyId::Width, width);
+            crate::style::insert_style_length(&mut style, crate::style::PropertyId::Width, width);
         }
         if let Some(height) = self.height {
-            crate::insert_style_length(&mut style, crate::PropertyId::Height, height);
+            crate::style::insert_style_length(&mut style, crate::style::PropertyId::Height, height);
         }
-        apply_box_color(&mut style, crate::PropertyId::Color, &self.color);
+        apply_box_color(&mut style, crate::style::PropertyId::Color, &self.color);
         if let Some(font) = &self.font {
             style.insert(
-                crate::PropertyId::FontFamily,
-                crate::ParsedValue::FontFamily(font.clone()),
+                crate::style::PropertyId::FontFamily,
+                crate::style::ParsedValue::FontFamily(font.clone()),
             );
         }
         if let Some(font_size) = self.font_size {
-            crate::insert_style_font_size(&mut style, crate::PropertyId::FontSize, font_size);
+            crate::style::insert_style_font_size(&mut style, crate::style::PropertyId::FontSize, font_size);
         }
         if let Some(font_weight) = self.font_weight {
-            crate::insert_style_font_weight(&mut style, crate::PropertyId::FontWeight, font_weight);
+            crate::style::insert_style_font_weight(&mut style, crate::style::PropertyId::FontWeight, font_weight);
         }
         if let Some(text_wrap) = self.text_wrap {
-            crate::insert_style_text_wrap(&mut style, crate::PropertyId::TextWrap, text_wrap);
+            crate::style::insert_style_text_wrap(&mut style, crate::style::PropertyId::TextWrap, text_wrap);
         }
         if let Some(cursor) = self.cursor {
             style.insert(
-                crate::PropertyId::Cursor,
-                crate::ParsedValue::Cursor(cursor),
+                crate::style::PropertyId::Cursor,
+                crate::style::ParsedValue::Cursor(cursor),
             );
         }
         if let Some(opacity) = self.opacity {
             style.insert(
-                crate::PropertyId::Opacity,
-                crate::ParsedValue::Opacity(opacity),
+                crate::style::PropertyId::Opacity,
+                crate::style::ParsedValue::Opacity(opacity),
             );
         }
         if let Some(transition) = &self.transition {
             style.insert(
-                crate::PropertyId::Transition,
-                crate::ParsedValue::Transition(transition.clone()),
+                crate::style::PropertyId::Transition,
+                crate::style::ParsedValue::Transition(transition.clone()),
             );
         }
         style

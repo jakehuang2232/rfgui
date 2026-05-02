@@ -151,98 +151,98 @@ impl_no_arg_event_into_optional_prop!(
     crate::ui::into_text_change_handler
 );
 
-impl<'a> IntoOptionalProp<crate::Color> for crate::HexColor<'a> {
-    fn into_optional_prop(self) -> Option<crate::Color> {
-        Some(crate::IntoColor::<crate::Color>::into_color(self))
+impl<'a> IntoOptionalProp<crate::style::Color> for crate::style::HexColor<'a> {
+    fn into_optional_prop(self) -> Option<crate::style::Color> {
+        Some(crate::style::IntoColor::<crate::style::Color>::into_color(self))
     }
 }
 
-impl IntoOptionalProp<Box<dyn crate::ColorLike>> for &str {
-    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
-        Some(Box::new(crate::IntoColor::<crate::Color>::into_color(self)))
+impl IntoOptionalProp<Box<dyn crate::style::ColorLike>> for &str {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::style::ColorLike>> {
+        Some(Box::new(crate::style::IntoColor::<crate::style::Color>::into_color(self)))
     }
 }
 
-impl IntoOptionalProp<Box<dyn crate::ColorLike>> for String {
-    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
-        Some(Box::new(crate::IntoColor::<crate::Color>::into_color(self)))
+impl IntoOptionalProp<Box<dyn crate::style::ColorLike>> for String {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::style::ColorLike>> {
+        Some(Box::new(crate::style::IntoColor::<crate::style::Color>::into_color(self)))
     }
 }
 
-impl IntoOptionalProp<Box<dyn crate::ColorLike>> for crate::Color {
-    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
+impl IntoOptionalProp<Box<dyn crate::style::ColorLike>> for crate::style::Color {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::style::ColorLike>> {
         Some(Box::new(self))
     }
 }
 
-impl<'a> IntoOptionalProp<Box<dyn crate::ColorLike>> for crate::HexColor<'a> {
-    fn into_optional_prop(self) -> Option<Box<dyn crate::ColorLike>> {
-        Some(Box::new(crate::IntoColor::<crate::Color>::into_color(self)))
+impl<'a> IntoOptionalProp<Box<dyn crate::style::ColorLike>> for crate::style::HexColor<'a> {
+    fn into_optional_prop(self) -> Option<Box<dyn crate::style::ColorLike>> {
+        Some(Box::new(crate::style::IntoColor::<crate::style::Color>::into_color(self)))
     }
 }
 
 // Background accepts colors, gradients, and gradient builders.
 // (Background → Option<Background> is handled by the blanket `impl<T> IntoOptionalProp<T> for T`.)
-impl IntoOptionalProp<crate::Background> for crate::Gradient {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Gradient(self))
+impl IntoOptionalProp<crate::style::Background> for crate::style::Gradient {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Gradient(self))
     }
 }
 
-impl IntoOptionalProp<crate::Background> for crate::LinearBuilder {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Gradient(self.build()))
+impl IntoOptionalProp<crate::style::Background> for crate::style::LinearBuilder {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Gradient(self.build()))
     }
 }
 
-impl IntoOptionalProp<crate::Background> for crate::RadialBuilder {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Gradient(self.build()))
+impl IntoOptionalProp<crate::style::Background> for crate::style::RadialBuilder {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Gradient(self.build()))
     }
 }
 
-impl IntoOptionalProp<crate::Background> for crate::ConicBuilder {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Gradient(self.build()))
+impl IntoOptionalProp<crate::style::Background> for crate::style::ConicBuilder {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Gradient(self.build()))
     }
 }
 
-impl IntoOptionalProp<crate::Background> for Box<dyn crate::ColorLike> {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(self))
+impl IntoOptionalProp<crate::style::Background> for Box<dyn crate::style::ColorLike> {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Color(self))
     }
 }
 
-impl IntoOptionalProp<crate::Background> for crate::Color {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(Box::new(self)))
+impl IntoOptionalProp<crate::style::Background> for crate::style::Color {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Color(Box::new(self)))
     }
 }
 
-impl<'a> IntoOptionalProp<crate::Background> for crate::HexColor<'a> {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(Box::new(crate::IntoColor::<
-            crate::Color,
+impl<'a> IntoOptionalProp<crate::style::Background> for crate::style::HexColor<'a> {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Color(Box::new(crate::style::IntoColor::<
+            crate::style::Color,
         >::into_color(
             self
         ))))
     }
 }
 
-impl IntoOptionalProp<crate::Background> for &str {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(Box::new(crate::IntoColor::<
-            crate::Color,
+impl IntoOptionalProp<crate::style::Background> for &str {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Color(Box::new(crate::style::IntoColor::<
+            crate::style::Color,
         >::into_color(
             self
         ))))
     }
 }
 
-impl IntoOptionalProp<crate::Background> for String {
-    fn into_optional_prop(self) -> Option<crate::Background> {
-        Some(crate::Background::Color(Box::new(crate::IntoColor::<
-            crate::Color,
+impl IntoOptionalProp<crate::style::Background> for String {
+    fn into_optional_prop(self) -> Option<crate::style::Background> {
+        Some(crate::style::Background::Color(Box::new(crate::style::IntoColor::<
+            crate::style::Color,
         >::into_color(
             self
         ))))
@@ -250,20 +250,20 @@ impl IntoOptionalProp<crate::Background> for String {
 }
 
 // Gradient (for background_image / border_image fields): accept builders too.
-impl IntoOptionalProp<crate::Gradient> for crate::LinearBuilder {
-    fn into_optional_prop(self) -> Option<crate::Gradient> {
+impl IntoOptionalProp<crate::style::Gradient> for crate::style::LinearBuilder {
+    fn into_optional_prop(self) -> Option<crate::style::Gradient> {
         Some(self.build())
     }
 }
 
-impl IntoOptionalProp<crate::Gradient> for crate::RadialBuilder {
-    fn into_optional_prop(self) -> Option<crate::Gradient> {
+impl IntoOptionalProp<crate::style::Gradient> for crate::style::RadialBuilder {
+    fn into_optional_prop(self) -> Option<crate::style::Gradient> {
         Some(self.build())
     }
 }
 
-impl IntoOptionalProp<crate::Gradient> for crate::ConicBuilder {
-    fn into_optional_prop(self) -> Option<crate::Gradient> {
+impl IntoOptionalProp<crate::style::Gradient> for crate::style::ConicBuilder {
+    fn into_optional_prop(self) -> Option<crate::style::Gradient> {
         Some(self.build())
     }
 }
@@ -277,9 +277,9 @@ impl IntoOptionalProp<String> for &str {
 macro_rules! impl_numeric_into_optional_length {
     ($($ty:ty),* $(,)?) => {
         $(
-            impl IntoOptionalProp<crate::Length> for $ty {
-                fn into_optional_prop(self) -> Option<crate::Length> {
-                    Some(crate::Length::px(self as f32))
+            impl IntoOptionalProp<crate::style::Length> for $ty {
+                fn into_optional_prop(self) -> Option<crate::style::Length> {
+                    Some(crate::style::Length::px(self as f32))
                 }
             }
         )*
@@ -288,18 +288,18 @@ macro_rules! impl_numeric_into_optional_length {
 
 impl_numeric_into_optional_length!(i32, i64, u32, usize, f32, f64);
 
-impl IntoOptionalProp<crate::BorderRadius> for crate::Length {
-    fn into_optional_prop(self) -> Option<crate::BorderRadius> {
-        Some(crate::BorderRadius::uniform(self))
+impl IntoOptionalProp<crate::style::BorderRadius> for crate::style::Length {
+    fn into_optional_prop(self) -> Option<crate::style::BorderRadius> {
+        Some(crate::style::BorderRadius::uniform(self))
     }
 }
 
 macro_rules! impl_numeric_into_optional_border_radius {
     ($($ty:ty),* $(,)?) => {
         $(
-            impl IntoOptionalProp<crate::BorderRadius> for $ty {
-                fn into_optional_prop(self) -> Option<crate::BorderRadius> {
-                    Some(crate::BorderRadius::uniform(crate::Length::px(self as f32)))
+            impl IntoOptionalProp<crate::style::BorderRadius> for $ty {
+                fn into_optional_prop(self) -> Option<crate::style::BorderRadius> {
+                    Some(crate::style::BorderRadius::uniform(crate::style::Length::px(self as f32)))
                 }
             }
         )*
@@ -311,9 +311,9 @@ impl_numeric_into_optional_border_radius!(i32, i64, u32, usize, f32, f64);
 macro_rules! impl_numeric_into_optional_font_weight {
     ($($ty:ty),* $(,)?) => {
         $(
-            impl IntoOptionalProp<crate::FontWeight> for $ty {
-                fn into_optional_prop(self) -> Option<crate::FontWeight> {
-                    Some(crate::FontWeight::new((self as i64).max(0) as u16))
+            impl IntoOptionalProp<crate::style::FontWeight> for $ty {
+                fn into_optional_prop(self) -> Option<crate::style::FontWeight> {
+                    Some(crate::style::FontWeight::new((self as i64).max(0) as u16))
                 }
             }
         )*
@@ -325,9 +325,9 @@ impl_numeric_into_optional_font_weight!(i32, i64, u32, usize, u16);
 macro_rules! impl_numeric_into_optional_opacity {
     ($($ty:ty),* $(,)?) => {
         $(
-            impl IntoOptionalProp<crate::Opacity> for $ty {
-                fn into_optional_prop(self) -> Option<crate::Opacity> {
-                    Some(crate::Opacity::new(self as f32))
+            impl IntoOptionalProp<crate::style::Opacity> for $ty {
+                fn into_optional_prop(self) -> Option<crate::style::Opacity> {
+                    Some(crate::style::Opacity::new(self as f32))
                 }
             }
         )*
@@ -336,51 +336,51 @@ macro_rules! impl_numeric_into_optional_opacity {
 
 impl_numeric_into_optional_opacity!(i32, i64, u32, usize, f32, f64);
 
-impl IntoOptionalProp<crate::Layout> for crate::FlexLayout {
-    fn into_optional_prop(self) -> Option<crate::Layout> {
+impl IntoOptionalProp<crate::style::Layout> for crate::style::FlexLayout {
+    fn into_optional_prop(self) -> Option<crate::style::Layout> {
         Some(self.into())
     }
 }
 
-impl IntoOptionalProp<crate::Layout> for crate::FlowLayout {
-    fn into_optional_prop(self) -> Option<crate::Layout> {
+impl IntoOptionalProp<crate::style::Layout> for crate::style::FlowLayout {
+    fn into_optional_prop(self) -> Option<crate::style::Layout> {
         Some(self.into())
     }
 }
 
-impl IntoOptionalProp<crate::Transitions> for crate::Transition {
-    fn into_optional_prop(self) -> Option<crate::Transitions> {
+impl IntoOptionalProp<crate::style::Transitions> for crate::style::Transition {
+    fn into_optional_prop(self) -> Option<crate::style::Transitions> {
         Some(self.into())
     }
 }
 
-impl IntoOptionalProp<crate::Transitions> for Vec<crate::Transition> {
-    fn into_optional_prop(self) -> Option<crate::Transitions> {
+impl IntoOptionalProp<crate::style::Transitions> for Vec<crate::style::Transition> {
+    fn into_optional_prop(self) -> Option<crate::style::Transitions> {
         Some(self.into())
     }
 }
 
-impl<const N: usize> IntoOptionalProp<crate::Transitions> for [crate::Transition; N] {
-    fn into_optional_prop(self) -> Option<crate::Transitions> {
+impl<const N: usize> IntoOptionalProp<crate::style::Transitions> for [crate::style::Transition; N] {
+    fn into_optional_prop(self) -> Option<crate::style::Transitions> {
         Some(self.into())
     }
 }
 
-impl IntoOptionalProp<crate::Animator> for crate::Animation {
-    fn into_optional_prop(self) -> Option<crate::Animator> {
-        Some(crate::Animator::new([self]))
+impl IntoOptionalProp<crate::style::Animator> for crate::style::Animation {
+    fn into_optional_prop(self) -> Option<crate::style::Animator> {
+        Some(crate::style::Animator::new([self]))
     }
 }
 
-impl IntoOptionalProp<crate::Animator> for Vec<crate::Animation> {
-    fn into_optional_prop(self) -> Option<crate::Animator> {
-        Some(crate::Animator::from_vec(self))
+impl IntoOptionalProp<crate::style::Animator> for Vec<crate::style::Animation> {
+    fn into_optional_prop(self) -> Option<crate::style::Animator> {
+        Some(crate::style::Animator::from_vec(self))
     }
 }
 
-impl<const N: usize> IntoOptionalProp<crate::Animator> for [crate::Animation; N] {
-    fn into_optional_prop(self) -> Option<crate::Animator> {
-        Some(crate::Animator::new(self))
+impl<const N: usize> IntoOptionalProp<crate::style::Animator> for [crate::style::Animation; N] {
+    fn into_optional_prop(self) -> Option<crate::style::Animator> {
+        Some(crate::style::Animator::new(self))
     }
 }
 
@@ -426,39 +426,39 @@ impl IntoOptionalProp<i64> for u32 {
     }
 }
 
-impl IntoOptionalProp<crate::FontSize> for f32 {
-    fn into_optional_prop(self) -> Option<crate::FontSize> {
-        Some(crate::FontSize::px(self))
+impl IntoOptionalProp<crate::style::FontSize> for f32 {
+    fn into_optional_prop(self) -> Option<crate::style::FontSize> {
+        Some(crate::style::FontSize::px(self))
     }
 }
 
-impl IntoOptionalProp<crate::FontSize> for f64 {
-    fn into_optional_prop(self) -> Option<crate::FontSize> {
-        Some(crate::FontSize::px(self as f32))
+impl IntoOptionalProp<crate::style::FontSize> for f64 {
+    fn into_optional_prop(self) -> Option<crate::style::FontSize> {
+        Some(crate::style::FontSize::px(self as f32))
     }
 }
 
-impl IntoOptionalProp<crate::FontSize> for i32 {
-    fn into_optional_prop(self) -> Option<crate::FontSize> {
-        Some(crate::FontSize::px(self as f32))
+impl IntoOptionalProp<crate::style::FontSize> for i32 {
+    fn into_optional_prop(self) -> Option<crate::style::FontSize> {
+        Some(crate::style::FontSize::px(self as f32))
     }
 }
 
-impl IntoOptionalProp<crate::FontSize> for i64 {
-    fn into_optional_prop(self) -> Option<crate::FontSize> {
-        Some(crate::FontSize::px(self as f32))
+impl IntoOptionalProp<crate::style::FontSize> for i64 {
+    fn into_optional_prop(self) -> Option<crate::style::FontSize> {
+        Some(crate::style::FontSize::px(self as f32))
     }
 }
 
-impl IntoOptionalProp<crate::FontSize> for u32 {
-    fn into_optional_prop(self) -> Option<crate::FontSize> {
-        Some(crate::FontSize::px(self as f32))
+impl IntoOptionalProp<crate::style::FontSize> for u32 {
+    fn into_optional_prop(self) -> Option<crate::style::FontSize> {
+        Some(crate::style::FontSize::px(self as f32))
     }
 }
 
-impl IntoOptionalProp<crate::FontSize> for usize {
-    fn into_optional_prop(self) -> Option<crate::FontSize> {
-        Some(crate::FontSize::px(self as f32))
+impl IntoOptionalProp<crate::style::FontSize> for usize {
+    fn into_optional_prop(self) -> Option<crate::style::FontSize> {
+        Some(crate::style::FontSize::px(self as f32))
     }
 }
 

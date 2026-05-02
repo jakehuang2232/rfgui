@@ -5,10 +5,7 @@ use rfgui::ui::{
     component, props, rsx, use_interval, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::{
-    Align, Border, BorderRadius, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding,
-    Transition, TransitionProperty, Transitions, darken_color,
-};
+use rfgui::style::{Align, Border, BorderRadius, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding, Transition, TransitionProperty, Transitions, darken_color};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

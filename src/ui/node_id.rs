@@ -510,7 +510,7 @@ mod tests {
         //! resulting root `NodeKey`, hand-build an `EventTarget` pointing
         //! at it, then verify the accessors report the concrete type.
         use super::*;
-        use crate::Length;
+        use crate::style::Length;
         use crate::ui::{RsxNode, rsx};
         use crate::view::Element as RuntimeElementTag;
         use crate::view::base_component::Element as RuntimeElement;

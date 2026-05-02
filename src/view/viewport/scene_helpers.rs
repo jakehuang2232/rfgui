@@ -205,22 +205,22 @@ impl Viewport {
                 Self::element_by_id_mut(root_node.element.as_mut(), node_id, arena)
             {
                 let mut patch_style = Style::new();
-                if let Some(crate::ParsedValue::Transform(transform)) =
+                if let Some(crate::style::ParsedValue::Transform(transform)) =
                     style.get(PropertyId::Transform)
                 {
                     patch_style.set_transform(transform.clone());
                 }
-                if let Some(crate::ParsedValue::TransformOrigin(origin)) =
+                if let Some(crate::style::ParsedValue::TransformOrigin(origin)) =
                     style.get(PropertyId::TransformOrigin)
                 {
                     patch_style.set_transform_origin(*origin);
                 }
-                if let Some(crate::ParsedValue::Position(position)) =
+                if let Some(crate::style::ParsedValue::Position(position)) =
                     style.get(PropertyId::Position)
                 {
                     patch_style.insert(
                         PropertyId::Position,
-                        crate::ParsedValue::Position(position.clone()),
+                        crate::style::ParsedValue::Position(position.clone()),
                     );
                 }
                 element.apply_style(patch_style);

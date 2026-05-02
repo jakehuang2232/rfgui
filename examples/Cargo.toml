@@ -28,6 +28,10 @@ smol_str = "0.3"
 pollster = "0.4.0"
 rfd = "0.17.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSTextInputContext"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 rlsf = "0.2"
 wasm-bindgen = "0.2"

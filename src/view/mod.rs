@@ -32,6 +32,9 @@ pub use font_system::load_web_font_from_url;
 pub use font_system::register_font_bytes;
 pub use font_system::set_default_font_families;
 pub use node_arena::{NodeArena, NodeKey, NodeRef, ViewportRef};
-pub use renderer_adapter::*;
+pub use renderer_adapter::{
+    ElementDescriptor, ElementFactory, commit_descriptor_tree, register_element_factory,
+    rsx_to_descriptors_with_context,
+};
 pub use tags::*;
 pub use viewport::*;

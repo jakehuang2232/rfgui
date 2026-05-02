@@ -11,7 +11,7 @@ mod scene_windows;
 mod utils;
 mod window_manager;
 
-use rfgui::Color;
+use rfgui::style::Color;
 use rfgui::app::{App, AppConfig, AppContext, WheelConfig};
 use rfgui::ui::{RsxNode, rsx};
 

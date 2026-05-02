@@ -1,10 +1,8 @@
 use crate::{ExpandMoreIcon, use_theme};
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
 use rfgui::view::Element;
-use rfgui::{
-    Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform,
-    Transition, TransitionProperty, flex,
-};
+use rfgui::style::flex;
+use rfgui::style::{Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform, Transition, TransitionProperty};
 
 pub struct Accordion;
 
@@ -101,7 +99,7 @@ fn AccordionView(
                     } else if is_expanded {
                         theme.color.state.hover.clone()
                     } else {
-                        Box::new(Color::transparent()) as Box<dyn rfgui::ColorLike>
+                        Box::new(Color::transparent()) as Box<dyn rfgui::style::ColorLike>
                     },
                     transition: [
                         Transition::new(

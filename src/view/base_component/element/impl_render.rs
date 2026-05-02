@@ -115,6 +115,9 @@ impl Element {
         let render_children_passes = should_render_children && inner_visible;
 
         let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
+        // Element is promotion-aware: its `compose_promoted_descendants_only`
+        // pass will handle promoted direct children. Skipping them in the
+        // base walk is the right contract here.
         if render_children_passes {
             for (idx, child_key) in child_keys.iter().copied().enumerate() {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
@@ -1254,34 +1257,12 @@ impl Element {
         ctx.set_current_target(parent_target);
     }
 
-    fn has_composited_promoted_descendants(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        ctx: &UiBuildContext,
-    ) -> bool {
-        for child_key in &self.children {
-            let Some(node) = arena.get(*child_key) else {
-                continue;
-            };
-            let child = node.element.as_ref();
-            if child
-                .as_any()
-                .downcast_ref::<Element>()
-                .is_some_and(Element::should_append_to_root_viewport_render)
-            {
-                continue;
-            }
-            if ctx.is_node_promoted(child.stable_id()) {
-                return true;
-            }
-            if let Some(element) = child.as_any().downcast_ref::<Element>() {
-                if element.has_composited_promoted_descendants(arena, ctx) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
+    // `has_composited_promoted_descendants` lives on `ElementTrait` as a
+    // default method (recurses through any host's `children()`), so a
+    // promotion-aware non-Element host (e.g. TextArea2) participates in
+    // the ancestor's "do I need to enter the compose loop?" check
+    // automatically. Element no longer carries an inherent override —
+    // the viewport-clip skip the trait default applies is enough.
 
     pub(crate) fn build_promoted_layer(
         &mut self,
@@ -1430,7 +1411,15 @@ impl Element {
         self.compose_promoted_descendants_only(graph, arena, compose_ctx)
     }
 
-    fn build_promoted_child(
+    /// Promotion compose entry point. Allocates the child's promoted layer
+    /// target, dispatches its build (Reuse / Reraster / inline-fallback),
+    /// and composites the result back into `ctx`'s current target.
+    ///
+    /// `pub(crate)` so promotion-aware non-Element hosts (e.g. TextArea2)
+    /// can drive the same compose path their Element peers use, instead of
+    /// silently dropping promoted descendants. See
+    /// [`ElementTrait::supports_promoted_descendants`] for the contract.
+    pub(crate) fn build_promoted_child(
         graph: &mut FrameGraph,
         arena: &mut crate::view::node_arena::NodeArena,
         ctx: &mut UiBuildContext,

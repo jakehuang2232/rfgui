@@ -98,7 +98,9 @@ pub mod app;
 /// Platform abstraction traits (surface target, clipboard, cursor sink, ...).
 /// Phase 0 of the viewport-decoupling work. No backend code lives here.
 pub mod platform;
-mod style;
+/// Typed style system: colors, gradients, layout primitives, transforms,
+/// transitions/animations, and the parsed/computed style trees.
+pub mod style;
 pub mod time {
     pub use std::time::Duration;
     #[cfg(not(target_arch = "wasm32"))]
@@ -112,7 +114,3 @@ pub mod transition;
 pub mod ui;
 /// Viewport integration, built-in host tags, and low-level base components.
 pub mod view;
-
-pub use style::*;
-pub use view::register_font_bytes;
-pub use view::*;

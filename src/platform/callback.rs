@@ -6,7 +6,7 @@
 //! trait shape so the rfgui runtime can drive it.
 
 use super::{CursorSink, RedrawRequester};
-use crate::Cursor;
+use crate::style::Cursor;
 use std::sync::Arc;
 
 /// Cursor sink backed by a user-supplied closure. Host is responsible for

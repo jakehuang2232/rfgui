@@ -2,8 +2,8 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{ElementCore, Position, Size};
-use crate::ColorLike;
-use crate::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
+use crate::style::ColorLike;
+use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
     Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
@@ -914,6 +914,21 @@ pub struct InlineMeasureContext {
 pub struct InlineNodeSize {
     pub width: f32,
     pub height: f32,
+    /// Hard line break after this fragment. Honored by the inline solver
+    /// even when `solver_wrap` (soft overflow wrap) is disabled — this is
+    /// how `\n` paragraphs in `TextArea2` produce new lines while
+    /// `auto_wrap` is off.
+    pub force_break_after: bool,
+}
+
+impl Default for InlineNodeSize {
+    fn default() -> Self {
+        Self {
+            width: 0.0,
+            height: 0.0,
+            force_break_after: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1120,7 +1135,11 @@ pub trait Layoutable {
         _arena: &crate::view::node_arena::NodeArena,
     ) -> Vec<InlineNodeSize> {
         let (width, height) = self.measured_size();
-        vec![InlineNodeSize { width, height }]
+        vec![InlineNodeSize {
+            width,
+            height,
+            ..Default::default()
+        }]
     }
     fn place_inline(
         &mut self,
@@ -1345,6 +1364,28 @@ pub trait EventTarget {
         _self_key: crate::view::node_arena::NodeKey,
     ) {
     }
+
+    /// TextArea v2: when `true`, key/text-input/IME/focus events that would
+    /// dispatch to descendants of this node are short-circuited at this node
+    /// — descendants do NOT receive them. Pointer events are unaffected so
+    /// projection-internal widgets remain interactive. Default `false` keeps
+    /// all existing components transparent.
+    fn block_key_down_child_event(&self) -> bool {
+        false
+    }
+    fn block_key_up_child_event(&self) -> bool {
+        false
+    }
+    fn block_text_input_child_event(&self) -> bool {
+        false
+    }
+    fn block_ime_preedit_child_event(&self) -> bool {
+        false
+    }
+    fn block_focus_child_event(&self) -> bool {
+        false
+    }
+
     fn cancel_pointer_interaction(&mut self) -> bool {
         false
     }
@@ -1437,6 +1478,59 @@ pub trait ElementTrait:
 
     fn promotion_node_info(&self) -> PromotionNodeInfo {
         PromotionNodeInfo::default()
+    }
+
+    /// Promotion contract: this host's render path walks promoted
+    /// descendants and composites their layer textures back into its own
+    /// render target. When `false`, the promotion runtime must NOT place
+    /// any descendant of `self` into the promoted set — otherwise the
+    /// promoted layer is allocated but never composited (orphan), and the
+    /// orphan's `is_node_promoted` flag also makes ancestor base-walks
+    /// skip the node, dropping the subtree.
+    ///
+    /// `Element` overrides to `true` (it implements
+    /// `compose_promoted_descendants_only`). All other hosts default to
+    /// `false` until they implement an equivalent compose path.
+    fn supports_promoted_descendants(&self) -> bool {
+        false
+    }
+
+    /// Does this host's subtree contain any node currently in the
+    /// promoted set, OR any nested descendant whose subtree does? Used by
+    /// promotion-aware ancestors to decide whether to enter the compose
+    /// loop at all (skipping the loop is a hot-path optimization for
+    /// subtrees with no promoted layer work to do).
+    ///
+    /// Default recursion walks `children()` and recurses via this same
+    /// trait method — which is what lets a promotion-aware non-Element
+    /// host (TextArea2) expose its promoted descendants to its Element
+    /// ancestor. Viewport-clip absolute Elements are skipped because
+    /// they take the deferred path, not the ancestor's compose.
+    fn has_composited_promoted_descendants(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        ctx: &UiBuildContext,
+    ) -> bool {
+        for child_key in self.children() {
+            let Some(node) = arena.get(*child_key) else {
+                continue;
+            };
+            let child = node.element.as_ref();
+            if child
+                .as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(Element::should_append_to_root_viewport_render)
+            {
+                continue;
+            }
+            if ctx.is_node_promoted(child.stable_id()) {
+                return true;
+            }
+            if child.has_composited_promoted_descendants(arena, ctx) {
+                return true;
+            }
+        }
+        false
     }
 
     fn has_active_animator(&self) -> bool {
@@ -1677,7 +1771,7 @@ pub struct Element {
     last_scrollbar_interaction: Option<Instant>,
     scrollbar_shadow_blur_radius: f32,
     transition_requests: Option<Box<ElementTransitionRequests>>,
-    last_started_animator: Option<crate::Animator>,
+    last_started_animator: Option<crate::style::Animator>,
     has_style_snapshot: bool,
     has_layout_snapshot: bool,
     layout_transition_visual_offset_x: f32,
@@ -1729,6 +1823,10 @@ impl Element {
         self.computed_style.layout == Layout::Inline
             && self.computed_style.width == SizeValue::Auto
             && self.computed_style.height == SizeValue::Auto
+    }
+
+    pub(crate) fn inline_fragment_rects(&self) -> &[Rect] {
+        self.inline_paint_fragments.as_slice()
     }
 
     fn capture_style_snapshot(&self) -> ElementStyleSnapshot {
@@ -2005,6 +2103,10 @@ impl ElementTrait for Element {
     fn hit_test_visible_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
         self.hit_test_clip_rect
             .map_or(true, |rect| rect.contains(viewport_x, viewport_y))
+    }
+
+    fn supports_promoted_descendants(&self) -> bool {
+        true
     }
 
     fn promotion_node_info(&self) -> PromotionNodeInfo {
@@ -2319,7 +2421,7 @@ impl ElementTrait for Element {
                 let Ok(name_str) = as_owned_string(&value, name) else {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
-                self.set_anchor_name(Some(crate::AnchorName::new(name_str)));
+                self.set_anchor_name(Some(crate::style::AnchorName::new(name_str)));
                 PropApplyOutcome::Applied
             }
             other if crate::view::renderer_adapter::RSX_EVENT_HANDLER_PROPS.contains(&other) => {

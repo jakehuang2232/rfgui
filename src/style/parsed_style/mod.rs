@@ -9,8 +9,13 @@ use crate::style::gradient::Gradient;
 use rustc_hash::FxHashMap;
 use std::ops::Add;
 
+// Catalog of CSS-style property keys. Several variants are matched in the
+// cascade but not yet produced by the schema → parsed conversion path; kept
+// here so adding a new schema field doesn't require simultaneously expanding
+// this enum.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PropertyId {
+pub(crate) enum PropertyId {
     Layout,
     CrossSize,
     Align,
@@ -2438,8 +2443,9 @@ pub const fn flex() -> Flex {
     Flex::new()
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
-pub enum ParsedValue {
+pub(crate) enum ParsedValue {
     Layout(Layout),
     CrossSize(CrossSize),
     Align(Align),
@@ -2464,16 +2470,17 @@ pub enum ParsedValue {
     Gradient(Gradient),
 }
 
+#[cfg(test)]
 impl ParsedValue {
-    pub fn color_like<T: ColorLike>(color: T) -> Self {
+    pub(crate) fn color_like<T: ColorLike>(color: T) -> Self {
         Self::Color(color.to_style_color())
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Declaration {
-    pub property: PropertyId,
-    pub value: ParsedValue,
+pub(crate) struct Declaration {
+    pub(crate) property: PropertyId,
+    pub(crate) value: ParsedValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -2686,7 +2693,7 @@ impl IntoStyleFieldValue<TextWrap> for TextWrap {
     }
 }
 
-pub fn insert_style_length<V>(style: &mut Style, property: PropertyId, value: V)
+pub(crate) fn insert_style_length<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<Length>,
 {
@@ -2696,7 +2703,7 @@ where
     );
 }
 
-pub fn insert_style_font_size<V>(style: &mut Style, property: PropertyId, value: V)
+pub(crate) fn insert_style_font_size<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<FontSize>,
 {
@@ -2706,14 +2713,14 @@ where
     );
 }
 
-pub fn style_color_value<V>(value: V) -> ParsedValue
+pub(crate) fn style_color_value<V>(value: V) -> ParsedValue
 where
     V: IntoStyleFieldValue<StyleColor>,
 {
     ParsedValue::Color(value.into_style_field_value())
 }
 
-pub fn insert_style_font_weight<V>(style: &mut Style, property: PropertyId, value: V)
+pub(crate) fn insert_style_font_weight<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<FontWeight>,
 {
@@ -2723,14 +2730,14 @@ where
     );
 }
 
-pub fn insert_style_flex<V>(style: &mut Style, property: PropertyId, value: V)
+pub(crate) fn insert_style_flex<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<Flex>,
 {
     style.insert(property, ParsedValue::Flex(value.into_style_field_value()));
 }
 
-pub fn insert_style_text_wrap<V>(style: &mut Style, property: PropertyId, value: V)
+pub(crate) fn insert_style_text_wrap<V>(style: &mut Style, property: PropertyId, value: V)
 where
     V: IntoStyleFieldValue<TextWrap>,
 {
@@ -2745,15 +2752,7 @@ impl Style {
         Self::default()
     }
 
-    pub fn from_declarations(declarations: Vec<Declaration>) -> Self {
-        let mut parsed = Self::new();
-        for declaration in declarations {
-            parsed.insert(declaration.property, declaration.value);
-        }
-        parsed
-    }
-
-    pub fn insert(&mut self, property: PropertyId, value: ParsedValue) {
+    pub(crate) fn insert(&mut self, property: PropertyId, value: ParsedValue) {
         let declaration = Declaration { property, value };
         match self.index.get(&property).copied() {
             Some(i) => self.declarations[i] = declaration,
@@ -2765,22 +2764,18 @@ impl Style {
         }
     }
 
-    pub fn insert_color_like<T: ColorLike>(&mut self, property: PropertyId, color: T) {
-        self.insert(property, ParsedValue::color_like(color));
-    }
-
-    pub fn get(&self, property: PropertyId) -> Option<&ParsedValue> {
+    pub(crate) fn get(&self, property: PropertyId) -> Option<&ParsedValue> {
         self.index
             .get(&property)
             .and_then(|i| self.declarations.get(*i))
             .map(|decl| &decl.value)
     }
 
-    pub fn declarations(&self) -> &[Declaration] {
+    pub(crate) fn declarations(&self) -> &[Declaration] {
         &self.declarations
     }
 
-    pub fn remove(&mut self, property: PropertyId) -> Option<ParsedValue> {
+    pub(crate) fn remove(&mut self, property: PropertyId) -> Option<ParsedValue> {
         let idx = self.index.remove(&property)?;
         let declaration = self.declarations.swap_remove(idx);
         if idx < self.declarations.len() {
@@ -2790,7 +2785,7 @@ impl Style {
         Some(declaration.value)
     }
 
-    pub fn without_properties_recursive(mut self, properties: &[PropertyId]) -> Self {
+    pub(crate) fn without_properties_recursive(mut self, properties: &[PropertyId]) -> Self {
         for property in properties {
             let _ = self.remove(*property);
         }

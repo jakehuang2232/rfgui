@@ -5,7 +5,7 @@
 //! flex/inline placement) and `place_absolute_children` (absolute-position
 //! children). Caller composes both around its own profile timing scopes.
 
-use std::time::Instant;
+use crate::time::Instant;
 
 use crate::style::{Align, CrossSize, JustifyContent, Layout};
 use crate::view::base_component::{

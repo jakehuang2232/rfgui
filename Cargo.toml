@@ -5,6 +5,7 @@ edition = "2024"
 description = "An innovative gui framework"
 license = "MIT"
 repository = "https://github.com/jakehuang2232/rfgui"
+build = "build.rs"
 
 [workspace]
 members = [

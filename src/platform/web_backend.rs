@@ -16,7 +16,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use super::{Clipboard, CursorSink};
-use crate::Cursor;
+use crate::style::Cursor;
 use web_sys::HtmlCanvasElement;
 
 /// Return the CSS `cursor` property value for a given `Cursor`. Keeps the

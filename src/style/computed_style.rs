@@ -182,31 +182,31 @@ impl ComputedStyle {
             && self.border_widths == other.border_widths
     }
 
-    pub const fn layout_axis_direction(&self) -> crate::FlowDirection {
+    pub const fn layout_axis_direction(&self) -> crate::style::FlowDirection {
         match self.layout {
             Layout::Flex { direction, .. } | Layout::Flow { direction, .. } => direction,
-            Layout::Inline => crate::FlowDirection::Row,
-            _ => crate::FlowDirection::Row,
+            Layout::Inline => crate::style::FlowDirection::Row,
+            _ => crate::style::FlowDirection::Row,
         }
     }
 
-    pub const fn layout_flow_direction(&self) -> crate::FlowDirection {
+    pub const fn layout_flow_direction(&self) -> crate::style::FlowDirection {
         match self.layout {
             Layout::Flow { direction, .. } => direction,
-            Layout::Inline => crate::FlowDirection::Row,
-            _ => crate::FlowDirection::Row,
+            Layout::Inline => crate::style::FlowDirection::Row,
+            _ => crate::style::FlowDirection::Row,
         }
     }
 
-    pub const fn layout_flow_wrap(&self) -> crate::FlowWrap {
+    pub const fn layout_flow_wrap(&self) -> crate::style::FlowWrap {
         match self.layout {
             Layout::Flow { wrap, .. } => wrap,
-            Layout::Inline => crate::FlowWrap::Wrap,
-            _ => crate::FlowWrap::NoWrap,
+            Layout::Inline => crate::style::FlowWrap::Wrap,
+            _ => crate::style::FlowWrap::NoWrap,
         }
     }
 
-    pub const fn layout_axis_justify_content(&self) -> crate::JustifyContent {
+    pub const fn layout_axis_justify_content(&self) -> crate::style::JustifyContent {
         match self.layout {
             Layout::Flex {
                 justify_content, ..
@@ -214,49 +214,49 @@ impl ComputedStyle {
             | Layout::Flow {
                 justify_content, ..
             } => justify_content,
-            Layout::Inline => crate::JustifyContent::Start,
-            _ => crate::JustifyContent::Start,
+            Layout::Inline => crate::style::JustifyContent::Start,
+            _ => crate::style::JustifyContent::Start,
         }
     }
 
-    pub const fn layout_flow_justify_content(&self) -> crate::JustifyContent {
+    pub const fn layout_flow_justify_content(&self) -> crate::style::JustifyContent {
         match self.layout {
             Layout::Flow {
                 justify_content, ..
             } => justify_content,
-            Layout::Inline => crate::JustifyContent::Start,
-            _ => crate::JustifyContent::Start,
+            Layout::Inline => crate::style::JustifyContent::Start,
+            _ => crate::style::JustifyContent::Start,
         }
     }
 
-    pub const fn layout_axis_cross_size(&self) -> crate::CrossSize {
+    pub const fn layout_axis_cross_size(&self) -> crate::style::CrossSize {
         match self.layout {
             Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.size,
-            Layout::Inline => crate::CrossSize::Fit,
+            Layout::Inline => crate::style::CrossSize::Fit,
             _ => self.cross_size,
         }
     }
 
-    pub const fn layout_flow_cross_size(&self) -> crate::CrossSize {
+    pub const fn layout_flow_cross_size(&self) -> crate::style::CrossSize {
         match self.layout {
             Layout::Flow { cross_axis, .. } => cross_axis.size,
-            Layout::Inline => crate::CrossSize::Fit,
+            Layout::Inline => crate::style::CrossSize::Fit,
             _ => self.cross_size,
         }
     }
 
-    pub const fn layout_axis_align(&self) -> crate::Align {
+    pub const fn layout_axis_align(&self) -> crate::style::Align {
         match self.layout {
             Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.align,
-            Layout::Inline => crate::Align::Start,
+            Layout::Inline => crate::style::Align::Start,
             _ => self.align,
         }
     }
 
-    pub const fn layout_flow_align(&self) -> crate::Align {
+    pub const fn layout_flow_align(&self) -> crate::style::Align {
         match self.layout {
             Layout::Flow { cross_axis, .. } => cross_axis.align,
-            Layout::Inline => crate::Align::Start,
+            Layout::Inline => crate::style::Align::Start,
             _ => self.align,
         }
     }
@@ -592,9 +592,7 @@ mod tests {
     use crate::style::{
         BoxShadow, Color, FontSize, ParsedValue, PropertyId, SizeValue, Style, TextWrap,
     };
-    use crate::{
-        Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
-    };
+    use crate::style::{Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout, Length};
 
     #[test]
     fn compute_style_applies_box_shadow_list() {
@@ -718,7 +716,7 @@ mod tests {
         );
         style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::flex().grow(2.0).shrink(0.0).basis(Length::px(80.0))),
+            ParsedValue::Flex(crate::style::flex().grow(2.0).shrink(0.0).basis(Length::px(80.0))),
         );
 
         let computed = compute_style(&style, None);
