@@ -915,6 +915,24 @@ pub struct InlineMeasureContext {
 pub struct InlineNodeSize {
     pub width: f32,
     pub height: f32,
+    /// Distance from the fragment's top to its baseline (cross-axis).
+    /// Surfaces typography baseline for `Layout::Inline` cross-axis
+    /// alignment per `docs/design/inline-baseline.md`. Conventions:
+    /// - Text / TextAreaTextRun fragment: cosmic-text
+    ///   `LayoutRun.line_y - line_top` (already includes line-height
+    ///   leading/2).
+    /// - Non-fragmentable Element: `height` (bottom edge).
+    /// - Fragmentable Inline element fragment: that fragment's inner
+    ///   `line_ascent` (relative to its line box top, excluding outer
+    ///   vertical padding/border which paint outside the line box).
+    /// - Default / empty: `0.0`.
+    pub baseline: f32,
+    /// Cross-axis alignment effective for this fragment. Initial
+    /// `Baseline`; per `docs/design/inline-baseline.md` D5/D5a
+    /// `Layoutable` producers fill this from their inherited value
+    /// (`ComputedStyle.vertical_align` for Element, dedicated field for
+    /// Text / TextAreaTextRun). Read by the inline place pipeline (D3).
+    pub vertical_align: crate::style::VerticalAlign,
     /// Hard line break after this fragment. Honored by the inline solver
     /// even when `solver_wrap` (soft overflow wrap) is disabled — this is
     /// how `\n` paragraphs in `TextArea` produce new lines while
@@ -927,6 +945,8 @@ impl Default for InlineNodeSize {
         Self {
             width: 0.0,
             height: 0.0,
+            baseline: 0.0,
+            vertical_align: crate::style::VerticalAlign::Baseline,
             force_break_after: false,
         }
     }
@@ -1139,6 +1159,12 @@ pub trait Layoutable {
         vec![InlineNodeSize {
             width,
             height,
+            // Non-fragmentable element: baseline = bottom edge
+            // (`docs/design/inline-baseline.md` D1). User wanting
+            // text-baseline alignment for `<Element><Text/></Element>`
+            // must drop the Element wrapper (Phase 2 will add
+            // baseline-from-children).
+            baseline: height,
             ..Default::default()
         }]
     }

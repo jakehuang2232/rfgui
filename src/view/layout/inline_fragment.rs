@@ -13,7 +13,7 @@
 
 use crate::style::{Align, FlowDirection, Length};
 use crate::view::base_component::{
-    InlinePlacement, Position, Rect, Size, cross_item_offset, resolve_px,
+    InlinePlacement, Position, Rect, Size, inline_cross_offset, resolve_px,
 };
 use crate::view::layout::types::{FlexLayoutInfo, LayoutState};
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -59,7 +59,9 @@ pub(crate) fn place_inline_fragment(
         bottom_inset,
         gap_length,
         direction,
-        align,
+        // Inline path picks per-item vertical-align (D3) from the
+        // FlexLineItem; container `align` is intentionally unused.
+        align: _align,
     } = inputs;
 
     let is_row = matches!(direction, FlowDirection::Row);
@@ -101,12 +103,23 @@ pub(crate) fn place_inline_fragment(
             .copied()
             .unwrap_or(0.0)
             .max(0.0);
-        let line_height = info
-            .line_cross_max
+        // Inner line box height per D2: ascent + descent. Outer caller
+        // (parent inline solver) sees the same value through this fragment's
+        // `InlineNodeSize.height` (already computed from line_cross_max in
+        // `Element::get_inline_nodes_size`); when a mixed row's ascent +
+        // descent exceeds line_cross_max the fragment paint band grows
+        // accordingly in Sprint 2 (see design D2 visual diff table).
+        let line_height = (info
+            .line_ascent
             .get(placement.node_index)
             .copied()
             .unwrap_or(0.0)
-            .max(0.0);
+            + info
+                .line_descent
+                .get(placement.node_index)
+                .copied()
+                .unwrap_or(0.0))
+        .max(0.0);
         let mut main_cursor = 0.0_f32;
         let mut prev_child_index: Option<usize> = None;
         let gap = resolve_px(
@@ -116,11 +129,24 @@ pub(crate) fn place_inline_fragment(
             placement.viewport_height,
         );
 
+        let line_ascent = info
+            .line_ascent
+            .get(placement.node_index)
+            .copied()
+            .unwrap_or(0.0);
         for item in line {
             if prev_child_index != Some(item.child_index) && prev_child_index.is_some() {
                 main_cursor += gap;
             }
-            let align_offset = cross_item_offset(line_height, item.cross.max(0.0), align);
+            // D3 per-fragment offset (inner inline line). Container's
+            // `align` is intentionally ignored on the inline path.
+            let align_offset = inline_cross_offset(
+                line_ascent,
+                line_height,
+                item.baseline,
+                item.cross.max(0.0),
+                item.vertical_align,
+            );
             let content_origin_x = placement.x
                 + if placement.node_index == 0 {
                     left_inset

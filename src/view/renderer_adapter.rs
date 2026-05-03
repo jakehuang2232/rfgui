@@ -32,6 +32,13 @@ pub struct InheritedTextStyle {
     pub(crate) color: Option<Color>,
     pub(crate) cursor: Option<Cursor>,
     pub(crate) text_wrap: Option<TextWrap>,
+    /// Multiplier-style line height (e.g. 1.2 = 120% of font_size).
+    /// Inherited typography prop. Default is the `Text` field's own
+    /// initial value when unset (cascade is opt-in).
+    pub(crate) line_height: Option<f32>,
+    /// Cross-axis alignment cascaded from an Element ancestor's
+    /// `style` prop. See `docs/design/inline-baseline.md` D5/D5a.
+    pub(crate) vertical_align: Option<crate::style::VerticalAlign>,
 }
 
 /// Resolved text-cascading declarations extracted from a `Style`.
@@ -49,6 +56,8 @@ pub(crate) struct ResolvedTextProps {
     pub(crate) color: Option<Color>,
     pub(crate) cursor: Option<Cursor>,
     pub(crate) text_wrap: Option<TextWrap>,
+    pub(crate) line_height: Option<f32>,
+    pub(crate) vertical_align: Option<crate::style::VerticalAlign>,
 }
 
 impl InheritedTextStyle {
@@ -76,6 +85,8 @@ impl InheritedTextStyle {
             color: None,
             cursor: None,
             text_wrap: None,
+            line_height: None,
+            vertical_align: None,
         };
         let resolved = inherited.resolved_text_props(style);
         if let Some(font_families) = resolved.font_families {
@@ -88,6 +99,8 @@ impl InheritedTextStyle {
         inherited.color = resolved.color.or(inherited.color);
         inherited.cursor = resolved.cursor.or(inherited.cursor);
         inherited.text_wrap = resolved.text_wrap.or(inherited.text_wrap);
+        inherited.line_height = resolved.line_height.or(inherited.line_height);
+        inherited.vertical_align = resolved.vertical_align.or(inherited.vertical_align);
         inherited
     }
 
@@ -115,6 +128,12 @@ impl InheritedTextStyle {
         }
         if let Some(text_wrap) = resolved.text_wrap {
             self.text_wrap = Some(text_wrap);
+        }
+        if let Some(line_height) = resolved.line_height {
+            self.line_height = Some(line_height);
+        }
+        if let Some(vertical_align) = resolved.vertical_align {
+            self.vertical_align = Some(vertical_align);
         }
     }
 
@@ -148,6 +167,15 @@ impl InheritedTextStyle {
             },
             text_wrap: match style.get(PropertyId::TextWrap) {
                 Some(ParsedValue::TextWrap(text_wrap)) => Some(*text_wrap),
+                _ => None,
+            },
+            line_height: match style.get(PropertyId::LineHeight) {
+                // Multiplier value clamped to >= 0 to mirror compute_style.
+                Some(ParsedValue::LineHeight(lh)) => Some(lh.value().max(0.0)),
+                _ => None,
+            },
+            vertical_align: match style.get(PropertyId::VerticalAlign) {
+                Some(ParsedValue::VerticalAlign(va)) => Some(*va),
                 _ => None,
             },
         }

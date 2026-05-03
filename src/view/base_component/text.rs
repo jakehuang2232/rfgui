@@ -30,6 +30,10 @@ struct InlineTextFragment {
     content: String,
     width: f32,
     height: f32,
+    /// Distance from fragment top to typography baseline. Sourced from
+    /// cosmic-text `LayoutRun.line_y - line_top` (already includes
+    /// line-height leading/2). See `docs/design/inline-baseline.md` D1/D4.
+    baseline: f32,
     position: Option<Position>,
     layout_buffer: Option<Arc<GlyphBuffer>>,
 }
@@ -143,6 +147,10 @@ pub struct Text {
     auto_width: bool,
     auto_height: bool,
     text_wrap: TextWrap,
+    /// Effective `vertical-align` for this Text node. Default
+    /// `Baseline`; written by parent cascade or explicit prop. Read by
+    /// `get_inline_nodes_size` to fan out into the inline solver.
+    vertical_align: crate::style::VerticalAlign,
     allow_wrap: bool,
     measure_revision: u64,
     cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
@@ -168,6 +176,7 @@ pub struct Text {
     color_explicit: bool,
     cursor_explicit: bool,
     text_wrap_explicit: bool,
+    line_height_explicit: bool,
 }
 
 /// LRU cache with generation-based eviction (à la Skia SkStrikeCache).
@@ -527,15 +536,24 @@ impl Text {
         )
         .buffer;
 
+        // Mirror cosmic-text's LayoutRunIter::next centering formula
+        // (`buffer.rs`: `centering_offset + max_ascent`) so the
+        // first-line wrapped fragment baseline matches the
+        // `LayoutRun.line_y - line_top` value used elsewhere.
+        let effective_line_height = layout_line
+            .line_height_opt
+            .unwrap_or(self.font_size * self.line_height.max(0.8))
+            .max(1.0);
+        let glyph_height = layout_line.max_ascent + layout_line.max_descent;
+        let leading = (effective_line_height - glyph_height).max(0.0);
+        let baseline = (layout_line.max_ascent + leading / 2.0).max(0.0);
         let entry = FirstLineLayoutCacheEntry {
             consumed_bytes,
             fragment: InlineTextFragment {
                 content,
                 width,
-                height: layout_line
-                    .line_height_opt
-                    .unwrap_or(self.font_size * self.line_height.max(0.8))
-                    .max(1.0),
+                height: effective_line_height,
+                baseline,
                 position: None,
                 layout_buffer: Some(fragment_buffer),
             },
@@ -709,6 +727,7 @@ impl Text {
                     content,
                     width,
                     height: run.line_height.max(1.0),
+                    baseline: (run.line_y - run.line_top).max(0.0),
                     position: None,
                     layout_buffer: Some(fragment_buffer),
                 }
@@ -740,10 +759,20 @@ impl Text {
                 self.align,
                 self.font_families.as_slice(),
             );
+            // Single-fragment NoWrap: derive baseline from buffer's
+            // first LayoutRun (cosmic-text already places line_y with
+            // line-height leading/2 distributed).
+            let baseline = layout
+                .buffer
+                .layout_runs()
+                .next()
+                .map(|run| (run.line_y - run.line_top).max(0.0))
+                .unwrap_or(0.0);
             vec![InlineTextFragment {
                 content: self.content.clone(),
                 width: layout.width,
                 height: layout.height,
+                baseline,
                 position: None,
                 layout_buffer: Some(layout.buffer),
             }]
@@ -1051,6 +1080,7 @@ impl Text {
             auto_width: false,
             auto_height: false,
             text_wrap: TextWrap::Wrap,
+            vertical_align: crate::style::VerticalAlign::Baseline,
             allow_wrap: true,
             measure_revision: 0,
             cached_intrinsic_layout: None,
@@ -1070,6 +1100,7 @@ impl Text {
             color_explicit: false,
             cursor_explicit: false,
             text_wrap_explicit: false,
+            line_height_explicit: false,
         }
     }
 
@@ -1202,6 +1233,23 @@ impl Text {
             self.line_height = line_height;
             self.mark_measure_dirty();
         }
+        self.line_height_explicit = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn line_height_value(&self) -> f32 {
+        self.line_height
+    }
+
+    pub fn set_vertical_align(&mut self, vertical_align: crate::style::VerticalAlign) {
+        // No measure invalidation — vertical_align affects place only.
+        self.vertical_align = vertical_align;
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn vertical_align(&self) -> crate::style::VerticalAlign {
+        self.vertical_align
     }
 
     pub fn set_font_weight(&mut self, font_weight: u16) {
@@ -1412,12 +1460,31 @@ impl Text {
             self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::ALL);
             changed = true;
         }
+        if !self.line_height_explicit
+            && let Some(lh) = inherited.line_height
+            && (self.line_height - lh).abs() > f32::EPSILON
+        {
+            self.line_height = lh;
+            self.mark_measure_dirty();
+            changed = true;
+        }
         if !self.cursor_explicit
             && let Some(cursor) = inherited.cursor
         {
             let mut style = Style::new();
             style.set_cursor(cursor);
             self.element.apply_style(style);
+            changed = true;
+        }
+        // vertical-align is layout-only (place pass); no measure dirty.
+        // No explicit-flag tracking yet — explicit `set_vertical_align`
+        // will be re-overwritten by an ancestor cascade. Matches Sprint
+        // 3 acceptance footgun (`docs/design/inline-baseline.md` Risk
+        // #6: inheritance footgun, document-only mitigation).
+        if let Some(va) = inherited.vertical_align
+            && self.vertical_align != va
+        {
+            self.vertical_align = va;
             changed = true;
         }
         changed
@@ -2025,6 +2092,8 @@ impl Layoutable for Text {
             .map(|(idx, fragment)| InlineNodeSize {
                 width: fragment.width,
                 height: fragment.height,
+                baseline: fragment.baseline,
+                vertical_align: self.vertical_align,
                 // Each fragment is one visual line of this Text already wrapped
                 // by cosmic_text — trailing whitespace was stripped per CSS, so
                 // packing two fragments side-by-side in the parent inline solver
