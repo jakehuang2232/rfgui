@@ -8,7 +8,7 @@ use crate::rfgui::view::base_component::{
     InlineNodeSize, InlinePlacement, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
     UiBuildContext,
 };
-use crate::rfgui::view::{HostElement, host_node};
+use crate::rfgui::view::{BuildCtx, ElementDescriptor, HostBuilder, host_builder_node};
 use crate::rfgui::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::rfgui::view::frame_graph::texture_resource::{TextureDesc, TextureResource};
 use crate::rfgui::view::frame_graph::{
@@ -521,7 +521,9 @@ pub struct ParticleCanvas {
 }
 
 impl ParticleCanvas {
-    pub fn new(id: u64, w: f32, h: f32) -> Self {
+    pub fn new(id: u64) -> Self {
+        // Sizes seeded at 0.0; `measure` fills target_w/target_h from
+        // parent's percent base (width:100%, height:100% layout).
         Self {
             id,
             parent_id: None,
@@ -529,10 +531,10 @@ impl ParticleCanvas {
             offset_y: 0.0,
             layout_x: 0.0,
             layout_y: 0.0,
-            layout_w: w,
-            layout_h: h,
-            target_w: w,
-            target_h: h,
+            layout_w: 0.0,
+            layout_h: 0.0,
+            target_w: 0.0,
+            target_h: 0.0,
             should_render: true,
         }
     }
@@ -832,17 +834,19 @@ impl ElementTrait for ParticleCanvas {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HostElement impl + ParticleDemo component
+// HostBuilder impl + ParticleDemo component
 // ═══════════════════════════════════════════════════════════════════════════════
 
-impl HostElement for ParticleCanvas {
-    fn build(_node: &RsxElementNode, path: &[u64]) -> Result<Box<dyn ElementTrait>, String> {
+impl HostBuilder for ParticleCanvas {
+    fn build_descriptor(
+        _node: &RsxElementNode,
+        path: &[u64],
+        _ctx: &BuildCtx,
+    ) -> Result<ElementDescriptor, String> {
         // Size defaults to 0 → filled by parent constraints during layout.
-        Ok(Box::new(ParticleCanvas::new(
+        Ok(ElementDescriptor::leaf(Box::new(ParticleCanvas::new(
             stable_id("ParticleCanvas", path),
-            0.0,
-            0.0,
-        )))
+        ))))
     }
 }
 
@@ -850,5 +854,5 @@ impl HostElement for ParticleCanvas {
 pub fn ParticleDemo() -> RsxNode {
     let viewport = use_viewport();
     viewport.request_redraw();
-    host_node::<ParticleCanvas>("ParticleCanvas")
+    host_builder_node::<ParticleCanvas>("ParticleCanvas")
 }

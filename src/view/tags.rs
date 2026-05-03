@@ -802,6 +802,8 @@ macro_rules! impl_rsx_tag_v2_trivial {
             type StrictProps = $props;
             const ACCEPTS_CHILDREN: bool = $accepts;
             const IS_HOST_TAG: bool = true;
+            const HOST_BUILDER: Option<crate::ui::ErasedHostBuilder> =
+                Some(crate::view::host_element::erased_host_builder::<$tag>);
 
             fn into_strict(props: Self::Props) -> Self::StrictProps {
                 props
@@ -828,6 +830,76 @@ impl_rsx_tag_v2_trivial!(
     TextAreaProjectionSegment,
     TextAreaProjectionSegmentPropSchema,
     true
+);
+
+// ---------- Phase 6b: HostBuilder impls for built-in host tags ----------
+//
+// Each tag's `build_descriptor` delegates to the per-host body in
+// `view::renderer_adapter` (Step 4 wiring). Step 6 will inline the
+// bodies into each `base_component/*` module and delete the adapter
+// helpers; the builder fn pointer carried by `HOST_BUILDER` then
+// becomes the only conversion path.
+
+macro_rules! impl_host_builder_via_adapter {
+    ($tag:ty, $delegate:path) => {
+        impl crate::view::host_element::HostBuilder for $tag {
+            fn build_descriptor(
+                node: &crate::ui::RsxElementNode,
+                path: &[u64],
+                ctx: &crate::view::host_element::BuildCtx,
+            ) -> Result<crate::view::renderer_adapter::ElementDescriptor, String> {
+                $delegate(node, path, ctx.global_path.clone(), &ctx.inherited)
+            }
+        }
+    };
+}
+
+impl crate::view::host_element::HostBuilder for Element {
+    fn build_descriptor(
+        node: &crate::ui::RsxElementNode,
+        path: &[u64],
+        ctx: &crate::view::host_element::BuildCtx,
+    ) -> Result<crate::view::renderer_adapter::ElementDescriptor, String> {
+        crate::view::renderer_adapter::convert_container_element_desc(
+            node,
+            path,
+            ctx.global_path.clone(),
+            &ctx.inherited,
+        )
+    }
+}
+
+impl crate::view::host_element::HostBuilder for Text {
+    fn build_descriptor(
+        node: &crate::ui::RsxElementNode,
+        path: &[u64],
+        ctx: &crate::view::host_element::BuildCtx,
+    ) -> Result<crate::view::renderer_adapter::ElementDescriptor, String> {
+        crate::view::renderer_adapter::convert_text_element(
+            node,
+            path,
+            ctx.global_path.clone(),
+            &ctx.inherited,
+        )
+        .map(crate::view::renderer_adapter::ElementDescriptor::leaf)
+    }
+}
+
+impl_host_builder_via_adapter!(
+    TextArea,
+    crate::view::renderer_adapter::convert_text_area_element_desc
+);
+impl_host_builder_via_adapter!(
+    TextAreaProjectionSegment,
+    crate::view::renderer_adapter::convert_text_area_projection_segment_element_desc
+);
+impl_host_builder_via_adapter!(
+    Image,
+    crate::view::renderer_adapter::convert_image_element_desc
+);
+impl_host_builder_via_adapter!(
+    Svg,
+    crate::view::renderer_adapter::convert_svg_element_desc
 );
 
 // ---------- v2 path: Init struct pattern for tags with required props ----------
@@ -872,6 +944,8 @@ impl crate::ui::RsxTag for Image {
     type StrictProps = ImagePropSchema;
     const ACCEPTS_CHILDREN: bool = false;
     const IS_HOST_TAG: bool = true;
+    const HOST_BUILDER: Option<crate::ui::ErasedHostBuilder> =
+        Some(crate::view::host_element::erased_host_builder::<Image>);
 
     fn into_strict(props: Self::Props) -> Self::StrictProps {
         props.into()
@@ -930,6 +1004,8 @@ impl crate::ui::RsxTag for Svg {
     type StrictProps = SvgPropSchema;
     const ACCEPTS_CHILDREN: bool = false;
     const IS_HOST_TAG: bool = true;
+    const HOST_BUILDER: Option<crate::ui::ErasedHostBuilder> =
+        Some(crate::view::host_element::erased_host_builder::<Svg>);
 
     fn into_strict(props: Self::Props) -> Self::StrictProps {
         props.into()

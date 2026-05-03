@@ -36,7 +36,8 @@ pub use font_system::register_font_bytes;
 pub use font_system::set_default_font_families;
 pub use node_arena::{NodeArena, NodeKey, NodeRef, ViewportRef};
 pub use host_element::{
-    HostElement, HostElementBox, erased_host_factory, host_descriptor, host_factory_of, host_node,
+    BuildCtx, HostBuilder, HostElementDescBox, erased_host_builder, host_builder_descriptor,
+    host_builder_node, host_builder_of,
 };
 pub use renderer_adapter::{
     ElementDescriptor, commit_descriptor_tree, rsx_to_descriptors_with_context,

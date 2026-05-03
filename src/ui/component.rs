@@ -840,10 +840,16 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
                     // `<WindowView>` — tree root's descriptor remains
                     // `Window`, not `WindowView`).
                     if let RsxNode::Element(el) = &mut walked {
+                        // Phase 6b: preserve the rendered root's
+                        // `host_builder` so dispatch still works after
+                        // the outer component's `type_id`/`type_name`
+                        // is stamped for stable identity.
+                        let inner_builder =
+                            el.tag_descriptor.and_then(|d| d.host_builder);
                         std::rc::Rc::make_mut(el).tag_descriptor = Some(RsxTagDescriptor {
                             type_id,
                             type_name: identity.invocation_type,
-                            host_factory: None,
+                            host_builder: inner_builder,
                         });
                     }
                     walked
@@ -907,15 +913,11 @@ pub trait RsxTag: 'static {
     /// User `#[component]` 保持 false（default）。
     const IS_HOST_TAG: bool = false;
 
-    /// Compile-time host-element factory pointer. `Some` when this tag
-    /// builds a `Box<dyn ElementTrait>` directly (built-in host tags and
-    /// user-authored custom `ElementTrait` types). `None` for ordinary
-    /// `#[component]` user components.
-    ///
-    /// Stamped into [`RsxTagDescriptor::host_factory`] by
-    /// [`RsxTagDescriptor::of`]. View layer reads it at conversion time
-    /// instead of consulting a runtime registry.
-    const HOST_FACTORY: Option<crate::ui::ErasedHostFactory> = None;
+    /// Phase 6b host-builder pointer. Built-in host tags and custom
+    /// `view::HostBuilder` implementors set this to
+    /// `Some(view::erased_host_builder::<Self>)`; ordinary `#[component]`
+    /// user components leave it `None`.
+    const HOST_BUILDER: Option<crate::ui::ErasedHostBuilder> = None;
 
     fn into_strict(props: Self::Props) -> Self::StrictProps;
 

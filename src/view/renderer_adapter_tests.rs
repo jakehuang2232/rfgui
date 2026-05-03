@@ -928,3 +928,45 @@ fn text_area_v2_no_content_no_placeholder_has_no_children() {
 
     assert!(arena.children_of(root).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6b regression: a downstream-style custom host that implements
+// `HostBuilder` (no `RsxTag` boilerplate) gets dispatched through
+// `host_builder_node` without any change to renderer_adapter.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn custom_host_builder_reaches_arena_without_adapter_changes() {
+    use crate::view::base_component::{ElementTrait, Text};
+    use crate::view::renderer_adapter::ElementDescriptor;
+    use crate::view::{BuildCtx, HostBuilder, host_builder_node};
+
+    struct MyHost;
+
+    impl HostBuilder for MyHost {
+        fn build_descriptor(
+            _node: &crate::ui::RsxElementNode,
+            _path: &[u64],
+            _ctx: &BuildCtx,
+        ) -> Result<ElementDescriptor, String> {
+            // Distinctive stable id so the assertion catches dispatch.
+            Ok(ElementDescriptor::leaf(Box::new(Text::from_content_with_id(
+                0xDEAD_BEEF,
+                "custom-host-marker",
+            ))))
+        }
+    }
+
+    let tree = host_builder_node::<MyHost>("MyHost");
+    let mut arena = crate::view::test_support::new_test_arena();
+    let roots = commit_rsx_tree(&mut arena, &tree);
+    let root = *roots.first().expect("single root");
+
+    let node = arena.get(root).expect("root committed");
+    let text = node
+        .element
+        .as_any()
+        .downcast_ref::<Text>()
+        .expect("custom host produced a Text leaf via HostBuilder");
+    assert_eq!(text.stable_id(), 0xDEAD_BEEF);
+}
