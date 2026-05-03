@@ -7,6 +7,7 @@ use crate::style::gradient::Gradient;
 use crate::style::parsed_style::{
     Align, Animator, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
     PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin, Transitions,
+    VerticalAlign,
 };
 
 /// A resolved size value used by computed style.
@@ -64,6 +65,11 @@ pub struct ComputedStyle {
     pub font_weight: u16,
     pub line_height: f32,
     pub text_wrap: TextWrap,
+    /// Cross-axis alignment within the inline line box. Initial
+    /// `Baseline`; inherited (see `docs/design/inline-baseline.md` D5).
+    /// Non-inline containers don't read this — they only pass it down
+    /// the cascade.
+    pub vertical_align: VerticalAlign,
     pub border_radius: f32,
     pub border_radii: CornerRadii<Length>,
     pub border_width: f32,
@@ -119,6 +125,7 @@ impl Default for ComputedStyle {
             font_weight: 400,
             line_height: 1.2,
             text_wrap: TextWrap::Wrap,
+            vertical_align: VerticalAlign::Baseline,
             border_radius: 0.0,
             border_radii: CornerRadii {
                 top_left: Length::Px(0.0),
@@ -179,6 +186,7 @@ impl ComputedStyle {
             && self.font_weight == other.font_weight
             && self.line_height == other.line_height
             && self.text_wrap == other.text_wrap
+            && self.vertical_align == other.vertical_align
             && self.border_widths == other.border_widths
     }
 
@@ -273,6 +281,7 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
         computed.font_size = parent.font_size;
         computed.font_weight = parent.font_weight;
         computed.line_height = parent.line_height;
+        computed.vertical_align = parent.vertical_align;
     }
 
     if let Some(selection) = parsed.selection()
@@ -420,6 +429,11 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             PropertyId::TextWrap => {
                 if let ParsedValue::TextWrap(value) = &declaration.value {
                     computed.text_wrap = *value;
+                }
+            }
+            PropertyId::VerticalAlign => {
+                if let ParsedValue::VerticalAlign(value) = &declaration.value {
+                    computed.vertical_align = *value;
                 }
             }
             PropertyId::BorderRadius => {

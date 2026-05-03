@@ -9,7 +9,7 @@ use crate::time::Instant;
 
 use crate::style::{Align, CrossSize, JustifyContent, Layout};
 use crate::view::base_component::{
-    InlinePlacement, LayoutPlacement, cross_item_offset, cross_start_offset,
+    InlinePlacement, LayoutPlacement, cross_item_offset, cross_start_offset, inline_cross_offset,
     main_axis_start_and_gap, with_layout_place_profile,
 };
 use crate::view::layout::types::FlexLayoutInfo;
@@ -98,7 +98,16 @@ pub(crate) fn place_axis_children(
 
     for (line_idx, line) in info.lines.iter().enumerate() {
         let line_main = info.line_main_sum[line_idx];
-        let line_cross = info.line_cross_max[line_idx];
+        // Inline path uses ascent + descent (D2). Flex/Flow keep using
+        // line_cross_max so non-inline layouts stay byte-identical until
+        // Sprint 5 cleanup. Pure-element / pure-text inline rows produce
+        // ascent + descent == line_cross_max (zero descent for elements,
+        // baseline+descent collapses back to height for single text run).
+        let line_cross = if matches!(layout, Layout::Inline) {
+            info.line_ascent[line_idx] + info.line_descent[line_idx]
+        } else {
+            info.line_cross_max[line_idx]
+        };
         let mut line_item_count = 0_usize;
         let mut prev_child_index: Option<usize> = None;
         for item in line {
@@ -122,7 +131,19 @@ pub(crate) fn place_axis_children(
             with_layout_place_profile(|profile| profile.child_place_calls += 1);
             if matches!(layout, Layout::Inline) {
                 let alignment_cross = item.cross.max(0.0);
-                let align_offset = cross_item_offset(line_cross, alignment_cross, align);
+                // D3 per-fragment offset: each item picks one of
+                // {Baseline, Top, Middle, Bottom}. Default Baseline aligns
+                // the item's typography baseline to the line's
+                // line_ascent (max baseline). The container's `align`
+                // (which is forced to Start for Inline) is intentionally
+                // ignored on this branch.
+                let align_offset = inline_cross_offset(
+                    info.line_ascent[line_idx],
+                    line_cross,
+                    item.baseline,
+                    alignment_cross,
+                    item.vertical_align,
+                );
                 let (offset_x, offset_y) = if is_row {
                     (
                         main_cursor + item.main_offset,

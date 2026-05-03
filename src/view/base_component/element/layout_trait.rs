@@ -415,7 +415,7 @@ impl Layoutable for Element {
                         .lines
                         .iter()
                         .enumerate()
-                        .map(|(line_idx, _)| InlineNodeSize {
+                        .map(|(line_idx, _line_items)| InlineNodeSize {
                             width: info.line_main_sum[line_idx].max(0.0)
                                 + if line_idx == 0 { left_inset } else { 0.0 }
                                 + if line_idx + 1 == info.lines.len() {
@@ -425,7 +425,39 @@ impl Layoutable for Element {
                                 },
                             // Match CSS inline formatting: vertical padding/border paints
                             // outside the line box and must not increase line height.
-                            height: info.line_cross_max[line_idx].max(0.0),
+                            // Inner line box height per D2 = ascent + descent
+                            // (collapses to line_cross_max for pure-element /
+                            // pure-text rows); the outer line then sees a
+                            // consistent (height, baseline) pair so its own
+                            // ascent/descent calc is well-defined.
+                            height: (info
+                                .line_ascent
+                                .get(line_idx)
+                                .copied()
+                                .unwrap_or(0.0)
+                                + info
+                                    .line_descent
+                                    .get(line_idx)
+                                    .copied()
+                                    .unwrap_or(0.0))
+                            .max(0.0),
+                            // Per `docs/design/inline-baseline.md` D1, a
+                            // fragmentable inline element exposes each
+                            // fragment's inner `line_ascent` as its
+                            // baseline (relative to the line box top —
+                            // outer vertical padding/border paint outside
+                            // and are not added here).
+                            baseline: info
+                                .line_ascent
+                                .get(line_idx)
+                                .copied()
+                                .unwrap_or(0.0),
+                            // D7: every outer fragment shares this
+                            // element's own `vertical-align` (the inner
+                            // line items keep their own values — they're
+                            // placed by the element's inner inline solver
+                            // independently).
+                            vertical_align: self.computed_style.vertical_align,
                             ..Default::default()
                         })
                         .collect();
@@ -448,12 +480,23 @@ impl Layoutable for Element {
             if let Some(last) = nodes.last_mut() {
                 last.width += right_inset;
             }
+            // D7: every outer fragment shares this wrapper's own
+            // `vertical-align`. Inner placement already used the
+            // children's own values; here we overwrite the values
+            // exposed to the outer inline solver so it sees the wrapper
+            // as a single inline-block-like node with one alignment.
+            let wrapper_va = self.computed_style.vertical_align;
+            for node in &mut nodes {
+                node.vertical_align = wrapper_va;
+            }
             return nodes;
         }
         let (width, height) = self.measured_size();
         vec![InlineNodeSize {
             width,
             height,
+            baseline: height,
+            vertical_align: self.computed_style.vertical_align,
             ..Default::default()
         }]
     }

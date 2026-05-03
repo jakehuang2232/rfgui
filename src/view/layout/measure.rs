@@ -107,6 +107,18 @@ pub(crate) fn measure_axis_children(
                     current_line_width = next_width;
                 }
                 line_has_content = true;
+                // Honor hard line breaks in the per-child width estimate.
+                // Without this, a run carrying `force_break_after = true`
+                // (e.g. TextAreaTextRun for a `\n` paragraph) leaves
+                // `current_line_width` accumulated from prior paragraphs,
+                // so the *next* child receives a tiny `first_available_width`
+                // and cosmic-text wraps inside it on the wrong boundary —
+                // even though the flex solver later places the next child
+                // on a fresh line. Reset so measure and solver agree.
+                if node.force_break_after {
+                    current_line_width = 0.0;
+                    line_has_content = false;
+                }
             }
         } else {
             arena.with_element_taken(child_key, |child, arena| {

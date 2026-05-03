@@ -67,6 +67,7 @@ pub(crate) struct TextAreaTextRun {
     pub(crate) color: crate::style::Color,
     pub(crate) cursor: Cursor,
     pub(crate) auto_wrap: bool,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
 
     // IME preedit overlay (TextArea routes via set_inline_preedit)
     pub(crate) inline_preedit: Option<InlinePreedit>,
@@ -100,6 +101,7 @@ impl TextAreaTextRun {
             color: crate::style::Color::rgba(17, 17, 17, 255),
             cursor: Cursor::Text,
             auto_wrap: true,
+            vertical_align: crate::style::VerticalAlign::Baseline,
             inline_preedit: None,
             glyph_buffer: None,
             last_inline_measure_context: None,
@@ -606,9 +608,33 @@ impl Layoutable for TextAreaTextRun {
         // Single fragment per Run. Trailing `\n` is signaled via
         // `force_break_after` so the inline solver wraps the next sibling
         // even when its `solver_wrap` (soft overflow wrap) is off.
+        // Baseline: per `docs/design/inline-baseline.md` D1, atomic
+        // multi-visual-line runs report the first visual line baseline.
+        // Empty paragraph (no shaped buffer) falls back to a synthesized
+        // baseline using the line-height / font-size leading split, so
+        // blank lines still align to surrounding text.
+        let baseline = if let Some(buffer) = self.glyph_buffer.as_ref() {
+            buffer
+                .layout_runs()
+                .next()
+                .map(|run| (run.line_y - run.line_top).max(0.0))
+                .unwrap_or(0.0)
+        } else {
+            let font_size = self.font_size.max(1.0);
+            let line_height = font_size * self.line_height.max(0.8);
+            // Approximate font ascent at ~0.8 of em (cosmic-text reports
+            // ~0.78–0.83 for typical fonts); empty paragraphs only need a
+            // reasonable baseline so the empty line shares a vertical
+            // anchor with adjacent text runs.
+            let approx_ascent = font_size * 0.8;
+            let leading = (line_height - font_size).max(0.0);
+            (approx_ascent + leading / 2.0).max(0.0)
+        };
         vec![InlineNodeSize {
             width: self.layout_state.layout_size.width,
             height: self.layout_state.layout_size.height,
+            baseline,
+            vertical_align: self.vertical_align,
             force_break_after: self.has_trailing_newline,
         }]
     }

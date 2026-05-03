@@ -216,6 +216,28 @@ pub(crate) fn cross_item_offset(line_cross: f32, item_cross: f32, align: Align) 
     }
 }
 
+/// D3 per-item cross offset for `Layout::Inline` placement.
+/// `line_ascent` is the line box's ascent (max fragment baseline);
+/// `line_box_h` is `line_ascent + line_descent`. `item_baseline` and
+/// `item_height` come from the FlexLineItem; `vertical_align` is the
+/// fragment's effective inherited value. See
+/// `docs/design/inline-baseline.md` D3.
+pub(crate) fn inline_cross_offset(
+    line_ascent: f32,
+    line_box_h: f32,
+    item_baseline: f32,
+    item_height: f32,
+    vertical_align: crate::style::VerticalAlign,
+) -> f32 {
+    use crate::style::VerticalAlign;
+    match vertical_align {
+        VerticalAlign::Baseline => (line_ascent - item_baseline).max(0.0),
+        VerticalAlign::Top => 0.0,
+        VerticalAlign::Bottom => (line_box_h - item_height).max(0.0),
+        VerticalAlign::Middle => ((line_box_h - item_height) / 2.0).max(0.0),
+    }
+}
+
 fn trace_layout_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_LAYOUT").is_ok())

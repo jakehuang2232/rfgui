@@ -74,7 +74,18 @@ impl LayoutState {
 pub(crate) struct FlexLayoutInfo {
     pub lines: Vec<Vec<FlexLineItem>>,
     pub line_main_sum: Vec<f32>,
+    /// Per-line cross-axis max item size. Used by Flex/Flow place
+    /// pipelines (and as a transitional fallback for inline). Sprint 5
+    /// will drop the inline-path writes — see
+    /// `docs/design/inline-baseline.md`.
     pub line_cross_max: Vec<f32>,
+    /// Per-line ascent (max fragment baseline). Inline path only;
+    /// Flex/Flow lines leave this 0. Used with `line_descent` to compute
+    /// `line_box_h = line_ascent + line_descent` (D2).
+    pub line_ascent: Vec<f32>,
+    /// Per-line descent (max `fragment.cross - fragment.baseline`).
+    /// Inline path only; Flex/Flow lines leave this 0.
+    pub line_descent: Vec<f32>,
     pub total_main: f32,
     pub total_cross: f32,
 }
@@ -92,6 +103,14 @@ pub(crate) struct FlexLineItem {
     pub cross: f32,
     pub main_offset: f32,
     pub cross_offset: f32,
+    /// Cross-axis baseline (inline path only). Distance from fragment top
+    /// to typography baseline; copied from `InlineNodeSize.baseline`. See
+    /// `docs/design/inline-baseline.md` D1. Flex/Flow paths leave this 0.
+    pub baseline: f32,
+    /// Effective `vertical-align` (inline path only). Copied from
+    /// `InlineNodeSize.vertical_align`. Read by `place.rs` /
+    /// `inline_fragment.rs` (D3). Flex/Flow paths leave this `Baseline`.
+    pub vertical_align: crate::style::VerticalAlign,
     pub force_break_after: bool,
 }
 

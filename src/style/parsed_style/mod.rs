@@ -68,6 +68,7 @@ pub(crate) enum PropertyId {
     TransformOrigin,
     Transition,
     Animator,
+    VerticalAlign,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -706,6 +707,24 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+}
+
+/// Cross-axis alignment of an inline fragment within its line box.
+/// Inherited prop. Initial value `Baseline` (per
+/// `docs/design/inline-baseline.md` D5). Read only by `Layout::Inline`
+/// place pipelines; non-inline containers pass through inheritance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalAlign {
+    Baseline,
+    Top,
+    Middle,
+    Bottom,
+}
+
+impl Default for VerticalAlign {
+    fn default() -> Self {
+        Self::Baseline
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2468,6 +2487,7 @@ pub(crate) enum ParsedValue {
     Animator(Animator),
     Color(StyleColor),
     Gradient(Gradient),
+    VerticalAlign(VerticalAlign),
 }
 
 #[cfg(test)]
@@ -2909,6 +2929,33 @@ impl Style {
 
     pub fn with_text_wrap(mut self, text_wrap: TextWrap) -> Self {
         self.set_text_wrap(text_wrap);
+        self
+    }
+
+    /// Multiplier-style line height. Inherited typography prop.
+    /// Pass the raw `f32` (e.g. `1.2`); construction matches the
+    /// existing `LineHeight::new` API.
+    pub fn set_line_height(&mut self, line_height: f32) {
+        self.insert(
+            PropertyId::LineHeight,
+            ParsedValue::LineHeight(LineHeight::new(line_height)),
+        );
+    }
+
+    pub fn with_line_height(mut self, line_height: f32) -> Self {
+        self.set_line_height(line_height);
+        self
+    }
+
+    pub fn set_vertical_align(&mut self, vertical_align: VerticalAlign) {
+        self.insert(
+            PropertyId::VerticalAlign,
+            ParsedValue::VerticalAlign(vertical_align),
+        );
+    }
+
+    pub fn with_vertical_align(mut self, vertical_align: VerticalAlign) -> Self {
+        self.set_vertical_align(vertical_align);
         self
     }
 
