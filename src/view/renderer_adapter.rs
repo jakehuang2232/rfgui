@@ -177,30 +177,6 @@ fn convert_text_leaf(
     Box::new(text_node)
 }
 
-/// Compile-time host-element dispatch: read the factory pointer carried
-/// by `descriptor.host_factory` and call it. Returns `Ok(None)` when the
-/// node has no descriptor or its descriptor carries no factory.
-fn invoke_host_factory(
-    node: &RsxElementNode,
-    path: &[u64],
-) -> Result<Option<Box<dyn ElementTrait>>, String> {
-    let Some(descriptor) = node.tag_descriptor else {
-        return Ok(None);
-    };
-    let Some(factory) = descriptor.host_factory else {
-        return Ok(None);
-    };
-    let any = factory(node, path)?;
-    let host_box: Box<crate::view::host_element::HostElementBox> =
-        any.downcast().map_err(|_| {
-            format!(
-                "host factory for `{}` returned wrong type",
-                descriptor.type_name
-            )
-        })?;
-    Ok(Some(host_box.0))
-}
-
 /// Build the container Element plus child-inherited text style without
 /// walking children. Used by the descriptor path
 /// ([`convert_container_element_desc`]).
@@ -258,7 +234,7 @@ fn build_container_element_shell(
     Ok((element, child_inherited_text_style))
 }
 
-fn convert_text_element(
+pub(crate) fn convert_text_element(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
@@ -452,7 +428,7 @@ fn append_text_children(out: &mut String, node: &RsxNode) -> Result<(), String> 
 /// / `width` / `height`) deliberately do *not* apply to TextArea — per
 /// design A1 the user wraps `<TextArea>` in an `<Element>` for those.
 /// See `docs/design/textarea-v2.md`.
-fn convert_text_area_element_desc(
+pub(crate) fn convert_text_area_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
@@ -559,7 +535,7 @@ fn convert_text_area_element_desc(
 /// `char_range`; payload is the user RSX subtree which is converted
 /// using the same inherited text style as TextArea's other inline
 /// children (M3 will narrow this to a TextArea-resolved cascade).
-fn convert_text_area_projection_segment_element_desc(
+pub(crate) fn convert_text_area_projection_segment_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
@@ -653,7 +629,7 @@ pub(crate) fn convert_image_slot_desc(
     }])
 }
 
-fn convert_image_element_desc(
+pub(crate) fn convert_image_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
@@ -726,7 +702,7 @@ fn convert_image_element_desc(
     })
 }
 
-fn convert_svg_element_desc(
+pub(crate) fn convert_svg_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
@@ -1155,7 +1131,6 @@ fn convert_node_desc(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<ElementDescriptor, String> {
-    use std::any::TypeId;
     match node {
         RsxNode::Component(_) => {
             Err("Component node must be unwrapped before conversion".to_string())
@@ -1171,61 +1146,34 @@ fn convert_node_desc(
         ))),
         RsxNode::Fragment(_) => Err("fragment must be flattened before conversion".to_string()),
         RsxNode::Element(el) => {
-            // 軌 1 #14 Phase 6a: builtin host dispatch by TypeId. The
-            // descriptor's `type_id` is either the zero-sized tag
-            // marker (`view::tags::*`, stamped by the rsx! macro via
-            // `for_tag::<T>()`) or the host-implementation type
-            // (`view::base_component::*`, when test fixtures stamp
-            // `RsxTagDescriptor::of::<HostType>()` directly). Match
-            // both for each builtin.
-            if let Some(descriptor) = el.tag_descriptor {
-                let type_id = descriptor.type_id;
-                if type_id == TypeId::of::<crate::view::tags::Image>()
-                    || type_id == TypeId::of::<Image>()
-                {
-                    return convert_image_element_desc(el, path, global_path, inherited_text_style);
-                }
-                if type_id == TypeId::of::<crate::view::tags::Svg>()
-                    || type_id == TypeId::of::<Svg>()
-                {
-                    return convert_svg_element_desc(el, path, global_path, inherited_text_style);
-                }
-                if type_id == TypeId::of::<crate::view::tags::TextArea>()
-                    || type_id == TypeId::of::<TextArea>()
-                {
-                    return convert_text_area_element_desc(
-                        el,
-                        path,
-                        global_path,
-                        inherited_text_style,
-                    );
-                }
-                if type_id == TypeId::of::<crate::view::tags::TextAreaProjectionSegment>()
-                    || type_id == TypeId::of::<TextAreaProjectionSegment>()
-                {
-                    return convert_text_area_projection_segment_element_desc(
-                        el,
-                        path,
-                        global_path,
-                        inherited_text_style,
-                    );
-                }
-                if type_id == TypeId::of::<crate::view::tags::Text>()
-                    || type_id == TypeId::of::<Text>()
-                {
-                    return convert_text_element(el, path, global_path, inherited_text_style)
-                        .map(ElementDescriptor::leaf);
-                }
-            }
-            if let Some(element) = invoke_host_factory(el, path)? {
-                return Ok(ElementDescriptor::leaf(element));
-            }
-            convert_container_element_desc(el, path, global_path, inherited_text_style)
+            // Phase 6b: host-owned dispatch. Each tag's
+            // `host_builder` fn pointer (carried by the descriptor)
+            // builds the full ElementDescriptor — children, side
+            // slots, the lot. Adapter no longer enumerates host types.
+            let descriptor = el.tag_descriptor.ok_or_else(|| {
+                format!("element `{}` missing tag descriptor", el.tag)
+            })?;
+            let builder = descriptor.host_builder.ok_or_else(|| {
+                format!("tag `{}` missing host_builder", descriptor.type_name)
+            })?;
+            let ctx = crate::view::host_element::BuildCtx {
+                global_path,
+                inherited: inherited_text_style.clone(),
+            };
+            let any = builder(el, path, &ctx as &dyn std::any::Any)?;
+            let boxed: Box<crate::view::host_element::HostElementDescBox> =
+                any.downcast().map_err(|_| {
+                    format!(
+                        "host builder for `{}` returned wrong type",
+                        descriptor.type_name
+                    )
+                })?;
+            Ok(boxed.0)
         }
     }
 }
 
-fn convert_container_element_desc(
+pub(crate) fn convert_container_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,

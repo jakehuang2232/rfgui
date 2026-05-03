@@ -621,7 +621,7 @@ mod tests {
     use crate::ui::{RsxNode, RsxTagDescriptor};
     use crate::view::ElementStylePropSchema;
     use crate::view::base_component::{
-        Element, ElementTrait, LayoutConstraints, LayoutPlacement, Text,
+        ElementTrait, LayoutConstraints, LayoutPlacement, Text,
     };
 
     fn projection_fixture(cursor_char: usize, with_text_child: bool) -> (NodeArena, NodeKey) {
@@ -637,11 +637,11 @@ mod tests {
                     height: Some(Length::px(42.0)),
                     ..Default::default()
                 };
-                let node = RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                let node = RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_prop("style", style);
                 if with_text_child {
                     node.with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::of::<Text>())
+                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
                             .with_child(RsxNode::text("XYZ")),
                     )
                 } else {
@@ -818,10 +818,10 @@ mod tests {
                     height: Some(Length::px(80.0)),
                     ..Default::default()
                 };
-                RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_prop("style", style)
                     .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::of::<Text>())
+                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
                             .with_child(RsxNode::text("/activity/with/a/very/long/path")),
                     )
             });
@@ -907,7 +907,7 @@ mod tests {
         text_area.ime_preedit = "\u{4E2D}".to_string();
         text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
             render.range(2..5, |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_prop(
                         "style",
                         ElementStylePropSchema {
@@ -917,7 +917,7 @@ mod tests {
                         },
                     )
                     .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::of::<Text>())
+                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
                             .with_child(RsxNode::text("XYZ")),
                     )
             });
@@ -1018,7 +1018,7 @@ mod tests {
         text_area.ime_preedit_cursor = preedit_cursor;
         text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
             render.range(2..5, |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_prop(
                         "style",
                         ElementStylePropSchema {
@@ -1028,7 +1028,7 @@ mod tests {
                         },
                     )
                     .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::of::<Text>())
+                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
                             .with_child(RsxNode::text("XYZ")),
                     )
             });

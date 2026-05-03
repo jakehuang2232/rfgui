@@ -951,10 +951,10 @@ mod tests {
                     height: Some(Length::px(42.0)),
                     ..Default::default()
                 };
-                RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_prop("style", style)
                     .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::of::<Text>())
+                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
                             .with_child(RsxNode::text("XYZ")),
                     )
             });
@@ -1174,11 +1174,11 @@ mod tests {
                     height: Some(Length::px(20.0)),
                     ..Default::default()
                 };
-                RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_key(RsxKey::Local(0xC0AC_C0AC_0001))
                     .with_prop("style", style)
                     .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::of::<Text>())
+                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
                             .with_child(RsxNode::text("X")),
                     )
             });
@@ -1282,11 +1282,11 @@ mod tests {
                             height: Some(Length::px(20.0)),
                             ..Default::default()
                         };
-                        RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                        RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                             .with_key(RsxKey::Local(0xC0AC_C0AC_0002))
                             .with_prop("style", style)
                             .with_child(
-                                RsxNode::tagged("Text", RsxTagDescriptor::of::<Text>())
+                                RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
                                     .with_child(RsxNode::text("X")),
                             )
                     });
@@ -1373,7 +1373,7 @@ mod tests {
             let key_first = if swapped { key_b } else { key_a };
             let key_second = if swapped { key_a } else { key_b };
             render.range(1..2, move |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_key(key_first)
                     .with_prop(
                         "style",
@@ -1385,7 +1385,7 @@ mod tests {
                     )
             });
             render.range(3..4, move |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::of::<Element>())
+                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
                     .with_key(key_second)
                     .with_prop(
                         "style",
