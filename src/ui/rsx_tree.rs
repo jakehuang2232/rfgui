@@ -5,11 +5,11 @@
 use crate::style::FontSize;
 use crate::style::TextAlign;
 use crate::ui::{
-    BlurHandlerProp, ClickHandlerProp, ContextMenuHandlerProp, CopyHandlerProp, CutHandlerProp,
-    DragEndHandlerProp, DragLeaveHandlerProp, DragOverHandlerProp, DragStartHandlerProp,
-    DropHandlerProp, FocusHandlerProp, ImeCommitHandlerProp, ImeDisabledHandlerProp,
-    ImeEnabledHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp, PasteHandlerProp,
-    PointerDownHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp,
+    Binding, BlurHandlerProp, ClickHandlerProp, ContextMenuHandlerProp, CopyHandlerProp,
+    CutHandlerProp, DragEndHandlerProp, DragLeaveHandlerProp, DragOverHandlerProp,
+    DragStartHandlerProp, DropHandlerProp, FocusHandlerProp, ImeCommitHandlerProp,
+    ImeDisabledHandlerProp, ImeEnabledHandlerProp, KeyDownHandlerProp, KeyUpHandlerProp,
+    PasteHandlerProp, PointerDownHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp,
     PointerMoveHandlerProp, PointerUpHandlerProp, TextAreaFocusHandlerProp,
     TextAreaRenderHandlerProp, TextChangeHandlerProp, WheelHandlerProp,
 };
@@ -1192,5 +1192,376 @@ where
                 .map_err(|_| "expected shared prop value of requested type".to_string()),
             _ => Err("expected  shared prop value".to_string()),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 軌 1 #14 Phase 7: identity helpers + stable_node_id machinery + PropValue
+// `as_*` helpers — moved here from `view::renderer_adapter` so the engine
+// core owns the RSX-tree concepts that are independent of the rendering
+// layer. View modules `pub use` these for backward compatibility.
+// ---------------------------------------------------------------------------
+
+/// Path through `GlobalKey` ancestors. Used by stable-id hashing so a
+/// keyed subtree's descendants get ids that are stable across structural
+/// changes higher up the tree (the hash mixes the global key + the
+/// local-path fragment beneath it instead of the full root-relative path).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalNodePath {
+    key: GlobalKey,
+    local_path: Vec<u64>,
+}
+
+impl GlobalNodePath {
+    pub fn key(&self) -> GlobalKey {
+        self.key
+    }
+
+    pub fn local_path(&self) -> &[u64] {
+        &self.local_path
+    }
+}
+
+enum NodeIdSeed<'a> {
+    Local {
+        kind: &'a str,
+        path: &'a [u64],
+    },
+    Global {
+        global_key: GlobalKey,
+        kind: &'a str,
+        local_path: &'a [u64],
+    },
+}
+
+pub fn rendered_node_id_by_index_path(
+    root: &RsxNode,
+    index_path: &[usize],
+) -> Result<Option<u64>, String> {
+    let mut token_path = Vec::new();
+    rendered_node_id_by_index_path_impl(root, index_path, &mut token_path, None)
+}
+
+fn rendered_node_id_by_index_path_impl(
+    node: &RsxNode,
+    index_path: &[usize],
+    token_path: &mut Vec<u64>,
+    global_path: Option<GlobalNodePath>,
+) -> Result<Option<u64>, String> {
+    use rustc_hash::FxHashMap;
+    if index_path.is_empty() {
+        return Ok(rendered_node_id(node, token_path, global_path.as_ref()));
+    }
+
+    let Some(children) = node.children() else {
+        return Err("path traverses through a leaf node".to_string());
+    };
+    let index = index_path[0];
+    let child = children
+        .get(index)
+        .ok_or_else(|| format!("invalid node path index: {index}"))?;
+
+    let current_global_path = current_global_node_path(node, global_path.as_ref());
+    let mut ordinals = FxHashMap::<&'static str, usize>::default();
+    for (child_index, candidate) in children.iter().enumerate() {
+        let ordinal = next_identity_ordinal(&mut ordinals, candidate.identity());
+        let token = child_identity_token(candidate, ordinal);
+        if child_index == index {
+            token_path.push(token);
+            let child_global_path =
+                child_global_node_path(current_global_path.as_ref(), child, token);
+            let rendered = rendered_node_id_by_index_path_impl(
+                child,
+                &index_path[1..],
+                token_path,
+                child_global_path,
+            );
+            token_path.pop();
+            return rendered;
+        }
+    }
+
+    Err(format!("invalid node path index: {index}"))
+}
+
+pub fn rendered_node_id(
+    node: &RsxNode,
+    path: &[u64],
+    global_path: Option<&GlobalNodePath>,
+) -> Option<u64> {
+    match node {
+        RsxNode::Element(element) => Some(stable_node_id_from_parts(
+            element_runtime_name(element),
+            path,
+            global_path,
+        )),
+        RsxNode::Text(_) => Some(stable_node_id_from_parts("TextNode", path, global_path)),
+        RsxNode::Fragment(_) => None,
+        RsxNode::Component(_) => {
+            unreachable!("Component node should be unwrapped before identity hashing")
+        }
+        RsxNode::Provider(_) => {
+            unreachable!("Provider node should be unwrapped before identity hashing")
+        }
+    }
+}
+
+pub fn element_runtime_name(node: &RsxElementNode) -> &str {
+    node.tag_descriptor
+        .map(|descriptor| descriptor.type_name)
+        .unwrap_or(node.tag)
+}
+
+pub fn stable_node_id_from_parts(
+    kind: &str,
+    path: &[u64],
+    global_path: Option<&GlobalNodePath>,
+) -> u64 {
+    stable_node_id(node_id_seed(kind, path, global_path))
+}
+
+fn stable_node_id(seed: NodeIdSeed<'_>) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    match seed {
+        NodeIdSeed::Local { kind, path } => {
+            hash ^= 0x01;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for &byte in kind.as_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for &index in path {
+                for byte in index.to_le_bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(FNV_PRIME);
+                }
+                hash ^= 0xfe;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+        NodeIdSeed::Global {
+            global_key,
+            kind,
+            local_path,
+        } => {
+            hash ^= 0x02;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in global_key.id().to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= 0xfd;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for &byte in kind.as_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for &index in local_path {
+                for byte in index.to_le_bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(FNV_PRIME);
+                }
+                hash ^= 0xfe;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+    }
+
+    if hash == 0 { 1 } else { hash }
+}
+
+fn node_id_seed<'a>(
+    kind: &'a str,
+    path: &'a [u64],
+    global_path: Option<&'a GlobalNodePath>,
+) -> NodeIdSeed<'a> {
+    if let Some(global_path) = global_path {
+        NodeIdSeed::Global {
+            global_key: global_path.key,
+            kind,
+            local_path: &global_path.local_path,
+        }
+    } else {
+        NodeIdSeed::Local { kind, path }
+    }
+}
+
+pub fn current_global_node_path(
+    node: &RsxNode,
+    inherited: Option<&GlobalNodePath>,
+) -> Option<GlobalNodePath> {
+    if let Some(RsxKey::Global(global_key)) = node.identity().key {
+        return Some(GlobalNodePath {
+            key: global_key,
+            local_path: Vec::new(),
+        });
+    }
+    inherited.cloned()
+}
+
+pub fn child_global_node_path(
+    current: Option<&GlobalNodePath>,
+    child: &RsxNode,
+    token: u64,
+) -> Option<GlobalNodePath> {
+    if let Some(RsxKey::Global(global_key)) = child.identity().key {
+        return Some(GlobalNodePath {
+            key: global_key,
+            local_path: Vec::new(),
+        });
+    }
+    let current = current?;
+    let mut local_path = current.local_path.clone();
+    local_path.push(token);
+    Some(GlobalNodePath {
+        key: current.key,
+        local_path,
+    })
+}
+
+pub fn next_identity_ordinal(
+    ordinals: &mut rustc_hash::FxHashMap<&'static str, usize>,
+    identity: &RsxNodeIdentity,
+) -> usize {
+    let entry = ordinals.entry(identity.invocation_type).or_insert(0);
+    let ordinal = *entry;
+    *entry += 1;
+    ordinal
+}
+
+pub fn child_identity_token(node: &RsxNode, fallback_ordinal: usize) -> u64 {
+    identity_token_from_node_identity(node.identity(), fallback_ordinal)
+}
+
+pub fn identity_token_from_node_identity(
+    identity: &RsxNodeIdentity,
+    fallback_ordinal: usize,
+) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in identity.invocation_type.as_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    match &identity.key {
+        Some(RsxKey::Local(key)) => {
+            hash ^= 0x4c;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in key.to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+        Some(RsxKey::Global(global_key)) => {
+            hash ^= 0x47;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in global_key.id().to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+        None => {
+            hash ^= 0x55;
+            hash = hash.wrapping_mul(FNV_PRIME);
+            for byte in (fallback_ordinal as u64).to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+    }
+    hash
+}
+
+// ---------------------------------------------------------------------------
+// 軌 1 #14 Phase 7: PropValue → typed value decode helpers. View hosts
+// (`Element`/`Text`/`TextArea`/...) call these inside `ingest_props` /
+// `apply_prop` / cold-path setup. Not impls on `PropValue` itself only
+// because they want a `key` string for diagnostic error messages.
+// ---------------------------------------------------------------------------
+
+pub fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
+    match value {
+        PropValue::I64(v) => Ok(*v as f32),
+        PropValue::F64(v) => Ok(*v as f32),
+        _ => Err(format!("prop `{key}` expects numeric value")),
+    }
+}
+
+pub fn as_font_size_px(
+    value: &PropValue,
+    key: &str,
+    parent_font_size: f32,
+    root_font_size: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<f32, String> {
+    match value {
+        PropValue::I64(v) => Ok((*v as f32).max(0.0)),
+        PropValue::F64(v) => Ok((*v as f32).max(0.0)),
+        PropValue::FontSize(v) => Ok(v.resolve_px(
+            parent_font_size,
+            root_font_size,
+            viewport_width,
+            viewport_height,
+        )),
+        _ => Err(format!("prop `{key}` expects numeric or FontSize value")),
+    }
+}
+
+pub fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
+    match value {
+        PropValue::String(v) => Ok(v.as_str()),
+        _ => Err(format!("prop `{key}` expects string value")),
+    }
+}
+
+pub fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
+    Ok(as_string(value, key)?.to_string())
+}
+
+pub fn as_text_align(value: &PropValue, key: &str) -> Result<TextAlign, String> {
+    match value {
+        PropValue::TextAlign(v) => Ok(*v),
+        _ => Err(format!("prop `{key}` expects TextAlign value")),
+    }
+}
+
+pub fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
+    Binding::<String>::from_prop_value(value.clone())
+        .map_err(|_| format!("prop `{key}` expects Binding<String> value"))
+}
+
+pub fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {
+    match value {
+        PropValue::Bool(v) => Ok(*v),
+        _ => Err(format!("prop `{key}` expects bool value")),
+    }
+}
+
+pub fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
+    match value {
+        PropValue::I64(v) => {
+            if *v < 0 {
+                Err(format!("prop `{key}` expects non-negative integer value"))
+            } else {
+                Ok(Some(*v as usize))
+            }
+        }
+        PropValue::F64(v) => {
+            if *v < 0.0 {
+                Err(format!("prop `{key}` expects non-negative numeric value"))
+            } else {
+                Ok(Some(*v as usize))
+            }
+        }
+        _ => Err(format!("prop `{key}` expects numeric value")),
     }
 }

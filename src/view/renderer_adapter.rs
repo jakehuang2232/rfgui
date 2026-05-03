@@ -4,90 +4,47 @@
 use rustc_hash::FxHashMap;
 
 use crate::style::Style;
-use crate::ui::{
-    Binding, FromPropValue, GlobalKey, PropValue, RsxElementNode, RsxKey, RsxNode,
-    RsxNodeIdentity, RsxTagDescriptor, RsxTextNode, use_context,
-};
+use crate::style::{Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
+use crate::ui::{FromPropValue, PropValue, RsxElementNode, RsxNode, RsxTextNode, use_context};
+use crate::view::base_component::text_area::TextAreaProjectionSegment;
 use crate::view::base_component::{
     Element, ElementTrait, Image, Svg, Text, TextArea, TextAreaImeContext,
 };
-use crate::view::base_component::text_area::{TextAreaProjectionSegment, TextAreaTextRun};
 use crate::view::node_arena::{Node, NodeArena, NodeKey};
-use crate::view::{
-    ElementStylePropSchema, ImageFit, ImageSampling, ImageSource, SvgSource, TextStylePropSchema,
+use crate::view::{ElementStylePropSchema, ImageSource, SvgSource, TextStylePropSchema};
+// 軌 1 #14 Phase 7: identity / global-path / stable-id machinery
+// moved to `ui::rsx_tree`. Re-exported here so existing
+// `renderer_adapter::*` paths keep working.
+pub(crate) use crate::ui::{
+    GlobalNodePath, child_global_node_path, child_identity_token, current_global_node_path,
+    element_runtime_name, next_identity_ordinal, rendered_node_id_by_index_path,
+    stable_node_id_from_parts,
 };
-use crate::style::{AnchorName, Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
-fn element_runtime_name(node: &RsxElementNode) -> &str {
-    node.tag_descriptor
-        .map(|descriptor| descriptor.type_name)
-        .unwrap_or(node.tag)
-}
-
-fn element_display_name(node: &RsxElementNode) -> &str {
-    node.tag
-}
-
-fn is_text_descriptor(descriptor: RsxTagDescriptor) -> bool {
-    let name = descriptor.type_name;
-    name.ends_with("::Text") || name == "Text"
-}
-
-fn is_text_area_descriptor(descriptor: RsxTagDescriptor) -> bool {
-    let name = descriptor.type_name;
-    name.ends_with("::TextArea") || name == "TextArea"
-}
-
-fn is_text_area_projection_segment_descriptor(descriptor: RsxTagDescriptor) -> bool {
-    let name = descriptor.type_name;
-    name.ends_with("::TextAreaProjectionSegment") || name == "TextAreaProjectionSegment"
-}
-
-fn is_builtin_text_area_projection_segment_node(node: &RsxElementNode) -> bool {
-    node.tag_descriptor
-        .map(is_text_area_projection_segment_descriptor)
-        .unwrap_or(false)
-        || node.tag == "TextAreaProjectionSegment"
-}
-
-fn is_image_descriptor(descriptor: RsxTagDescriptor) -> bool {
-    let name = descriptor.type_name;
-    name.ends_with("::Image") || name == "Image"
-}
-
-fn is_svg_descriptor(descriptor: RsxTagDescriptor) -> bool {
-    let name = descriptor.type_name;
-    name.ends_with("::Svg") || name == "Svg"
-}
-
-fn is_builtin_text_node(node: &RsxElementNode) -> bool {
-    node.tag_descriptor.map(is_text_descriptor).unwrap_or(false) || node.tag == "Text"
-}
-
-fn is_builtin_text_area_node(node: &RsxElementNode) -> bool {
-    node.tag_descriptor
-        .map(is_text_area_descriptor)
-        .unwrap_or(false)
-        || node.tag == "TextArea"
-}
-
-fn is_builtin_image_node(node: &RsxElementNode) -> bool {
-    node.tag_descriptor
-        .map(is_image_descriptor)
-        .unwrap_or(false)
-        || node.tag == "Image"
-}
-
-fn is_builtin_svg_node(node: &RsxElementNode) -> bool {
-    node.tag_descriptor.map(is_svg_descriptor).unwrap_or(false) || node.tag == "Svg"
-}
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct InheritedTextStyle {
+pub struct InheritedTextStyle {
     pub(crate) font_families: Vec<String>,
     pub(crate) font_size: Option<f32>,
     pub(crate) root_font_size: f32,
     pub(crate) viewport_width: f32,
     pub(crate) viewport_height: f32,
+    pub(crate) font_weight: Option<u16>,
+    pub(crate) color: Option<Color>,
+    pub(crate) cursor: Option<Cursor>,
+    pub(crate) text_wrap: Option<TextWrap>,
+}
+
+/// Resolved text-cascading declarations extracted from a `Style`.
+///
+/// 軌 1 #14 Phase 3: single enumeration of the cascade's prop list
+/// (font_family / font_size / font_weight / color / cursor / text_wrap).
+/// Callers that need to write these into a host (Text setters,
+/// TextArea fields, `InheritedTextStyle` cascade) read from the same
+/// `ResolvedTextProps` instead of repeating per-PropertyId match arms.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ResolvedTextProps {
+    pub(crate) font_families: Option<Vec<String>>,
+    pub(crate) font_size: Option<f32>,
     pub(crate) font_weight: Option<u16>,
     pub(crate) color: Option<Color>,
     pub(crate) cursor: Option<Cursor>,
@@ -120,21 +77,17 @@ impl InheritedTextStyle {
             cursor: None,
             text_wrap: None,
         };
-        if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
-            inherited.font_families = font_family.as_slice().to_vec();
+        let resolved = inherited.resolved_text_props(style);
+        if let Some(font_families) = resolved.font_families {
+            inherited.font_families = font_families;
         }
-        if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
-            inherited.font_weight = Some(font_weight.value());
-        }
-        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-            inherited.color = Some(color.to_color());
-        }
-        if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
-            inherited.cursor = Some(*cursor);
-        }
-        if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
-            inherited.text_wrap = Some(*text_wrap);
-        }
+        // `from_viewport_style` keeps the explicit root_font_size
+        // already computed above — don't downgrade it to whatever
+        // `resolve_font_size_from_style` returns mid-cascade.
+        inherited.font_weight = resolved.font_weight.or(inherited.font_weight);
+        inherited.color = resolved.color.or(inherited.color);
+        inherited.cursor = resolved.cursor.or(inherited.cursor);
+        inherited.text_wrap = resolved.text_wrap.or(inherited.text_wrap);
         inherited
     }
 
@@ -143,122 +96,60 @@ impl InheritedTextStyle {
     /// in `build_container_element_shell`; pulled out so the
     /// incremental-commit path can replay the same cascade walking
     /// the arena parent chain (M6).
-    ///
-    /// Keep synchronised with `from_viewport_style` above — those two
-    /// are the only places the cascade's property list is enumerated.
     pub(crate) fn merge_style(&mut self, style: &Style) {
-        if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
-            self.font_families = font_family.as_slice().to_vec();
+        let resolved = self.resolved_text_props(style);
+        if let Some(font_families) = resolved.font_families {
+            self.font_families = font_families;
         }
-        if let Some(font_size) = resolve_font_size_from_style(
-            style,
-            self.font_size.unwrap_or(self.root_font_size),
-            self.root_font_size,
-            self.viewport_width,
-            self.viewport_height,
-        ) {
+        if let Some(font_size) = resolved.font_size {
             self.font_size = Some(font_size);
         }
-        if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
-            self.font_weight = Some(font_weight.value());
+        if let Some(font_weight) = resolved.font_weight {
+            self.font_weight = Some(font_weight);
         }
-        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-            self.color = Some(color.to_color());
+        if let Some(color) = resolved.color {
+            self.color = Some(color);
         }
-        if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
-            self.cursor = Some(*cursor);
+        if let Some(cursor) = resolved.cursor {
+            self.cursor = Some(cursor);
         }
-        if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
-            self.text_wrap = Some(*text_wrap);
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct GlobalNodePath {
-    key: GlobalKey,
-    local_path: Vec<u64>,
-}
-
-enum NodeIdSeed<'a> {
-    Local {
-        kind: &'a str,
-        path: &'a [u64],
-    },
-    Global {
-        global_key: GlobalKey,
-        kind: &'a str,
-        local_path: &'a [u64],
-    },
-}
-
-pub(crate) fn rendered_node_id_by_index_path(
-    root: &RsxNode,
-    index_path: &[usize],
-) -> Result<Option<u64>, String> {
-    let mut token_path = Vec::new();
-    rendered_node_id_by_index_path_impl(root, index_path, &mut token_path, None)
-}
-
-fn rendered_node_id_by_index_path_impl(
-    node: &RsxNode,
-    index_path: &[usize],
-    token_path: &mut Vec<u64>,
-    global_path: Option<GlobalNodePath>,
-) -> Result<Option<u64>, String> {
-    if index_path.is_empty() {
-        return Ok(rendered_node_id(node, token_path, global_path.as_ref()));
-    }
-
-    let Some(children) = node.children() else {
-        return Err("path traverses through a leaf node".to_string());
-    };
-    let index = index_path[0];
-    let child = children
-        .get(index)
-        .ok_or_else(|| format!("invalid node path index: {index}"))?;
-
-    let current_global_path = current_global_node_path(node, global_path.as_ref());
-    let mut ordinals = FxHashMap::<&'static str, usize>::default();
-    for (child_index, candidate) in children.iter().enumerate() {
-        let ordinal = next_identity_ordinal(&mut ordinals, candidate.identity());
-        let token = child_identity_token(candidate, ordinal);
-        if child_index == index {
-            token_path.push(token);
-            let child_global_path =
-                child_global_node_path(current_global_path.as_ref(), child, token);
-            let rendered = rendered_node_id_by_index_path_impl(
-                child,
-                &index_path[1..],
-                token_path,
-                child_global_path,
-            );
-            token_path.pop();
-            return rendered;
+        if let Some(text_wrap) = resolved.text_wrap {
+            self.text_wrap = Some(text_wrap);
         }
     }
 
-    Err(format!("invalid node path index: {index}"))
-}
-
-fn rendered_node_id(
-    node: &RsxNode,
-    path: &[u64],
-    global_path: Option<&GlobalNodePath>,
-) -> Option<u64> {
-    match node {
-        RsxNode::Element(element) => Some(stable_node_id_from_parts(
-            element_runtime_name(element),
-            path,
-            global_path,
-        )),
-        RsxNode::Text(_) => Some(stable_node_id_from_parts("TextNode", path, global_path)),
-        RsxNode::Fragment(_) => None,
-        RsxNode::Component(_) => {
-            unreachable!("Component node should be unwrapped before renderer_adapter")
-        }
-        RsxNode::Provider(_) => {
-            unreachable!("Provider node should be unwrapped before renderer_adapter")
+    /// Single source of truth for "what does this `Style` cascade?".
+    /// Resolves font_size relative to `self`'s font_size / root /
+    /// viewport. Other props are direct extractions.
+    pub(crate) fn resolved_text_props(&self, style: &Style) -> ResolvedTextProps {
+        ResolvedTextProps {
+            font_families: match style.get(PropertyId::FontFamily) {
+                Some(ParsedValue::FontFamily(family)) => Some(family.as_slice().to_vec()),
+                _ => None,
+            },
+            font_size: resolve_font_size_from_style(
+                style,
+                self.font_size.unwrap_or(self.root_font_size),
+                self.root_font_size,
+                self.viewport_width,
+                self.viewport_height,
+            ),
+            font_weight: match style.get(PropertyId::FontWeight) {
+                Some(ParsedValue::FontWeight(fw)) => Some(fw.value()),
+                _ => None,
+            },
+            color: match style.get(PropertyId::Color) {
+                Some(ParsedValue::Color(color)) => Some(color.to_color()),
+                _ => None,
+            },
+            cursor: match style.get(PropertyId::Cursor) {
+                Some(ParsedValue::Cursor(cursor)) => Some(*cursor),
+                _ => None,
+            },
+            text_wrap: match style.get(PropertyId::TextWrap) {
+                Some(ParsedValue::TextWrap(text_wrap)) => Some(*text_wrap),
+                _ => None,
+            },
         }
     }
 }
@@ -300,9 +191,13 @@ fn invoke_host_factory(
         return Ok(None);
     };
     let any = factory(node, path)?;
-    let host_box: Box<crate::view::host_element::HostElementBox> = any
-        .downcast()
-        .map_err(|_| format!("host factory for `{}` returned wrong type", descriptor.type_name))?;
+    let host_box: Box<crate::view::host_element::HostElementBox> =
+        any.downcast().map_err(|_| {
+            format!(
+                "host factory for `{}` returned wrong type",
+                descriptor.type_name
+            )
+        })?;
     Ok(Some(host_box.0))
 }
 
@@ -331,13 +226,11 @@ fn build_container_element_shell(
         base_style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
     }
 
-    let mut child_inherited_text_style = inherited_text_style.clone();
     let mut user_style = Style::new();
     let mut has_user_style = false;
     for (key, value) in node.props.iter() {
         if *key == "style" {
             let style = as_element_style(value, key)?;
-            child_inherited_text_style.merge_style(&style);
             user_style = user_style + style;
             has_user_style = true;
         }
@@ -348,40 +241,19 @@ fn build_container_element_shell(
         base_style
     };
     element.apply_style(effective_style);
-    for (key, value) in node.props.iter() {
-        if *key == "key" {
-            continue;
-        }
-        match *key {
-            "anchor" => {
-                element.set_anchor_name(Some(AnchorName::new(as_owned_string(value, key)?)))
-            }
-            "padding" => element.set_padding(as_f32(value, key)?),
-            "padding_x" => element.set_padding_x(as_f32(value, key)?),
-            "padding_y" => element.set_padding_y(as_f32(value, key)?),
-            "padding_left" => element.set_padding_left(as_f32(value, key)?),
-            "padding_right" => element.set_padding_right(as_f32(value, key)?),
-            "padding_top" => element.set_padding_top(as_f32(value, key)?),
-            "padding_bottom" => element.set_padding_bottom(as_f32(value, key)?),
-            "opacity" => element.set_opacity(as_f32(value, key)?),
-            "style" => {}
-            other => {
-                // Handler props (23 `on_*` keys) are handled by the
-                // shared dispatcher so `fiber_work` can reuse the same
-                // decode path. Returns Ok(false) iff `other` isn't a
-                // known handler key.
-                if try_assign_event_handler_prop(&mut element, other, value)? {
-                    // handled
-                } else {
-                    return Err(format!(
-                        "unknown prop `{}` on <{}>",
-                        key,
-                        element_display_name(node)
-                    ));
-                }
-            }
-        }
-    }
+    // 軌 1 #14 Phase 1: cold-path prop dispatch lives on the host
+    // (`Element::ingest_props`), the same code path the incremental
+    // commit reaches via `apply_prop`. The shell here only owns
+    // identity, layered style, and child cascade — anchor / padding /
+    // opacity / event handlers all flow through the host.
+    element.ingest_props(node)?;
+    // Phase 3: child cascade goes through the host. Element merges
+    // its `parsed_style()` (which now includes the layered base+user)
+    // onto `parent`. Equivalent to the previous inline merge of
+    // user_style alone — base_style only adds {Width:Auto,
+    // Height:Auto, Cursor:inherited.cursor}, none of which alter the
+    // text cascade beyond what's already inherited.
+    let child_inherited_text_style = element.child_inherited_text_style(inherited_text_style);
 
     Ok((element, child_inherited_text_style))
 }
@@ -401,10 +273,11 @@ fn convert_text_element(
     let mut width: Option<f32> = None;
     let mut height: Option<f32> = None;
 
+    // Cold-path-owned props: style (extracted for downstream
+    // width/height/font_weight/color/cursor/text_wrap fan-out) and
+    // font_size (cascade-resolved). Everything else flows through
+    // `Text::ingest_props`.
     for (key, value) in node.props.iter() {
-        if *key == "key" {
-            continue;
-        }
         match *key {
             "style" => style = Some(as_text_style(value, key)?),
             "font_size" => {
@@ -419,17 +292,10 @@ fn convert_text_element(
                     inherited_text_style.viewport_height,
                 )?);
             }
-            "line_height" => text.set_line_height(as_f32(value, key)?),
-            "align" => {
-                text.set_text_align(as_text_align(value, key)?);
-            }
-            "font" => {
-                text.set_font(as_string(value, key)?);
-            }
-            "opacity" => text.set_opacity(as_f32(value, key)?),
-            _ => return Err(format!("unknown prop `{}` on <Text>", key,)),
+            _ => {}
         }
     }
+    text.ingest_props(node)?;
 
     if let Some(style) = &style {
         if let Some(value) = style.get(PropertyId::Width) {
@@ -438,28 +304,24 @@ fn convert_text_element(
         if let Some(value) = style.get(PropertyId::Height) {
             height = length_from_parsed_value(value, "Text style.height")?;
         }
-        if let Some(font_size) = resolve_font_size_from_style(
-            style,
-            inherited_text_style
-                .font_size
-                .unwrap_or(inherited_text_style.root_font_size),
-            inherited_text_style.root_font_size,
-            inherited_text_style.viewport_width,
-            inherited_text_style.viewport_height,
-        ) {
+        // Phase 3: shared cascade-prop resolver. Text doesn't read
+        // `font_family` from style (cascade-only), so font_families
+        // is intentionally ignored.
+        let resolved = inherited_text_style.resolved_text_props(style);
+        if let Some(font_size) = resolved.font_size {
             text.set_font_size(font_size);
         }
-        if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
-            text.set_font_weight(font_weight.value());
+        if let Some(font_weight) = resolved.font_weight {
+            text.set_font_weight(font_weight);
         }
-        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-            text.set_color(color.clone());
+        if let Some(color) = resolved.color {
+            text.set_color(color);
         }
-        if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
-            text.set_cursor(*cursor);
+        if let Some(cursor) = resolved.cursor {
+            text.set_cursor(cursor);
         }
-        if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
-            text.set_text_wrap(*text_wrap);
+        if let Some(text_wrap) = resolved.text_wrap {
+            text.set_text_wrap(text_wrap);
         }
     }
 
@@ -602,18 +464,11 @@ fn convert_text_area_element_desc(
     let mut explicit_font_size: Option<f32> = None;
     let mut explicit_font: Option<String> = None;
 
+    // Cold-path-owned props: layered style + explicit font-priority
+    // (font, font_size with cascade resolution). The rest of the
+    // schema flows through `TextArea::ingest_props`.
     for (key, value) in node.props.iter() {
-        if *key == "key" {
-            continue;
-        }
         match *key {
-            "content" => text_area.content = as_owned_string(value, key)?,
-            "placeholder" => text_area.placeholder = as_owned_string(value, key)?,
-            "binding" => text_area.text_binding = Some(as_binding_string(value, key)?),
-            "multiline" => text_area.multiline = as_bool(value, key)?,
-            "auto_wrap" => text_area.auto_wrap = as_bool(value, key)?,
-            "read_only" => text_area.read_only = as_bool(value, key)?,
-            "max_length" => text_area.max_length = as_usize(value, key)?,
             "style" => style = Some(as_element_style(value, key)?),
             "font_size" => {
                 explicit_font_size = Some(as_font_size_px(
@@ -628,26 +483,10 @@ fn convert_text_area_element_desc(
                 )?);
             }
             "font" => explicit_font = Some(as_owned_string(value, key)?),
-            "on_focus" => text_area
-                .on_focus_handlers
-                .push(as_text_area_focus_handler(value, key)?),
-            "on_blur" => text_area
-                .on_blur_handlers
-                .push(as_blur_handler(value, key)?),
-            "on_change" => text_area
-                .on_change_handlers
-                .push(as_text_change_handler(value, key)?),
-            "on_render" => {
-                let handler =
-                    crate::ui::TextAreaRenderHandlerProp::from_prop_value(value.clone())
-                        .map_err(|_| {
-                            format!("prop `{key}` expects text area render handler value")
-                        })?;
-                text_area.on_render_handler = Some(handler);
-            }
-            _ => return Err(format!("unknown prop `{}` on <TextArea>", key)),
+            _ => {}
         }
     }
+    text_area.ingest_props(node)?;
 
     // Mirror apply_prop's normalization: collapse `\n` when single-line,
     // and truncate to `max_length`. Order matches v1 setter semantics.
@@ -672,29 +511,25 @@ fn convert_text_area_element_desc(
         text_area.color = inherited_color;
     }
 
-    // Style block (v1-style extraction): only text-side properties apply.
+    // Phase 3: text-side declarations from `style` go through the
+    // shared cascade-prop resolver. TextArea only reads font / size /
+    // weight / color / cursor (no text_wrap).
     if let Some(style) = &style {
-        if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-            text_area.color = color.to_color();
+        let resolved = inherited_text_style.resolved_text_props(style);
+        if let Some(color) = resolved.color {
+            text_area.color = color;
         }
-        if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
-            text_area.cursor = *cursor;
+        if let Some(cursor) = resolved.cursor {
+            text_area.cursor = cursor;
         }
-        if let Some(ParsedValue::FontSize(size)) = style.get(PropertyId::FontSize) {
-            text_area.font_size = size.resolve_px(
-                inherited_text_style
-                    .font_size
-                    .unwrap_or(inherited_text_style.root_font_size),
-                inherited_text_style.root_font_size,
-                inherited_text_style.viewport_width,
-                inherited_text_style.viewport_height,
-            );
+        if let Some(font_size) = resolved.font_size {
+            text_area.font_size = font_size;
         }
-        if let Some(ParsedValue::FontFamily(family)) = style.get(PropertyId::FontFamily) {
-            text_area.font_families = family.as_slice().to_vec();
+        if let Some(font_families) = resolved.font_families {
+            text_area.font_families = font_families;
         }
-        if let Some(ParsedValue::FontWeight(fw)) = style.get(PropertyId::FontWeight) {
-            text_area.font_weight = fw.value();
+        if let Some(font_weight) = resolved.font_weight {
+            text_area.font_weight = font_weight;
         }
     }
 
@@ -707,49 +542,13 @@ fn convert_text_area_element_desc(
         text_area.font_families = vec![family];
     }
 
-    let mut child_descriptors: Vec<ElementDescriptor> = Vec::new();
-    let (display_text, is_placeholder) = if !text_area.content.is_empty() {
-        (text_area.content.clone(), false)
-    } else if !text_area.placeholder.is_empty() {
-        (text_area.placeholder.clone(), true)
-    } else {
-        (String::new(), false)
-    };
-    if !display_text.is_empty() {
-        let char_count = display_text.chars().count();
-        let mut run = TextAreaTextRun::new(display_text, 0..char_count);
-        run.is_placeholder = is_placeholder;
-        run.cascade_style(
-            text_area.font_families.clone(),
-            text_area.font_size,
-            text_area.line_height,
-            text_area.font_weight,
-            if is_placeholder {
-                text_area.placeholder_color
-            } else {
-                text_area.color
-            },
-            text_area.cursor,
-            text_area.auto_wrap,
-        );
-        child_descriptors.push(ElementDescriptor::leaf(
-            Box::new(run) as Box<dyn ElementTrait>
-        ));
-    }
-
-    let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> =
-        Some(Box::new(|arena: &mut NodeArena, text_area_key: NodeKey| {
-            arena.with_element_taken(text_area_key, |element, _arena_ref| {
-                if let Some(ta) = element.as_any_mut().downcast_mut::<TextArea>() {
-                    ta.set_self_node_key(text_area_key);
-                }
-            });
-        }));
+    let child_descriptors =
+        text_area.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
 
     Ok(ElementDescriptor {
         element: Box::new(text_area) as Box<dyn ElementTrait>,
         children: child_descriptors,
-        post_commit,
+        side_slots: Vec::new(),
     })
 }
 
@@ -766,11 +565,8 @@ fn convert_text_area_projection_segment_element_desc(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<ElementDescriptor, String> {
-    let stable_id = stable_node_id_from_parts(
-        "TextAreaProjectionSegment",
-        path,
-        global_path.as_ref(),
-    );
+    let stable_id =
+        stable_node_id_from_parts("TextAreaProjectionSegment", path, global_path.as_ref());
     let mut segment = TextAreaProjectionSegment::with_stable_id(stable_id);
     let mut range_start: usize = 0;
     let mut range_end: usize = 0;
@@ -781,7 +577,12 @@ fn convert_text_area_projection_segment_element_desc(
         match *key {
             "char_range_start" => range_start = as_usize(value, key)?.unwrap_or(0),
             "char_range_end" => range_end = as_usize(value, key)?.unwrap_or(0),
-            _ => return Err(format!("unknown prop `{}` on <TextAreaProjectionSegment>", key)),
+            _ => {
+                return Err(format!(
+                    "unknown prop `{}` on <TextAreaProjectionSegment>",
+                    key
+                ));
+            }
         }
     }
     if range_end < range_start {
@@ -789,34 +590,13 @@ fn convert_text_area_projection_segment_element_desc(
     }
     segment.set_char_range(range_start..range_end);
 
-    let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
-    child_path.extend_from_slice(path);
-    let current_global_path = current_global_node_path(
-        &RsxNode::Element(std::rc::Rc::new(node.clone())),
-        global_path.as_ref(),
-    );
-    let mut ordinals = FxHashMap::<&'static str, usize>::default();
-    let mut child_descriptors: Vec<ElementDescriptor> = Vec::new();
-    for child in &node.children {
-        let ordinal = next_identity_ordinal(&mut ordinals, child.identity());
-        let token = child_identity_token(child, ordinal);
-        child_path.push(token);
-        let child_global_path =
-            child_global_node_path(current_global_path.as_ref(), child, token);
-        append_child_nodes_flattening_fragments_desc(
-            child,
-            &child_path,
-            child_global_path,
-            inherited_text_style,
-            &mut child_descriptors,
-        )?;
-        child_path.pop();
-    }
+    let child_descriptors =
+        segment.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
 
     Ok(ElementDescriptor {
         element: Box::new(segment) as Box<dyn ElementTrait>,
         children: child_descriptors,
-        post_commit: None,
+        side_slots: Vec::new(),
     })
 }
 
@@ -851,10 +631,7 @@ pub(crate) fn convert_image_slot_desc(
 
     let mut slot_path = Vec::with_capacity(path.len() + 1);
     slot_path.extend_from_slice(path);
-    slot_path.push(stable_node_id(NodeIdSeed::Local {
-        kind: slot_name,
-        path,
-    }));
+    slot_path.push(stable_node_id_from_parts(slot_name, path, None));
     let slot_global_path = child_global_node_path(
         global_path.as_ref(),
         &slot_node,
@@ -872,7 +649,7 @@ pub(crate) fn convert_image_slot_desc(
     Ok(vec![ElementDescriptor {
         element: Box::new(wrapper) as Box<dyn ElementTrait>,
         children: wrapper_children,
-        post_commit: None,
+        side_slots: Vec::new(),
     }])
 }
 
@@ -882,25 +659,16 @@ fn convert_image_element_desc(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<ElementDescriptor, String> {
-    if !node.children.is_empty() {
-        return Err("<Image> does not accept children; use loading/error props".to_string());
-    }
-
     let mut source: Option<ImageSource> = None;
-    let mut fit = ImageFit::Contain;
-    let mut sampling = ImageSampling::Linear;
     let mut style: Option<Style> = None;
     let mut loading_descs: Vec<ElementDescriptor> = Vec::new();
     let mut error_descs: Vec<ElementDescriptor> = Vec::new();
 
+    // Cold-path-owned props: required `source` constructor arg,
+    // layered style, and slot subtrees (need cold path / global_path).
     for (key, value) in node.props.iter() {
-        if *key == "key" {
-            continue;
-        }
         match *key {
             "source" => source = Some(ImageSource::from_prop_value(value.clone())?),
-            "fit" => fit = ImageFit::from_prop_value(value.clone())?,
-            "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
             "style" => style = Some(as_element_style(value, key)?),
             "loading" => {
                 loading_descs = convert_image_slot_desc(
@@ -920,7 +688,7 @@ fn convert_image_element_desc(
                     "error",
                 )?;
             }
-            _ => return Err(format!("unknown prop `{}` on <Image>", key)),
+            _ => {}
         }
     }
 
@@ -928,42 +696,33 @@ fn convert_image_element_desc(
         stable_node_id_from_parts("Image", path, global_path.as_ref()),
         source.ok_or_else(|| "<Image> requires `source`".to_string())?,
     );
-    image.set_fit(fit);
-    image.set_sampling(sampling);
+    image.ingest_props(node)?;
     if let Some(style) = style {
         image.apply_style(style);
     } else {
         image.apply_style(Style::new());
     }
 
-    let has_slots = !loading_descs.is_empty() || !error_descs.is_empty();
-    let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> = if has_slots {
-        Some(Box::new(
-            move |arena: &mut NodeArena, image_key: NodeKey| {
-                let loading_keys: Vec<NodeKey> = loading_descs
-                    .into_iter()
-                    .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
-                    .collect();
-                let error_keys: Vec<NodeKey> = error_descs
-                    .into_iter()
-                    .map(|d| commit_descriptor_tree(arena, Some(image_key), d))
-                    .collect();
-                arena.with_element_taken(image_key, |element, _arena_ref| {
-                    if let Some(img) = element.as_any_mut().downcast_mut::<Image>() {
-                        img.set_loading_slot(loading_keys);
-                        img.set_error_slot(error_keys);
-                    }
-                });
-            },
-        ))
-    } else {
-        None
-    };
+    let mut side_slots: Vec<SideSlot> = Vec::new();
+    if !loading_descs.is_empty() {
+        side_slots.push(SideSlot {
+            name: "loading",
+            descriptors: loading_descs,
+        });
+    }
+    if !error_descs.is_empty() {
+        side_slots.push(SideSlot {
+            name: "error",
+            descriptors: error_descs,
+        });
+    }
+
+    let children = image.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
 
     Ok(ElementDescriptor {
         element: Box::new(image) as Box<dyn ElementTrait>,
-        children: Vec::new(),
-        post_commit,
+        children,
+        side_slots,
     })
 }
 
@@ -973,25 +732,16 @@ fn convert_svg_element_desc(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<ElementDescriptor, String> {
-    if !node.children.is_empty() {
-        return Err("<Svg> does not accept children; use loading/error props".to_string());
-    }
-
     let mut source: Option<SvgSource> = None;
-    let mut fit = ImageFit::Contain;
-    let mut sampling = ImageSampling::Linear;
     let mut style: Option<Style> = None;
     let mut loading_descs: Vec<ElementDescriptor> = Vec::new();
     let mut error_descs: Vec<ElementDescriptor> = Vec::new();
 
+    // Cold-path-owned props: required `source` constructor arg,
+    // layered style, and slot subtrees (need cold path / global_path).
     for (key, value) in node.props.iter() {
-        if *key == "key" {
-            continue;
-        }
         match *key {
             "source" => source = Some(SvgSource::from_prop_value(value.clone())?),
-            "fit" => fit = ImageFit::from_prop_value(value.clone())?,
-            "sampling" => sampling = ImageSampling::from_prop_value(value.clone())?,
             "style" => style = Some(as_element_style(value, key)?),
             "loading" => {
                 loading_descs = convert_image_slot_desc(
@@ -1011,7 +761,7 @@ fn convert_svg_element_desc(
                     "error",
                 )?;
             }
-            _ => return Err(format!("unknown prop `{}` on <Svg>", key)),
+            _ => {}
         }
     }
 
@@ -1019,286 +769,43 @@ fn convert_svg_element_desc(
         stable_node_id_from_parts("Svg", path, global_path.as_ref()),
         source.ok_or_else(|| "<Svg> requires `source`".to_string())?,
     );
-    svg.set_fit(fit);
-    svg.set_sampling(sampling);
+    svg.ingest_props(node)?;
     if let Some(style) = style {
         svg.apply_style(style);
     } else {
         svg.apply_style(Style::new());
     }
 
-    let has_slots = !loading_descs.is_empty() || !error_descs.is_empty();
-    let post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>> = if has_slots {
-        Some(Box::new(move |arena: &mut NodeArena, svg_key: NodeKey| {
-            let loading_keys: Vec<NodeKey> = loading_descs
-                .into_iter()
-                .map(|d| commit_descriptor_tree(arena, Some(svg_key), d))
-                .collect();
-            let error_keys: Vec<NodeKey> = error_descs
-                .into_iter()
-                .map(|d| commit_descriptor_tree(arena, Some(svg_key), d))
-                .collect();
-            arena.with_element_taken(svg_key, |element, _arena_ref| {
-                if let Some(s) = element.as_any_mut().downcast_mut::<Svg>() {
-                    s.set_loading_slot(loading_keys);
-                    s.set_error_slot(error_keys);
-                }
-            });
-        }))
-    } else {
-        None
-    };
+    let mut side_slots: Vec<SideSlot> = Vec::new();
+    if !loading_descs.is_empty() {
+        side_slots.push(SideSlot {
+            name: "loading",
+            descriptors: loading_descs,
+        });
+    }
+    if !error_descs.is_empty() {
+        side_slots.push(SideSlot {
+            name: "error",
+            descriptors: error_descs,
+        });
+    }
+
+    let children = svg.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
 
     Ok(ElementDescriptor {
         element: Box::new(svg) as Box<dyn ElementTrait>,
-        children: Vec::new(),
-        post_commit,
+        children,
+        side_slots,
     })
 }
 
-fn stable_node_id(seed: NodeIdSeed<'_>) -> u64 {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET_BASIS;
-    match seed {
-        NodeIdSeed::Local { kind, path } => {
-            hash ^= 0x01;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for &byte in kind.as_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash ^= 0xff;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for &index in path {
-                for byte in index.to_le_bytes() {
-                    hash ^= u64::from(byte);
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                }
-                hash ^= 0xfe;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-        }
-        NodeIdSeed::Global {
-            global_key,
-            kind,
-            local_path,
-        } => {
-            hash ^= 0x02;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for byte in global_key.id().to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash ^= 0xfd;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for &byte in kind.as_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash ^= 0xff;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for &index in local_path {
-                for byte in index.to_le_bytes() {
-                    hash ^= u64::from(byte);
-                    hash = hash.wrapping_mul(FNV_PRIME);
-                }
-                hash ^= 0xfe;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-        }
-    }
-
-    if hash == 0 { 1 } else { hash }
-}
-
-fn stable_node_id_from_parts(
-    kind: &str,
-    path: &[u64],
-    global_path: Option<&GlobalNodePath>,
-) -> u64 {
-    stable_node_id(node_id_seed(kind, path, global_path))
-}
-
-fn node_id_seed<'a>(
-    kind: &'a str,
-    path: &'a [u64],
-    global_path: Option<&'a GlobalNodePath>,
-) -> NodeIdSeed<'a> {
-    if let Some(global_path) = global_path {
-        NodeIdSeed::Global {
-            global_key: global_path.key,
-            kind,
-            local_path: &global_path.local_path,
-        }
-    } else {
-        NodeIdSeed::Local { kind, path }
-    }
-}
-
-fn current_global_node_path(
-    node: &RsxNode,
-    inherited: Option<&GlobalNodePath>,
-) -> Option<GlobalNodePath> {
-    if let Some(RsxKey::Global(global_key)) = node.identity().key {
-        return Some(GlobalNodePath {
-            key: global_key,
-            local_path: Vec::new(),
-        });
-    }
-    inherited.cloned()
-}
-
-fn child_global_node_path(
-    current: Option<&GlobalNodePath>,
-    child: &RsxNode,
-    token: u64,
-) -> Option<GlobalNodePath> {
-    if let Some(RsxKey::Global(global_key)) = child.identity().key {
-        return Some(GlobalNodePath {
-            key: global_key,
-            local_path: Vec::new(),
-        });
-    }
-    let current = current?;
-    let mut local_path = current.local_path.clone();
-    local_path.push(token);
-    Some(GlobalNodePath {
-        key: current.key,
-        local_path,
-    })
-}
-
-fn next_identity_ordinal(
-    ordinals: &mut FxHashMap<&'static str, usize>,
-    identity: &RsxNodeIdentity,
-) -> usize {
-    let entry = ordinals.entry(identity.invocation_type).or_insert(0);
-    let ordinal = *entry;
-    *entry += 1;
-    ordinal
-}
-
-fn child_identity_token(node: &RsxNode, fallback_ordinal: usize) -> u64 {
-    identity_token_from_node_identity(node.identity(), fallback_ordinal)
-}
-
-fn identity_token_from_node_identity(identity: &RsxNodeIdentity, fallback_ordinal: usize) -> u64 {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut hash = FNV_OFFSET_BASIS;
-    for &byte in identity.invocation_type.as_bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    match &identity.key {
-        Some(RsxKey::Local(key)) => {
-            hash ^= 0x4c;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for byte in key.to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-        }
-        Some(RsxKey::Global(global_key)) => {
-            hash ^= 0x47;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for byte in global_key.id().to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-        }
-        None => {
-            hash ^= 0x55;
-            hash = hash.wrapping_mul(FNV_PRIME);
-            for byte in (fallback_ordinal as u64).to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-        }
-    }
-    hash
-}
-
-pub(crate) fn as_f32(value: &PropValue, key: &str) -> Result<f32, String> {
-    match value {
-        PropValue::I64(v) => Ok(*v as f32),
-        PropValue::F64(v) => Ok(*v as f32),
-        _ => Err(format!("prop `{key}` expects numeric value")),
-    }
-}
-
-pub(crate) fn as_font_size_px(
-    value: &PropValue,
-    key: &str,
-    parent_font_size: f32,
-    root_font_size: f32,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Result<f32, String> {
-    match value {
-        PropValue::I64(v) => Ok((*v as f32).max(0.0)),
-        PropValue::F64(v) => Ok((*v as f32).max(0.0)),
-        PropValue::FontSize(v) => Ok(v.resolve_px(
-            parent_font_size,
-            root_font_size,
-            viewport_width,
-            viewport_height,
-        )),
-        _ => Err(format!("prop `{key}` expects numeric or FontSize value")),
-    }
-}
-
-pub(crate) fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String> {
-    match value {
-        PropValue::String(v) => Ok(v.as_str()),
-        _ => Err(format!("prop `{key}` expects string value")),
-    }
-}
-
-pub(crate) fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
-    Ok(as_string(value, key)?.to_string())
-}
-
-pub(crate) fn as_text_align(value: &PropValue, key: &str) -> Result<crate::style::TextAlign, String> {
-    match value {
-        PropValue::TextAlign(v) => Ok(*v),
-        _ => Err(format!("prop `{key}` expects TextAlign value")),
-    }
-}
-
-pub(crate) fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {
-    Binding::<String>::from_prop_value(value.clone())
-        .map_err(|_| format!("prop `{key}` expects Binding<String> value"))
-}
-
-pub(crate) fn as_bool(value: &PropValue, key: &str) -> Result<bool, String> {
-    match value {
-        PropValue::Bool(v) => Ok(*v),
-        _ => Err(format!("prop `{key}` expects bool value")),
-    }
-}
-
-pub(crate) fn as_usize(value: &PropValue, key: &str) -> Result<Option<usize>, String> {
-    match value {
-        PropValue::I64(v) => {
-            if *v < 0 {
-                Err(format!("prop `{key}` expects non-negative integer value"))
-            } else {
-                Ok(Some(*v as usize))
-            }
-        }
-        PropValue::F64(v) => {
-            if *v < 0.0 {
-                Err(format!("prop `{key}` expects non-negative numeric value"))
-            } else {
-                Ok(Some(*v as usize))
-            }
-        }
-        _ => Err(format!("prop `{key}` expects numeric value")),
-    }
-}
+// 軌 1 #14 Phase 7: PropValue→typed-value decoders moved to
+// `ui::rsx_tree`. Re-exported here so existing
+// `renderer_adapter::as_*` paths keep working.
+pub(crate) use crate::ui::{
+    as_binding_string, as_bool, as_f32, as_font_size_px, as_owned_string, as_string, as_text_align,
+    as_usize,
+};
 
 pub(crate) fn as_element_style(value: &PropValue, key: &str) -> Result<Style, String> {
     ElementStylePropSchema::from_prop_value(value.clone())
@@ -1310,339 +817,6 @@ pub(crate) fn as_text_style(value: &PropValue, key: &str) -> Result<Style, Strin
     TextStylePropSchema::from_prop_value(value.clone())
         .map(|style| style.to_style())
         .map_err(|_| format!("prop `{key}` expects TextStylePropSchema value"))
-}
-
-/// Dispatch a single `on_*` handler prop to the matching `Element`
-/// setter. Returns `Ok(true)` if `key` is one of the 23 RSX handler
-/// prop names and the handler was installed; `Ok(false)` if `key`
-/// isn't a handler prop (caller should continue its own dispatch);
-/// `Err` on decode failure (wrong `PropValue` variant).
-///
-/// Callers:
-/// - cold convert path in this file (`build_container_element_shell`)
-/// - `fiber_work::apply_update_to_element` for the M4 #4 incremental
-///   handler path (pairs with `Element::clear_rsx_event_handler` for
-///   replace semantics)
-pub(crate) fn try_assign_event_handler_prop(
-    element: &mut Element,
-    key: &str,
-    value: &PropValue,
-) -> Result<bool, String> {
-    match key {
-        "on_pointer_down" => {
-            let handler = as_mouse_down_handler(value, key)?;
-            element.on_pointer_down(move |event, _control| handler.call(event));
-        }
-        "on_pointer_up" => {
-            let handler = as_mouse_up_handler(value, key)?;
-            element.on_pointer_up(move |event, _control| handler.call(event));
-        }
-        "on_pointer_move" => {
-            let handler = as_mouse_move_handler(value, key)?;
-            element.on_pointer_move(move |event, _control| handler.call(event));
-        }
-        "on_pointer_enter" => {
-            let handler = as_mouse_enter_handler(value, key)?;
-            element.on_pointer_enter(move |event| handler.call(event));
-        }
-        "on_pointer_leave" => {
-            let handler = as_mouse_leave_handler(value, key)?;
-            element.on_pointer_leave(move |event| handler.call(event));
-        }
-        "on_click" => {
-            let handler = as_click_handler(value, key)?;
-            element.on_click(move |event, _control| handler.call(event));
-        }
-        "on_context_menu" => {
-            let handler = as_context_menu_handler(value, key)?;
-            element.on_context_menu(move |event, _control| handler.call(event));
-        }
-        "on_wheel" => {
-            let handler = as_wheel_handler(value, key)?;
-            element.on_wheel(move |event, _control| handler.call(event));
-        }
-        "on_key_down" => {
-            let handler = as_key_down_handler(value, key)?;
-            element.on_key_down(move |event, _control| handler.call(event));
-        }
-        "on_key_up" => {
-            let handler = as_key_up_handler(value, key)?;
-            element.on_key_up(move |event, _control| handler.call(event));
-        }
-        "on_focus" => {
-            let handler = as_focus_handler(value, key)?;
-            element.on_focus(move |event, _control| handler.call(event));
-        }
-        "on_blur" => {
-            let handler = as_blur_handler(value, key)?;
-            element.on_blur(move |event, _control| handler.call(event));
-        }
-        "on_ime_commit" => {
-            let handler = as_ime_commit_handler(value, key)?;
-            element.on_ime_commit(move |event, _control| handler.call(event));
-        }
-        "on_ime_enabled" => {
-            let handler = as_ime_enabled_handler(value, key)?;
-            element.on_ime_enabled(move |event, _control| handler.call(event));
-        }
-        "on_ime_disabled" => {
-            let handler = as_ime_disabled_handler(value, key)?;
-            element.on_ime_disabled(move |event, _control| handler.call(event));
-        }
-        "on_drag_start" => {
-            let handler = as_drag_start_handler(value, key)?;
-            element.on_drag_start(move |event, _control| handler.call(event));
-        }
-        "on_drag_over" => {
-            let handler = as_drag_over_handler(value, key)?;
-            element.on_drag_over(move |event, _control| handler.call(event));
-        }
-        "on_drag_leave" => {
-            let handler = as_drag_leave_handler(value, key)?;
-            element.on_drag_leave(move |event, _control| handler.call(event));
-        }
-        "on_drop" => {
-            let handler = as_drop_handler(value, key)?;
-            element.on_drop(move |event, _control| handler.call(event));
-        }
-        "on_drag_end" => {
-            let handler = as_drag_end_handler(value, key)?;
-            element.on_drag_end(move |event, _control| handler.call(event));
-        }
-        "on_copy" => {
-            let handler = as_copy_handler(value, key)?;
-            element.on_copy(move |event, _control| handler.call(event));
-        }
-        "on_cut" => {
-            let handler = as_cut_handler(value, key)?;
-            element.on_cut(move |event, _control| handler.call(event));
-        }
-        "on_paste" => {
-            let handler = as_paste_handler(value, key)?;
-            element.on_paste(move |event, _control| handler.call(event));
-        }
-        _ => return Ok(false),
-    }
-    Ok(true)
-}
-
-/// `&'static str` table of the 23 RSX event handler prop names. Used
-/// by the incremental fiber_work whitelist gate so every `on_*` prop
-/// that the cold path recognises is also committable incrementally.
-pub(crate) const RSX_EVENT_HANDLER_PROPS: &[&str] = &[
-    "on_pointer_down",
-    "on_pointer_up",
-    "on_pointer_move",
-    "on_pointer_enter",
-    "on_pointer_leave",
-    "on_click",
-    "on_context_menu",
-    "on_wheel",
-    "on_key_down",
-    "on_key_up",
-    "on_focus",
-    "on_blur",
-    "on_ime_commit",
-    "on_ime_enabled",
-    "on_ime_disabled",
-    "on_drag_start",
-    "on_drag_over",
-    "on_drag_leave",
-    "on_drop",
-    "on_drag_end",
-    "on_copy",
-    "on_cut",
-    "on_paste",
-];
-
-fn as_mouse_down_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::PointerDownHandlerProp, String> {
-    match value {
-        PropValue::OnPointerDown(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects pointer down handler value")),
-    }
-}
-
-fn as_mouse_up_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::PointerUpHandlerProp, String> {
-    match value {
-        PropValue::OnPointerUp(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects pointer up handler value")),
-    }
-}
-
-fn as_mouse_move_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::PointerMoveHandlerProp, String> {
-    match value {
-        PropValue::OnPointerMove(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects pointer move handler value")),
-    }
-}
-
-fn as_mouse_enter_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::PointerEnterHandlerProp, String> {
-    match value {
-        PropValue::OnPointerEnter(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects pointer enter handler value")),
-    }
-}
-
-fn as_mouse_leave_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::PointerLeaveHandlerProp, String> {
-    match value {
-        PropValue::OnPointerLeave(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects pointer leave handler value")),
-    }
-}
-
-fn as_click_handler(value: &PropValue, key: &str) -> Result<crate::ui::ClickHandlerProp, String> {
-    match value {
-        PropValue::OnClick(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects click handler value")),
-    }
-}
-
-fn as_context_menu_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::ContextMenuHandlerProp, String> {
-    match value {
-        PropValue::OnContextMenu(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects context menu handler value")),
-    }
-}
-
-fn as_wheel_handler(value: &PropValue, key: &str) -> Result<crate::ui::WheelHandlerProp, String> {
-    match value {
-        PropValue::OnWheel(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects wheel handler value")),
-    }
-}
-
-fn as_key_down_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::KeyDownHandlerProp, String> {
-    match value {
-        PropValue::OnKeyDown(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects key down handler value")),
-    }
-}
-
-fn as_key_up_handler(value: &PropValue, key: &str) -> Result<crate::ui::KeyUpHandlerProp, String> {
-    match value {
-        PropValue::OnKeyUp(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects key up handler value")),
-    }
-}
-
-fn as_focus_handler(value: &PropValue, key: &str) -> Result<crate::ui::FocusHandlerProp, String> {
-    match value {
-        PropValue::OnFocus(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects focus handler value")),
-    }
-}
-
-fn as_blur_handler(value: &PropValue, key: &str) -> Result<crate::ui::BlurHandlerProp, String> {
-    match value {
-        PropValue::OnBlur(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects blur handler value")),
-    }
-}
-
-macro_rules! as_event_handler_fn {
-    ($fn_name:ident, $ty:ty, $variant:ident, $label:expr) => {
-        fn $fn_name(value: &PropValue, key: &str) -> Result<$ty, String> {
-            match value {
-                PropValue::$variant(v) => Ok(v.clone()),
-                _ => Err(format!("prop `{}` expects {} handler value", key, $label)),
-            }
-        }
-    };
-}
-
-as_event_handler_fn!(
-    as_ime_commit_handler,
-    crate::ui::ImeCommitHandlerProp,
-    OnImeCommit,
-    "ime commit"
-);
-as_event_handler_fn!(
-    as_ime_enabled_handler,
-    crate::ui::ImeEnabledHandlerProp,
-    OnImeEnabled,
-    "ime enabled"
-);
-as_event_handler_fn!(
-    as_ime_disabled_handler,
-    crate::ui::ImeDisabledHandlerProp,
-    OnImeDisabled,
-    "ime disabled"
-);
-as_event_handler_fn!(
-    as_drag_start_handler,
-    crate::ui::DragStartHandlerProp,
-    OnDragStart,
-    "drag start"
-);
-as_event_handler_fn!(
-    as_drag_over_handler,
-    crate::ui::DragOverHandlerProp,
-    OnDragOver,
-    "drag over"
-);
-as_event_handler_fn!(
-    as_drag_leave_handler,
-    crate::ui::DragLeaveHandlerProp,
-    OnDragLeave,
-    "drag leave"
-);
-as_event_handler_fn!(as_drop_handler, crate::ui::DropHandlerProp, OnDrop, "drop");
-as_event_handler_fn!(
-    as_drag_end_handler,
-    crate::ui::DragEndHandlerProp,
-    OnDragEnd,
-    "drag end"
-);
-as_event_handler_fn!(as_copy_handler, crate::ui::CopyHandlerProp, OnCopy, "copy");
-as_event_handler_fn!(as_cut_handler, crate::ui::CutHandlerProp, OnCut, "cut");
-as_event_handler_fn!(
-    as_paste_handler,
-    crate::ui::PasteHandlerProp,
-    OnPaste,
-    "paste"
-);
-
-fn as_text_area_focus_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::TextAreaFocusHandlerProp, String> {
-    match value {
-        PropValue::OnTextAreaFocus(v) => Ok(v.clone()),
-        _ => Err(format!(
-            "prop `{key}` expects text area focus handler value"
-        )),
-    }
-}
-
-fn as_text_change_handler(
-    value: &PropValue,
-    key: &str,
-) -> Result<crate::ui::TextChangeHandlerProp, String> {
-    match value {
-        PropValue::OnChange(v) => Ok(v.clone()),
-        _ => Err(format!("prop `{key}` expects change handler value")),
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1671,11 +845,20 @@ fn as_text_change_handler(
 pub struct ElementDescriptor {
     pub element: Box<dyn ElementTrait>,
     pub children: Vec<ElementDescriptor>,
-    /// Runs after the element is inserted and its `children` committed.
-    /// Used by nodes that own side-channel subtrees (e.g. Image/Svg
-    /// loading/error slots) which live in the arena parented to this
-    /// node but stay outside its `Node.children` list until activated.
-    pub post_commit: Option<Box<dyn FnOnce(&mut NodeArena, NodeKey)>>,
+    /// Side-channel subtrees: in the arena their parent is this node,
+    /// but they stay outside `Node.children` so they don't enter
+    /// layout / paint flow until the host activates them. Image / Svg
+    /// use this for `loading` / `error` slots. After commit, the host
+    /// receives the freshly allocated keys via
+    /// [`ElementTrait::attach_side_slot`].
+    pub side_slots: Vec<SideSlot>,
+}
+
+/// Named side-channel subtree on an [`ElementDescriptor`].
+#[doc(hidden)]
+pub struct SideSlot {
+    pub name: &'static str,
+    pub descriptors: Vec<ElementDescriptor>,
 }
 
 impl ElementDescriptor {
@@ -1683,7 +866,7 @@ impl ElementDescriptor {
         Self {
             element,
             children: Vec::new(),
-            post_commit: None,
+            side_slots: Vec::new(),
         }
     }
 }
@@ -1706,7 +889,7 @@ pub fn commit_descriptor_tree(
     let ElementDescriptor {
         element,
         children,
-        post_commit,
+        side_slots,
     } = desc;
     let key = arena.insert(Node::with_parent(element, parent));
     let mut child_keys = Vec::with_capacity(children.len());
@@ -1728,9 +911,22 @@ pub fn commit_descriptor_tree(
         }
         let _ = arena_ref;
     });
-    if let Some(cb) = post_commit {
-        cb(arena, key);
+    // Phase 4: side-channel subtrees commit under the same parent
+    // but bypass `Node.children`. Each slot's NodeKeys go back to the
+    // host via `attach_side_slot`.
+    for slot in side_slots {
+        let SideSlot { name, descriptors } = slot;
+        let slot_keys: Vec<NodeKey> = descriptors
+            .into_iter()
+            .map(|d| commit_descriptor_tree(arena, Some(key), d))
+            .collect();
+        arena.with_element_taken(key, |element, _arena_ref| {
+            element.attach_side_slot(name, slot_keys);
+        });
     }
+    arena.with_element_taken(key, |element, arena_ref| {
+        element.after_commit(arena_ref, key);
+    });
     key
 }
 
@@ -1907,11 +1103,7 @@ pub(crate) fn inherited_text_style_at_parent(
         InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
     for key in chain {
         let Some(node) = arena.get(key) else { continue };
-        if let Some(el) = node
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-        {
+        if let Some(el) = node.element.as_any().downcast_ref::<Element>() {
             inherited.merge_style(el.parsed_style());
         }
     }
@@ -1963,6 +1155,7 @@ fn convert_node_desc(
     global_path: Option<GlobalNodePath>,
     inherited_text_style: &InheritedTextStyle,
 ) -> Result<ElementDescriptor, String> {
+    use std::any::TypeId;
     match node {
         RsxNode::Component(_) => {
             Err("Component node must be unwrapped before conversion".to_string())
@@ -1978,26 +1171,51 @@ fn convert_node_desc(
         ))),
         RsxNode::Fragment(_) => Err("fragment must be flattened before conversion".to_string()),
         RsxNode::Element(el) => {
-            if is_builtin_image_node(el) {
-                return convert_image_element_desc(el, path, global_path, inherited_text_style);
-            }
-            if is_builtin_svg_node(el) {
-                return convert_svg_element_desc(el, path, global_path, inherited_text_style);
-            }
-            if is_builtin_text_area_node(el) {
-                return convert_text_area_element_desc(el, path, global_path, inherited_text_style);
-            }
-            if is_builtin_text_area_projection_segment_node(el) {
-                return convert_text_area_projection_segment_element_desc(
-                    el,
-                    path,
-                    global_path,
-                    inherited_text_style,
-                );
-            }
-            if is_builtin_text_node(el) {
-                return convert_text_element(el, path, global_path, inherited_text_style)
-                    .map(ElementDescriptor::leaf);
+            // 軌 1 #14 Phase 6a: builtin host dispatch by TypeId. The
+            // descriptor's `type_id` is either the zero-sized tag
+            // marker (`view::tags::*`, stamped by the rsx! macro via
+            // `for_tag::<T>()`) or the host-implementation type
+            // (`view::base_component::*`, when test fixtures stamp
+            // `RsxTagDescriptor::of::<HostType>()` directly). Match
+            // both for each builtin.
+            if let Some(descriptor) = el.tag_descriptor {
+                let type_id = descriptor.type_id;
+                if type_id == TypeId::of::<crate::view::tags::Image>()
+                    || type_id == TypeId::of::<Image>()
+                {
+                    return convert_image_element_desc(el, path, global_path, inherited_text_style);
+                }
+                if type_id == TypeId::of::<crate::view::tags::Svg>()
+                    || type_id == TypeId::of::<Svg>()
+                {
+                    return convert_svg_element_desc(el, path, global_path, inherited_text_style);
+                }
+                if type_id == TypeId::of::<crate::view::tags::TextArea>()
+                    || type_id == TypeId::of::<TextArea>()
+                {
+                    return convert_text_area_element_desc(
+                        el,
+                        path,
+                        global_path,
+                        inherited_text_style,
+                    );
+                }
+                if type_id == TypeId::of::<crate::view::tags::TextAreaProjectionSegment>()
+                    || type_id == TypeId::of::<TextAreaProjectionSegment>()
+                {
+                    return convert_text_area_projection_segment_element_desc(
+                        el,
+                        path,
+                        global_path,
+                        inherited_text_style,
+                    );
+                }
+                if type_id == TypeId::of::<crate::view::tags::Text>()
+                    || type_id == TypeId::of::<Text>()
+                {
+                    return convert_text_element(el, path, global_path, inherited_text_style)
+                        .map(ElementDescriptor::leaf);
+                }
             }
             if let Some(element) = invoke_host_factory(el, path)? {
                 return Ok(ElementDescriptor::leaf(element));
@@ -2015,14 +1233,36 @@ fn convert_container_element_desc(
 ) -> Result<ElementDescriptor, String> {
     let (element, child_inherited_text_style) =
         build_container_element_shell(node, path, global_path.as_ref(), inherited_text_style)?;
-    let element_box: Box<dyn ElementTrait> = Box::new(element);
+    let children = element.build_children(
+        node,
+        path,
+        global_path.as_ref(),
+        &child_inherited_text_style,
+    )?;
+    Ok(ElementDescriptor {
+        element: Box::new(element) as Box<dyn ElementTrait>,
+        children,
+        side_slots: Vec::new(),
+    })
+}
 
+/// 軌 1 #14 Phase 5: standard "walk `node.children`, flatten fragments,
+/// recurse via `convert_node_desc`" loop. The default
+/// `ElementTrait::build_children` calls this; hosts whose child shape
+/// matches the standard pattern (Element, TextAreaProjectionSegment)
+/// don't override.
+pub(crate) fn walk_children_descriptors(
+    node: &RsxElementNode,
+    path: &[u64],
+    global_path: Option<&GlobalNodePath>,
+    inherited_text_style: &InheritedTextStyle,
+) -> Result<Vec<ElementDescriptor>, String> {
     let mut children: Vec<ElementDescriptor> = Vec::new();
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
     child_path.extend_from_slice(path);
     let current_global_path = current_global_node_path(
         &RsxNode::Element(std::rc::Rc::new(node.clone())),
-        global_path.as_ref(),
+        global_path,
     );
     let mut ordinals = FxHashMap::<&'static str, usize>::default();
     for child in &node.children {
@@ -2034,17 +1274,12 @@ fn convert_container_element_desc(
             child,
             &child_path,
             child_global_path,
-            &child_inherited_text_style,
+            inherited_text_style,
             &mut children,
         )?;
         child_path.pop();
     }
-
-    Ok(ElementDescriptor {
-        element: element_box,
-        children,
-        post_commit: None,
-    })
+    Ok(children)
 }
 
 fn append_child_nodes_flattening_fragments_desc(
@@ -2090,19 +1325,22 @@ fn append_child_nodes_flattening_fragments_desc(
 }
 
 #[cfg(test)]
+use crate::ui::{identity_token_from_node_identity, rendered_node_id};
+
+#[cfg(test)]
 mod tests {
     use super::{identity_token_from_node_identity, rendered_node_id};
-    use crate::ui::{GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx};
-    use crate::view::base_component::{Text, TextArea, get_cursor_by_id, hit_test};
-    use crate::view::base_component::text_area::TextAreaTextRun;
-    use crate::view::test_support::{commit_rsx_tree, measure_and_place};
-    use crate::view::{
-        Element as HostElement, ElementStylePropSchema, Text as HostText,
-        TextArea as HostTextArea, TextStylePropSchema,
-    };
     use crate::style::{
         Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length,
         ParsedValue, PropertyId, Style, Unit,
+    };
+    use crate::ui::{GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, rsx};
+    use crate::view::base_component::text_area::TextAreaTextRun;
+    use crate::view::base_component::{Text, TextArea, get_cursor_by_id, hit_test};
+    use crate::view::test_support::{commit_rsx_tree, measure_and_place};
+    use crate::view::{
+        Element as HostElement, ElementStylePropSchema, Text as HostText, TextArea as HostTextArea,
+        TextStylePropSchema,
     };
 
     fn host_element_node() -> RsxNode {
@@ -2734,7 +1972,7 @@ mod tests {
     // not — the box model lives on a wrapping `<Element>`. The two old
     // size-on-textarea tests were dropped in P7.
 
-#[test]
+    #[test]
     fn nested_container_percent_height_without_definite_parent_does_not_keep_placeholder_size() {
         let root_style = ElementStylePropSchema {
             width: Some(Length::px(200.0)),
@@ -2840,8 +2078,7 @@ mod tests {
             .first()
             .expect("TextArea should spawn a generated run");
         let run_stable_id = arena.get(run).unwrap().element.stable_id();
-        let run_cursor =
-            get_cursor_by_id(&arena, root, run_stable_id).expect("run cursor exists");
+        let run_cursor = get_cursor_by_id(&arena, root, run_stable_id).expect("run cursor exists");
         assert_eq!(run_cursor, Cursor::Pointer);
     }
 
@@ -2998,7 +2235,10 @@ mod tests {
             .downcast_ref::<crate::view::base_component::text_area::TextAreaTextRun>()
             .unwrap()
             .is_placeholder;
-        assert!(is_placeholder, "placeholder Run must carry is_placeholder=true");
+        assert!(
+            is_placeholder,
+            "placeholder Run must carry is_placeholder=true"
+        );
     }
 
     #[test]
