@@ -110,6 +110,42 @@ fn test_apply_ctx() -> crate::view::fiber_work::ApplyContext<'static> {
     }
 }
 
+/// Drive measure+place on each arena root after `render_rsx`.
+///
+/// `Viewport::render_rsx` defers layout to `render_render_tree`, which
+/// bails early in tests because there's no GPU surface to acquire. Hit
+/// tests against `box_model_snapshot()` therefore see uninitialized
+/// layout state. Tests that need real bounds run measure+place
+/// explicitly via the test_support helper.
+fn run_layout_for_test(viewport: &mut Viewport, viewport_w: f32, viewport_h: f32) {
+    let constraints = crate::view::base_component::LayoutConstraints {
+        max_width: viewport_w,
+        max_height: viewport_h,
+        viewport_width: viewport_w,
+        viewport_height: viewport_h,
+        percent_base_width: Some(viewport_w),
+        percent_base_height: Some(viewport_h),
+    };
+    let placement = crate::view::base_component::LayoutPlacement {
+        parent_x: 0.0,
+        parent_y: 0.0,
+        visual_offset_x: 0.0,
+        visual_offset_y: 0.0,
+        available_width: viewport_w,
+        available_height: viewport_h,
+        viewport_width: viewport_w,
+        viewport_height: viewport_h,
+        percent_base_width: Some(viewport_w),
+        percent_base_height: Some(viewport_h),
+    };
+    let mut arena = std::mem::take(&mut viewport.scene.node_arena);
+    let root_keys = viewport.scene.ui_root_keys.clone();
+    for &root in &root_keys {
+        crate::view::test_support::measure_and_place(&mut arena, root, constraints, placement);
+    }
+    viewport.scene.node_arena = arena;
+}
+
 #[test]
 fn drag_drop_retargets_after_drag_over_rerender() {
     let dropped = global_state(|| Vec::<String>::new());
@@ -119,6 +155,7 @@ fn drag_drop_retargets_after_drag_over_rerender() {
     viewport
         .render_rsx(&drag_drop_rerender_tree(false, dropped.binding()))
         .expect("cold render");
+    run_layout_for_test(&mut viewport, 200.0, 120.0);
     let old_target = viewport
         .scene
         .ui_root_keys
@@ -141,6 +178,7 @@ fn drag_drop_retargets_after_drag_over_rerender() {
     viewport
         .render_rsx(&drag_drop_rerender_tree(true, dropped.binding()))
         .expect("drag-over indicator render");
+    run_layout_for_test(&mut viewport, 200.0, 120.0);
 
     viewport.dispatch_pointer_up_event(crate::view::viewport::PointerButton::Left);
 

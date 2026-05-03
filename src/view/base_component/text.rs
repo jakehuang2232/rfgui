@@ -2014,15 +2014,24 @@ impl Layoutable for Text {
         &self,
         _arena: &crate::view::node_arena::NodeArena,
     ) -> Vec<InlineNodeSize> {
-        self.inline_plan
+        let runs = self
+            .inline_plan
             .as_ref()
             .map(|plan| plan.runs.as_slice())
-            .unwrap_or(&[])
-            .iter()
-            .map(|fragment| InlineNodeSize {
+            .unwrap_or(&[]);
+        let last = runs.len().saturating_sub(1);
+        runs.iter()
+            .enumerate()
+            .map(|(idx, fragment)| InlineNodeSize {
                 width: fragment.width,
                 height: fragment.height,
-                ..Default::default()
+                // Each fragment is one visual line of this Text already wrapped
+                // by cosmic_text — trailing whitespace was stripped per CSS, so
+                // packing two fragments side-by-side in the parent inline solver
+                // would render adjacent words with no separator. Force a break
+                // after every fragment except the last so subsequent inline
+                // siblings can still continue on the last line.
+                force_break_after: idx < last,
             })
             .collect()
     }
@@ -2963,6 +2972,43 @@ mod tests {
             "expected first-line constraint to force wrapping"
         );
         assert!(nodes[0].width <= 48.01);
+    }
+
+    #[test]
+    fn wrapped_inline_fragments_force_break_so_parent_does_not_pack_them() {
+        let mut a = arena();
+        let mut text = Text::from_content("note note note note note note note");
+        text.set_font_size(14.0);
+        text.measure_inline(
+            InlineMeasureContext {
+                first_available_width: 52.0,
+                full_available_width: 52.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(52.0),
+                percent_base_height: Some(600.0),
+            },
+            &mut a,
+        );
+        let nodes = text.get_inline_nodes_size(&a);
+        assert!(nodes.len() > 1, "test fixture should produce multiple wrap fragments");
+        let last = nodes.len() - 1;
+        for (idx, node) in nodes.iter().enumerate() {
+            if idx < last {
+                assert!(
+                    node.force_break_after,
+                    "fragment {idx} (not last) must force a break — otherwise parent inline solver \
+                     packs adjacent fragments with no whitespace separator (cosmic_text strips \
+                     trailing whitespace at wrap)"
+                );
+            } else {
+                assert!(
+                    !node.force_break_after,
+                    "last fragment must NOT force a break so subsequent inline siblings can \
+                     continue on the same line"
+                );
+            }
+        }
     }
 
     #[test]
