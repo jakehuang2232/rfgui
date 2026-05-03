@@ -15,6 +15,8 @@ pub mod promotion;
 mod promotion_builder;
 pub mod render_pass;
 mod renderer_adapter;
+#[cfg(test)]
+mod renderer_adapter_tests;
 pub(crate) mod svg_resource;
 mod tags;
 pub(crate) mod text_layout;
