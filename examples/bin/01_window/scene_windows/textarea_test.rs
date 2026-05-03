@@ -58,11 +58,14 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
         let tx = badge_text.clone();
         on_text_area_render(
             move |render: &mut rfgui::view::base_component::TextAreaRenderString| {
+                let content_chars: Vec<char> = render.content().chars().collect();
                 for (start, end) in projection_token_ranges(render.content()) {
                     let badge_background = bg.clone();
                     let badge_border = bd.clone();
                     let badge_text = tx.clone();
-                    render.range(start..end, move |text_area_node| {
+                    let slice: String = content_chars[start..end].iter().collect();
+                    render.range(start..end, move |_text_area_node| {
+                        let slice = slice.clone();
                         rsx! {
                             <Element style={{
                                 background: badge_background.clone(),
@@ -70,8 +73,9 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                                 border_radius: BorderRadius::uniform(Length::px(4.0)),
                                 padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
                                 color: badge_text.clone(),
+                                font_size: theme.typography.size.xl,
                             }}>
-                                {text_area_node}
+                                <Text>{slice}</Text>
                             </Element>
                         }
                     });
@@ -107,22 +111,30 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                 projection_value,
                 auto_wrap_value,
             )}</Text>
-            <TextArea
-                style={{
-                    width: fixed_width_value.then_some(textarea_width),
-                    height: textarea_height,
-                    color: theme.color.text.primary.clone(),
-                    background: theme.color.background.base.clone(),
-                    border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
-                    border_radius: theme.radius.md,
-                }}
-                font_size=14
-                multiline={multiline_value}
-                auto_wrap={auto_wrap_value}
-                placeholder="Type text here..."
-                binding={content.binding()}
-                on_render={projection_renderer}
-            />
+            // Design A1: TextArea is not-IS-A Element. Box model
+            // (width / height / background / border / border-radius /
+            // padding) lives on a wrapping <Element>. TextArea's own
+            // style is text-side only (color / font / font-size).
+            <Element style={{
+                width: fixed_width_value.then_some(textarea_width),
+                height: textarea_height,
+                background: theme.color.background.base.clone(),
+                border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
+                border_radius: theme.radius.md,
+                padding: Padding::uniform(Length::px(8.0)),
+            }}>
+                <TextArea
+                    style={{
+                        color: theme.color.text.primary.clone(),
+                    }}
+                    font_size=14
+                    multiline={multiline_value}
+                    auto_wrap={auto_wrap_value}
+                    placeholder="Type text here..."
+                    binding={content.binding()}
+                    on_render={projection_renderer}
+                />
+            </Element>
         </Element>
     }
 }

@@ -18,16 +18,16 @@ mod element;
 mod image;
 mod svg;
 mod text;
-mod text_area;
-pub(crate) mod text_area_v2;
+pub(crate) mod text_area;
 
 pub(crate) use core::*;
 pub use element::*;
 pub use image::*;
 pub use svg::*;
 pub use text::*;
-pub use text_area::*;
-pub use text_area_v2::{TextArea2, TextAreaImeContext};
+pub use text_area::{
+    TextArea, TextAreaImeContext, TextAreaRenderProjection, TextAreaRenderString,
+};
 
 fn next_ui_node_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);

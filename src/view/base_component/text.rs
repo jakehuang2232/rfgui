@@ -764,7 +764,7 @@ impl Text {
 
     /// Translate a `local_char` index into `self.content` to a screen-space
     /// `(x, y_top, line_height)`. Returns `None` if no glyph buffer is
-    /// available. Used by `TextArea2` to query precise caret coordinates
+    /// available. Used by `TextArea` to query precise caret coordinates
     /// inside a projection that wraps a `<Text>`.
     ///
     /// Inline-laid-out Text uses `inline_plan` (one fragment per visual

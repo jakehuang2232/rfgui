@@ -5,5 +5,4 @@ pub mod inspector_panel;
 pub mod particle_demo;
 pub mod render_test;
 pub mod textarea_test;
-pub mod textarea_v2_test;
 pub mod transition_lab;

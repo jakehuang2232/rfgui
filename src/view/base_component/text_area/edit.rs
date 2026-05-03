@@ -11,9 +11,9 @@ use crate::ui::{EventMeta, TextChangeEvent};
 use crate::view::base_component::DirtyFlags;
 use crate::view::node_arena::NodeKey;
 
-use super::TextArea2;
+use super::TextArea;
 
-impl TextArea2 {
+impl TextArea {
     /// Snapshot the currently-selected range as `(start, end)` *sorted*.
     /// Direction is preserved on the underlying `selection_anchor_char` /
     /// `selection_focus_char` fields — callers that need direction read

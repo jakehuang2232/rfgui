@@ -1,4 +1,4 @@
-//! `Renderable` impl for `TextArea2`.
+//! `Renderable` impl for `TextArea`.
 //!
 //! `TextAreaTextRun`'s Renderable lives in [`super::run`] — it owns the
 //! glyph buffer and emits the actual `TextPass`.
@@ -23,7 +23,7 @@ use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, RectPassParams, RenderTargetIn,
 };
 
-use super::TextArea2;
+use super::TextArea;
 use super::run::TextAreaTextRun;
 use crate::view::base_component::Text;
 
@@ -31,7 +31,7 @@ const CARET_BLINK_PERIOD: Duration = Duration::from_millis(1060);
 const CARET_BLINK_VISIBLE: Duration = Duration::from_millis(530);
 const CARET_WIDTH: f32 = 1.0;
 
-impl TextArea2 {
+impl TextArea {
     /// Caret is drawn only while focused, blinking at the standard cadence.
     pub(super) fn should_draw_caret(&self) -> bool {
         if !self.is_focused {
@@ -47,11 +47,11 @@ impl TextArea2 {
     ///
     /// Walks `children` for a `TextAreaTextRun` whose `char_range` covers
     /// the cursor (boundary cases prefer the *following* Run per the caret
-    /// boundary rules). Falls back to TextArea2's own layout origin when
+    /// boundary rules). Falls back to TextArea's own layout origin when
     /// no Run exists (empty content, no placeholder).
     pub(super) fn caret_screen_position(&self, arena: &NodeArena) -> Option<(f32, f32, f32)> {
         if self.children.is_empty() {
-            // No child Run yet — caret pinned to TextArea2's own origin.
+            // No child Run yet — caret pinned to TextArea's own origin.
             return Some((
                 self.layout_state.layout_position.x,
                 self.layout_state.layout_position.y,
@@ -177,7 +177,7 @@ impl TextArea2 {
 
     /// Walk Run children, collect each Run's preedit underline rects, and
     /// translate to screen coords. When the caret sits inside a projection,
-    /// TextArea2 only draws the IME underline overlay inside the projection;
+    /// TextArea only draws the IME underline overlay inside the projection;
     /// the projection remains responsible for text rendering.
     fn preedit_underline_screen_rects(&self, arena: &NodeArena) -> Vec<Rect> {
         if !self.ime_preedit.is_empty()
@@ -342,7 +342,7 @@ impl TextArea2 {
     }
 }
 
-impl Renderable for TextArea2 {
+impl Renderable for TextArea {
     fn build(
         &mut self,
         graph: &mut FrameGraph,
@@ -384,10 +384,10 @@ impl Renderable for TextArea2 {
 
         // Layer 1 — walk arena children (Run / projection self-render).
         //
-        // TextArea2 is promotion-aware (Phase 2): a child that ends up in
+        // TextArea is promotion-aware (Phase 2): a child that ends up in
         // the promoted set goes through `Element::build_promoted_child`,
         // which allocates its own layer target, runs the build into it,
-        // and composites the layer back onto TextArea2's current target.
+        // and composites the layer back onto TextArea's current target.
         // Non-promoted children render inline directly.
         let child_keys: Vec<NodeKey> = self.children.clone();
         for (idx, child_key) in child_keys.into_iter().enumerate() {
@@ -625,7 +625,7 @@ mod tests {
     };
 
     fn projection_fixture(cursor_char: usize, with_text_child: bool) -> (NodeArena, NodeKey) {
-        let mut text_area = TextArea2::new();
+        let mut text_area = TextArea::new();
         text_area.content = "abXYZcd".to_string();
         text_area.font_size = 14.0;
         text_area.line_height = 1.25;
@@ -657,8 +657,8 @@ mod tests {
         );
         arena.with_element_taken(root, |el, _| {
             el.as_any_mut()
-                .downcast_mut::<TextArea2>()
-                .expect("TextArea2 root")
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
                 .set_self_node_key(root);
         });
         crate::view::test_support::measure_and_place(
@@ -692,8 +692,8 @@ mod tests {
         arena
             .with_element_taken_ref(root, |el, arena| {
                 el.as_any()
-                    .downcast_ref::<TextArea2>()
-                    .expect("TextArea2 root")
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
                     .caret_screen_position(arena)
                     .expect("caret position")
             })
@@ -806,7 +806,7 @@ mod tests {
 
     #[test]
     fn projection_selection_uses_text_rects_instead_of_projection_bounds() {
-        let mut text_area = TextArea2::new();
+        let mut text_area = TextArea::new();
         text_area.content = "ab/activity/with/a/very/long/pathcd".to_string();
         text_area.font_size = 14.0;
         text_area.line_height = 1.25;
@@ -834,8 +834,8 @@ mod tests {
         );
         arena.with_element_taken(root, |el, _| {
             el.as_any_mut()
-                .downcast_mut::<TextArea2>()
-                .expect("TextArea2 root")
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
                 .set_self_node_key(root);
         });
         crate::view::test_support::measure_and_place(
@@ -867,8 +867,8 @@ mod tests {
         let root_el = arena
             .with_element_taken_ref(root, |el, arena| {
                 el.as_any()
-                    .downcast_ref::<TextArea2>()
-                    .expect("TextArea2 root")
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
                     .projection_selection_context_for_child(1, projection_key(&arena, root), arena)
             })
             .expect("root exists");
@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn projection_preedit_underline_uses_projection_text_rects() {
-        let mut text_area = TextArea2::new();
+        let mut text_area = TextArea::new();
         text_area.content = "abXYZcd".to_string();
         text_area.font_size = 14.0;
         text_area.line_height = 1.25;
@@ -930,8 +930,8 @@ mod tests {
         );
         arena.with_element_taken(root, |el, _| {
             el.as_any_mut()
-                .downcast_mut::<TextArea2>()
-                .expect("TextArea2 root")
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
                 .set_self_node_key(root);
         });
         crate::view::test_support::measure_and_place(
@@ -963,8 +963,8 @@ mod tests {
         let rects = arena
             .with_element_taken_ref(root, |el, arena| {
                 el.as_any()
-                    .downcast_ref::<TextArea2>()
-                    .expect("TextArea2 root")
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
                     .preedit_underline_screen_rects(arena)
             })
             .expect("root exists");
@@ -1008,7 +1008,7 @@ mod tests {
     fn projection_fixture_with_preedit_cursor(
         preedit_cursor: Option<(usize, usize)>,
     ) -> (NodeArena, NodeKey) {
-        let mut text_area = TextArea2::new();
+        let mut text_area = TextArea::new();
         text_area.content = "abXYZcd".to_string();
         text_area.font_size = 14.0;
         text_area.line_height = 1.25;
@@ -1041,8 +1041,8 @@ mod tests {
         );
         arena.with_element_taken(root, |el, _| {
             el.as_any_mut()
-                .downcast_mut::<TextArea2>()
-                .expect("TextArea2 root")
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
                 .set_self_node_key(root);
         });
         crate::view::test_support::measure_and_place(

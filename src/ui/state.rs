@@ -1176,7 +1176,7 @@ mod tests {
         let _ = build_scope(|| {
             RsxNode::tagged(
                 "Element",
-                crate::ui::RsxTagDescriptor::of::<crate::view::Element>(),
+                crate::ui::RsxTagDescriptor::for_tag::<crate::view::Element>(),
             )
         });
 

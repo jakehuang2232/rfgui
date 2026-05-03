@@ -1,5 +1,5 @@
 //! Cursor / selection setters. Decision A9: char index lives at the root
-//! TextArea2; children carry no cursor or selection state. Decision (v2):
+//! TextArea; children carry no cursor or selection state. Decision (v2):
 //! `selection_anchor_char` / `selection_focus_char` preserve direction —
 //! callers that need the sorted range use `selection_range_chars`.
 //!
@@ -9,10 +9,10 @@
 
 use crate::view::base_component::DirtyFlags;
 
-use super::TextArea2;
+use super::TextArea;
 use super::edit::normalize_multiline;
 
-impl TextArea2 {
+impl TextArea {
     pub(super) fn content_char_len(&self) -> usize {
         self.content.chars().count()
     }

@@ -843,6 +843,7 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
                         std::rc::Rc::make_mut(el).tag_descriptor = Some(RsxTagDescriptor {
                             type_id,
                             type_name: identity.invocation_type,
+                            host_factory: None,
                         });
                     }
                     walked
@@ -905,6 +906,16 @@ pub trait RsxTag: 'static {
     /// `render_component` 的 frame push / live_keys 登記 / prune 旗標。
     /// User `#[component]` 保持 false（default）。
     const IS_HOST_TAG: bool = false;
+
+    /// Compile-time host-element factory pointer. `Some` when this tag
+    /// builds a `Box<dyn ElementTrait>` directly (built-in host tags and
+    /// user-authored custom `ElementTrait` types). `None` for ordinary
+    /// `#[component]` user components.
+    ///
+    /// Stamped into [`RsxTagDescriptor::host_factory`] by
+    /// [`RsxTagDescriptor::of`]. View layer reads it at conversion time
+    /// instead of consulting a runtime registry.
+    const HOST_FACTORY: Option<crate::ui::ErasedHostFactory> = None;
 
     fn into_strict(props: Self::Props) -> Self::StrictProps;
 
@@ -1013,7 +1024,7 @@ fn build_tag_node<T: RsxTag>(
     let mut node = T::create_node(strict, children, key.clone());
     node.set_identity(RsxNodeIdentity::new(std::any::type_name::<T>(), key));
     if let RsxNode::Element(element) = &mut node {
-        std::rc::Rc::make_mut(element).tag_descriptor = Some(RsxTagDescriptor::of::<T>());
+        std::rc::Rc::make_mut(element).tag_descriptor = Some(RsxTagDescriptor::for_tag::<T>());
     }
     node
 }

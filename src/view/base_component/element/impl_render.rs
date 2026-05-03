@@ -1259,7 +1259,7 @@ impl Element {
 
     // `has_composited_promoted_descendants` lives on `ElementTrait` as a
     // default method (recurses through any host's `children()`), so a
-    // promotion-aware non-Element host (e.g. TextArea2) participates in
+    // promotion-aware non-Element host (e.g. TextArea) participates in
     // the ancestor's "do I need to enter the compose loop?" check
     // automatically. Element no longer carries an inherent override —
     // the viewport-clip skip the trait default applies is enough.
@@ -1415,7 +1415,7 @@ impl Element {
     /// target, dispatches its build (Reuse / Reraster / inline-fallback),
     /// and composites the result back into `ctx`'s current target.
     ///
-    /// `pub(crate)` so promotion-aware non-Element hosts (e.g. TextArea2)
+    /// `pub(crate)` so promotion-aware non-Element hosts (e.g. TextArea)
     /// can drive the same compose path their Element peers use, instead of
     /// silently dropping promoted descendants. See
     /// [`ElementTrait::supports_promoted_descendants`] for the contract.

@@ -643,15 +643,6 @@ impl Element {
         self.event_handlers.get_or_insert_with(Default::default).blur.push(Box::new(handler));
     }
 
-    /// Track 1 #10: incremental swap of the blur handler list.
-    /// Clears the existing list so a re-emitted user `on_blur={...}`
-    /// prop doesn't accumulate duplicate handlers across renders.
-    pub(crate) fn replace_on_blur_handler(&mut self, handler: crate::ui::BlurHandlerProp) {
-        let list = &mut self.event_handlers.get_or_insert_with(Default::default).blur;
-        list.clear();
-        list.push(Box::new(move |event, _control| handler.call(event)));
-    }
-
     pub fn on_ime_commit<F>(&mut self, handler: F)
     where
         F: FnMut(&mut crate::ui::ImeCommitEvent, &mut ViewportControl<'_>) + 'static,

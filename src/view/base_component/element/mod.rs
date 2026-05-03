@@ -916,7 +916,7 @@ pub struct InlineNodeSize {
     pub height: f32,
     /// Hard line break after this fragment. Honored by the inline solver
     /// even when `solver_wrap` (soft overflow wrap) is disabled — this is
-    /// how `\n` paragraphs in `TextArea2` produce new lines while
+    /// how `\n` paragraphs in `TextArea` produce new lines while
     /// `auto_wrap` is off.
     pub force_break_after: bool,
 }
@@ -1503,7 +1503,7 @@ pub trait ElementTrait:
     ///
     /// Default recursion walks `children()` and recurses via this same
     /// trait method — which is what lets a promotion-aware non-Element
-    /// host (TextArea2) expose its promoted descendants to its Element
+    /// host (TextArea) expose its promoted descendants to its Element
     /// ancestor. Viewport-clip absolute Elements are skipped because
     /// they take the deferred path, not the ancestor's compose.
     fn has_composited_promoted_descendants(
