@@ -1,6 +1,6 @@
-//! `EventTarget` impls for `TextArea2`.
+//! `EventTarget` impls for `TextArea`.
 //!
-//! Decision A6: TextArea2 returns `true` from all 5 `block_*_child_event`
+//! Decision A6: TextArea returns `true` from all 5 `block_*_child_event`
 //! methods so keyboard / IME / focus events never reach descendants —
 //! editor-level state is the single source of truth. Pointer events are
 //! *not* blocked: projection-internal widgets remain interactive.
@@ -21,7 +21,7 @@ use crate::view::base_component::EventTarget;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::viewport::ViewportControl;
 
-use super::TextArea2;
+use super::TextArea;
 
 /// Tell the platform whether this widget wants OS-level IME composition.
 /// Mirrors egui/Firefox pattern: toggle enable on focus/blur transitions,
@@ -38,7 +38,7 @@ fn set_platform_ime(meta: &EventMeta, enabled: bool) {
     });
 }
 
-fn set_platform_ime_cursor_rect(text_area: &TextArea2, meta: &EventMeta, arena: &NodeArena) {
+fn set_platform_ime_cursor_rect(text_area: &TextArea, meta: &EventMeta, arena: &NodeArena) {
     if !text_area.is_focused {
         return;
     }
@@ -54,9 +54,9 @@ fn set_platform_ime_cursor_rect(text_area: &TextArea2, meta: &EventMeta, arena: 
     ));
 }
 
-impl EventTarget for TextArea2 {
+impl EventTarget for TextArea {
     fn cursor(&self) -> crate::style::Cursor {
-        crate::style::Cursor::Text
+        self.cursor
     }
 
     fn block_key_down_child_event(&self) -> bool {
@@ -408,7 +408,7 @@ impl EventTarget for TextArea2 {
     ) {
         // Lifecycle observability hook: nothing to mutate at start of
         // composition. Stop propagation so ancestors can't double-handle
-        // the IME session belonging to this TextArea2.
+        // the IME session belonging to this TextArea.
         set_platform_ime_cursor_rect(self, &event.meta, _arena);
         event.meta.stop_propagation();
     }

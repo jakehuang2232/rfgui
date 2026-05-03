@@ -1,14 +1,14 @@
-use crate::rfgui::view::register_element_factory;
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
-    PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent, RsxNode, ViewportHandle,
-    component, use_viewport,
+    PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent, RsxElementNode, RsxNode,
+    ViewportHandle, component, use_viewport,
 };
 use crate::rfgui::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, InlineMeasureContext,
     InlineNodeSize, InlinePlacement, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
     UiBuildContext,
 };
+use crate::rfgui::view::{HostElement, host_node};
 use crate::rfgui::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::rfgui::view::frame_graph::texture_resource::{TextureDesc, TextureResource};
 use crate::rfgui::view::frame_graph::{
@@ -25,7 +25,6 @@ use crate::rfgui::view::viewport::ViewportControl;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -833,26 +832,23 @@ impl ElementTrait for ParticleCanvas {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Factory registration + ParticleDemo component
+// HostElement impl + ParticleDemo component
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub fn register_particle_canvas() {
-    register_element_factory(
-        "ParticleCanvas",
-        Arc::new(|_node, path| {
-            // Size defaults to 0 → will be filled by parent constraints during layout.
-            Ok(Box::new(ParticleCanvas::new(
-                stable_id("ParticleCanvas", path),
-                0.0,
-                0.0,
-            )))
-        }),
-    );
+impl HostElement for ParticleCanvas {
+    fn build(_node: &RsxElementNode, path: &[u64]) -> Result<Box<dyn ElementTrait>, String> {
+        // Size defaults to 0 → filled by parent constraints during layout.
+        Ok(Box::new(ParticleCanvas::new(
+            stable_id("ParticleCanvas", path),
+            0.0,
+            0.0,
+        )))
+    }
 }
 
 #[component]
 pub fn ParticleDemo() -> RsxNode {
     let viewport = use_viewport();
     viewport.request_redraw();
-    RsxNode::element("ParticleCanvas")
+    host_node::<ParticleCanvas>("ParticleCanvas")
 }

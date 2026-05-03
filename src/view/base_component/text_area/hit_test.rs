@@ -12,7 +12,7 @@ use crate::view::base_component::{Element, ElementTrait, Text};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::run::TextAreaTextRun;
-use super::TextArea2;
+use super::TextArea;
 
 #[derive(Clone, Copy)]
 struct HitRect {
@@ -22,7 +22,7 @@ struct HitRect {
     height: f32,
 }
 
-impl TextArea2 {
+impl TextArea {
     /// Resolve a screen-space `(x, y)` hit to a root-content char index.
     /// Always returns *some* char index — falls back to the nearest
     /// child boundary when the click misses every child rect.

@@ -1,4 +1,4 @@
-//! `Layoutable` impl for `TextArea2`.
+//! `Layoutable` impl for `TextArea`.
 //!
 //! Drives `view/layout/measure_axis` and `view/layout/place_axis_children`
 //! over its mixed inline children — same Element template established in
@@ -12,9 +12,9 @@ use crate::view::base_component::{
 use crate::view::layout::measure::{MeasureAxisInputs, measure_axis};
 use crate::view::layout::place::{PlaceAxisChildrenInputs, place_axis_children};
 
-use super::TextArea2;
+use super::TextArea;
 
-impl Layoutable for TextArea2 {
+impl Layoutable for TextArea {
     fn measure(
         &mut self,
         constraints: LayoutConstraints,
@@ -55,7 +55,7 @@ impl Layoutable for TextArea2 {
         );
 
         self.layout_state.content_size = outputs.content_size;
-        // Auto-size to content (decision A1: TextArea2 has no box-model;
+        // Auto-size to content (decision A1: TextArea has no box-model;
         // wrap an `<Element>` for explicit dimensions).
         self.layout_state.layout_size = Size {
             width: outputs.content_size.width,

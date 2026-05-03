@@ -22,10 +22,14 @@ pub struct Element;
 pub struct Text;
 /// The built-in editable text host tag.
 pub struct TextArea;
-/// The built-in editable text host tag (v2). Coexists with [`TextArea`]
-/// during the v1→v2 migration; renamed to `TextArea` in P7. See
-/// `docs/design/textarea-v2.md`.
-pub struct TextArea2;
+/// Internal host tag emitted by [`TextArea`]'s schema render to wrap
+/// each user projection in the inline child list. Carries the source
+/// `char_range` for hit-test / caret / IME routing.
+///
+/// Not intended for direct author use — `<TextArea>` is the only
+/// emitter. Manually placing a `<TextAreaProjectionSegment>` outside a
+/// TextArea inline-flow context is unsupported.
+pub struct TextAreaProjectionSegment;
 /// The built-in image host tag.
 pub struct Image;
 /// The built-in svg host tag.
@@ -217,28 +221,13 @@ pub struct TextPropSchema {
 }
 
 #[props]
-pub struct TextAreaPropSchema {
-    pub content: Option<String>,
-    pub binding: Option<crate::ui::Binding<String>>,
-    pub style: Option<ElementStylePropSchema>,
-    pub on_focus: Option<TextAreaFocusHandlerProp>,
-    pub on_render: Option<TextAreaRenderHandlerProp>,
-    pub on_blur: Option<BlurHandlerProp>,
-    pub on_change: Option<TextChangeHandlerProp>,
-    pub placeholder: Option<String>,
-    pub x: Option<f64>,
-    pub y: Option<f64>,
-    pub font_size: Option<FontSize>,
-    pub font: Option<String>,
-    pub opacity: Option<f64>,
-    pub multiline: Option<bool>,
-    pub auto_wrap: Option<bool>,
-    pub read_only: Option<bool>,
-    pub max_length: Option<i64>,
+pub struct TextAreaProjectionSegmentPropSchema {
+    pub char_range_start: Option<i64>,
+    pub char_range_end: Option<i64>,
 }
 
 #[props]
-pub struct TextArea2PropSchema {
+pub struct TextAreaPropSchema {
     pub content: Option<String>,
     pub binding: Option<crate::ui::Binding<String>>,
     pub style: Option<ElementStylePropSchema>,
@@ -277,7 +266,7 @@ pub struct SvgPropSchema {
 
 impl RsxComponent<ElementPropSchema> for Element {
     fn render(props: ElementPropSchema, children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::of::<Element>());
+        let mut node = RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::for_tag::<Element>());
         if let Some(anchor) = props.anchor {
             node = node.with_prop("anchor", anchor);
         }
@@ -338,7 +327,7 @@ impl RsxComponent<ElementPropSchema> for Element {
 
 impl RsxComponent<TextPropSchema> for Text {
     fn render(props: TextPropSchema, children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::tagged("Text", crate::ui::RsxTagDescriptor::of::<Text>());
+        let mut node = RsxNode::tagged("Text", crate::ui::RsxTagDescriptor::for_tag::<Text>());
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
         }
@@ -372,6 +361,28 @@ impl RsxComponent<TextPropSchema> for Text {
     }
 }
 
+impl RsxComponent<TextAreaProjectionSegmentPropSchema> for TextAreaProjectionSegment {
+    fn render(
+        props: TextAreaProjectionSegmentPropSchema,
+        children: Vec<RsxNode>,
+    ) -> RsxNode {
+        let mut node = RsxNode::tagged(
+            "TextAreaProjectionSegment",
+            crate::ui::RsxTagDescriptor::for_tag::<TextAreaProjectionSegment>(),
+        );
+        if let Some(v) = props.char_range_start {
+            node = node.with_prop("char_range_start", v);
+        }
+        if let Some(v) = props.char_range_end {
+            node = node.with_prop("char_range_end", v);
+        }
+        for child in children {
+            node = node.with_child(child);
+        }
+        node
+    }
+}
+
 impl RsxComponent<TextAreaPropSchema> for TextArea {
     fn render(props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
         let mut resolved_content = props
@@ -387,104 +398,9 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
             resolved_content = Some(content);
         }
 
-        let mut node = RsxNode::tagged("TextArea", crate::ui::RsxTagDescriptor::of::<TextArea>());
-        if let Some(content) = resolved_content.clone()
-            && !content.is_empty()
-        {
-            node = node.with_prop("content", content);
-        }
-        if let Some(binding) = props.binding {
-            node = node.with_prop(
-                "binding",
-                crate::ui::IntoPropValue::into_prop_value(binding),
-            );
-        }
-        if let Some(style) = props.style {
-            node = node.with_prop("style", style);
-        }
-        if let Some(handler) = props.on_focus {
-            node = node.with_prop("on_focus", handler);
-        }
-        if let Some(handler) = props.on_blur {
-            node = node.with_prop("on_blur", handler);
-        }
-        if let Some(handler) = props.on_change {
-            node = node.with_prop("on_change", handler);
-        }
-        if let Some(placeholder) = props.placeholder
-            && !placeholder.is_empty()
-        {
-            node = node.with_prop("placeholder", placeholder);
-        }
-        if let Some(x) = props.x
-            && x != 0.0
-        {
-            node = node.with_prop("x", x);
-        }
-        if let Some(y) = props.y
-            && y != 0.0
-        {
-            node = node.with_prop("y", y);
-        }
-        if let Some(font_size) = props.font_size
-            && !is_unset_font_size(font_size)
-        {
-            node = node.with_prop("font_size", font_size);
-        }
-        if let Some(font) = props.font
-            && !font.is_empty()
-        {
-            node = node.with_prop("font", font);
-        }
-        if let Some(opacity) = props.opacity
-            && opacity != 0.0
-        {
-            node = node.with_prop("opacity", opacity);
-        }
-        if let Some(multiline) = props.multiline {
-            node = node.with_prop("multiline", multiline);
-        }
-        if let Some(auto_wrap) = props.auto_wrap {
-            node = node.with_prop("auto_wrap", auto_wrap);
-        }
-        if let Some(read_only) = props.read_only {
-            node = node.with_prop("read_only", read_only);
-        }
-        if let Some(max_length) = props.max_length
-            && max_length != 0
-        {
-            node = node.with_prop("max_length", max_length);
-        }
-        // 軌 1 #12: on_render handler passed straight through as prop
-        // and executed by the TextArea host against its own content in
-        // `rebuild_projection_tree_if_dirty`. No projection RSX
-        // children are emitted here — projection subtrees are fully
-        // owned by the TextArea, invisible to the reconciler.
-        if let Some(handler) = props.on_render {
-            node = node.with_prop("on_render", handler);
-        }
-        node
-    }
-}
-
-impl RsxComponent<TextArea2PropSchema> for crate::view::TextArea2 {
-    fn render(props: TextArea2PropSchema, children: Vec<RsxNode>) -> RsxNode {
-        let mut resolved_content = props
-            .binding
-            .as_ref()
-            .map(crate::ui::Binding::get)
-            .or(props.content.clone());
-        if resolved_content.is_none() {
-            let mut content = String::new();
-            for child in &children {
-                append_text_area_content_child(&mut content, child);
-            }
-            resolved_content = Some(content);
-        }
-
         let mut node = RsxNode::tagged(
-            "TextArea2",
-            crate::ui::RsxTagDescriptor::of::<crate::view::TextArea2>(),
+            "TextArea",
+            crate::ui::RsxTagDescriptor::for_tag::<TextArea>(),
         );
         if let Some(content) = resolved_content
             && !content.is_empty()
@@ -561,7 +477,7 @@ fn append_text_area_content_child(out: &mut String, node: &RsxNode) {
 
 impl RsxComponent<ImagePropSchema> for Image {
     fn render(props: ImagePropSchema, _children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::tagged("Image", crate::ui::RsxTagDescriptor::of::<Image>())
+        let mut node = RsxNode::tagged("Image", crate::ui::RsxTagDescriptor::for_tag::<Image>())
             .with_prop(
                 "source",
                 crate::ui::IntoPropValue::into_prop_value(props.source),
@@ -593,7 +509,7 @@ impl RsxComponent<ImagePropSchema> for Image {
 
 impl RsxComponent<SvgPropSchema> for Svg {
     fn render(props: SvgPropSchema, _children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::tagged("Svg", crate::ui::RsxTagDescriptor::of::<Svg>()).with_prop(
+        let mut node = RsxNode::tagged("Svg", crate::ui::RsxTagDescriptor::for_tag::<Svg>()).with_prop(
             "source",
             crate::ui::IntoPropValue::into_prop_value(props.source),
         );
@@ -719,11 +635,26 @@ mod v2_poc_tests {
     }
 
     #[test]
-    fn rsx_text_area_v2_skeleton_builds() {
-        // P1 acceptance: `<TextArea2/>` compiles and produces a tagged node.
-        let node = rsx! { <TextArea2 /> };
+    fn rsx_text_area_skeleton_builds() {
+        let node = rsx! { <TextArea /> };
         match node {
-            RsxNode::Element(ref el) => assert_eq!(el.tag, "TextArea2"),
+            RsxNode::Element(ref el) => assert_eq!(el.tag, "TextArea"),
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn rsx_text_area_projection_segment_builds() {
+        let node = rsx! {
+            <TextAreaProjectionSegment char_range_start=0 char_range_end=5 />
+        };
+        match node {
+            RsxNode::Element(ref el) => {
+                assert_eq!(el.tag, "TextAreaProjectionSegment");
+                let has_start = el.props.iter().any(|(k, _)| *k == "char_range_start");
+                let has_end = el.props.iter().any(|(k, _)| *k == "char_range_end");
+                assert!(has_start && has_end);
+            }
             _ => panic!("expected element"),
         }
     }
@@ -893,7 +824,11 @@ macro_rules! impl_rsx_tag_v2_trivial {
 impl_rsx_tag_v2_trivial!(Element, ElementPropSchema, true);
 impl_rsx_tag_v2_trivial!(Text, TextPropSchema, true);
 impl_rsx_tag_v2_trivial!(TextArea, TextAreaPropSchema, true);
-impl_rsx_tag_v2_trivial!(crate::view::TextArea2, TextArea2PropSchema, true);
+impl_rsx_tag_v2_trivial!(
+    TextAreaProjectionSegment,
+    TextAreaProjectionSegmentPropSchema,
+    true
+);
 
 // ---------- v2 path: Init struct pattern for tags with required props ----------
 #[doc(hidden)]

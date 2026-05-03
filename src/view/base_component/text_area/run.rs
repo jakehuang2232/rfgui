@@ -1,10 +1,10 @@
-//! `TextAreaTextRun` — internal plain-text segment child of `TextArea2`.
+//! `TextAreaTextRun` — internal plain-text segment child of `TextArea`.
 //!
 //! P2.1: shapes its segment via cosmic-text, exposes inline measure/place,
 //! and emits a single `TextPassFragment` per visual run during paint. Wrap
 //! happens inside the cosmic-text `Buffer` (controlled by the cascaded
 //! `auto_wrap` flag) — not via parent-level fragment splitting. The Run is
-//! treated as a single atomic inline node by the parent `TextArea2`'s
+//! treated as a single atomic inline node by the parent `TextArea`'s
 //! Inline layout solver, so wrapping happens *between* runs at run
 //! boundaries, plus *within* a run via cosmic-text's internal layout.
 //!
@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use cosmic_text::{Align, Buffer as GlyphBuffer};
 
-use crate::style::ColorLike;
+use crate::style::{ColorLike, Cursor};
 use crate::ui::Rect;
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, InlineMeasureContext,
@@ -36,7 +36,7 @@ use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
 use super::super::next_ui_node_id;
 use super::edit::byte_index_at_char;
 
-/// IME preedit overlay routed in by the owning `TextArea2` when the cursor
+/// IME preedit overlay routed in by the owning `TextArea` when the cursor
 /// falls inside this run. Run reshapes with the preedit text spliced in at
 /// `insert_at_local`.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,15 +59,16 @@ pub(crate) struct TextAreaTextRun {
     /// to fragment cosmic-text shape across multiple buffers.
     pub(crate) has_trailing_newline: bool,
 
-    // style cascaded from owning TextArea2
+    // style cascaded from owning TextArea
     pub(crate) font_families: Vec<String>,
     pub(crate) font_size: f32,
     pub(crate) line_height: f32,
     pub(crate) font_weight: u16,
     pub(crate) color: crate::style::Color,
+    pub(crate) cursor: Cursor,
     pub(crate) auto_wrap: bool,
 
-    // IME preedit overlay (TextArea2 routes via set_inline_preedit)
+    // IME preedit overlay (TextArea routes via set_inline_preedit)
     pub(crate) inline_preedit: Option<InlinePreedit>,
 
     // shape state
@@ -97,6 +98,7 @@ impl TextAreaTextRun {
             line_height: 1.25,
             font_weight: 400,
             color: crate::style::Color::rgba(17, 17, 17, 255),
+            cursor: Cursor::Text,
             auto_wrap: true,
             inline_preedit: None,
             glyph_buffer: None,
@@ -139,7 +141,7 @@ impl TextAreaTextRun {
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
     }
 
-    /// Cascade-style cascaded set: owner TextArea2 calls this after edit/
+    /// Cascade-style cascaded set: owner TextArea calls this after edit/
     /// content-rebuild so the run picks up the up-to-date inherited values.
     pub(crate) fn cascade_style(
         &mut self,
@@ -148,9 +150,10 @@ impl TextAreaTextRun {
         line_height: f32,
         font_weight: u16,
         color: crate::style::Color,
+        cursor: Cursor,
         auto_wrap: bool,
     ) {
-        let changed = self.font_families != font_families
+        let shape_changed = self.font_families != font_families
             || self.font_size != font_size
             || self.line_height != line_height
             || self.font_weight != font_weight
@@ -161,8 +164,9 @@ impl TextAreaTextRun {
         self.line_height = line_height;
         self.font_weight = font_weight;
         self.color = color;
+        self.cursor = cursor;
         self.auto_wrap = auto_wrap;
-        if changed {
+        if shape_changed {
             self.invalidate_shape();
         }
     }
@@ -672,9 +676,9 @@ impl Renderable for TextAreaTextRun {
 }
 
 impl EventTarget for TextAreaTextRun {
-    // Run is a transparent inline-text segment; all events default-noop.
-    // Decision A6: keyboard / IME / focus are blocked at TextArea2 and
-    // never reach here.
+    fn cursor(&self) -> Cursor {
+        self.cursor
+    }
 }
 
 impl ElementTrait for TextAreaTextRun {

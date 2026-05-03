@@ -3,6 +3,7 @@
 #[allow(missing_docs)]
 pub mod base_component;
 pub mod fiber_work;
+pub mod host_element;
 pub(crate) mod font_system;
 pub mod frame_graph;
 pub(crate) mod image_resource;
@@ -32,9 +33,11 @@ pub use font_system::load_web_font_from_url;
 pub use font_system::register_font_bytes;
 pub use font_system::set_default_font_families;
 pub use node_arena::{NodeArena, NodeKey, NodeRef, ViewportRef};
+pub use host_element::{
+    HostElement, HostElementBox, erased_host_factory, host_descriptor, host_factory_of, host_node,
+};
 pub use renderer_adapter::{
-    ElementDescriptor, ElementFactory, commit_descriptor_tree, register_element_factory,
-    rsx_to_descriptors_with_context,
+    ElementDescriptor, commit_descriptor_tree, rsx_to_descriptors_with_context,
 };
 pub use tags::*;
 pub use viewport::*;

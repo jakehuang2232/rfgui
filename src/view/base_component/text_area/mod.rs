@@ -4,7 +4,7 @@
 //! P5 (projection), P6 (reconcile diff), P7 (migration). See
 //! `docs/design/textarea-v2.md` for the design and phase plan.
 //!
-//! v2 lives under tag `<TextArea2>` while v1 (`<TextArea>`) is unchanged.
+//! v2 lives under tag `<TextArea>` while v1 (`<TextArea>`) is unchanged.
 //! Rename + v1 removal happens in P7.
 
 #![allow(dead_code)] // P1: stubs; fields wired in later phases.
@@ -15,17 +15,24 @@ mod hit_test;
 mod ime_context;
 mod layout;
 mod projection;
+mod reconcile;
 mod render;
+mod render_string;
 mod run;
+mod segment;
 mod state;
 
 pub use ime_context::TextAreaImeContext;
+pub use render_string::{TextAreaRenderProjection, TextAreaRenderString};
 #[allow(unused_imports)] // re-exported for P2+; not yet referenced outside the module.
 pub(crate) use run::TextAreaTextRun;
+#[allow(unused_imports)] // P8 M1+: emitted by TextArea schema render.
+pub(crate) use segment::TextAreaProjectionSegment;
 
 use std::ops::Range;
 
 use crate::time::Instant;
+use crate::style::Cursor;
 use crate::ui::{
     Binding, BlurHandlerProp, Rect, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
     TextChangeHandlerProp,
@@ -43,7 +50,7 @@ use super::next_ui_node_id;
 /// all real arena children laid out via `view/layout/*` Inline pipeline.
 /// Decision A9: char index is the single source of truth; children carry no
 /// cursor/selection/IME state.
-pub struct TextArea2 {
+pub struct TextArea {
     // text
     pub(crate) content: String,
     pub(crate) placeholder: String,
@@ -58,6 +65,7 @@ pub struct TextArea2 {
     pub(crate) font_weight: u16,
     pub(crate) line_height: f32,
     pub(crate) color: crate::style::Color,
+    pub(crate) cursor: Cursor,
 
     // cursor / selection / IME / focus
     pub(crate) cursor_char: usize,
@@ -77,6 +85,13 @@ pub struct TextArea2 {
     pub(crate) on_render_handler: Option<TextAreaRenderHandlerProp>,
     pub(crate) children: Vec<NodeKey>,
     pub(crate) child_char_ranges: Vec<Range<usize>>,
+    /// P6 reconcile metadata, parallel to `children` / `child_char_ranges`.
+    /// `Run` slots carry no user-state identity (Runs are owned by TextArea);
+    /// `Projection` slots remember the projection root's `RsxNodeIdentity`
+    /// (post-Provider-unwrap) plus the last `RsxNode` so the next rebuild
+    /// can identity-match → `reconcile_existing_subtree` instead of full
+    /// teardown.
+    pub(crate) child_slots: Vec<crate::view::base_component::text_area::projection::ChildSlot>,
     pub(crate) self_node_key: Option<NodeKey>,
     pub(crate) children_dirty: bool,
 
@@ -97,7 +112,7 @@ pub struct TextArea2 {
     pub(crate) parent_id: Option<u64>,
 }
 
-impl Default for TextArea2 {
+impl Default for TextArea {
     fn default() -> Self {
         Self {
             content: String::new(),
@@ -113,6 +128,7 @@ impl Default for TextArea2 {
             font_weight: 400,
             line_height: 1.25,
             color: crate::style::Color::rgba(17, 17, 17, 255),
+            cursor: Cursor::Text,
 
             cursor_char: 0,
             selection_anchor_char: None,
@@ -130,6 +146,7 @@ impl Default for TextArea2 {
             on_render_handler: None,
             children: Vec::new(),
             child_char_ranges: Vec::new(),
+            child_slots: Vec::new(),
             self_node_key: None,
             children_dirty: true,
 
@@ -149,7 +166,7 @@ impl Default for TextArea2 {
     }
 }
 
-impl TextArea2 {
+impl TextArea {
     pub fn new() -> Self {
         Self::default()
     }
@@ -167,9 +184,64 @@ impl TextArea2 {
     pub(crate) fn set_self_node_key(&mut self, key: NodeKey) {
         self.self_node_key = Some(key);
     }
+
+    /// Patch entrypoint for `Patch::SetText` from incremental commit.
+    /// Mirrors v1's surface so `fiber_work::apply_set_text_to_host` can
+    /// route SetText to either Text or TextArea uniformly.
+    pub fn set_text(&mut self, value: String) {
+        self.set_content_from_external(value);
+    }
+
+    /// Re-apply ancestor-derived inherited cascade to props the user
+    /// didn't author explicitly. Called by
+    /// [`crate::view::fiber_work::recascade_text_subtree`] after an
+    /// ancestor style change.
+    ///
+    /// v2 doesn't yet track per-prop "explicit" flags (all TextArea
+    /// authors set values through `apply_prop` which writes
+    /// unconditionally). Conservative behaviour: overwrite
+    /// font_families when empty (default), font_size only when it still
+    /// matches the previously-cached inherited value (i.e. nothing else
+    /// has touched it since), and likewise for color / font_weight.
+    /// Marks content dirty so the next rebuild re-cascades the Run
+    /// children.
+    pub(crate) fn apply_inherited(
+        &mut self,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> bool {
+        let mut changed = false;
+        if self.font_families.is_empty() && !inherited.font_families.is_empty() {
+            self.font_families = inherited.font_families.clone();
+            changed = true;
+        }
+        if let Some(fs) = inherited.font_size
+            && (self.font_size - fs).abs() > f32::EPSILON
+            && (self.font_size - 14.0).abs() < f32::EPSILON
+        {
+            self.font_size = fs;
+            changed = true;
+        }
+        if let Some(fw) = inherited.font_weight
+            && self.font_weight == 400
+            && fw != 400
+        {
+            self.font_weight = fw;
+            changed = true;
+        }
+        if let Some(color) = inherited.color
+            && self.color == crate::style::Color::rgba(17, 17, 17, 255)
+        {
+            self.color = color;
+            changed = true;
+        }
+        if changed {
+            self.mark_content_dirty();
+        }
+        changed
+    }
 }
 
-impl ElementTrait for TextArea2 {
+impl ElementTrait for TextArea {
     fn stable_id(&self) -> u64 {
         self.node_id
     }
@@ -230,9 +302,9 @@ impl ElementTrait for TextArea2 {
         }
     }
 
-    /// Phase 2: TextArea2's children loop dispatches promoted children
+    /// Phase 2: TextArea's children loop dispatches promoted children
     /// through `Element::build_promoted_child` (allocates a layer target,
-    /// runs the build, and composites the layer back onto TextArea2's
+    /// runs the build, and composites the layer back onto TextArea's
     /// current target). Projection `<Element>` children can therefore
     /// promote independently and benefit from layer reuse.
     fn supports_promoted_descendants(&self) -> bool {

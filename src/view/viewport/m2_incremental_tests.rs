@@ -20,7 +20,7 @@ use crate::view::Element as HostElement;
 use crate::style::{Layout, Length};
 
 fn host_el() -> RsxNode {
-    RsxNode::tagged("Element", RsxTagDescriptor::of::<HostElement>())
+    RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<HostElement>())
 }
 
 fn single_element(width_px: f32) -> RsxNode {
@@ -1466,7 +1466,7 @@ fn incremental_commit_applies_svg_loading_slot_swap() {
     // Build a `loading` slot RsxNode (any HostElement leaf works as
     // the slot wrapper — convert_image_slot_desc wraps it in a
     // single descriptor).
-    let slot_rsx = RsxNode::tagged("Element", RsxTagDescriptor::of::<HostElement>());
+    let slot_rsx = RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<HostElement>());
     let patch = crate::ui::Patch::UpdateElementProps {
         path: vec![],
         changed: vec![("loading", slot_rsx.into_prop_value())],

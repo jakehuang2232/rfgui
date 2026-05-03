@@ -150,17 +150,64 @@ impl PartialEq for RsxProviderNode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Host-element factory pointer carried by an [`RsxTagDescriptor`].
+///
+/// Returned `Box<dyn Any>` is the view-layer's wrapper around
+/// `Box<dyn ElementTrait>` — the engine core (this module) cannot name
+/// `ElementTrait`, so the factory is type-erased through `Any`. View layer
+/// downcasts to its own wrapper at conversion time.
+pub type ErasedHostFactory =
+    fn(&RsxElementNode, &[u64]) -> Result<Box<dyn Any>, String>;
+
+#[derive(Clone, Copy, Debug)]
 pub struct RsxTagDescriptor {
     pub type_id: TypeId,
     pub type_name: &'static str,
+    /// Compile-time host-element factory for this tag. `Some` when the
+    /// tag implements a host-element build path (built-in host tags and
+    /// user-authored custom `ElementTrait` types). `None` for ordinary
+    /// `#[component]` user components.
+    ///
+    /// Populated automatically by [`RsxTagDescriptor::of`] from
+    /// `T::HOST_FACTORY`. Eliminates the runtime `register_element_factory`
+    /// registry.
+    pub host_factory: Option<ErasedHostFactory>,
+}
+
+// Compare/hash by `type_id` only — `type_name` is derived from the type
+// and `host_factory` is a fn pointer (unpredictable for equality).
+impl PartialEq for RsxTagDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_id == other.type_id
+    }
+}
+impl Eq for RsxTagDescriptor {}
+impl Hash for RsxTagDescriptor {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.type_id.hash(state);
+    }
 }
 
 impl RsxTagDescriptor {
+    /// Bare descriptor — `host_factory` is always `None`. Use when the
+    /// caller only needs a type-id stamp (synthetic descriptors in tests,
+    /// component-stamping where the wrapped type isn't a host tag).
     pub fn of<T: 'static>() -> Self {
         Self {
             type_id: TypeId::of::<T>(),
             type_name: std::any::type_name::<T>(),
+            host_factory: None,
+        }
+    }
+
+    /// Descriptor for an [`crate::ui::RsxTag`]-implementing type. Reads
+    /// `T::HOST_FACTORY` so the renderer can dispatch host-element
+    /// construction without consulting a runtime registry.
+    pub fn for_tag<T: crate::ui::RsxTag>() -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            type_name: std::any::type_name::<T>(),
+            host_factory: T::HOST_FACTORY,
         }
     }
 }

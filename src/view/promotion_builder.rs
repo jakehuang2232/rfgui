@@ -1151,7 +1151,7 @@ mod aware_filter_tests {
 
     /// Same shape as `NonAwareHost` but reports
     /// `supports_promoted_descendants() == true` — the Phase 2 contract a
-    /// host like `TextArea2` opts into once it dispatches promoted
+    /// host like `TextArea` opts into once it dispatches promoted
     /// children through `Element::build_promoted_child` and exposes its
     /// subtree to the ancestor's `has_composited_promoted_descendants`
     /// recursion.
@@ -1232,7 +1232,7 @@ mod aware_filter_tests {
     /// Phase 2 inverse of `descendants_under_non_aware_host_filtered_out`:
     /// once the host opts in via `supports_promoted_descendants() ==
     /// true`, its subtree IS exposed to the candidate walker. Without
-    /// this guarantee TextArea2's projection `<Element>` children would
+    /// this guarantee TextArea's projection `<Element>` children would
     /// never get the chance to promote even when scoring would warrant
     /// it.
     #[test]
