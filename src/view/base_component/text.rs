@@ -1729,6 +1729,43 @@ impl ElementTrait for Text {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
+    fn apply_inherited(
+        &mut self,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) {
+        Text::apply_inherited(self, inherited);
+    }
+
+    fn build_children(
+        &self,
+        _node: &crate::ui::RsxElementNode,
+        _path: &[u64],
+        _global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
+        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
+        // Text is a descriptor leaf: its RSX children collapse into
+        // the host's String content (assembled by the cold path /
+        // schema render via `append_text_children`).
+        Ok(Vec::new())
+    }
+
+    fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
+        use crate::view::renderer_adapter::{as_f32, as_string, as_text_align};
+        for (key, value) in node.props.iter() {
+            match *key {
+                // Cold-path shell owns identity, layered style, and
+                // cascade-resolved font_size.
+                "key" | "style" | "font_size" => {}
+                "line_height" => self.set_line_height(as_f32(value, key)?),
+                "align" => self.set_text_align(as_text_align(value, key)?),
+                "font" => self.set_font(as_string(value, key)?),
+                "opacity" => self.set_opacity(as_f32(value, key)?),
+                _ => return Err(format!("unknown prop `{}` on <Text>", key)),
+            }
+        }
+        Ok(())
+    }
+
     fn apply_prop(
         &mut self,
         arena: &mut crate::view::node_arena::NodeArena,
@@ -1739,7 +1776,7 @@ impl ElementTrait for Text {
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, as_f32, as_text_align, as_text_style,
+            InheritedTextStyle, as_f32, as_string, as_text_align, as_text_style,
             inherited_text_style_at_parent,
         };
 
@@ -1800,6 +1837,13 @@ impl ElementTrait for Text {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 self.set_opacity(v);
+                PropApplyOutcome::Applied
+            }
+            "font" => {
+                let Ok(family) = as_string(&value, name) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_font(family);
                 PropApplyOutcome::Applied
             }
             _ => PropApplyOutcome::UnknownProp,

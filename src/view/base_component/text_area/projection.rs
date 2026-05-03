@@ -909,7 +909,7 @@ fn wrap_projection_children(
     crate::view::renderer_adapter::ElementDescriptor {
         element: Box::new(wrapper) as Box<dyn ElementTrait>,
         children,
-        post_commit: None,
+        side_slots: Vec::new(),
     }
 }
 

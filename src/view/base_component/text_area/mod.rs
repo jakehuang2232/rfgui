@@ -350,6 +350,113 @@ impl ElementTrait for TextArea {
         hasher.finish()
     }
 
+    fn apply_inherited(
+        &mut self,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) {
+        TextArea::apply_inherited(self, inherited);
+    }
+
+    fn after_commit(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        self_key: NodeKey,
+    ) {
+        self.set_self_node_key(self_key);
+    }
+
+    fn build_children(
+        &self,
+        _node: &crate::ui::RsxElementNode,
+        _path: &[u64],
+        _global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
+        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
+        // Spawn a single `TextAreaTextRun` from `self.content` (or
+        // placeholder fallback). RSX `node.children` are not walked
+        // here — projection segments rebuild lazily via
+        // `rebuild_projection_tree_if_dirty` after the TextArea
+        // exists in the arena.
+        let mut child_descriptors: Vec<crate::view::renderer_adapter::ElementDescriptor> =
+            Vec::new();
+        let (display_text, is_placeholder) = if !self.content.is_empty() {
+            (self.content.clone(), false)
+        } else if !self.placeholder.is_empty() {
+            (self.placeholder.clone(), true)
+        } else {
+            (String::new(), false)
+        };
+        if !display_text.is_empty() {
+            let char_count = display_text.chars().count();
+            let mut run = run::TextAreaTextRun::new(display_text, 0..char_count);
+            run.is_placeholder = is_placeholder;
+            run.cascade_style(
+                self.font_families.clone(),
+                self.font_size,
+                self.line_height,
+                self.font_weight,
+                if is_placeholder {
+                    self.placeholder_color
+                } else {
+                    self.color
+                },
+                self.cursor,
+                self.auto_wrap,
+            );
+            child_descriptors.push(crate::view::renderer_adapter::ElementDescriptor::leaf(
+                Box::new(run) as Box<dyn ElementTrait>,
+            ));
+        }
+        Ok(child_descriptors)
+    }
+
+    fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
+        use crate::ui::FromPropValue;
+        use crate::view::base_component::as_blur_handler;
+        use crate::view::renderer_adapter::{
+            as_binding_string, as_bool, as_owned_string, as_usize,
+        };
+        for (key, value) in node.props.iter() {
+            match *key {
+                // Cold-path-owned: identity, layered style, explicit
+                // font-priority block (cascade-resolved).
+                "key" | "style" | "font" | "font_size" => {}
+                "content" => self.content = as_owned_string(value, key)?,
+                "placeholder" => self.placeholder = as_owned_string(value, key)?,
+                "binding" => self.text_binding = Some(as_binding_string(value, key)?),
+                "multiline" => self.multiline = as_bool(value, key)?,
+                "auto_wrap" => self.auto_wrap = as_bool(value, key)?,
+                "read_only" => self.read_only = as_bool(value, key)?,
+                "max_length" => self.max_length = as_usize(value, key)?,
+                "on_focus" => self.on_focus_handlers.push(
+                    crate::ui::TextAreaFocusHandlerProp::from_prop_value(value.clone())
+                        .map_err(|_| {
+                            format!("prop `{key}` expects text area focus handler value")
+                        })?,
+                ),
+                "on_blur" => self
+                    .on_blur_handlers
+                    .push(as_blur_handler(value, key)?),
+                "on_change" => self.on_change_handlers.push(
+                    crate::ui::TextChangeHandlerProp::from_prop_value(value.clone())
+                        .map_err(|_| {
+                            format!("prop `{key}` expects text change handler value")
+                        })?,
+                ),
+                "on_render" => {
+                    self.on_render_handler = Some(
+                        crate::ui::TextAreaRenderHandlerProp::from_prop_value(value.clone())
+                            .map_err(|_| {
+                                format!("prop `{key}` expects text area render handler value")
+                            })?,
+                    );
+                }
+                _ => return Err(format!("unknown prop `{}` on <TextArea>", key)),
+            }
+        }
+        Ok(())
+    }
+
     /// Real incremental apply path. Mirrors v1's surface (decision: keep
     /// the apply matrix shape parity-with-v1 to ease P7 migration), minus
     /// the box-model props that v2 rejects per design A1.

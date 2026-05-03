@@ -49,6 +49,7 @@ include!("impl_scroll.rs");
 include!("impl_render.rs");
 include!("impl_layout.rs");
 include!("helpers.rs");
+include!("event_handler_props.rs");
 include!("tests.rs");
 
 use crate::time::{Duration, Instant};
@@ -1593,6 +1594,86 @@ pub trait ElementTrait:
     /// that have no parent tracking.
     fn set_parent_id(&mut self, _parent_id: Option<u64>) {}
 
+    /// 軌 1 #14: cold-path counterpart to `apply_prop`. Push every
+    /// prop on `node.props` into `self`. Default is a no-op so leaf
+    /// hosts that don't author any incremental prop schema yet keep
+    /// the cold path's existing behaviour; hosts that have moved
+    /// their schema onto `apply_prop` override this to share the
+    /// single source of truth between cold convert and incremental
+    /// commit.
+    fn ingest_props(&mut self, _node: &crate::ui::RsxElementNode) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// 軌 1 #14 Phase 3: replay the ancestor text cascade onto this
+    /// host. Default is a no-op (most hosts don't read inherited
+    /// text props). Text / TextArea override to fill font / color /
+    /// cursor / text_wrap that the author didn't explicitly set.
+    fn apply_inherited(
+        &mut self,
+        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) {
+    }
+
+    /// 軌 1 #14 Phase 3: produce the `InheritedTextStyle` to pass to
+    /// this host's children. Default returns the parent cascade
+    /// unchanged (leaves and non-Element containers don't introduce
+    /// new cascade declarations). `Element` overrides to merge its
+    /// own `parsed_style()` on top of the parent cascade.
+    fn child_inherited_text_style(
+        &self,
+        parent: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> crate::view::renderer_adapter::InheritedTextStyle {
+        parent.clone()
+    }
+
+    /// 軌 1 #14 Phase 4: receive freshly committed side-channel
+    /// subtrees. `name` matches the `SideSlot.name` declared by the
+    /// host's cold-path builder; `keys` are the arena keys for that
+    /// slot's descriptor roots (parented to `self`, but kept off
+    /// `Node.children`). Default no-op so hosts that don't author
+    /// any side slots stay simple. Image / Svg override to fill
+    /// `loading_slot` / `error_slot`.
+    fn attach_side_slot(
+        &mut self,
+        _name: &'static str,
+        _keys: Vec<crate::view::node_arena::NodeKey>,
+    ) {
+    }
+
+    /// 軌 1 #14 Phase 4: hook that runs after this host's children
+    /// and side-slots have been committed and `Node.parent` /
+    /// `Node.children` are wired. Default no-op. TextArea overrides
+    /// to record its own `NodeKey` (needed by projection rebuild +
+    /// dispatch routing).
+    fn after_commit(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+    }
+
+    /// 軌 1 #14 Phase 5: build the descriptor list for this host's
+    /// arena children. Default walks `node.children`, flattens
+    /// fragments, and recurses through the adapter's
+    /// `convert_node_desc`. Hosts whose child shape doesn't match
+    /// the standard pattern override:
+    /// - Text: empty (children collapse into the leaf's String content)
+    /// - TextArea: spawn a `TextAreaTextRun` from `self.content` /
+    ///   placeholder; projection segments rebuild later
+    /// - Image / Svg: rejects non-empty children (use `loading` / `error`)
+    fn build_children(
+        &self,
+        node: &crate::ui::RsxElementNode,
+        path: &[u64],
+        global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
+        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
+        crate::view::renderer_adapter::walk_children_descriptors(
+            node, path, global_path, inherited,
+        )
+    }
+
     /// 軌 1 #11: dispatch a single changed prop to this host. Each host
     /// owns its own prop registry — fiber_work routes `(name, value)`
     /// pairs straight here without per-host helper functions.
@@ -2337,6 +2418,44 @@ impl ElementTrait for Element {
         self.core.parent_id = parent_id;
     }
 
+    fn child_inherited_text_style(
+        &self,
+        parent: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> crate::view::renderer_adapter::InheritedTextStyle {
+        let mut child = parent.clone();
+        child.merge_style(self.parsed_style());
+        child
+    }
+
+    fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
+        use crate::view::renderer_adapter::{as_f32, as_owned_string};
+        for (key, value) in node.props.iter() {
+            match *key {
+                // Identity ("key") and layered "style" are owned by
+                // the cold convert shell — it merges base + user style
+                // before this hook runs. Skip both here.
+                "key" | "style" => {}
+                "anchor" => self.set_anchor_name(Some(crate::style::AnchorName::new(
+                    as_owned_string(value, key)?,
+                ))),
+                "padding" => self.set_padding(as_f32(value, key)?),
+                "padding_x" => self.set_padding_x(as_f32(value, key)?),
+                "padding_y" => self.set_padding_y(as_f32(value, key)?),
+                "padding_left" => self.set_padding_left(as_f32(value, key)?),
+                "padding_right" => self.set_padding_right(as_f32(value, key)?),
+                "padding_top" => self.set_padding_top(as_f32(value, key)?),
+                "padding_bottom" => self.set_padding_bottom(as_f32(value, key)?),
+                "opacity" => self.set_opacity(as_f32(value, key)?),
+                other => {
+                    if !try_assign_event_handler_prop(self, other, value)? {
+                        return Err(format!("unknown prop `{}` on <{}>", key, node.tag));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn apply_prop(
         &mut self,
         _arena: &mut crate::view::node_arena::NodeArena,
@@ -2346,9 +2465,7 @@ impl ElementTrait for Element {
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
-        use crate::view::renderer_adapter::{
-            as_element_style, as_f32, as_owned_string, try_assign_event_handler_prop,
-        };
+        use crate::view::renderer_adapter::{as_element_style, as_f32, as_owned_string};
 
         match name {
             "style" => {
@@ -2424,7 +2541,7 @@ impl ElementTrait for Element {
                 self.set_anchor_name(Some(crate::style::AnchorName::new(name_str)));
                 PropApplyOutcome::Applied
             }
-            other if crate::view::renderer_adapter::RSX_EVENT_HANDLER_PROPS.contains(&other) => {
+            other if RSX_EVENT_HANDLER_PROPS.contains(&other) => {
                 // M4 #4: replace semantics for RSX event handlers.
                 // Cold-path setters push onto a Vec; clear first to
                 // avoid stacking duplicates across renders.
@@ -2487,7 +2604,7 @@ impl ElementTrait for Element {
                 self.set_padding_bottom(0.0);
                 PropApplyOutcome::Applied
             }
-            other if crate::view::renderer_adapter::RSX_EVENT_HANDLER_PROPS.contains(&other) => {
+            other if RSX_EVENT_HANDLER_PROPS.contains(&other) => {
                 self.clear_rsx_event_handler(other);
                 PropApplyOutcome::Applied
             }

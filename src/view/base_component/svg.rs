@@ -327,6 +327,47 @@ impl ElementTrait for Svg {
         self.element.clear_local_dirty_flags(flags);
     }
 
+    fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
+        use crate::ui::FromPropValue;
+        for (key, value) in node.props.iter() {
+            match *key {
+                // Cold-path-owned: identity, layered style, the
+                // required `source` constructor arg, and slot subtrees
+                // (which need cold-path child path / global path).
+                "key" | "style" | "source" | "loading" | "error" => {}
+                "fit" => self.set_fit(ImageFit::from_prop_value(value.clone())?),
+                "sampling" => self.set_sampling(ImageSampling::from_prop_value(value.clone())?),
+                _ => return Err(format!("unknown prop `{}` on <Svg>", key)),
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_side_slot(
+        &mut self,
+        name: &'static str,
+        keys: Vec<crate::view::node_arena::NodeKey>,
+    ) {
+        match name {
+            "loading" => self.set_loading_slot(keys),
+            "error" => self.set_error_slot(keys),
+            _ => {}
+        }
+    }
+
+    fn build_children(
+        &self,
+        node: &crate::ui::RsxElementNode,
+        _path: &[u64],
+        _global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
+        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
+        if !node.children.is_empty() {
+            return Err("<Svg> does not accept children; use loading/error props".to_string());
+        }
+        Ok(Vec::new())
+    }
+
     fn apply_prop(
         &mut self,
         arena: &mut crate::view::node_arena::NodeArena,

@@ -8,7 +8,7 @@
 //! These helpers are deliberately thin — just enough to cut the
 //! ceremonial boilerplate (`commit_descriptor_tree(&mut arena, None,
 //! ElementDescriptor { element: Box::new(x), children: vec![],
-//! post_commit: None })`) down to a one-liner while leaving the
+//! side_slots: vec![] })`) down to a one-liner while leaving the
 //! underlying primitives visible.
 #![cfg(test)]
 #![allow(dead_code)]

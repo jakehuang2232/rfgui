@@ -937,7 +937,6 @@ pub(crate) fn recascade_text_subtree(
     ctx: ApplyContext<'_>,
     root_key: NodeKey,
 ) {
-    use crate::view::base_component::{Text, TextArea};
     use crate::view::renderer_adapter::inherited_text_style_at_parent;
 
     fn walk(arena: &mut NodeArena, ctx: ApplyContext<'_>, key: NodeKey) {
@@ -959,13 +958,10 @@ pub(crate) fn recascade_text_subtree(
                 ctx.viewport_height,
             ),
         };
-        // Apply inherited to this node if it's a Text/TextArea host.
+        // Phase 3: cascade replay goes through `ElementTrait::apply_inherited`.
+        // Text / TextArea override; other hosts use the no-op default.
         arena.with_element_taken(key, |element, _arena_ref| {
-            if let Some(t) = element.as_any_mut().downcast_mut::<Text>() {
-                t.apply_inherited(&inherited);
-            } else if let Some(ta) = element.as_any_mut().downcast_mut::<TextArea>() {
-                ta.apply_inherited(&inherited);
-            }
+            element.apply_inherited(&inherited);
         });
         for child in arena.children_of(key) {
             walk(arena, ctx, child);
