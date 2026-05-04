@@ -1,4 +1,5 @@
-use crate::{MaterialSymbolIcon, Theme, use_theme};
+use crate::material_symbol::MaterialSymbolIcon;
+use crate::{Theme, use_theme};
 use rfgui::style::{
     Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding,
 };

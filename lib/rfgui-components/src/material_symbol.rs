@@ -1,11 +1,11 @@
-use rfgui::style::{FontFamily, FontSize, TextWrap};
+use rfgui::style::{FontFamily, TextWrap};
 use rfgui::ui::{RsxComponent, RsxNode, props, rsx};
 use rfgui::view::register_font_bytes;
 use rfgui::view::{Element, ElementStylePropSchema, Text};
 use std::sync::Once;
 
 const MATERIAL_SYMBOLS_OUTLINED_FONT_BYTES: &[u8] =
-    include_bytes!("../../assets/MaterialSymbolsOutlined.ttf");
+    include_bytes!("../assets/MaterialSymbolsOutlined.ttf");
 
 pub const MATERIAL_SYMBOLS_OUTLINED_FONT_FAMILY: &str = "Material Symbols Outlined";
 
@@ -77,9 +77,6 @@ fn material_symbol_icon_style(style: Option<ElementStylePropSchema>) -> ElementS
     let mut style = style.unwrap_or_default();
     if style.font.is_none() {
         style.font = Some(FontFamily::new([MATERIAL_SYMBOLS_OUTLINED_FONT_FAMILY]));
-    }
-    if style.font_size.is_none() {
-        style.font_size = Some(FontSize::px(24.0));
     }
     if style.text_wrap.is_none() {
         style.text_wrap = Some(TextWrap::NoWrap);

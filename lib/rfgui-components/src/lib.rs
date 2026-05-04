@@ -1,10 +1,9 @@
-mod icons;
+pub mod material_symbol;
 mod inputs;
 mod layout;
 mod theme;
 mod utils;
 
-pub use icons::*;
 pub use inputs::*;
 pub use layout::*;
 pub use theme::*;
@@ -12,9 +11,10 @@ pub use utils::*;
 
 #[cfg(test)]
 mod tests {
+    use crate::material_symbol::CloseIcon;
     use crate::{
-        Accordion, BranchNode, Button, ButtonVariant, Checkbox, CloseIcon, LeafNode, NumberField,
-        Select, Switch, TreeNode, TreeView, Window,
+        Accordion, BranchNode, Button, ButtonVariant, Checkbox, LeafNode, NumberField, Select,
+        Switch, TreeNode, TreeView, Window,
     };
     use rfgui::ui::{
         EventMeta, NodeId, PointerButton as UiPointerButton, PointerEventData, PropValue,
@@ -292,9 +292,8 @@ mod tests {
             &[String::from("Material Symbols Outlined")]
         );
         assert_eq!(
-            style.font_size,
-            Some(rfgui::style::FontSize::px(24.0)),
-            "icon should default to 24px"
+            style.font_size, None,
+            "icon should inherit font_size from parent"
         );
 
         let text_child = root.children.first().expect("missing text child");

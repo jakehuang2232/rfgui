@@ -1,4 +1,5 @@
-use crate::{ExpandMoreIcon, use_theme};
+use crate::material_symbol::ExpandMoreIcon;
+use crate::use_theme;
 use rfgui::style::flex;
 use rfgui::style::{
     Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform,

@@ -3,7 +3,7 @@ use crate::rfgui::ui::{RsxNode, component, rsx, use_mount, use_state, use_viewpo
 use crate::rfgui_components::use_theme;
 use crate::scene_windows::about_panel::Build as AboutPanel;
 use crate::scene_windows::component_test::ComponentTest;
-use crate::scene_windows::inline_test::build as build_inline_test_window;
+use crate::scene_windows::inline_test::InlineTest;
 use crate::scene_windows::inspector_panel::build as build_inspector_panel;
 use crate::scene_windows::particle_demo::ParticleDemo;
 use crate::scene_windows::render_test::RenderTest;
@@ -57,7 +57,9 @@ pub fn MainScene() -> RsxNode {
     );
     window_manager.push(
         "Inline test",
-        vec![build_inline_test_window(&theme)],
+        vec![rsx! {
+            <InlineTest theme={theme.clone()} />
+        }],
         (620.0, 560.0),
     );
     window_manager.push(

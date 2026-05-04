@@ -1,4 +1,5 @@
-use crate::{CheckIcon, use_theme};
+use crate::material_symbol::CheckIcon;
+use crate::use_theme;
 use rfgui::style::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};
 use rfgui::ui::{
     Binding, ClickHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxComponent,

@@ -1,7 +1,8 @@
 use crate::rfgui::style::{Angle, Layout, Length, Rotate, Transform};
 use crate::rfgui::ui::{RsxNode, component, rsx};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui_components::{CloseIcon, Theme};
+use crate::rfgui_components::Theme;
+use crate::rfgui_components::material_symbol::CloseIcon;
 use rfgui::style::Repeat::Infinite;
 use rfgui::style::{Animation, Animator, FillMode, Keyframe};
 use rfgui_components::Accordion;
@@ -15,6 +16,7 @@ pub fn MaterialSymbolsSection(theme: Theme) -> RsxNode {
                 layout: Layout::flow().row().wrap(),
                 gap: theme.spacing.md,
                 color: theme.color.text.primary.clone(),
+                font_size: theme.typography.size.sm,
             }}>
                 <Element style={{
                     layout: Layout::flow().column().no_wrap(),
@@ -30,7 +32,6 @@ pub fn MaterialSymbolsSection(theme: Theme) -> RsxNode {
                     <Text>Colored</Text>
                     <CloseIcon style={{
                         color: theme.color.secondary.base.clone(),
-                        font_size: theme.typography.size.xl,
                     }} />
                 </Element>
                 <Element style={{

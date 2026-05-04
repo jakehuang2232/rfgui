@@ -1,7 +1,10 @@
-use crate::rfgui::style::{Border, BorderRadius, Color, ColorLike, Layout, Length, Padding};
-use crate::rfgui::ui::{RsxNode, rsx};
+use rfgui::style::Align::Center;
+use crate::rfgui::style::{
+    Border, BorderRadius, Color, ColorLike, Layout, Length, Padding, VerticalAlign,
+};
+use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui_components::Theme;
+use crate::rfgui_components::{Button, NumberField, Theme};
 
 fn inline_chip(
     label: impl Into<String>,
@@ -49,7 +52,19 @@ fn demo_section(
     }
 }
 
-pub fn build(theme: &Theme) -> RsxNode {
+#[component]
+pub fn InlineTest(theme: Theme) -> RsxNode {
+    let vertical_align = use_state(|| VerticalAlign::Baseline);
+    let line_height = use_state(|| 1.2_f64);
+
+    let va_baseline = vertical_align.binding();
+    let va_top = vertical_align.binding();
+    let va_middle = vertical_align.binding();
+    let va_bottom = vertical_align.binding();
+
+    let va = vertical_align.get();
+    let lh = line_height.get();
+
     rsx! {
         <Element style={{
             width: Length::percent(100.0),
@@ -63,8 +78,37 @@ pub fn build(theme: &Theme) -> RsxNode {
         }}>
             <Text>Inline Layout Test Window</Text>
             <Text>{"This window demonstrates Layout::Inline behavior: content participates in line boxes, wraps based on available width, and grows vertically as more lines are formed."}</Text>
+            <Element style={{
+                layout: Layout::flow().column().no_wrap(),
+                width: Length::percent(100.0),
+                gap: theme.spacing.sm,
+                padding: Padding::uniform(theme.spacing.sm),
+                background: theme.color.layer.surface.clone(),
+                border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
+                border_radius: theme.radius.md,
+            }}>
+                <Element style={{
+                    layout: Layout::flow().row().align(Center),
+                    gap: theme.spacing.sm,
+                }}>
+                    <Text>vertical-align:</Text>
+                    <Button on_click={move |_| { va_baseline.set(VerticalAlign::Baseline); }}>Baseline</Button>
+                    <Button on_click={move |_| { va_top.set(VerticalAlign::Top); }}>Top</Button>
+                    <Button on_click={move |_| { va_middle.set(VerticalAlign::Middle); }}>Middle</Button>
+                    <Button on_click={move |_| { va_bottom.set(VerticalAlign::Bottom); }}>Bottom</Button>
+                </Element>
+                <Element>
+                    <NumberField
+                        binding={line_height.binding()}
+                        min={0.5_f64}
+                        max={3.0_f64}
+                        step={0.1_f64}
+                        label={"line-height".to_string()}
+                    />
+                </Element>
+            </Element>
             {demo_section(
-                theme,
+                &theme,
                 "Mixed Text / Element😀",
                 "Text nodes and Elements participate in the same inline formatting context.",
                 rsx! {
@@ -76,6 +120,8 @@ pub fn build(theme: &Theme) -> RsxNode {
                         padding: Padding::uniform(theme.spacing.sm),
                         layout: Layout::Inline,
                         gap: theme.spacing.xs,
+                        line_height: lh,
+                        vertical_align: va,
                     }}>
                         Inline text starts here,
                         <Element style={{
@@ -93,7 +139,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                 },
             )}
             {demo_section(
-                theme,
+                &theme,
                 "Inline Element Test",
                 "Element children also participate in the same inline formatting context.",
                 rsx! {
@@ -105,6 +151,8 @@ pub fn build(theme: &Theme) -> RsxNode {
                         padding: Padding::uniform(theme.spacing.sm),
                         layout: Layout::Inline,
                         gap: theme.spacing.xs,
+                        line_height: lh,
+                        vertical_align: va,
                     }}>
                         <Element style={{
                             background: theme.color.secondary.base.clone(),
