@@ -6,7 +6,7 @@ use crate::style::{
     Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
     FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position,
     ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin,
-    Transitions,
+    Transitions, VerticalAlign,
 };
 use crate::ui::RsxNode;
 use crate::ui::{
@@ -121,6 +121,8 @@ pub struct ElementStylePropSchema {
     pub font_size: Option<FontSize>,
     pub font_weight: Option<FontWeight>,
     pub text_wrap: Option<TextWrap>,
+    pub line_height: Option<f64>,
+    pub vertical_align: Option<VerticalAlign>,
     pub border_radius: Option<BorderRadius>,
     pub hover: Option<HoverElementStylePropSchema>,
     pub selection: Option<SelectionStylePropSchema>,
@@ -160,6 +162,8 @@ pub struct HoverElementStylePropSchema {
     pub font_size: Option<FontSize>,
     pub font_weight: Option<FontWeight>,
     pub text_wrap: Option<TextWrap>,
+    pub line_height: Option<f64>,
+    pub vertical_align: Option<VerticalAlign>,
     pub border_radius: Option<BorderRadius>,
     pub selection: Option<SelectionStylePropSchema>,
     pub opacity: Option<Opacity>,
@@ -1216,6 +1220,12 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
     if let Some(text_wrap) = schema.text_wrap {
         crate::style::insert_style_text_wrap(style, crate::style::PropertyId::TextWrap, text_wrap);
     }
+    if let Some(line_height) = schema.line_height {
+        style.set_line_height(line_height as f32);
+    }
+    if let Some(vertical_align) = schema.vertical_align {
+        style.set_vertical_align(vertical_align);
+    }
     if let Some(border_radius) = schema.border_radius {
         style.set_border_radius(border_radius);
     }
@@ -1299,6 +1309,8 @@ impl ElementStylePropSchema {
             font_size: self.font_size,
             font_weight: self.font_weight,
             text_wrap: self.text_wrap,
+            line_height: self.line_height,
+            vertical_align: self.vertical_align,
             selection: self.selection.clone(),
             border_radius: self.border_radius,
             opacity: self.opacity,

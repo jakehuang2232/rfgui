@@ -1,10 +1,13 @@
 use crate::rfgui::style::{Layout, Length};
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
+use crate::rfgui_components::material_symbol::{
+    DeleteIcon, EditIcon, FavoriteIcon, FormatAlignCenterIcon, FormatAlignLeftIcon,
+    FormatAlignRightIcon, FormatBoldIcon, FormatItalicIcon, FormatUnderlinedIcon, SaveIcon,
+    SendIcon,
+};
 use crate::rfgui_components::{
-    Button, ButtonColor, ButtonSize, ButtonVariant, DeleteIcon, EditIcon, FavoriteIcon,
-    FormatAlignCenterIcon, FormatAlignLeftIcon, FormatAlignRightIcon, FormatBoldIcon,
-    FormatItalicIcon, FormatUnderlinedIcon, IconButton, SaveIcon, SendIcon, Theme, ToggleButton,
+    Button, ButtonColor, ButtonSize, ButtonVariant, IconButton, Theme, ToggleButton,
     ToggleButtonGroup,
 };
 use rfgui_components::Accordion;

@@ -229,6 +229,18 @@ fn build_container_element_shell(
     if let Some(cursor) = inherited_text_style.cursor {
         base_style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
     }
+    if let Some(line_height) = inherited_text_style.line_height {
+        base_style.insert(
+            PropertyId::LineHeight,
+            ParsedValue::LineHeight(crate::style::LineHeight::new(line_height)),
+        );
+    }
+    if let Some(vertical_align) = inherited_text_style.vertical_align {
+        base_style.insert(
+            PropertyId::VerticalAlign,
+            ParsedValue::VerticalAlign(vertical_align),
+        );
+    }
 
     let mut user_style = Style::new();
     let mut has_user_style = false;

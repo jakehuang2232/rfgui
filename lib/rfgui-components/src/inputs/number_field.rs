@@ -1,3 +1,4 @@
+use crate::material_symbol::{AddIcon, RemoveIcon};
 use crate::{Button, use_theme};
 use rfgui::style::flex;
 use rfgui::style::{Align, Layout, Length, Padding, TextWrap};
@@ -156,13 +157,15 @@ where
                     variant="outlined"
                     repeat on_click={minus_click}
                     disabled={disabled}
-                >-</Button>
+                    start_icon={rsx! {<RemoveIcon />}}
+                ></Button>
                 <Button
                     size="small"
                     variant="outlined"
                     repeat on_click={plus_click}
                     disabled={disabled}
-                >+</Button>
+                    start_icon={rsx! {<AddIcon />}}
+                ></Button>
                 <Element style={{
                     flex: flex().grow(1.0).shrink(1.0).basis(theme.component.input.label_width_basis.clone()),
                     max_width: theme.component.input.label_max_width.clone(),

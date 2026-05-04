@@ -8,7 +8,7 @@ use rfgui::ui::{
     PointerEnterHandlerProp, PointerEventData, PointerLeaveHandlerProp, RsxComponent, RsxNode,
     component, props, rsx, use_interval, use_state,
 };
-use rfgui::view::{Element, Text};
+use rfgui::view::{Element};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -514,6 +514,7 @@ fn ButtonView(
                     .align(Align::Center),
                 gap: icon_gap,
                 color: resolved_text_color,
+                font_size: spec.font_size,
                 padding: root_padding,
                 border_radius: root_border_radius,
                 border: border,
@@ -533,9 +534,7 @@ fn ButtonView(
             on_click={if !disabled && !repeat_enabled { on_click } else { None }}
         >
             {start_icon}
-            <Text font_size={spec.font_size}>
-                {children}
-            </Text>
+            {children}
             {end_icon}
             {if tooltip_hovered { tooltip } else { None }}
         </Element>

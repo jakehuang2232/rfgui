@@ -858,6 +858,8 @@ const TEXT_CASCADING_PROPS: &[crate::style::PropertyId] = &[
     crate::style::PropertyId::Color,
     crate::style::PropertyId::Cursor,
     crate::style::PropertyId::TextWrap,
+    crate::style::PropertyId::LineHeight,
+    crate::style::PropertyId::VerticalAlign,
 ];
 
 /// Does `key`'s arena node have any descendant? Cheap check:

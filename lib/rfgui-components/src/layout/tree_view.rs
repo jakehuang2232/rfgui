@@ -49,7 +49,8 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use crate::{ChevronRightIcon, MaterialSymbolIcon, use_theme};
+use crate::material_symbol::{ChevronRightIcon, MaterialSymbolIcon};
+use crate::use_theme;
 use rfgui::style::flex;
 use rfgui::style::{
     Align, Angle, Border, Color, ColorLike, Cursor, Layout, Length, Padding, Position, Rotate,
