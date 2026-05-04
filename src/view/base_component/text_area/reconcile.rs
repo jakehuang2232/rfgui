@@ -73,15 +73,9 @@ fn reconcile_existing_subtree_inner(
         return Err("identity mismatch at subtree root");
     }
     match (old_inner, new_inner) {
-        (RsxNode::Element(o), RsxNode::Element(n)) => reconcile_element_pair(
-            arena,
-            anchor,
-            o,
-            n,
-            apply_ctx,
-            inherited_style,
-            scope,
-        ),
+        (RsxNode::Element(o), RsxNode::Element(n)) => {
+            reconcile_element_pair(arena, anchor, o, n, apply_ctx, inherited_style, scope)
+        }
         (RsxNode::Text(_o), RsxNode::Text(n)) => {
             let new_content = text_with_text_area_ime_preedit(n.content.clone());
             arena.with_element_taken(anchor, |el, _| {
@@ -97,11 +91,11 @@ fn reconcile_existing_subtree_inner(
 
 fn with_new_provider_contexts<R>(node: &RsxNode, f: impl FnOnce(&RsxNode) -> R) -> R {
     match node {
-        RsxNode::Provider(provider) => crate::ui::with_pushed_context_raw(
-            provider.type_id,
-            Rc::clone(&provider.value),
-            || with_new_provider_contexts(&provider.child, f),
-        ),
+        RsxNode::Provider(provider) => {
+            crate::ui::with_pushed_context_raw(provider.type_id, Rc::clone(&provider.value), || {
+                with_new_provider_contexts(&provider.child, f)
+            })
+        }
         _ => f(node),
     }
 }
@@ -227,7 +221,11 @@ fn diff_and_apply_props(
             }
         }
     });
-    if all_ok { Ok(()) } else { Err("prop apply failed") }
+    if all_ok {
+        Ok(())
+    } else {
+        Err("prop apply failed")
+    }
 }
 
 enum ChildSlotPlan<'a> {

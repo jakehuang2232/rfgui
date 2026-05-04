@@ -65,10 +65,7 @@ pub(crate) struct PlaceAbsoluteChildrenInputs<'a> {
 /// For `Layout::Flex` / `Layout::Flow`: sizes children via
 /// `set_layout_width/height`, runs cross-axis stretch + alignment, then
 /// dispatches `place` with `LayoutPlacement`.
-pub(crate) fn place_axis_children(
-    inputs: PlaceAxisChildrenInputs<'_>,
-    arena: &mut NodeArena,
-) {
+pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &mut NodeArena) {
     let PlaceAxisChildrenInputs {
         layout,
         children,
@@ -116,13 +113,8 @@ pub(crate) fn place_axis_children(
                 prev_child_index = Some(item.child_index);
             }
         }
-        let (mut main_cursor, distributed_gap) = main_axis_start_and_gap(
-            main_limit,
-            line_main,
-            gap,
-            line_item_count,
-            justify_content,
-        );
+        let (mut main_cursor, distributed_gap) =
+            main_axis_start_and_gap(main_limit, line_main, gap, line_item_count, justify_content);
 
         for (item_idx, item) in line.iter().enumerate() {
             let child_idx = item.child_index;
@@ -234,8 +226,7 @@ pub(crate) fn place_axis_children(
 
         cross_cursor += line_cross + gap;
     }
-    let flex_children_elapsed_ms =
-        flex_children_started_at.elapsed().as_secs_f64() * 1000.0;
+    let flex_children_elapsed_ms = flex_children_started_at.elapsed().as_secs_f64() * 1000.0;
     with_layout_place_profile(|profile| {
         profile.non_axis_child_place_ms += flex_children_elapsed_ms;
     });

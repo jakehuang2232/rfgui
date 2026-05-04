@@ -345,4 +345,3 @@ impl ElementTrait for TextAreaProjectionSegment {
         }
     }
 }
-

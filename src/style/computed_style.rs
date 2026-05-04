@@ -604,9 +604,11 @@ fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
 mod tests {
     use super::compute_style;
     use crate::style::{
+        Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
+    };
+    use crate::style::{
         BoxShadow, Color, FontSize, ParsedValue, PropertyId, SizeValue, Style, TextWrap,
     };
-    use crate::style::{Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout, Length};
 
     #[test]
     fn compute_style_applies_box_shadow_list() {
@@ -730,7 +732,12 @@ mod tests {
         );
         style.insert(
             PropertyId::Flex,
-            ParsedValue::Flex(crate::style::flex().grow(2.0).shrink(0.0).basis(Length::px(80.0))),
+            ParsedValue::Flex(
+                crate::style::flex()
+                    .grow(2.0)
+                    .shrink(0.0)
+                    .basis(Length::px(80.0)),
+            ),
         );
 
         let computed = compute_style(&style, None);

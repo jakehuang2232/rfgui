@@ -1,10 +1,10 @@
-use rfgui::style::Padding;
+use crate::rfgui::style::{Layout, Length};
 use crate::rfgui::ui::{PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxNode, component, rsx};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::style::{Layout, Length};
 use crate::rfgui_components::{
     Button, ButtonVariant, FavoriteIcon, Theme, Tooltip, TooltipPlacement, use_tooltip_ref,
 };
+use rfgui::style::Padding;
 use rfgui_components::Accordion;
 
 #[component]

@@ -1,5 +1,7 @@
+use crate::rfgui::style::{
+    Border, ClipMode, Color, Layout, Length, Padding, Position, Transition, TransitionProperty,
+};
 use crate::rfgui::ui::{RsxNode, rsx, use_state, use_viewport};
-use crate::rfgui::style::{Border, ClipMode, Color, Layout, Length, Padding, Position, Transition, TransitionProperty};
 use crate::rfgui_components::{Checkbox, Switch, Theme, use_theme};
 use rfgui::view::Element;
 use std::rc::Rc;

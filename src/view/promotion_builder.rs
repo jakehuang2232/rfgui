@@ -1129,7 +1129,8 @@ mod aware_filter_tests {
         let root = insert_element(&mut arena, Element::new_with_id(1, 0.0, 0.0, 320.0, 240.0));
         let mid = insert_non_aware(&mut arena, 2, 200.0, 160.0);
         let inner_el = insert_element(&mut arena, Element::new_with_id(3, 0.0, 0.0, 180.0, 140.0));
-        let inner_inner = insert_element(&mut arena, Element::new_with_id(4, 0.0, 0.0, 140.0, 100.0));
+        let inner_inner =
+            insert_element(&mut arena, Element::new_with_id(4, 0.0, 0.0, 140.0, 100.0));
         append_child(&mut arena, root, mid);
         append_child(&mut arena, mid, inner_el);
         append_child(&mut arena, inner_el, inner_inner);

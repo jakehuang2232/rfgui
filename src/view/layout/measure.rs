@@ -42,10 +42,7 @@ pub(crate) struct MeasureChildrenInputs<'a> {
 /// For `Layout::Inline`: tracks current line width, dispatches
 /// `measure_inline` with the right `first_available_width`.
 /// For `Layout::Flex` / `Layout::Flow`: dispatches plain `measure`.
-pub(crate) fn measure_axis_children(
-    inputs: MeasureChildrenInputs<'_>,
-    arena: &mut NodeArena,
-) {
+pub(crate) fn measure_axis_children(inputs: MeasureChildrenInputs<'_>, arena: &mut NodeArena) {
     let MeasureChildrenInputs {
         layout,
         children,

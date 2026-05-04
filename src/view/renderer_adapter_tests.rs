@@ -61,8 +61,7 @@ fn identity_token_distinguishes_local_and_global_key() {
         "Button",
         Some(RsxKey::Local(crate::ui::component_key_token(&"item-a"))),
     );
-    let global =
-        RsxNodeIdentity::new("Button", Some(RsxKey::Global(GlobalKey::from("item-a"))));
+    let global = RsxNodeIdentity::new("Button", Some(RsxKey::Global(GlobalKey::from("item-a"))));
     assert_ne!(
         identity_token_from_node_identity(&local, 0),
         identity_token_from_node_identity(&global, 0)
@@ -84,11 +83,7 @@ fn rendered_node_id_prefers_tag_descriptor_type_name() {
     );
 }
 
-fn style_bg_border(
-    bg_hex: &str,
-    border_hex: &str,
-    border_width: f32,
-) -> ElementStylePropSchema {
+fn style_bg_border(bg_hex: &str, border_hex: &str, border_width: f32) -> ElementStylePropSchema {
     ElementStylePropSchema {
         background: Some(crate::style::Background::Color(Box::new(
             IntoColor::<Color>::into_color(Color::hex(bg_hex)),
@@ -746,8 +741,7 @@ fn text_area_v2_cursor_style_cascades_to_generated_run() {
     measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
     let root_stable_id = arena.get(root).unwrap().element.stable_id();
-    let root_cursor =
-        get_cursor_by_id(&arena, root, root_stable_id).expect("root cursor exists");
+    let root_cursor = get_cursor_by_id(&arena, root, root_stable_id).expect("root cursor exists");
     assert_eq!(root_cursor, Cursor::Pointer);
 
     let run = *arena
@@ -773,9 +767,8 @@ fn text_area_v2_cursor_style_cascades_to_projection_text() {
             crate::ui::on_text_area_render(
                 |render: &mut crate::view::base_component::TextAreaRenderString| {
                     render.range(2..12, |_text_area_node| {
-                        host_element_node().with_child(
-                            host_text_node().with_child(RsxNode::text("/v1/users/")),
-                        )
+                        host_element_node()
+                            .with_child(host_text_node().with_child(RsxNode::text("/v1/users/")))
                     });
                 },
             ),
@@ -813,14 +806,12 @@ fn text_area_v2_plain_run_between_projections_hit_tests_as_text_cursor() {
             crate::ui::on_text_area_render(
                 |render: &mut crate::view::base_component::TextAreaRenderString| {
                     render.range(0..12, |_text_area_node| {
-                        host_element_node().with_child(
-                            host_text_node().with_child(RsxNode::text("{{API_HOST}}")),
-                        )
+                        host_element_node()
+                            .with_child(host_text_node().with_child(RsxNode::text("{{API_HOST}}")))
                     });
                     render.range(22..33, |_text_area_node| {
-                        host_element_node().with_child(
-                            host_text_node().with_child(RsxNode::text("{{USER_ID}}")),
-                        )
+                        host_element_node()
+                            .with_child(host_text_node().with_child(RsxNode::text("{{USER_ID}}")))
                     });
                 },
             ),
@@ -950,10 +941,9 @@ fn custom_host_builder_reaches_arena_without_adapter_changes() {
             _ctx: &BuildCtx,
         ) -> Result<ElementDescriptor, String> {
             // Distinctive stable id so the assertion catches dispatch.
-            Ok(ElementDescriptor::leaf(Box::new(Text::from_content_with_id(
-                0xDEAD_BEEF,
-                "custom-host-marker",
-            ))))
+            Ok(ElementDescriptor::leaf(Box::new(
+                Text::from_content_with_id(0xDEAD_BEEF, "custom-host-marker"),
+            )))
         }
     }
 

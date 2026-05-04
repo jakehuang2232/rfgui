@@ -1,10 +1,12 @@
 use crate::use_theme;
+use rfgui::style::{
+    Align, ColorLike, Layout, Length, Operator, Transition, TransitionProperty, darken_color,
+};
 use rfgui::ui::{
     Binding, PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxComponent, RsxNode, on_click,
     props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::style::{Align, ColorLike, Layout, Length, Operator, Transition, TransitionProperty, darken_color};
 use std::rc::Rc;
 
 pub struct Switch;

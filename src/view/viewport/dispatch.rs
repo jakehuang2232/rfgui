@@ -688,10 +688,9 @@ impl Viewport {
         let hit_target = crate::view::base_component::hit_test_stacked(arena, popup_stack, x, y)
             .map(|(_, t)| t)
             .or_else(|| {
-                root_keys
-                    .iter()
-                    .rev()
-                    .find_map(|&root_key| crate::view::base_component::hit_test(arena, root_key, x, y))
+                root_keys.iter().rev().find_map(|&root_key| {
+                    crate::view::base_component::hit_test(arena, root_key, x, y)
+                })
             })?;
 
         // Walk up from hit_target via arena.parent_of, stopping at the first
@@ -1311,14 +1310,18 @@ impl Viewport {
     fn handle_drag_move(&mut self, x: f32, y: f32) -> bool {
         let arena_view = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
-        let target =
-            crate::view::base_component::hit_test_stacked(&arena_view, &self.scene.popup_stack, x, y)
-                .map(|(_, t)| t)
-                .or_else(|| {
-                    root_keys.iter().rev().find_map(|&root_key| {
-                        crate::view::base_component::hit_test(&arena_view, root_key, x, y)
-                    })
-                });
+        let target = crate::view::base_component::hit_test_stacked(
+            &arena_view,
+            &self.scene.popup_stack,
+            x,
+            y,
+        )
+        .map(|(_, t)| t)
+        .or_else(|| {
+            root_keys.iter().rev().find_map(|&root_key| {
+                crate::view::base_component::hit_test(&arena_view, root_key, x, y)
+            })
+        });
         self.scene.node_arena = arena_view;
 
         let prev_target = self

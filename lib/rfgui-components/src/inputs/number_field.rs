@@ -1,11 +1,11 @@
 use crate::{Button, use_theme};
+use rfgui::style::flex;
+use rfgui::style::{Align, Layout, Length, Padding, TextWrap};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, RsxComponent, RsxNode, TextChangeHandlerProp,
     props, rsx, use_state,
 };
 use rfgui::view::{Element, TextArea};
-use rfgui::style::flex;
-use rfgui::style::{Align, Layout, Length, Padding, TextWrap};
 
 pub struct NumberField<T: NumberFieldValue = f64>(std::marker::PhantomData<T>);
 

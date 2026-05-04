@@ -52,6 +52,7 @@ use winit::window::{Window, WindowId};
 /// so Rust panics surface as a readable JS error.
 pub fn run<A: App + 'static>(app: A, mut config: AppConfig) {
     console_error_panic_hook::set_once();
+    crate::word_segmenter_bridge::install_system_word_segmenter();
     let _ = &mut config; // currently no wasm-only mutation; reserved.
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
     event_loop.set_control_flow(ControlFlow::Wait);

@@ -153,19 +153,25 @@ impl_no_arg_event_into_optional_prop!(
 
 impl<'a> IntoOptionalProp<crate::style::Color> for crate::style::HexColor<'a> {
     fn into_optional_prop(self) -> Option<crate::style::Color> {
-        Some(crate::style::IntoColor::<crate::style::Color>::into_color(self))
+        Some(crate::style::IntoColor::<crate::style::Color>::into_color(
+            self,
+        ))
     }
 }
 
 impl IntoOptionalProp<Box<dyn crate::style::ColorLike>> for &str {
     fn into_optional_prop(self) -> Option<Box<dyn crate::style::ColorLike>> {
-        Some(Box::new(crate::style::IntoColor::<crate::style::Color>::into_color(self)))
+        Some(Box::new(
+            crate::style::IntoColor::<crate::style::Color>::into_color(self),
+        ))
     }
 }
 
 impl IntoOptionalProp<Box<dyn crate::style::ColorLike>> for String {
     fn into_optional_prop(self) -> Option<Box<dyn crate::style::ColorLike>> {
-        Some(Box::new(crate::style::IntoColor::<crate::style::Color>::into_color(self)))
+        Some(Box::new(
+            crate::style::IntoColor::<crate::style::Color>::into_color(self),
+        ))
     }
 }
 
@@ -177,7 +183,9 @@ impl IntoOptionalProp<Box<dyn crate::style::ColorLike>> for crate::style::Color 
 
 impl<'a> IntoOptionalProp<Box<dyn crate::style::ColorLike>> for crate::style::HexColor<'a> {
     fn into_optional_prop(self) -> Option<Box<dyn crate::style::ColorLike>> {
-        Some(Box::new(crate::style::IntoColor::<crate::style::Color>::into_color(self)))
+        Some(Box::new(
+            crate::style::IntoColor::<crate::style::Color>::into_color(self),
+        ))
     }
 }
 
@@ -221,31 +229,25 @@ impl IntoOptionalProp<crate::style::Background> for crate::style::Color {
 
 impl<'a> IntoOptionalProp<crate::style::Background> for crate::style::HexColor<'a> {
     fn into_optional_prop(self) -> Option<crate::style::Background> {
-        Some(crate::style::Background::Color(Box::new(crate::style::IntoColor::<
-            crate::style::Color,
-        >::into_color(
-            self
-        ))))
+        Some(crate::style::Background::Color(Box::new(
+            crate::style::IntoColor::<crate::style::Color>::into_color(self),
+        )))
     }
 }
 
 impl IntoOptionalProp<crate::style::Background> for &str {
     fn into_optional_prop(self) -> Option<crate::style::Background> {
-        Some(crate::style::Background::Color(Box::new(crate::style::IntoColor::<
-            crate::style::Color,
-        >::into_color(
-            self
-        ))))
+        Some(crate::style::Background::Color(Box::new(
+            crate::style::IntoColor::<crate::style::Color>::into_color(self),
+        )))
     }
 }
 
 impl IntoOptionalProp<crate::style::Background> for String {
     fn into_optional_prop(self) -> Option<crate::style::Background> {
-        Some(crate::style::Background::Color(Box::new(crate::style::IntoColor::<
-            crate::style::Color,
-        >::into_color(
-            self
-        ))))
+        Some(crate::style::Background::Color(Box::new(
+            crate::style::IntoColor::<crate::style::Color>::into_color(self),
+        )))
     }
 }
 
@@ -844,8 +846,7 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
                         // `host_builder` so dispatch still works after
                         // the outer component's `type_id`/`type_name`
                         // is stamped for stable identity.
-                        let inner_builder =
-                            el.tag_descriptor.and_then(|d| d.host_builder);
+                        let inner_builder = el.tag_descriptor.and_then(|d| d.host_builder);
                         std::rc::Rc::make_mut(el).tag_descriptor = Some(RsxTagDescriptor {
                             type_id,
                             type_name: identity.invocation_type,

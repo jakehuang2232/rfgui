@@ -2,13 +2,16 @@ use std::any::Any;
 use std::rc::Rc;
 
 use crate::{ExpandMoreIcon, use_theme};
+use rfgui::style::flex;
+use rfgui::style::{
+    Align, Angle, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout,
+    Length, Operator, Position, Rotate, ScrollDirection, Transform, Transition, TransitionProperty,
+};
 use rfgui::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, FocusHandlerProp, KeyDownHandlerProp,
     PointerDownHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::style::flex;
-use rfgui::style::{Align, Angle, ClipMode, Collision, CollisionBoundary, Color, ColorLike, CrossSize, Layout, Length, Operator, Position, Rotate, ScrollDirection, Transform, Transition, TransitionProperty};
 
 pub struct Select<DataType = (), ValueType = ()>(std::marker::PhantomData<(DataType, ValueType)>)
 where

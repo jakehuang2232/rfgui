@@ -16,6 +16,7 @@ mod scene_helpers;
 mod tests;
 mod transitions_tick;
 
+use crate::style::{ColorLike, Cursor, HexColor, PropertyId, Style};
 use crate::time::Instant;
 use crate::transition::{
     AnimationPlugin, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X,
@@ -35,6 +36,7 @@ use crate::ui::{
     PropValue, RsxNode, TextInputEvent, ViewportListenerHandle, peek_state_dirty, reconcile,
     take_state_dirty,
 };
+use crate::view::ElementStylePropSchema;
 use crate::view::base_component::Renderable;
 use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
@@ -46,8 +48,6 @@ use crate::view::promotion_builder::{
     collect_debug_subtree_signatures, collect_promoted_layer_updates, collect_promotion_candidates,
 };
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
-use crate::style::{ColorLike, Cursor, HexColor, PropertyId, Style};
-use crate::view::ElementStylePropSchema;
 
 use std::ops::Sub;
 use std::sync::Arc;

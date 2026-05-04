@@ -1,12 +1,12 @@
 use crate::components::GlobalKeyRenderTestBlock;
-use crate::rfgui::ui::{RsxNode, component, on_click, rsx, use_state};
-use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text};
 use crate::rfgui::style::{
     Align, Angle, Animation, Animator, Border, BorderRadius, ClipMode, Collision,
     CollisionBoundary, Color, ColorLike, CrossSize, Direction, JustifyContent, Keyframe, Layout,
-    Length, Opacity, Padding, Perspective, Position, Repeat, Rotate, Scale, ScrollDirection,
-    Style, Transform, TransformOrigin, Transition, TransitionProperty, Translate,
+    Length, Opacity, Padding, Perspective, Position, Repeat, Rotate, Scale, ScrollDirection, Style,
+    Transform, TransformOrigin, Transition, TransitionProperty, Translate,
 };
+use crate::rfgui::ui::{RsxNode, component, on_click, rsx, use_state};
+use crate::rfgui::view::{Element, Image, ImageFit, Svg, SvgSource, Text};
 use crate::rfgui_components::{Button, ButtonVariant, Theme};
 use crate::utils::output_image_source;
 use rfgui::style;

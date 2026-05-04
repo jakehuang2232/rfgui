@@ -1,7 +1,9 @@
 use crate::{MaterialSymbolIcon, Theme, use_theme};
+use rfgui::style::{
+    Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding,
+};
 use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx};
 use rfgui::view::{Element, Text};
-use rfgui::style::{Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

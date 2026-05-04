@@ -227,7 +227,14 @@ pub(crate) fn place_inline_fragment(
     let is_first_fragment = placement.node_index == 0;
     let is_last_fragment = placement.node_index + 1 == total_nodes;
     let left = placement.x;
-    let top = placement.y - top_inset;
+    // Paint top sits at the outer placement (= line top for VA=Top).
+    // The wrapper's vertical padding/border is folded into the inline
+    // node's exposed height (`Element::get_inline_nodes_size`), so the
+    // outer line reserves the full painted box and the box top edge
+    // does NOT extend above the line top. Contained text glyphs stay
+    // at `placement.y + leading/2` which matches sibling text on the
+    // same line.
+    let top = placement.y;
     let outer_width = line_width
         + if is_first_fragment { left_inset } else { 0.0 }
         + if is_last_fragment { right_inset } else { 0.0 };
@@ -260,8 +267,7 @@ pub(crate) fn place_inline_fragment(
         layout_state.layout_position.x = layout_state.layout_position.x.min(left);
         layout_state.layout_position.y = layout_state.layout_position.y.min(top);
         layout_state.layout_flow_position = layout_state.layout_position;
-        layout_state.layout_size.width =
-            current_right.max(right) - layout_state.layout_position.x;
+        layout_state.layout_size.width = current_right.max(right) - layout_state.layout_position.x;
         layout_state.layout_size.height =
             current_bottom.max(bottom) - layout_state.layout_position.y;
     } else {

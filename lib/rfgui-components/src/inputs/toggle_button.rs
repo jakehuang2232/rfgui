@@ -1,11 +1,14 @@
 use crate::inputs::button::{ButtonColor, ButtonSize, resolve_color_set, size_spec};
 use crate::inputs::toggle_button_group::ToggleButtonGroupContext;
 use crate::use_theme;
+use rfgui::style::{
+    Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition,
+    TransitionProperty, Transitions,
+};
 use rfgui::ui::{
     ClickEvent, ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx, use_context,
 };
 use rfgui::view::Element;
-use rfgui::style::{Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Transition, TransitionProperty, Transitions};
 
 pub struct ToggleButton;
 

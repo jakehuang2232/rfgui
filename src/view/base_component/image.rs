@@ -1,3 +1,4 @@
+use crate::style::{ParsedValue, PropertyId, Style};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
     ImageHandle, ImageSnapshot, acquire_image_resource, needs_upload, snapshot_image,
@@ -7,7 +8,6 @@ use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams,
 };
 use crate::view::{ImageFit, ImageSampling, ImageSource};
-use crate::style::{ParsedValue, PropertyId, Style};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
@@ -590,10 +590,10 @@ pub(crate) fn compute_image_mapping(
 mod tests {
     use super::Image;
     use crate::style::Layout;
+    use crate::style::{Length, ParsedValue, PropertyId, Style};
     use crate::view::ImageSource;
     use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement, Layoutable};
     use crate::view::test_support::{commit_child, commit_element, new_test_arena};
-    use crate::style::{Length, ParsedValue, PropertyId, Style};
 
     fn rgba_source(width: u32, height: u32) -> ImageSource {
         ImageSource::Rgba {

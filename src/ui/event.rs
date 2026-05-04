@@ -2,8 +2,8 @@
 
 //! Event payloads and handler prop types used by the retained UI runtime.
 
-use crate::style::Cursor;
 use crate::platform::input::{Key, PointerType, WheelDeltaMode, WheelPhase};
+use crate::style::Cursor;
 
 /// Re-export so `crate::ui` users don't need a separate platform import.
 pub use crate::platform::input::Modifiers;

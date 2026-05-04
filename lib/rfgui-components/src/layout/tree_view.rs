@@ -50,14 +50,17 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::{ChevronRightIcon, MaterialSymbolIcon, use_theme};
+use rfgui::style::flex;
+use rfgui::style::{
+    Align, Angle, Border, Color, ColorLike, Cursor, Layout, Length, Padding, Position, Rotate,
+    TextWrap, Transform, Transition, TransitionProperty,
+};
 use rfgui::ui::{
     Binding, ClickHandlerProp, DragEffect, RsxComponent, RsxNode, component, on_drag_end,
     on_drag_leave, on_drag_over, on_drag_start, on_drop, on_pointer_down, on_pointer_move,
     on_pointer_up, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::style::flex;
-use rfgui::style::{Align, Angle, Border, Color, ColorLike, Cursor, Layout, Length, Padding, Position, Rotate, TextWrap, Transform, Transition, TransitionProperty};
 
 // ---------------------------------------------------------------------------
 // Data

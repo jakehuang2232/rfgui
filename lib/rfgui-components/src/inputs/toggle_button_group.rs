@@ -1,12 +1,12 @@
 use crate::inputs::button::{ButtonColor, ButtonSize};
 use crate::inputs::toggle_button::ToggleButton;
 use crate::use_theme;
+use rfgui::style::{Border, ClipMode, Color, ColorLike, CrossSize, Layout, Length, Position};
 use rfgui::ui::{
     Binding, ClickEvent, IntoOptionalProp, Provider, RsxComponent, RsxNode, RsxTag, component,
     global_state, props, rsx,
 };
 use rfgui::view::Element;
-use rfgui::style::{Border, ClipMode, Color, ColorLike, CrossSize, Layout, Length, Position};
 use std::any::TypeId;
 use std::rc::Rc;
 

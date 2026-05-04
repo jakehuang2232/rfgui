@@ -5,9 +5,9 @@ mod snackbar_section;
 mod tooltip_section;
 mod tree_view_section;
 
+use crate::rfgui::style::{Layout, Length, Padding};
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::style::{Layout, Length, Padding};
 use crate::rfgui_components::{Checkbox, Select, Slider, Switch, Theme};
 
 use button_section::ButtonSection;

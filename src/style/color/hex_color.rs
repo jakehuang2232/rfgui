@@ -2,7 +2,7 @@
 
 //! Hex-based color literals for the typed color system.
 
-use crate::{style::color::ColorLike};
+use crate::style::color::ColorLike;
 use crate::style::srgb_to_linear_f32;
 use std::borrow::Cow;
 

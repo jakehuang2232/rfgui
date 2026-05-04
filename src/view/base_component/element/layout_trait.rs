@@ -403,6 +403,9 @@ impl Layoutable for Element {
         if self.is_fragmentable_inline_element() {
             let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
+            let top_inset = (self.border_widths.top + self.padding.top).max(0.0);
+            let bottom_inset = (self.border_widths.bottom + self.padding.bottom).max(0.0);
+            let v_inset = top_inset + bottom_inset;
             let inline_child_count = self
                 .children
                 .iter()
@@ -423,13 +426,14 @@ impl Layoutable for Element {
                                 } else {
                                     0.0
                                 },
-                            // Match CSS inline formatting: vertical padding/border paints
-                            // outside the line box and must not increase line height.
-                            // Inner line box height per D2 = ascent + descent
-                            // (collapses to line_cross_max for pure-element /
-                            // pure-text rows); the outer line then sees a
-                            // consistent (height, baseline) pair so its own
-                            // ascent/descent calc is well-defined.
+                            // Fold the wrapper's own vertical padding/
+                            // border into each fragment's exposed line
+                            // height so the outer line reserves the
+                            // full painted box height. `place_inline_fragment`
+                            // paints from `placement.y` (no -top_inset)
+                            // so the box top sits at the outer line top
+                            // and contained text glyphs visually align
+                            // with sibling text on the same line.
                             height: (info
                                 .line_ascent
                                 .get(line_idx)
@@ -440,7 +444,8 @@ impl Layoutable for Element {
                                     .get(line_idx)
                                     .copied()
                                     .unwrap_or(0.0))
-                            .max(0.0),
+                            .max(0.0)
+                                + v_inset,
                             // Per `docs/design/inline-baseline.md` D1, a
                             // fragmentable inline element exposes each
                             // fragment's inner `line_ascent` as its
@@ -485,9 +490,13 @@ impl Layoutable for Element {
             // children's own values; here we overwrite the values
             // exposed to the outer inline solver so it sees the wrapper
             // as a single inline-block-like node with one alignment.
+            // Also fold the wrapper's own vertical padding/border into
+            // each fragment's exposed height so outer line spacing
+            // reserves the full painted box (paint top = placement.y).
             let wrapper_va = self.computed_style.vertical_align;
             for node in &mut nodes {
                 node.vertical_align = wrapper_va;
+                node.height += v_inset;
             }
             return nodes;
         }

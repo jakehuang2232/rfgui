@@ -276,8 +276,8 @@ pub(crate) fn compute_flex_info(
         } else {
             current_main + item_main
         };
-        let must_wrap = !current.is_empty()
-            && (force_break_pending || (wrap && next_main > main_limit));
+        let must_wrap =
+            !current.is_empty() && (force_break_pending || (wrap && next_main > main_limit));
         if must_wrap {
             lines.push(current);
             line_main_sum.push(current_main);
@@ -336,8 +336,7 @@ pub(crate) fn compute_flex_info(
             .sum::<f32>();
         lines_sum + gap * (line_ascent.len().saturating_sub(1) as f32)
     } else {
-        line_cross_max.iter().sum::<f32>()
-            + gap * (line_cross_max.len().saturating_sub(1) as f32)
+        line_cross_max.iter().sum::<f32>() + gap * (line_cross_max.len().saturating_sub(1) as f32)
     };
 
     FlexLayoutInfo {
@@ -537,7 +536,14 @@ mod tests {
 
     use super::*;
 
-    fn plan(idx: usize, base: f32, min: f32, max: Option<f32>, grow: f32, shrink: f32) -> FlexItemPlan {
+    fn plan(
+        idx: usize,
+        base: f32,
+        min: f32,
+        max: Option<f32>,
+        grow: f32,
+        shrink: f32,
+    ) -> FlexItemPlan {
         FlexItemPlan {
             index: idx,
             flex_base_main: base,

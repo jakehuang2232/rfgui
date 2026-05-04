@@ -2,18 +2,18 @@ use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use crate::style::{ColorLike, Cursor, HexColor, Style, TextAlign, TextWrap};
 use crate::time::Instant;
+use crate::ui::Rect;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::FrameGraph;
-use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, RectPassParams, RenderTargetIn,
 };
 use crate::view::render_pass::text_pass::{TextInput, TextOutput};
 use crate::view::render_pass::text_pass::{TextPassFragment, TextPassParams};
+use crate::view::render_pass::{DrawRectPass, TextPass};
 use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
-use crate::style::{ColorLike, Cursor, HexColor, Style, TextAlign, TextWrap};
-use crate::ui::Rect;
 use cosmic_text::{Align, Buffer as GlyphBuffer, Hinting, ShapeLine, Wrap};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -805,10 +805,7 @@ impl Text {
     ///
     /// Returned `(x, y)` are absolute screen coordinates (already
     /// translated by `self.layout_position`).
-    pub fn local_char_to_screen_position(
-        &self,
-        local_char: usize,
-    ) -> Option<(f32, f32, f32)> {
+    pub fn local_char_to_screen_position(&self, local_char: usize) -> Option<(f32, f32, f32)> {
         let total_chars = self.content.chars().count();
         let target_char = local_char.min(total_chars);
 
@@ -834,15 +831,8 @@ impl Text {
                         .map(|(b, _)| b)
                         .unwrap_or(fragment.content.len());
                     let pos = caret_position_in_buffer(buffer, local_byte);
-                    let (gx, gy) = pos.unwrap_or((
-                        fragment.width.max(0.0),
-                        0.0,
-                    ));
-                    return Some((
-                        frag_origin.x + gx,
-                        frag_origin.y + gy,
-                        line_height,
-                    ));
+                    let (gx, gy) = pos.unwrap_or((fragment.width.max(0.0), 0.0));
+                    return Some((frag_origin.x + gx, frag_origin.y + gy, line_height));
                 }
                 consumed_chars += frag_chars;
                 last_fragment_end_screen = Some((
@@ -869,11 +859,7 @@ impl Text {
         for run in buffer.layout_runs() {
             had_run = true;
             last_top = run.line_top;
-            last_x = run
-                .glyphs
-                .last()
-                .map(|g| g.x + g.w.max(0.0))
-                .unwrap_or(0.0);
+            last_x = run.glyphs.last().map(|g| g.x + g.w.max(0.0)).unwrap_or(0.0);
             for glyph in run.glyphs.iter() {
                 if glyph.start >= target_byte {
                     return Some((
@@ -894,14 +880,52 @@ impl Text {
         None
     }
 
+    /// Screen-space leading-edge positions of every visual line, in y
+    /// order. Each entry is `(x, y_top, line_height)` for the caret
+    /// position **before** the first glyph on that line.
+    ///
+    /// Pure geometry — knows nothing about caret affinity. Exists
+    /// because `local_char_to_screen_position` cannot reach a
+    /// non-leading fragment's leading edge (its `<=` match captures
+    /// the boundary source char as the previous fragment's tail), so
+    /// `TextArea` calls this to render the lower-line head when its
+    /// affinity logic decides the caret belongs to the new visual line.
+    pub fn visual_line_heads(&self) -> Vec<(f32, f32, f32)> {
+        if let Some(plan) = self.inline_plan.as_ref()
+            && !plan.runs.is_empty()
+        {
+            return plan
+                .runs
+                .iter()
+                .filter_map(|fragment| {
+                    let buffer = fragment.layout_buffer.as_ref()?;
+                    let line_height = buffer.metrics().line_height;
+                    let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
+                    Some((origin.x, origin.y, line_height))
+                })
+                .collect();
+        }
+        let Some(buffer) = self.layout_buffer.as_ref() else {
+            return Vec::new();
+        };
+        let line_height = buffer.metrics().line_height;
+        buffer
+            .layout_runs()
+            .map(|run| {
+                let head_x = run.glyphs.first().map(|g| g.x).unwrap_or(0.0);
+                (
+                    self.layout_position.x + head_x,
+                    self.layout_position.y + run.line_top,
+                    line_height,
+                )
+            })
+            .collect()
+    }
+
     /// Translate a local char selection range into screen-space selection
     /// rects. Inline-laid-out text returns one or more rects scoped to the
     /// actual inline fragments instead of the union bounds.
-    pub fn local_selection_screen_rects(
-        &self,
-        local_start: usize,
-        local_end: usize,
-    ) -> Vec<Rect> {
+    pub fn local_selection_screen_rects(&self, local_start: usize, local_end: usize) -> Vec<Rect> {
         let start_char = local_start.min(local_end);
         let end_char = local_start.max(local_end);
         if start_char == end_char {
@@ -994,10 +1018,8 @@ impl Text {
                     for (line_i, paragraph) in fragment.content.split('\n').enumerate() {
                         if line_i == cursor.line {
                             let local_byte = cursor.index.min(paragraph.len());
-                            let in_fragment_char = fragment.content
-                                [..byte_offset + local_byte]
-                                .chars()
-                                .count();
+                            let in_fragment_char =
+                                fragment.content[..byte_offset + local_byte].chars().count();
                             return Some(consumed_chars + in_fragment_char);
                         }
                         byte_offset += paragraph.len() + 1;
@@ -1592,11 +1614,7 @@ fn caret_position_in_buffer(buffer: &GlyphBuffer, target_byte: usize) -> Option<
     for run in buffer.layout_runs() {
         had_run = true;
         last_top = run.line_top;
-        last_x = run
-            .glyphs
-            .last()
-            .map(|g| g.x + g.w.max(0.0))
-            .unwrap_or(0.0);
+        last_x = run.glyphs.last().map(|g| g.x + g.w.max(0.0)).unwrap_or(0.0);
         for glyph in run.glyphs.iter() {
             if glyph.start >= target_byte {
                 return Some((glyph.x, run.line_top));
@@ -1677,7 +1695,10 @@ fn selection_rects_in_buffer(
             }
             let glyph_left = glyph.x;
             let glyph_right = glyph.x + glyph.w.max(0.0);
-            left = Some(left.map(|current| current.min(glyph_left)).unwrap_or(glyph_left));
+            left = Some(
+                left.map(|current| current.min(glyph_left))
+                    .unwrap_or(glyph_left),
+            );
             right = right.max(glyph_right);
         }
         if let Some(left) = left {
@@ -1796,10 +1817,7 @@ impl ElementTrait for Text {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
-    fn apply_inherited(
-        &mut self,
-        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
-    ) {
+    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::InheritedTextStyle) {
         Text::apply_inherited(self, inherited);
     }
 
@@ -2439,11 +2457,11 @@ impl Renderable for Text {
 #[cfg(test)]
 mod tests {
     use super::{ElementTrait, Layoutable, Text, measure_text_size};
+    use crate::style::{Length, TextWrap};
     use crate::view::base_component::{
         DirtyFlags, InlineMeasureContext, LayoutConstraints, LayoutPlacement,
     };
     use crate::view::node_arena::NodeArena;
-    use crate::style::{Length, TextWrap};
     use cosmic_text::Align;
 
     fn arena() -> NodeArena {
@@ -3060,7 +3078,10 @@ mod tests {
             &mut a,
         );
         let nodes = text.get_inline_nodes_size(&a);
-        assert!(nodes.len() > 1, "test fixture should produce multiple wrap fragments");
+        assert!(
+            nodes.len() > 1,
+            "test fixture should produce multiple wrap fragments"
+        );
         let last = nodes.len() - 1;
         for (idx, node) in nodes.iter().enumerate() {
             if idx < last {

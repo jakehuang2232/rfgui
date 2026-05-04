@@ -1,6 +1,6 @@
+use crate::rfgui::style::{Angle, Layout, Length, Rotate, Transform};
 use crate::rfgui::ui::{RsxNode, component, rsx};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::style::{Angle, Layout, Length, Rotate, Transform};
 use crate::rfgui_components::{CloseIcon, Theme};
 use rfgui::style::Repeat::Infinite;
 use rfgui::style::{Animation, Animator, FillMode, Keyframe};

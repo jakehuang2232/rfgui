@@ -18,6 +18,7 @@ path = "bin/01_window/main.rs"
 [dependencies]
 rfgui = { path = ".." }
 rfgui-components = { path = "../lib/rfgui-components" }
+rfgui-segmenter = { path = "../lib/rfgui-segmenter" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 winit = "0.30.13"
 wgpu = "29.0.1"

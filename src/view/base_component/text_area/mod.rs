@@ -9,6 +9,7 @@
 
 #![allow(dead_code)] // P1: stubs; fields wired in later phases.
 
+mod caret_map;
 mod edit;
 mod events;
 mod hit_test;
@@ -31,8 +32,8 @@ pub(crate) use segment::TextAreaProjectionSegment;
 
 use std::ops::Range;
 
-use crate::time::Instant;
 use crate::style::Cursor;
+use crate::time::Instant;
 use crate::ui::{
     Binding, BlurHandlerProp, Rect, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
     TextChangeHandlerProp,
@@ -69,6 +70,12 @@ pub struct TextArea {
 
     // cursor / selection / IME / focus
     pub(crate) cursor_char: usize,
+    /// Soft-wrap caret affinity. char index alone is ambiguous at a wrap
+    /// boundary (= "end of upper line" === "start of lower line"); this
+    /// disambiguates. Default `Downstream` (start of lower line) matches
+    /// the long-standing pre-affinity behaviour. Set to `Upstream` by
+    /// Cmd+Right and other line-end navigations.
+    pub(crate) cursor_affinity: caret_map::CaretAffinity,
     pub(crate) selection_anchor_char: Option<usize>,
     pub(crate) selection_focus_char: Option<usize>,
     pub(crate) selection_background_color: crate::style::Color,
@@ -131,6 +138,7 @@ impl Default for TextArea {
             cursor: Cursor::Text,
 
             cursor_char: 0,
+            cursor_affinity: caret_map::CaretAffinity::Downstream,
             selection_anchor_char: None,
             selection_focus_char: None,
             selection_background_color: crate::style::Color::rgba(71, 133, 240, 89),
@@ -321,15 +329,35 @@ impl ElementTrait for TextArea {
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         self.layout_state.should_render.hash(&mut hasher);
-        self.layout_state.layout_position.x.to_bits().hash(&mut hasher);
-        self.layout_state.layout_position.y.to_bits().hash(&mut hasher);
-        self.layout_state.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
-        self.layout_state.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
+        self.layout_state
+            .layout_position
+            .x
+            .to_bits()
+            .hash(&mut hasher);
+        self.layout_state
+            .layout_position
+            .y
+            .to_bits()
+            .hash(&mut hasher);
+        self.layout_state
+            .layout_size
+            .width
+            .max(0.0)
+            .to_bits()
+            .hash(&mut hasher);
+        self.layout_state
+            .layout_size
+            .height
+            .max(0.0)
+            .to_bits()
+            .hash(&mut hasher);
         self.content.hash(&mut hasher);
         self.placeholder.hash(&mut hasher);
         self.color.to_rgba_u8().hash(&mut hasher);
         self.placeholder_color.to_rgba_u8().hash(&mut hasher);
-        self.selection_background_color.to_rgba_u8().hash(&mut hasher);
+        self.selection_background_color
+            .to_rgba_u8()
+            .hash(&mut hasher);
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
         self.line_height.to_bits().hash(&mut hasher);
@@ -338,6 +366,7 @@ impl ElementTrait for TextArea {
         self.auto_wrap.hash(&mut hasher);
         self.read_only.hash(&mut hasher);
         self.cursor_char.hash(&mut hasher);
+        self.cursor_affinity.hash(&mut hasher);
         self.selection_anchor_char.hash(&mut hasher);
         self.selection_focus_char.hash(&mut hasher);
         self.scroll_x.to_bits().hash(&mut hasher);
@@ -350,18 +379,11 @@ impl ElementTrait for TextArea {
         hasher.finish()
     }
 
-    fn apply_inherited(
-        &mut self,
-        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
-    ) {
+    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::InheritedTextStyle) {
         TextArea::apply_inherited(self, inherited);
     }
 
-    fn after_commit(
-        &mut self,
-        _arena: &mut crate::view::node_arena::NodeArena,
-        self_key: NodeKey,
-    ) {
+    fn after_commit(&mut self, _arena: &mut crate::view::node_arena::NodeArena, self_key: NodeKey) {
         self.set_self_node_key(self_key);
     }
 
@@ -429,19 +451,14 @@ impl ElementTrait for TextArea {
                 "read_only" => self.read_only = as_bool(value, key)?,
                 "max_length" => self.max_length = as_usize(value, key)?,
                 "on_focus" => self.on_focus_handlers.push(
-                    crate::ui::TextAreaFocusHandlerProp::from_prop_value(value.clone())
-                        .map_err(|_| {
-                            format!("prop `{key}` expects text area focus handler value")
-                        })?,
+                    crate::ui::TextAreaFocusHandlerProp::from_prop_value(value.clone()).map_err(
+                        |_| format!("prop `{key}` expects text area focus handler value"),
+                    )?,
                 ),
-                "on_blur" => self
-                    .on_blur_handlers
-                    .push(as_blur_handler(value, key)?),
+                "on_blur" => self.on_blur_handlers.push(as_blur_handler(value, key)?),
                 "on_change" => self.on_change_handlers.push(
                     crate::ui::TextChangeHandlerProp::from_prop_value(value.clone())
-                        .map_err(|_| {
-                            format!("prop `{key}` expects text change handler value")
-                        })?,
+                        .map_err(|_| format!("prop `{key}` expects text change handler value"))?,
                 ),
                 "on_render" => {
                     self.on_render_handler = Some(
@@ -468,10 +485,10 @@ impl ElementTrait for TextArea {
         name: &'static str,
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::style::{ParsedValue, PropertyId};
         use crate::ui::FromPropValue;
         use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
         use crate::view::renderer_adapter::{InheritedTextStyle, inherited_text_style_at_parent};
-        use crate::style::{ParsedValue, PropertyId};
 
         self.set_self_node_key(self_key);
 
@@ -592,9 +609,7 @@ impl ElementTrait for TextArea {
                 }
                 if let Some(ParsedValue::FontSize(size)) = style.get(PropertyId::FontSize) {
                     self.font_size = size.resolve_px(
-                        inherited
-                            .font_size
-                            .unwrap_or(inherited.root_font_size),
+                        inherited.font_size.unwrap_or(inherited.root_font_size),
                         inherited.root_font_size,
                         inherited.viewport_width,
                         inherited.viewport_height,
@@ -610,9 +625,7 @@ impl ElementTrait for TextArea {
                 PropApplyOutcome::Applied
             }
             "on_change" => {
-                let Ok(handler) =
-                    crate::ui::TextChangeHandlerProp::from_prop_value(value)
-                else {
+                let Ok(handler) = crate::ui::TextChangeHandlerProp::from_prop_value(value) else {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 self.on_change_handlers.clear();
@@ -620,8 +633,7 @@ impl ElementTrait for TextArea {
                 PropApplyOutcome::Applied
             }
             "on_focus" => {
-                let Ok(handler) =
-                    crate::ui::TextAreaFocusHandlerProp::from_prop_value(value)
+                let Ok(handler) = crate::ui::TextAreaFocusHandlerProp::from_prop_value(value)
                 else {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
@@ -638,8 +650,7 @@ impl ElementTrait for TextArea {
                 PropApplyOutcome::Applied
             }
             "on_render" => {
-                let Ok(handler) =
-                    crate::ui::TextAreaRenderHandlerProp::from_prop_value(value)
+                let Ok(handler) = crate::ui::TextAreaRenderHandlerProp::from_prop_value(value)
                 else {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
