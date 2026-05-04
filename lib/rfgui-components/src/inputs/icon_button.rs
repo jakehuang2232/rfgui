@@ -1,8 +1,11 @@
 use crate::inputs::button::{ButtonColor, ButtonSize, resolve_color_set, size_spec};
 use crate::use_theme;
+use rfgui::style::{
+    Align, Color, ColorLike, Cursor, JustifyContent, Layout, Transition, TransitionProperty,
+    Transitions,
+};
 use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx};
 use rfgui::view::Element;
-use rfgui::style::{Align, Color, ColorLike, Cursor, JustifyContent, Layout, Transition, TransitionProperty, Transitions};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconButtonEdge {

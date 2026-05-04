@@ -1,3 +1,4 @@
+use crate::style::{ParsedValue, PropertyId, Style};
 use crate::time::{Duration, Instant};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::ImageSnapshot;
@@ -11,7 +12,6 @@ use crate::view::svg_resource::{
     snapshot_svg_raster,
 };
 use crate::view::{ImageFit, ImageSampling, SvgSource};
-use crate::style::{ParsedValue, PropertyId, Style};
 
 use super::{
     BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,

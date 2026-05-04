@@ -1,6 +1,9 @@
 use crate::rfgui::ui::{RsxNode, component, rsx};
 use rfgui::style;
-use rfgui::style::{Align, Animation, Animator, Direction, JustifyContent, Keyframe, Layout, Length, Repeat, Scale, Transform};
+use rfgui::style::{
+    Align, Animation, Animator, Direction, JustifyContent, Keyframe, Layout, Length, Repeat, Scale,
+    Transform,
+};
 use rfgui::view::Element;
 
 #[component]

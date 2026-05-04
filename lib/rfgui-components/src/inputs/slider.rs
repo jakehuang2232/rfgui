@@ -1,12 +1,15 @@
 use crate::use_theme;
 
+use rfgui::style::flex;
+use rfgui::style::{
+    Align, Cursor, JustifyContent, Layout, Length, Operator, Position, TextWrap, Transition,
+    TransitionProperty,
+};
 use rfgui::ui::{
     Binding, RsxComponent, RsxNode, on_pointer_down, on_pointer_move, on_pointer_up, props, rsx,
     use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::style::flex;
-use rfgui::style::{Align, Cursor, JustifyContent, Layout, Length, Operator, Position, TextWrap, Transition, TransitionProperty};
 
 pub struct Slider;
 

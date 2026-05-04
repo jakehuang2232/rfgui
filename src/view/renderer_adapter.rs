@@ -1178,12 +1178,12 @@ fn convert_node_desc(
             // `host_builder` fn pointer (carried by the descriptor)
             // builds the full ElementDescriptor — children, side
             // slots, the lot. Adapter no longer enumerates host types.
-            let descriptor = el.tag_descriptor.ok_or_else(|| {
-                format!("element `{}` missing tag descriptor", el.tag)
-            })?;
-            let builder = descriptor.host_builder.ok_or_else(|| {
-                format!("tag `{}` missing host_builder", descriptor.type_name)
-            })?;
+            let descriptor = el
+                .tag_descriptor
+                .ok_or_else(|| format!("element `{}` missing tag descriptor", el.tag))?;
+            let builder = descriptor
+                .host_builder
+                .ok_or_else(|| format!("tag `{}` missing host_builder", descriptor.type_name))?;
             let ctx = crate::view::host_element::BuildCtx {
                 global_path,
                 inherited: inherited_text_style.clone(),
@@ -1299,4 +1299,3 @@ fn append_child_nodes_flattening_fragments_desc(
         }
     }
 }
-

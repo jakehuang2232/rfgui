@@ -7,6 +7,7 @@
 //! need glyph metrics from the Run subtree and live in `events.rs` where
 //! arena access is in scope. State.rs stays glyph-free.
 
+use crate::platform::word_segmenter::{next_word_boundary, prev_word_boundary, word_segmenter};
 use crate::view::base_component::DirtyFlags;
 
 use super::TextArea;
@@ -121,6 +122,55 @@ impl TextArea {
         true
     }
 
+    /// macOS Option+Left target: nearest word START strictly before
+    /// `cursor_char`. Routes through the host-installed
+    /// [`WordSegmenter`](crate::platform::WordSegmenter) — falls back
+    /// to alphanumeric-run heuristic when the host hasn't installed
+    /// a richer impl (e.g. `rfgui-segmenter::system_segmenter()`).
+    pub(super) fn prev_word_boundary_at(&self, from: usize) -> usize {
+        prev_word_boundary(&self.content, word_segmenter(), from)
+    }
+
+    pub(super) fn next_word_boundary_at(&self, from: usize) -> usize {
+        next_word_boundary(&self.content, word_segmenter(), from)
+    }
+
+    pub(super) fn move_cursor_word_left(&mut self) -> bool {
+        let target = self.prev_word_boundary_at(self.cursor_char);
+        if target == self.cursor_char {
+            return false;
+        }
+        self.move_cursor_to(target);
+        true
+    }
+
+    pub(super) fn move_cursor_word_right(&mut self) -> bool {
+        let target = self.next_word_boundary_at(self.cursor_char);
+        if target == self.cursor_char {
+            return false;
+        }
+        self.move_cursor_to(target);
+        true
+    }
+
+    pub(super) fn extend_selection_word_left(&mut self) -> bool {
+        let target = self.prev_word_boundary_at(self.cursor_char);
+        if target == self.cursor_char {
+            return false;
+        }
+        self.extend_selection_to(target);
+        true
+    }
+
+    pub(super) fn extend_selection_word_right(&mut self) -> bool {
+        let target = self.next_word_boundary_at(self.cursor_char);
+        if target == self.cursor_char {
+            return false;
+        }
+        self.extend_selection_to(target);
+        true
+    }
+
     pub(super) fn extend_selection_line_home(&mut self) {
         let chars: Vec<char> = self.content.chars().collect();
         let mut idx = self.cursor_char.min(chars.len());
@@ -160,14 +210,14 @@ impl TextArea {
         self.selection_focus_char = Some(focus);
         self.cursor_char = focus;
         self.reset_caret_blink();
+        self.clear_vertical_goal();
     }
 
     pub(super) fn end_pointer_selection(&mut self) {
         self.pointer_selecting = false;
         // Collapse zero-length selection so subsequent caret-only edits
         // don't trip the delete-selection branch.
-        if let (Some(anchor), Some(focus)) =
-            (self.selection_anchor_char, self.selection_focus_char)
+        if let (Some(anchor), Some(focus)) = (self.selection_anchor_char, self.selection_focus_char)
             && anchor == focus
         {
             self.clear_selection();
@@ -195,11 +245,7 @@ impl TextArea {
     /// `multiline=false` to mirror v1 behaviour. Routing the preedit to
     /// the target child Run lives in `projection::route_preedit_to_runs`
     /// since it needs arena access; callers in `events.rs` invoke both.
-    pub(super) fn set_preedit(
-        &mut self,
-        text: String,
-        cursor: Option<(usize, usize)>,
-    ) -> bool {
+    pub(super) fn set_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) -> bool {
         let normalized = normalize_multiline(&text, self.multiline);
         if self.ime_preedit == normalized && self.ime_preedit_cursor == cursor {
             return false;
@@ -253,5 +299,29 @@ impl TextArea {
             // Editor blur: keep selection visible? v1 keeps it. Match v1.
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::caret_map::CaretAffinity;
+    use super::*;
+
+    #[test]
+    fn pointer_drag_update_resets_stale_affinity() {
+        let mut text_area = TextArea::new();
+        text_area.content = "abcdef".to_string();
+        text_area.cursor_affinity = CaretAffinity::Upstream;
+        text_area.vertical_cursor_x = Some(42.0);
+        text_area.pointer_selecting = true;
+        text_area.selection_anchor_char = Some(0);
+        text_area.selection_focus_char = Some(0);
+
+        text_area.update_pointer_selection(3);
+
+        assert_eq!(text_area.cursor_char, 3);
+        assert_eq!(text_area.selection_focus_char, Some(3));
+        assert_eq!(text_area.cursor_affinity, CaretAffinity::Downstream);
+        assert_eq!(text_area.vertical_cursor_x, None);
     }
 }

@@ -41,6 +41,7 @@ use winit::window::{Window, WindowId};
 /// Blocks the calling thread. Returns on `WindowEvent::CloseRequested`
 /// after calling `App::on_shutdown`.
 pub fn run<A: App + 'static>(app: A, config: AppConfig) {
+    crate::word_segmenter_bridge::install_system_word_segmenter();
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut handler = Runner::new(Box::new(app), config);

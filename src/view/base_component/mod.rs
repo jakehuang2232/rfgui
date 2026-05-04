@@ -25,9 +25,7 @@ pub use element::*;
 pub use image::*;
 pub use svg::*;
 pub use text::*;
-pub use text_area::{
-    TextArea, TextAreaImeContext, TextAreaRenderProjection, TextAreaRenderString,
-};
+pub use text_area::{TextArea, TextAreaImeContext, TextAreaRenderProjection, TextAreaRenderString};
 
 fn next_ui_node_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -3156,6 +3154,7 @@ mod tests {
         dispatch_click_from_hit_test, dispatch_drag_over_bubble, dispatch_hover_transition,
         dispatch_pointer_down_from_hit_test, hit_test,
     };
+    use crate::style::{AnchorName, Color, Layout};
     use crate::style::{
         Angle, ClipMode, Length, ParsedValue, Position, PropertyId, Rotate, ScrollDirection, Style,
         Transform, TransformOrigin, Translate,
@@ -3169,7 +3168,6 @@ mod tests {
         commit_child, commit_element, measure_and_place, new_test_arena,
     };
     use crate::view::{Viewport, ViewportControl};
-    use crate::style::{AnchorName, Color, Layout};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 

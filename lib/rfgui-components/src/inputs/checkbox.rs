@@ -1,10 +1,10 @@
 use crate::{CheckIcon, use_theme};
+use rfgui::style::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};
 use rfgui::ui::{
     Binding, ClickHandlerProp, PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxComponent,
     RsxNode, props, rsx, use_state,
 };
 use rfgui::view::{Element, Text};
-use rfgui::style::{Align, Border, Color, JustifyContent, Layout, Transition, TransitionProperty};
 use std::rc::Rc;
 
 pub struct Checkbox;

@@ -158,8 +158,7 @@ impl PartialEq for RsxProviderNode {
 /// Engine-core (this module) cannot name `ElementDescriptor` /
 /// `InheritedTextStyle`, so both the return type and the context are
 /// type-erased through `Any`.
-pub type ErasedHostBuilder =
-    fn(&RsxElementNode, &[u64], &dyn Any) -> Result<Box<dyn Any>, String>;
+pub type ErasedHostBuilder = fn(&RsxElementNode, &[u64], &dyn Any) -> Result<Box<dyn Any>, String>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RsxTagDescriptor {

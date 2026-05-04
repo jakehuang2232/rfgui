@@ -1617,7 +1617,10 @@ mod tests {
         let mut arena = NodeArena::new();
         let image_key = arena.insert(Node::new(Box::new(image)));
 
-        let loading_a = RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>());
+        let loading_a = RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        );
         apply_fiber_works(
             &mut arena,
             test_apply_ctx(),
@@ -1645,9 +1648,14 @@ mod tests {
         // Install a taller slot; the old wrapper subtree must be
         // removed and the new one committed, keeping the Vec length
         // at 1.
-        let loading_b = RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>()).with_child(
-            RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>()),
-        );
+        let loading_b = RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        )
+        .with_child(RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        ));
         apply_fiber_works(
             &mut arena,
             test_apply_ctx(),

@@ -1,8 +1,11 @@
 use crate::{ExpandMoreIcon, use_theme};
+use rfgui::style::flex;
+use rfgui::style::{
+    Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform,
+    Transition, TransitionProperty,
+};
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
 use rfgui::view::Element;
-use rfgui::style::flex;
-use rfgui::style::{Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform, Transition, TransitionProperty};
 
 pub struct Accordion;
 

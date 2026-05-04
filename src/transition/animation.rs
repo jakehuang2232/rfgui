@@ -624,7 +624,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::{Animation, Animator, Color, Keyframe, Opacity, ParsedValue, PropertyId, Repeat, Style};
+    use crate::style::{
+        Animation, Animator, Color, Keyframe, Opacity, ParsedValue, PropertyId, Repeat, Style,
+    };
 
     fn opacity_style(value: f32) -> Style {
         let mut style = Style::new();

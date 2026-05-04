@@ -3,12 +3,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{ElementCore, Position, Size};
 use crate::style::ColorLike;
-use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
-    Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode,
-    ScrollDirection, SizeValue, Style, Transform, TransformKind, TransformOrigin,
-    TransitionProperty, TransitionTiming, compute_style, interpolate_transform_with_reference_box,
+    Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode, ScrollDirection,
+    SizeValue, Style, Transform, TransformKind, TransformOrigin, TransitionProperty,
+    TransitionTiming, compute_style, interpolate_transform_with_reference_box,
 };
 use crate::transition::{
     AnimationRequest, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -29,6 +28,7 @@ use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{AttachmentTarget, FrameGraph, ResourceLifetime, TextureDesc};
 use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
+use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::GraphicsPassContext;
 use crate::view::render_pass::{
@@ -310,9 +310,7 @@ pub(crate) fn take_layout_place_profile() -> LayoutPlaceProfile {
 /// Mutate the per-frame layout-place profile via a closure.
 /// `pub(crate)` so layout-pipeline modules (e.g. `crate::view::layout::place`)
 /// can record profile counters without exposing the thread-local directly.
-pub(crate) fn with_layout_place_profile<R>(
-    f: impl FnOnce(&mut LayoutPlaceProfile) -> R,
-) -> R {
+pub(crate) fn with_layout_place_profile<R>(f: impl FnOnce(&mut LayoutPlaceProfile) -> R) -> R {
     LAYOUT_PLACE_PROFILE.with(|profile| f(&mut profile.borrow_mut()))
 }
 
@@ -1635,11 +1633,7 @@ pub trait ElementTrait:
     /// host. Default is a no-op (most hosts don't read inherited
     /// text props). Text / TextArea override to fill font / color /
     /// cursor / text_wrap that the author didn't explicitly set.
-    fn apply_inherited(
-        &mut self,
-        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
-    ) {
-    }
+    fn apply_inherited(&mut self, _inherited: &crate::view::renderer_adapter::InheritedTextStyle) {}
 
     /// 軌 1 #14 Phase 3: produce the `InheritedTextStyle` to pass to
     /// this host's children. Default returns the parent cascade
@@ -1695,9 +1689,7 @@ pub trait ElementTrait:
         global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
         inherited: &crate::view::renderer_adapter::InheritedTextStyle,
     ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
-        crate::view::renderer_adapter::walk_children_descriptors(
-            node, path, global_path, inherited,
-        )
+        crate::view::renderer_adapter::walk_children_descriptors(node, path, global_path, inherited)
     }
 
     /// 軌 1 #11: dispatch a single changed prop to this host. Each host
@@ -2247,8 +2239,14 @@ impl ElementTrait for Element {
         hash_f32(&mut hasher, self.layout_state.layout_position.y);
         hash_f32(&mut hasher, self.layout_state.layout_size.width.max(0.0));
         hash_f32(&mut hasher, self.layout_state.layout_size.height.max(0.0));
-        hash_f32(&mut hasher, self.layout_state.layout_inner_size.width.max(0.0));
-        hash_f32(&mut hasher, self.layout_state.layout_inner_size.height.max(0.0));
+        hash_f32(
+            &mut hasher,
+            self.layout_state.layout_inner_size.width.max(0.0),
+        );
+        hash_f32(
+            &mut hasher,
+            self.layout_state.layout_inner_size.height.max(0.0),
+        );
         hash_f32(&mut hasher, self.padding.left);
         hash_f32(&mut hasher, self.padding.right);
         hash_f32(&mut hasher, self.padding.top);

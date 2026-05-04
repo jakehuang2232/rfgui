@@ -14,11 +14,11 @@
 //!   4. Host drains `Viewport::drain_platform_requests()` and applies the
 //!      cursor / clipboard / redraw requests to the real host window.
 
-use crate::style::Color;
 use crate::platform::{
     PlatformImePreedit, PlatformKeyEvent, PlatformPointerEvent, PlatformServices,
     PlatformTextInput, PlatformWheelEvent,
 };
+use crate::style::Color;
 use crate::ui::RsxNode;
 use crate::view::viewport::ViewportControl;
 

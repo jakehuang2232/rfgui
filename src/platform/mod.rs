@@ -15,6 +15,7 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 pub mod callback;
 pub mod headless;
 pub mod input;
+pub mod word_segmenter;
 
 #[cfg(target_arch = "wasm32")]
 pub mod web;
@@ -31,6 +32,10 @@ pub use input::{
     Key, Modifiers, PlatformImePreedit, PlatformInputType, PlatformKeyEvent, PlatformPointerButton,
     PlatformPointerEvent, PlatformPointerEventKind, PlatformPreeditAttribute, PlatformPreeditStyle,
     PlatformTextInput, PlatformWheelEvent, PointerType, WheelDeltaMode, WheelPhase,
+};
+pub use word_segmenter::{
+    DefaultWordSegmenter, WordSegmenter, install_word_segmenter, next_word_boundary,
+    prev_word_boundary, word_segmenter,
 };
 
 /// Anything that can back a `wgpu::Surface`.

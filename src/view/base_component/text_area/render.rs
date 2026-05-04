@@ -69,16 +69,27 @@ impl TextArea {
         //     newline = start of next visual line"). Mirrors v1's
         //     `Newline && cursor == source_range.end` branch.
         let mut chosen_idx: Option<usize> = None;
+        let mut upstream_newline_idx: Option<usize> = None;
         let mut last_run_idx: Option<usize> = None;
         for (idx, child_range) in self.child_char_ranges.iter().enumerate() {
             let &child_key = self.children.get(idx)?;
             let is_run = arena
-                .with_element_taken_ref(child_key, |el, _| {
-                    el.as_any().is::<TextAreaTextRun>()
-                })
+                .with_element_taken_ref(child_key, |el, _| el.as_any().is::<TextAreaTextRun>())
                 .unwrap_or(false);
             if is_run {
                 last_run_idx = Some(idx);
+                if self.cursor_affinity == super::caret_map::CaretAffinity::Upstream
+                    && self.cursor_char == child_range.end
+                    && arena
+                        .with_element_taken_ref(child_key, |el, _| {
+                            el.as_any()
+                                .downcast_ref::<TextAreaTextRun>()
+                                .is_some_and(|run| run.has_trailing_newline)
+                        })
+                        .unwrap_or(false)
+                {
+                    upstream_newline_idx = Some(idx);
+                }
             }
             if chosen_idx.is_none()
                 && self.cursor_char >= child_range.start
@@ -88,7 +99,7 @@ impl TextArea {
                 break;
             }
         }
-        let idx = chosen_idx.or(last_run_idx)?;
+        let idx = upstream_newline_idx.or(chosen_idx).or(last_run_idx)?;
         let &key = self.children.get(idx)?;
         let range = self.child_char_ranges.get(idx)?.clone();
         let line_h = self.font_size.max(1.0) * self.line_height;
@@ -120,13 +131,26 @@ impl TextArea {
             return arena.with_element_taken_ref(key, |el, _| {
                 let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
                 if run.has_trailing_newline && self.cursor_char == range.end {
+                    if self.cursor_affinity == super::caret_map::CaretAffinity::Upstream {
+                        let local = run.text.chars().count();
+                        let (x, y_top, lh) = run.local_char_to_screen_position_with_affinity(
+                            local,
+                            self.cursor_affinity,
+                        )?;
+                        return Some((
+                            run.layout_state.layout_position.x + x,
+                            run.layout_state.layout_position.y + y_top,
+                            lh,
+                        ));
+                    }
                     if let Some((nx, ny)) = next_sibling_origin {
                         return Some((nx, ny, line_h));
                     }
                     // No next sibling: pin caret to the start of the
                     // following visual line directly under the Run.
                     let x = run.layout_state.layout_position.x;
-                    let y = run.layout_state.layout_position.y + run.layout_state.layout_size.height;
+                    let y =
+                        run.layout_state.layout_position.y + run.layout_state.layout_size.height;
                     return Some((x, y, line_h));
                 }
                 let (x, y_top, lh) = if run.inline_preedit.is_some() {
@@ -135,7 +159,7 @@ impl TextArea {
                     let start = run.char_range.start;
                     let visible_chars = run.text.chars().count();
                     let local = self.cursor_char.saturating_sub(start).min(visible_chars);
-                    run.local_char_to_screen_position(local)?
+                    run.local_char_to_screen_position_with_affinity(local, self.cursor_affinity)?
                 };
                 let screen_x = run.layout_state.layout_position.x + x;
                 let screen_y = run.layout_state.layout_position.y + y_top;
@@ -146,13 +170,27 @@ impl TextArea {
         // Projection host: prefer real glyph coordinates from the first
         // text-bearing descendant. For image/icon-only projections, fall
         // back to proportional positioning inside the projection root box.
+        //
+        // Affinity disambiguation lives at the TextArea layer, not in
+        // the inner Text — that's why we *post-process* the projection
+        // descendant's reported caret position here. When the user
+        // explicitly chose `Upstream` (e.g. Cmd+Right that lands at the
+        // head of a wrapped visual line) and the descendant's caret
+        // sits at the lower line's head, walk the
+        // `CaretNavigationMap` to find the corresponding upper-line
+        // tail stop and prefer that. This preserves the Cocoa rule
+        // without requiring `Text` to know about caret affinity.
         let span = range.end.saturating_sub(range.start);
         let local_char = self.projection_caret_local_char(range.start, span);
-        if let Some(found) = glyph_caret_in_projection(arena, key, local_char) {
+        if let Some(found) = glyph_caret_in_projection(arena, key, local_char, self.cursor_affinity)
+        {
+            if let Some(override_pos) = self.projection_caret_affinity_override(arena, key, found.1)
+            {
+                return Some(override_pos);
+            }
             return Some(found);
         }
-        let snap = arena
-            .with_element_taken_ref(key, |el, _| el.box_model_snapshot())?;
+        let snap = arena.with_element_taken_ref(key, |el, _| el.box_model_snapshot())?;
         let ratio = if span == 0 {
             0.0
         } else {
@@ -164,7 +202,86 @@ impl TextArea {
         Some((x, y, caret_h))
     }
 
-    fn projection_caret_local_char(&self, projection_start: usize, projection_span: usize) -> usize {
+    /// Post-process the descendant's reported caret position to honour
+    /// `cursor_affinity`. The boundary char between two wrapped visual
+    /// lines is logically one source char index but visually has two
+    /// caret slots — affinity decides which slot to render:
+    ///
+    ///   * `cursor_char` IS line N's last stop AND a continuation line
+    ///     N+1 exists:
+    ///       - `Upstream`   → upper line's tail (descendant already
+    ///                        reports this; no override needed).
+    ///       - `Downstream` → lower line's head from the projection's
+    ///                        first text-bearing descendant.
+    ///   * `cursor_char` IS line N+1's first stop (CJK shared boundary
+    ///     where the same source char appears on both lines):
+    ///       - `Upstream`   → upper line's tail.
+    ///       - `Downstream` → descendant's report (= lower head).
+    ///
+    /// Falls through to a y-mismatch repair when neither case applies.
+    fn projection_caret_affinity_override(
+        &self,
+        arena: &NodeArena,
+        projection_key: NodeKey,
+        descendant_y: f32,
+    ) -> Option<(f32, f32, f32)> {
+        use super::caret_map::{CaretAffinity, CaretNavigationMap};
+        let affinity = self.cursor_affinity;
+        let map = CaretNavigationMap::build(self, arena);
+        let line_idx = map.line_index_for_char(self.cursor_char, affinity)?;
+        let line = map.lines.get(line_idx)?;
+
+        // Upstream cursor at the head of a non-leading visual line →
+        // pin to upper tail (CJK shared boundary case).
+        if affinity == CaretAffinity::Upstream
+            && line_idx > 0
+            && line.stops.first().map(|s| s.char_index) == Some(self.cursor_char)
+        {
+            let upper_tail = map.lines.get(line_idx - 1)?.stops.last()?;
+            return Some((upper_tail.x, upper_tail.y_top, upper_tail.height));
+        }
+
+        // Downstream cursor at the tail of a *multi-stop* visual line
+        // that has a continuation → pin to the lower line's head from
+        // the projection's text-bearing descendant. Without this, the
+        // descendant's `local_char_to_screen_position` always returns
+        // the upper-fragment tail at this source char (its `<= frag_chars`
+        // match keeps the boundary char on the prior fragment), so the
+        // caret can't reach the visual lower-line head via Downstream.
+        //
+        // The `len() >= 2` guard skips degenerate single-char lines
+        // where every char is simultaneously line head and line tail —
+        // there's no genuine "after the last visible glyph" position
+        // in those, and firing the override would shift the caret
+        // forward by a whole visual line for ordinary mid-line moves.
+        if affinity == CaretAffinity::Downstream
+            && line.stops.len() >= 2
+            && line.stops.last().map(|s| s.char_index) == Some(self.cursor_char)
+            && let Some(next_line) = map.lines.get(line_idx + 1)
+            && let Some(pos) =
+                projection_lower_fragment_head(arena, projection_key, next_line.y_top)
+        {
+            return Some(pos);
+        }
+
+        // Fallback: the descendant reported a `y` that disagrees with
+        // the map (e.g. legacy `Text` inline path snapping a gap byte
+        // to the wrong fragment). Re-anchor to whichever map stop
+        // matches `cursor_char` on the affinity-resolved line.
+        let line_height = (line.y_bottom - line.y_top).max(1.0);
+        if (descendant_y - line.y_top).abs() > line_height * 0.5
+            && let Some(stop) = line.stops.iter().find(|s| s.char_index == self.cursor_char)
+        {
+            return Some((stop.x, stop.y_top, stop.height));
+        }
+        None
+    }
+
+    fn projection_caret_local_char(
+        &self,
+        projection_start: usize,
+        projection_span: usize,
+    ) -> usize {
         let base = self
             .cursor_char
             .saturating_sub(projection_start)
@@ -244,12 +361,10 @@ impl TextArea {
                 }
             }
 
-            let local_caret = self.projection_caret_local_char(
-                range.start,
-                range.end.saturating_sub(range.start),
-            );
+            let local_caret = self
+                .projection_caret_local_char(range.start, range.end.saturating_sub(range.start));
             if let Some((x, y, line_h)) =
-                glyph_caret_in_projection(arena, child_key, local_caret)
+                glyph_caret_in_projection(arena, child_key, local_caret, self.cursor_affinity)
             {
                 let width = (self.font_size.max(1.0) * 0.6 * preedit_chars as f32).max(1.0);
                 return Some(vec![Rect {
@@ -305,7 +420,6 @@ impl TextArea {
                 });
                 continue;
             }
-
         }
         out
     }
@@ -494,17 +608,94 @@ impl Renderable for TextArea {
 /// text-bearing element (a `<Text>` or a `TextAreaTextRun`) and query
 /// its glyph buffer for the screen-space caret position at `local_char`
 /// (0-based char offset into the projected slice).
+/// Resolve the caret position at a wrapped projection's *lower line
+/// head* — the leading edge of the visual line whose top edge matches
+/// `target_y`. DFS the projection subtree for the first text-bearing
+/// descendant, ask it for `visual_line_heads()`, and pick the entry
+/// whose y matches `target_y`. The descendant's heads already include
+/// inline-fragment offsets (Text inline path) or the descendant's own
+/// `layout_position` (Text block path / `TextAreaTextRun`), so the
+/// returned position is screen-space.
+fn projection_lower_fragment_head(
+    arena: &NodeArena,
+    root_key: NodeKey,
+    target_y: f32,
+) -> Option<(f32, f32, f32)> {
+    let heads = collect_projection_visual_line_heads(arena, root_key);
+    heads
+        .into_iter()
+        .min_by(|a, b| {
+            (a.1 - target_y)
+                .abs()
+                .partial_cmp(&(b.1 - target_y).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .filter(|head| (head.1 - target_y).abs() < head.2)
+}
+
+fn collect_projection_visual_line_heads(
+    arena: &NodeArena,
+    root_key: NodeKey,
+) -> Vec<(f32, f32, f32)> {
+    fn extract(arena: &NodeArena, key: NodeKey) -> Option<Vec<(f32, f32, f32)>> {
+        arena
+            .with_element_taken_ref(key, |el, _| {
+                if let Some(text) = el.as_any().downcast_ref::<Text>() {
+                    return Some(text.visual_line_heads());
+                }
+                if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
+                    let origin_x = run.layout_state.layout_position.x;
+                    let origin_y = run.layout_state.layout_position.y;
+                    return Some(
+                        run.caret_stops()
+                            .into_iter()
+                            .filter_map(|line| {
+                                let head = line.stops.first()?;
+                                Some((
+                                    origin_x + head.local_x,
+                                    origin_y + head.local_y_top,
+                                    head.height,
+                                ))
+                            })
+                            .collect(),
+                    );
+                }
+                None
+            })
+            .flatten()
+    }
+
+    if let Some(heads) = extract(arena, root_key)
+        && !heads.is_empty()
+    {
+        return heads;
+    }
+    let mut stack: Vec<NodeKey> = arena.children_of(root_key).into_iter().rev().collect();
+    while let Some(key) = stack.pop() {
+        if let Some(heads) = extract(arena, key)
+            && !heads.is_empty()
+        {
+            return heads;
+        }
+        for child in arena.children_of(key).into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    Vec::new()
+}
+
 fn glyph_caret_in_projection(
     arena: &NodeArena,
     root_key: NodeKey,
     local_char: usize,
+    affinity: super::caret_map::CaretAffinity,
 ) -> Option<(f32, f32, f32)> {
-    if let Some(found) = query_caret_on(arena, root_key, local_char) {
+    if let Some(found) = query_caret_on(arena, root_key, local_char, affinity) {
         return Some(found);
     }
     let mut stack: Vec<NodeKey> = arena.children_of(root_key).into_iter().rev().collect();
     while let Some(key) = stack.pop() {
-        if let Some(found) = query_caret_on(arena, key, local_char) {
+        if let Some(found) = query_caret_on(arena, key, local_char, affinity) {
             return Some(found);
         }
         for child in arena.children_of(key).into_iter().rev() {
@@ -518,13 +709,15 @@ fn query_caret_on(
     arena: &NodeArena,
     key: NodeKey,
     local_char: usize,
+    affinity: super::caret_map::CaretAffinity,
 ) -> Option<(f32, f32, f32)> {
     arena
         .with_element_taken_ref(key, |el, _| {
             if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
                 let visible = run.text.chars().count();
                 let local = local_char.min(visible);
-                let (x, y_top, lh) = run.local_char_to_screen_position(local)?;
+                let (x, y_top, lh) =
+                    run.local_char_to_screen_position_with_affinity(local, affinity)?;
                 return Some((
                     run.layout_state.layout_position.x + x,
                     run.layout_state.layout_position.y + y_top,
@@ -532,6 +725,10 @@ fn query_caret_on(
                 ));
             }
             if let Some(text) = el.as_any().downcast_ref::<Text>() {
+                // Text doesn't take affinity — projection-internal wrap
+                // disambiguation lives at the TextArea layer (see
+                // `caret_screen_position` projection branch).
+                let _ = affinity;
                 let visible = text.content().chars().count();
                 let local = local_char.min(visible);
                 return text.local_char_to_screen_position(local);
@@ -620,9 +817,7 @@ mod tests {
     use crate::style::Length;
     use crate::ui::{RsxNode, RsxTagDescriptor};
     use crate::view::ElementStylePropSchema;
-    use crate::view::base_component::{
-        ElementTrait, LayoutConstraints, LayoutPlacement, Text,
-    };
+    use crate::view::base_component::{ElementTrait, LayoutConstraints, LayoutPlacement, Text};
 
     fn projection_fixture(cursor_char: usize, with_text_child: bool) -> (NodeArena, NodeKey) {
         let mut text_area = TextArea::new();
@@ -637,12 +832,18 @@ mod tests {
                     height: Some(Length::px(42.0)),
                     ..Default::default()
                 };
-                let node = RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_prop("style", style);
+                let node = RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop("style", style);
                 if with_text_child {
                     node.with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
-                            .with_child(RsxNode::text("XYZ")),
+                        RsxNode::tagged(
+                            "Text",
+                            RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+                        )
+                        .with_child(RsxNode::text("XYZ")),
                     )
                 } else {
                     node
@@ -732,15 +933,8 @@ mod tests {
         panic!("expected Text descendant");
     }
 
-    fn snapshot(
-        arena: &NodeArena,
-        key: NodeKey,
-    ) -> crate::view::base_component::BoxModelSnapshot {
-        arena
-            .get(key)
-            .expect("node")
-            .element
-            .box_model_snapshot()
+    fn snapshot(arena: &NodeArena, key: NodeKey) -> crate::view::base_component::BoxModelSnapshot {
+        arena.get(key).expect("node").element.box_model_snapshot()
     }
 
     #[test]
@@ -787,9 +981,21 @@ mod tests {
             })
             .expect("text key exists");
 
-        assert!((x - expected.0).abs() < 0.5, "x={x}, expected={}", expected.0);
-        assert!((y - expected.1).abs() < 0.5, "y={y}, expected={}", expected.1);
-        assert!((height - expected.2).abs() < 0.01, "height={height}, expected={}", expected.2);
+        assert!(
+            (x - expected.0).abs() < 0.5,
+            "x={x}, expected={}",
+            expected.0
+        );
+        assert!(
+            (y - expected.1).abs() < 0.5,
+            "y={y}, expected={}",
+            expected.1
+        );
+        assert!(
+            (height - expected.2).abs() < 0.01,
+            "height={height}, expected={}",
+            expected.2
+        );
         assert!(
             x >= text_snap.x - 0.5 && x <= text_snap.x + text_snap.width + 0.5,
             "caret x should be inside text bounds: x={x}, text=({}, {})",
@@ -801,6 +1007,416 @@ mod tests {
             "caret y should be inside text bounds: y={y}, text=({}, {})",
             text_snap.y,
             text_snap.height
+        );
+    }
+
+    #[test]
+    fn hard_newline_caret_honours_affinity() {
+        use crate::view::base_component::text_area::caret_map::CaretAffinity;
+
+        fn fixture(affinity: CaretAffinity) -> (NodeArena, NodeKey) {
+            let mut text_area = TextArea::new();
+            text_area.content = "line1\nline2".to_string();
+            text_area.font_size = 14.0;
+            text_area.line_height = 1.25;
+            text_area.is_focused = true;
+            text_area.cursor_char = "line1\n".chars().count();
+            text_area.cursor_affinity = affinity;
+
+            let mut arena = crate::view::test_support::new_test_arena();
+            let root = crate::view::test_support::commit_element(
+                &mut arena,
+                Box::new(text_area) as Box<dyn ElementTrait>,
+            );
+            arena.with_element_taken(root, |el, _| {
+                el.as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .expect("TextArea root")
+                    .set_self_node_key(root);
+            });
+            crate::view::test_support::measure_and_place(
+                &mut arena,
+                root,
+                LayoutConstraints {
+                    max_width: 300.0,
+                    max_height: 300.0,
+                    viewport_width: 300.0,
+                    viewport_height: 300.0,
+                    percent_base_width: None,
+                    percent_base_height: None,
+                },
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 300.0,
+                    available_height: 300.0,
+                    viewport_width: 300.0,
+                    viewport_height: 300.0,
+                    percent_base_width: None,
+                    percent_base_height: None,
+                },
+            );
+            (arena, root)
+        }
+
+        let (up_arena, up_root) = fixture(CaretAffinity::Upstream);
+        let (_, up_y, _) = caret_position(&up_arena, up_root);
+        let (down_arena, down_root) = fixture(CaretAffinity::Downstream);
+        let (_, down_y, _) = caret_position(&down_arena, down_root);
+
+        assert!(
+            up_y < down_y,
+            "Upstream should render before the newline on the upper line; \
+             Downstream should render after it on the lower line (up={up_y}, down={down_y})",
+        );
+    }
+
+    /// Integration check for "projection 內 cursor_affinity 沒作用".
+    /// Sets up a TextArea whose projection wraps a long path-like Text
+    /// across multiple visual lines; sets the caret to a wrap-tail char
+    /// inside the projection; asserts that with `Upstream` affinity the
+    /// caret y resolves to the **upper** visual line (i.e. the affinity
+    /// actually flows into the projection's text descendant). The
+    /// pre-fix path returned the lower line's head for any soft-wrapped
+    /// Text inside a projection because `query_caret_on` dropped the
+    /// affinity argument before forwarding to `Text`.
+    /// Repro of the live `textarea_test` scenario. Content has a
+    /// `{{USER_ID}}`-style badge projection mid-paragraph that wraps
+    /// across two visual lines (the projection box itself splits, like
+    /// a CSS inline-block on the boundary). The caret-affinity override
+    /// must let cursor at the lower-line head of the badge render at
+    /// the upper line's tail when `Upstream`, and at the lower head
+    /// when `Downstream`.
+    #[test]
+    fn projection_badge_wrap_caret_affinity() {
+        use crate::view::base_component::text_area::caret_map::CaretAffinity;
+        // Mirror textarea_test: `{{API_HOST}}/v1/users/{{USER_ID}}/activity/...`
+        // — single paragraph, badge projection in the middle, narrow
+        // wrap forces the second badge to split.
+        let content = "{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/path";
+        let usr_start = content.find("{{USER_ID}}").unwrap();
+        let usr_end = usr_start + "{{USER_ID}}".len();
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.cursor_char = 0;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            // Two badge ranges.
+            let host = "{{API_HOST}}";
+            let host_start = render.content().find(host).unwrap();
+            let host_end = host_start + host.len();
+            for (start, end) in [(host_start, host_end), (usr_start, usr_end)] {
+                let slice: String = render
+                    .content()
+                    .chars()
+                    .skip(start)
+                    .take(end - start)
+                    .collect();
+                render.range(start..end, move |_node| {
+                    let style = ElementStylePropSchema {
+                        padding: Some(
+                            crate::style::Padding::uniform(crate::style::Length::px(0.0))
+                                .x(crate::style::Length::px(8.0)),
+                        ),
+                        ..Default::default()
+                    };
+                    RsxNode::tagged(
+                        "Element",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                    )
+                    .with_prop("style", style)
+                    .with_child(
+                        RsxNode::tagged(
+                            "Text",
+                            RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+                        )
+                        .with_child(RsxNode::text(slice.clone())),
+                    )
+                });
+            }
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 320.0,
+                max_height: 300.0,
+                viewport_width: 320.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 320.0,
+                available_height: 300.0,
+                viewport_width: 320.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+        );
+
+        // Inspect the navigation map to confirm the badge truly
+        // wrapped (otherwise the test fixture failed to repro).
+        let (upper_tail_char, lower_head_char, upper_y, lower_y) = arena
+            .with_element_taken_ref(root, |el, arena| {
+                let ta = el.as_any().downcast_ref::<TextArea>().unwrap();
+                let map = super::super::caret_map::CaretNavigationMap::build(ta, arena);
+                eprintln!("[badge test] map has {} visual lines", map.lines.len());
+                for (i, line) in map.lines.iter().enumerate() {
+                    let chars: Vec<usize> = line.stops.iter().map(|s| s.char_index).collect();
+                    eprintln!("  line {i} y_top={} stops={:?}", line.y_top, chars);
+                }
+                // Find a wrap inside USER_ID badge.
+                let mut upper_tail = None;
+                let mut lower_head = None;
+                let mut upper_y = 0.0;
+                let mut lower_y = 0.0;
+                for (idx, line) in map.lines.iter().enumerate() {
+                    if idx + 1 < map.lines.len() {
+                        let next = &map.lines[idx + 1];
+                        let last = line.stops.last().map(|s| s.char_index).unwrap_or(0);
+                        let first = next.stops.first().map(|s| s.char_index).unwrap_or(0);
+                        if last >= usr_start
+                            && last < usr_end
+                            && first > usr_start
+                            && first <= usr_end
+                        {
+                            upper_tail = Some(last);
+                            lower_head = Some(first);
+                            upper_y = line.y_top;
+                            lower_y = next.y_top;
+                            break;
+                        }
+                    }
+                }
+                Some((upper_tail?, lower_head?, upper_y, lower_y))
+            })
+            .flatten()
+            .expect("USER_ID badge should split across two visual lines");
+        eprintln!(
+            "[badge test] upper_tail={upper_tail_char} lower_head={lower_head_char} upper_y={upper_y} lower_y={lower_y}",
+        );
+
+        // Cursor at lower-head with Upstream → upper line.
+        for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
+            arena.with_element_taken(root, |el, _| {
+                let ta = el
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .expect("TextArea root");
+                ta.cursor_char = lower_head_char;
+                ta.cursor_affinity = affinity;
+            });
+            let (cx, cy, _) = caret_position(&arena, root);
+            eprintln!("[badge test] {affinity:?}: ({cx}, {cy})");
+            let expect_y = match affinity {
+                CaretAffinity::Upstream => upper_y,
+                CaretAffinity::Downstream => lower_y,
+            };
+            assert!(
+                (cy - expect_y).abs() < (lower_y - upper_y) * 0.5,
+                "[badge] affinity={affinity:?} cursor={lower_head_char}: caret y={cy} \
+                 should match {expect_y} (upper={upper_y}, lower={lower_y})",
+            );
+        }
+    }
+
+    #[test]
+    fn projection_caret_inside_wrapped_text_honours_affinity() {
+        use crate::view::base_component::text_area::caret_map::CaretAffinity;
+        let mut text_area = TextArea::new();
+        text_area.content = "ab/activity/with/a/very/long/pathcd".to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.cursor_char = 0;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(2..34, |_text_area_node| {
+                let style = ElementStylePropSchema {
+                    width: Some(Length::px(120.0)),
+                    height: Some(Length::px(80.0)),
+                    ..Default::default()
+                };
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop("style", style)
+                .with_child(
+                    RsxNode::tagged(
+                        "Text",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+                    )
+                    .with_child(RsxNode::text("/activity/with/a/very/long/path")),
+                )
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 300.0,
+                max_height: 300.0,
+                viewport_width: 300.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            LayoutPlacement {
+                parent_x: 10.0,
+                parent_y: 20.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 300.0,
+                available_height: 300.0,
+                viewport_width: 300.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+        );
+
+        // Discover wrap structure inside the projection's Text descendant
+        // by walking each char and recording when y jumps. The wrap-tail
+        // char is the LAST char on the upper line (i.e. the one whose y
+        // matches the upper line, with the next char's y on the lower).
+        let proj_key = projection_key(&arena, root);
+        let text_key = first_text_descendant(&arena, proj_key);
+        let inner = "/activity/with/a/very/long/path";
+        let (wrap_local_char, upper_y, lower_y) = arena
+            .with_element_taken_ref(text_key, |el, _| {
+                let text = el.as_any().downcast_ref::<Text>().expect("Text");
+                let mut prev_y: Option<f32> = None;
+                let mut upper: Option<f32> = None;
+                let mut lower: Option<f32> = None;
+                let mut wrap_char: Option<usize> = None;
+                for c in 0..=inner.chars().count() {
+                    let (_, y, _) = text.local_char_to_screen_position(c)?;
+                    if let Some(py) = prev_y {
+                        if y > py + 0.5 && wrap_char.is_none() {
+                            wrap_char = Some(c.saturating_sub(1));
+                            upper = Some(py);
+                            lower = Some(y);
+                            break;
+                        }
+                    }
+                    prev_y = Some(y);
+                }
+                Some((wrap_char?, upper?, lower?))
+            })
+            .flatten()
+            .expect("wrap boundary discoverable");
+
+        // ── Case A: gap-byte caret = upper line regardless of affinity.
+        // (cursor_char in TextArea-source space; projection covers 2..34.)
+        // The boundary cursor (= first source char that *could* belong
+        // to either visual line) is `wrap_local_char + 1` — that's the
+        // first char whose probe via Text returns the upper tail
+        // because of the inline-path `<= frag_chars` capture. Affinity
+        // disambiguates: `Upstream` keeps the caret on the upper
+        // line's tail; `Downstream` moves it to the lower line's head.
+        let boundary_cursor = 2 + wrap_local_char;
+        let mut boundary_up: Option<f32> = None;
+        let mut boundary_down: Option<f32> = None;
+        for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
+            arena.with_element_taken(root, |el, _| {
+                let ta = el
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .expect("TextArea root");
+                ta.cursor_char = boundary_cursor;
+                ta.cursor_affinity = affinity;
+            });
+            let (_, y, _) = caret_position(&arena, root);
+            match affinity {
+                CaretAffinity::Upstream => boundary_up = Some(y),
+                CaretAffinity::Downstream => boundary_down = Some(y),
+            }
+        }
+        let bup = boundary_up.unwrap();
+        let bdown = boundary_down.unwrap();
+        assert!(
+            bup < bdown,
+            "[boundary] Upstream y ({bup}) on upper line, Downstream y ({bdown}) on lower",
+        );
+        assert!(
+            (bup - upper_y).abs() < (lower_y - upper_y) * 0.5,
+            "[boundary] Upstream y ({bup}) should match upper line ({upper_y})",
+        );
+        assert!(
+            (bdown - lower_y).abs() < (lower_y - upper_y) * 0.5,
+            "[boundary] Downstream y ({bdown}) should match lower line ({lower_y})",
+        );
+
+        // ── Case B: lower-head char (the *next* char past the gap) — this
+        // is where affinity actually splits. Upstream pins the caret to
+        // the upper line's tail; Downstream lands on the lower line's
+        // head. This is what Cmd+Right relies on when the wrap point
+        // happens to coincide with a non-leading run's first glyph.
+        let lower_head_cursor = boundary_cursor + 1;
+        let mut upstream_y: Option<f32> = None;
+        let mut downstream_y: Option<f32> = None;
+        for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
+            arena.with_element_taken(root, |el, _| {
+                let ta = el
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .expect("TextArea root");
+                ta.cursor_char = lower_head_cursor;
+                ta.cursor_affinity = affinity;
+            });
+            let (_, y, _) = caret_position(&arena, root);
+            match affinity {
+                CaretAffinity::Upstream => upstream_y = Some(y),
+                CaretAffinity::Downstream => downstream_y = Some(y),
+            }
+        }
+        let up_y = upstream_y.unwrap();
+        let down_y = downstream_y.unwrap();
+        assert!(
+            up_y < down_y,
+            "[lower-head] Upstream y ({up_y}) should be on upper line, \
+             Downstream y ({down_y}) on lower",
+        );
+        assert!(
+            (up_y - upper_y).abs() < (lower_y - upper_y) * 0.5,
+            "[lower-head] Upstream y ({up_y}) should match upper line ({upper_y})",
+        );
+        assert!(
+            (down_y - lower_y).abs() < (lower_y - upper_y) * 0.5,
+            "[lower-head] Downstream y ({down_y}) should match lower line ({lower_y})",
         );
     }
 
@@ -818,12 +1434,18 @@ mod tests {
                     height: Some(Length::px(80.0)),
                     ..Default::default()
                 };
-                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_prop("style", style)
-                    .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
-                            .with_child(RsxNode::text("/activity/with/a/very/long/path")),
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop("style", style)
+                .with_child(
+                    RsxNode::tagged(
+                        "Text",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
                     )
+                    .with_child(RsxNode::text("/activity/with/a/very/long/path")),
+                )
             });
         }));
 
@@ -886,13 +1508,20 @@ mod tests {
             })
             .expect("text exists");
 
-        assert!(!rects.is_empty(), "expected projection text selection rects");
         assert!(
-            rects.iter().all(|rect| rect.height < projection_snap.height - 1.0),
+            !rects.is_empty(),
+            "expected projection text selection rects"
+        );
+        assert!(
+            rects
+                .iter()
+                .all(|rect| rect.height < projection_snap.height - 1.0),
             "selection should use visual text-line rects, not projection bounds: rects={rects:?}, projection={projection_snap:?}"
         );
         assert!(
-            rects.iter().any(|rect| rect.width < projection_snap.width - 1.0),
+            rects
+                .iter()
+                .any(|rect| rect.width < projection_snap.width - 1.0),
             "selection should be narrower than the projection union bounds: rects={rects:?}, projection={projection_snap:?}"
         );
     }
@@ -907,19 +1536,25 @@ mod tests {
         text_area.ime_preedit = "\u{4E2D}".to_string();
         text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
             render.range(2..5, |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_prop(
-                        "style",
-                        ElementStylePropSchema {
-                            width: Some(Length::px(90.0)),
-                            height: Some(Length::px(42.0)),
-                            ..Default::default()
-                        },
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop(
+                    "style",
+                    ElementStylePropSchema {
+                        width: Some(Length::px(90.0)),
+                        height: Some(Length::px(42.0)),
+                        ..Default::default()
+                    },
+                )
+                .with_child(
+                    RsxNode::tagged(
+                        "Text",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
                     )
-                    .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
-                            .with_child(RsxNode::text("XYZ")),
-                    )
+                    .with_child(RsxNode::text("XYZ")),
+                )
             });
         }));
 
@@ -987,10 +1622,8 @@ mod tests {
 
     #[test]
     fn projection_preedit_caret_follows_preedit_cursor() {
-        let (arena_start, root_start) =
-            projection_fixture_with_preedit_cursor(Some((0, 0)));
-        let (arena_end, root_end) =
-            projection_fixture_with_preedit_cursor(Some((3, 3)));
+        let (arena_start, root_start) = projection_fixture_with_preedit_cursor(Some((0, 0)));
+        let (arena_end, root_end) = projection_fixture_with_preedit_cursor(Some((3, 3)));
 
         let (start_x, start_y, _) = caret_position(&arena_start, root_start);
         let (end_x, end_y, _) = caret_position(&arena_end, root_end);
@@ -1018,19 +1651,25 @@ mod tests {
         text_area.ime_preedit_cursor = preedit_cursor;
         text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
             render.range(2..5, |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_prop(
-                        "style",
-                        ElementStylePropSchema {
-                            width: Some(Length::px(90.0)),
-                            height: Some(Length::px(42.0)),
-                            ..Default::default()
-                        },
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop(
+                    "style",
+                    ElementStylePropSchema {
+                        width: Some(Length::px(90.0)),
+                        height: Some(Length::px(42.0)),
+                        ..Default::default()
+                    },
+                )
+                .with_child(
+                    RsxNode::tagged(
+                        "Text",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
                     )
-                    .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
-                            .with_child(RsxNode::text("XYZ")),
-                    )
+                    .with_child(RsxNode::text("XYZ")),
+                )
             });
         }));
 

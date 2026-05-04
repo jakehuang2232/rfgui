@@ -77,8 +77,7 @@ fn scan_dir(dir: &Path, hits: &mut Vec<String>) {
                 }
             }
 
-            let cfg_gated_off_wasm = prev_trimmed
-                .contains("#[cfg(not(target_arch = \"wasm32\"))]")
+            let cfg_gated_off_wasm = prev_trimmed.contains("#[cfg(not(target_arch = \"wasm32\"))]")
                 || prev_trimmed.contains("cfg(not(target_arch=\"wasm32\"))");
             prev_trimmed = trimmed;
 
@@ -93,7 +92,12 @@ fn scan_dir(dir: &Path, hits: &mut Vec<String>) {
             }
 
             if line.contains("std::time::Instant") || line.contains("std::time::SystemTime") {
-                hits.push(format!("{}:{}: {}", path.display(), lineno + 1, line.trim()));
+                hits.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    lineno + 1,
+                    line.trim()
+                ));
             }
         }
     }

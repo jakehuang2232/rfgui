@@ -1,9 +1,9 @@
+use crate::rfgui::style::{Layout, Length};
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::style::{Layout, Length};
 use crate::rfgui_components::{
-    Alert, AlertSeverity, Button, ButtonColor, Snackbar, SnackbarHorizontal,
-    SnackbarOrigin, SnackbarVertical, Theme, snackbar_close_binding,
+    Alert, AlertSeverity, Button, ButtonColor, Snackbar, SnackbarHorizontal, SnackbarOrigin,
+    SnackbarVertical, Theme, snackbar_close_binding,
 };
 use rfgui_components::Accordion;
 use std::time::Duration;

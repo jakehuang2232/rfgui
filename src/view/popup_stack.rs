@@ -72,8 +72,7 @@ impl PopupStack {
 
     /// Drop ids whose stable_id no longer resolves in arena.
     pub fn compact(&mut self, arena: &NodeArena) {
-        self.ids
-            .retain(|id| arena.find_by_stable_id(*id).is_some());
+        self.ids.retain(|id| arena.find_by_stable_id(*id).is_some());
     }
 
     /// Bottom -> top (paint order).

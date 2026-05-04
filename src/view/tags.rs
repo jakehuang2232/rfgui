@@ -2,6 +2,12 @@
 
 //! Built-in RSX host tags and their typed prop schemas.
 
+use crate::style::{
+    Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
+    FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position,
+    ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin,
+    Transitions,
+};
 use crate::ui::RsxNode;
 use crate::ui::{
     BlurHandlerProp, ClickHandlerProp, DragEndHandlerProp, DragLeaveHandlerProp,
@@ -11,7 +17,6 @@ use crate::ui::{
     RsxComponent, SharedPropValue, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
     TextChangeHandlerProp, props,
 };
-use crate::style::{Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily, FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position, ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin, Transitions};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -266,7 +271,8 @@ pub struct SvgPropSchema {
 
 impl RsxComponent<ElementPropSchema> for Element {
     fn render(props: ElementPropSchema, children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::for_tag::<Element>());
+        let mut node =
+            RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::for_tag::<Element>());
         if let Some(anchor) = props.anchor {
             node = node.with_prop("anchor", anchor);
         }
@@ -362,10 +368,7 @@ impl RsxComponent<TextPropSchema> for Text {
 }
 
 impl RsxComponent<TextAreaProjectionSegmentPropSchema> for TextAreaProjectionSegment {
-    fn render(
-        props: TextAreaProjectionSegmentPropSchema,
-        children: Vec<RsxNode>,
-    ) -> RsxNode {
+    fn render(props: TextAreaProjectionSegmentPropSchema, children: Vec<RsxNode>) -> RsxNode {
         let mut node = RsxNode::tagged(
             "TextAreaProjectionSegment",
             crate::ui::RsxTagDescriptor::for_tag::<TextAreaProjectionSegment>(),
@@ -509,10 +512,11 @@ impl RsxComponent<ImagePropSchema> for Image {
 
 impl RsxComponent<SvgPropSchema> for Svg {
     fn render(props: SvgPropSchema, _children: Vec<RsxNode>) -> RsxNode {
-        let mut node = RsxNode::tagged("Svg", crate::ui::RsxTagDescriptor::for_tag::<Svg>()).with_prop(
-            "source",
-            crate::ui::IntoPropValue::into_prop_value(props.source),
-        );
+        let mut node = RsxNode::tagged("Svg", crate::ui::RsxTagDescriptor::for_tag::<Svg>())
+            .with_prop(
+                "source",
+                crate::ui::IntoPropValue::into_prop_value(props.source),
+            );
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
         }
@@ -537,7 +541,6 @@ impl RsxComponent<SvgPropSchema> for Svg {
         node
     }
 }
-
 
 #[cfg(test)]
 mod v2_poc_tests {
@@ -897,10 +900,7 @@ impl_host_builder_via_adapter!(
     Image,
     crate::view::renderer_adapter::convert_image_element_desc
 );
-impl_host_builder_via_adapter!(
-    Svg,
-    crate::view::renderer_adapter::convert_svg_element_desc
-);
+impl_host_builder_via_adapter!(Svg, crate::view::renderer_adapter::convert_svg_element_desc);
 
 // ---------- v2 path: Init struct pattern for tags with required props ----------
 #[doc(hidden)]
@@ -1152,7 +1152,10 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
         );
     }
     if let Some(align) = schema.align {
-        style.insert(crate::style::PropertyId::Align, crate::style::ParsedValue::Align(align));
+        style.insert(
+            crate::style::PropertyId::Align,
+            crate::style::ParsedValue::Align(align),
+        );
     }
     if let Some(flex) = schema.flex {
         crate::style::insert_style_flex(style, crate::style::PropertyId::Flex, flex);
@@ -1204,7 +1207,11 @@ fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropS
         crate::style::insert_style_font_size(style, crate::style::PropertyId::FontSize, font_size);
     }
     if let Some(font_weight) = schema.font_weight {
-        crate::style::insert_style_font_weight(style, crate::style::PropertyId::FontWeight, font_weight);
+        crate::style::insert_style_font_weight(
+            style,
+            crate::style::PropertyId::FontWeight,
+            font_weight,
+        );
     }
     if let Some(text_wrap) = schema.text_wrap {
         crate::style::insert_style_text_wrap(style, crate::style::PropertyId::TextWrap, text_wrap);
@@ -1327,13 +1334,25 @@ impl HoverTextStylePropSchema {
             );
         }
         if let Some(font_size) = self.font_size {
-            crate::style::insert_style_font_size(&mut style, crate::style::PropertyId::FontSize, font_size);
+            crate::style::insert_style_font_size(
+                &mut style,
+                crate::style::PropertyId::FontSize,
+                font_size,
+            );
         }
         if let Some(font_weight) = self.font_weight {
-            crate::style::insert_style_font_weight(&mut style, crate::style::PropertyId::FontWeight, font_weight);
+            crate::style::insert_style_font_weight(
+                &mut style,
+                crate::style::PropertyId::FontWeight,
+                font_weight,
+            );
         }
         if let Some(text_wrap) = self.text_wrap {
-            crate::style::insert_style_text_wrap(&mut style, crate::style::PropertyId::TextWrap, text_wrap);
+            crate::style::insert_style_text_wrap(
+                &mut style,
+                crate::style::PropertyId::TextWrap,
+                text_wrap,
+            );
         }
         if let Some(cursor) = self.cursor {
             style.insert(

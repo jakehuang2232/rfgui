@@ -22,6 +22,479 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::viewport::ViewportControl;
 
 use super::TextArea;
+use super::caret_map::{CaretAffinity, CaretNavigationMap, VerticalDirection};
+
+impl TextArea {
+    fn caret_position_for(
+        &mut self,
+        arena: &NodeArena,
+        char_index: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let saved_char = self.cursor_char;
+        let saved_affinity = self.cursor_affinity;
+        self.cursor_char = self.clamp_char(char_index);
+        self.cursor_affinity = affinity;
+        let position = self.caret_screen_position(arena);
+        self.cursor_char = saved_char;
+        self.cursor_affinity = saved_affinity;
+        position
+    }
+
+    fn caret_y_for(
+        &mut self,
+        arena: &NodeArena,
+        char_index: usize,
+        affinity: CaretAffinity,
+    ) -> Option<f32> {
+        self.caret_position_for(arena, char_index, affinity)
+            .map(|(_, y, _)| y)
+    }
+
+    fn affinity_nearest_y(
+        &mut self,
+        arena: &NodeArena,
+        char_index: usize,
+        reference_y: f32,
+    ) -> CaretAffinity {
+        let up = self.caret_y_for(arena, char_index, CaretAffinity::Upstream);
+        let down = self.caret_y_for(arena, char_index, CaretAffinity::Downstream);
+        match (up, down) {
+            (Some(up), Some(down)) if (up - down).abs() > 0.5 => {
+                if (up - reference_y).abs() <= (down - reference_y).abs() {
+                    CaretAffinity::Upstream
+                } else {
+                    CaretAffinity::Downstream
+                }
+            }
+            _ => CaretAffinity::Downstream,
+        }
+    }
+
+    fn affinity_matching_y(
+        &mut self,
+        arena: &NodeArena,
+        char_index: usize,
+        reference_y: f32,
+    ) -> Option<CaretAffinity> {
+        let up = self.caret_y_for(arena, char_index, CaretAffinity::Upstream);
+        let down = self.caret_y_for(arena, char_index, CaretAffinity::Downstream);
+        match (up, down) {
+            (Some(up), Some(down)) => {
+                let up_matches = (up - reference_y).abs() <= 0.5;
+                let down_matches = (down - reference_y).abs() <= 0.5;
+                match (up_matches, down_matches) {
+                    (true, false) => Some(CaretAffinity::Upstream),
+                    (false, true) | (true, true) => Some(CaretAffinity::Downstream),
+                    (false, false) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn flip_horizontal_affinity_if_needed(&mut self, arena: &NodeArena, right: bool) -> bool {
+        let up = self.caret_y_for(arena, self.cursor_char, CaretAffinity::Upstream);
+        let down = self.caret_y_for(arena, self.cursor_char, CaretAffinity::Downstream);
+        let Some((up, down)) = up.zip(down) else {
+            return false;
+        };
+        if (up - down).abs() <= 0.5 {
+            return false;
+        }
+
+        let next_affinity = match (right, self.cursor_affinity) {
+            (true, CaretAffinity::Upstream) => Some(CaretAffinity::Downstream),
+            (false, CaretAffinity::Downstream) => Some(CaretAffinity::Upstream),
+            _ => None,
+        };
+        let Some(next_affinity) = next_affinity else {
+            return false;
+        };
+
+        self.cursor_affinity = next_affinity;
+        self.vertical_cursor_x = None;
+        self.clear_selection();
+        self.reset_caret_blink();
+        true
+    }
+
+    fn handle_horizontal_arrow(&mut self, arena: &NodeArena, right: bool) -> bool {
+        if right && self.flip_horizontal_affinity_if_needed(arena, true) {
+            return true;
+        }
+
+        let len = self.content_char_len();
+        let Some((reference_x, reference_y, _)) = self.caret_screen_position(arena) else {
+            return false;
+        };
+
+        if !right && self.flip_horizontal_affinity_if_needed(arena, false) {
+            return true;
+        }
+
+        let mut target = self.cursor_char;
+        loop {
+            target = if right {
+                if target >= len {
+                    return false;
+                }
+                target + 1
+            } else {
+                if target == 0 {
+                    return false;
+                }
+                target - 1
+            };
+
+            let target_affinity = self
+                .affinity_matching_y(arena, target, reference_y)
+                .unwrap_or_else(|| self.affinity_nearest_y(arena, target, reference_y));
+            let Some((target_x, target_y, _)) =
+                self.caret_position_for(arena, target, target_affinity)
+            else {
+                continue;
+            };
+
+            if (target_x - reference_x).abs() <= 0.5 && (target_y - reference_y).abs() <= 0.5 {
+                let alternate_affinity = match (right, target_affinity) {
+                    (true, CaretAffinity::Upstream) => Some(CaretAffinity::Downstream),
+                    (false, CaretAffinity::Downstream) => Some(CaretAffinity::Upstream),
+                    _ => None,
+                };
+                if let Some(alternate_affinity) = alternate_affinity
+                    && let Some((alternate_x, alternate_y, _)) =
+                        self.caret_position_for(arena, target, alternate_affinity)
+                    && ((alternate_x - reference_x).abs() > 0.5
+                        || (alternate_y - reference_y).abs() > 0.5)
+                {
+                    self.move_cursor_to(target);
+                    self.cursor_affinity = alternate_affinity;
+                    return true;
+                }
+                continue;
+            }
+
+            self.move_cursor_to(target);
+            self.cursor_affinity = target_affinity;
+            return true;
+        }
+    }
+
+    /// Resolve Up / Down vertical caret movement against the live caret
+    /// navigation map. Returns `Some((target_char, target_affinity,
+    /// sticky_x))` when a target visual line exists, `None` when caret
+    /// is already on the edge line.
+    fn vertical_arrow_target(
+        &self,
+        arena: &NodeArena,
+        direction: VerticalDirection,
+    ) -> Option<(usize, CaretAffinity, f32)> {
+        let map = CaretNavigationMap::build(self, arena);
+        if map.is_empty() {
+            return None;
+        }
+        let affinity = self.cursor_affinity;
+        let sticky_x = self.vertical_cursor_x.or_else(|| {
+            map.caret_stop_for_char(self.cursor_char, affinity)
+                .map(|s| s.x)
+        })?;
+        let target =
+            map.vertical_target_with_affinity(self.cursor_char, affinity, sticky_x, direction)?;
+        Some((target.char_index, target.affinity, sticky_x))
+    }
+
+    /// Apply Up / Down (and Shift+Up / Shift+Down) using the caret
+    /// navigation map. Sticky-x is preserved across consecutive vertical
+    /// presses; horizontal arrows / clicks / edits clear it via the
+    /// existing `clear_vertical_goal` calls in cursor mutators.
+    fn handle_vertical_arrow(
+        &mut self,
+        arena: &NodeArena,
+        direction: VerticalDirection,
+        shift: bool,
+    ) -> bool {
+        let Some((target, target_affinity, sticky_x)) =
+            self.vertical_arrow_target(arena, direction)
+        else {
+            // No target: collapse selection at the current edge so plain
+            // Up at the start (or Down at the end) still feels responsive.
+            if !shift && self.selection_range_chars().is_some() {
+                self.clear_selection();
+                self.reset_caret_blink();
+            }
+            return true;
+        };
+        if shift {
+            self.extend_selection_to(target);
+        } else {
+            self.move_cursor_to(target);
+        }
+        self.cursor_affinity = target_affinity;
+        // Restore sticky_x — both `move_cursor_to` and `extend_selection_to`
+        // clear it via `clear_vertical_goal`, but consecutive vertical
+        // presses must keep walking the same column.
+        self.vertical_cursor_x = Some(sticky_x);
+        true
+    }
+
+    /// macOS Cmd+Left / Cmd+Right target: head / tail of the **visual**
+    /// line owning the caret (wrap-aware). Falls back to the
+    /// paragraph-based mutators on `state.rs` when the navigation map
+    /// can't resolve a line for the cursor (e.g. during an empty-content
+    /// build).
+    fn handle_visual_line_jump(&mut self, arena: &NodeArena, end: bool, shift: bool) -> bool {
+        let map = CaretNavigationMap::build(self, arena);
+        let affinity = self.cursor_affinity;
+        let target = if end {
+            map.visual_line_end_for_char(self.cursor_char, affinity)
+        } else {
+            map.visual_line_home_for_char(self.cursor_char, affinity)
+        };
+        match target {
+            Some(idx) => {
+                if shift {
+                    self.extend_selection_to(idx);
+                } else {
+                    self.move_cursor_to(idx);
+                }
+                // Cmd+Right at a wrap boundary should *stick* to the
+                // upper line's tail; without Upstream the very next
+                // render snaps the caret to the lower line's head and
+                // visually swallows the jump. Cmd+Left needs no flip
+                // (line head sits at x=0 on its own line).
+                if end {
+                    self.cursor_affinity = CaretAffinity::Upstream;
+                }
+            }
+            None => match (end, shift) {
+                (true, true) => self.extend_selection_line_end(),
+                (true, false) => self.move_cursor_line_end(),
+                (false, true) => self.extend_selection_line_home(),
+                (false, false) => self.move_cursor_line_home(),
+            },
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::base_component::{
+        DirtyFlags, ElementTrait, LayoutConstraints, LayoutPlacement, TextArea as HostTextArea,
+    };
+
+    fn wrapped_text_area(content: &str, max_width: f32) -> (NodeArena, NodeKey) {
+        let mut text_area = HostTextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.is_focused = true;
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width,
+                max_height: 600.0,
+                viewport_width: max_width,
+                viewport_height: 600.0,
+                percent_base_width: Some(max_width),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: max_width,
+                available_height: 600.0,
+                viewport_width: max_width,
+                viewport_height: 600.0,
+                percent_base_width: Some(max_width),
+                percent_base_height: Some(600.0),
+            },
+        );
+        (arena, root)
+    }
+
+    fn first_boundary_with_neighbor(
+        text_area: &mut HostTextArea,
+        arena: &NodeArena,
+        right: bool,
+    ) -> (usize, f32, f32) {
+        let len = text_area.content_char_len();
+        for boundary in 1..len {
+            let Some(up_y) = text_area.caret_y_for(arena, boundary, CaretAffinity::Upstream) else {
+                continue;
+            };
+            let Some(down_y) = text_area.caret_y_for(arena, boundary, CaretAffinity::Downstream)
+            else {
+                continue;
+            };
+            if (up_y - down_y).abs() <= 0.5 {
+                continue;
+            }
+
+            let neighbor = if right {
+                boundary.checked_sub(1)
+            } else {
+                (boundary + 1 < len).then_some(boundary + 1)
+            };
+            let Some(neighbor) = neighbor else {
+                continue;
+            };
+            let reference = if right { up_y } else { down_y };
+            let Some(neighbor_y) =
+                text_area.caret_y_for(arena, neighbor, CaretAffinity::Downstream)
+            else {
+                continue;
+            };
+            if (neighbor_y - reference).abs() <= 0.5 {
+                return (boundary, up_y, down_y);
+            }
+        }
+        panic!("expected a soft-wrap boundary with a same-line neighbor");
+    }
+
+    #[test]
+    fn arrow_right_enters_wrap_boundary_before_crossing_line() {
+        let (mut arena, root) =
+            wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+            let (boundary, up_y, down_y) = first_boundary_with_neighbor(text_area, arena, true);
+
+            text_area.cursor_char = boundary - 1;
+            text_area.cursor_affinity = CaretAffinity::Downstream;
+            assert!(text_area.handle_horizontal_arrow(arena, true));
+            assert_eq!(text_area.cursor_char, boundary);
+            assert_eq!(text_area.cursor_affinity, CaretAffinity::Upstream);
+            let (_, first_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!((first_y - up_y).abs() <= 0.5);
+            let before_flip_signature = text_area.promotion_self_signature();
+
+            assert!(text_area.handle_horizontal_arrow(arena, true));
+            assert_eq!(text_area.cursor_char, boundary);
+            assert_eq!(text_area.cursor_affinity, CaretAffinity::Downstream);
+            assert!(text_area.dirty_flags.intersects(DirtyFlags::PAINT));
+            assert_ne!(text_area.promotion_self_signature(), before_flip_signature);
+            let (_, second_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!((second_y - down_y).abs() <= 0.5);
+            assert!(second_y > first_y);
+        });
+    }
+
+    #[test]
+    fn arrow_left_enters_wrap_boundary_before_crossing_line() {
+        let (mut arena, root) =
+            wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+            let (boundary, up_y, _down_y) = first_boundary_with_neighbor(text_area, arena, false);
+
+            text_area.cursor_char = boundary + 1;
+            text_area.cursor_affinity = CaretAffinity::Downstream;
+            let before_y = text_area.caret_screen_position(arena).expect("caret").1;
+
+            assert!(text_area.handle_horizontal_arrow(arena, false));
+            assert_eq!(text_area.cursor_char, boundary + 1);
+            assert_eq!(text_area.cursor_affinity, CaretAffinity::Upstream);
+            let (_, first_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!(
+                first_y < before_y,
+                "ArrowLeft should first cross to the paired upper-line slot before changing char",
+            );
+            let before_flip_signature = text_area.promotion_self_signature();
+
+            assert!(text_area.handle_horizontal_arrow(arena, false));
+            assert!(text_area.cursor_char <= boundary);
+            assert!(text_area.dirty_flags.intersects(DirtyFlags::PAINT));
+            assert_ne!(text_area.promotion_self_signature(), before_flip_signature);
+            let (_, second_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!((second_y - up_y).abs() <= 0.5 || second_y <= first_y + 0.5);
+        });
+    }
+
+    #[test]
+    fn arrow_right_skips_hard_newline_slot_with_same_position() {
+        let (mut arena, root) = wrapped_text_area("a\nb", 300.0);
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+
+            text_area.cursor_char = 1;
+            text_area.cursor_affinity = CaretAffinity::Downstream;
+            let (_, start_y, _) = text_area.caret_screen_position(arena).expect("caret");
+
+            assert!(text_area.handle_horizontal_arrow(arena, true));
+            assert_eq!(text_area.cursor_char, 2);
+            assert_eq!(text_area.cursor_affinity, CaretAffinity::Downstream);
+            let (_, target_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!(
+                target_y > start_y,
+                "ArrowRight should skip the unpainted newline slot and land on the lower line",
+            );
+        });
+    }
+
+    #[test]
+    fn arrow_right_skips_consumed_wrap_space_slot_with_same_position() {
+        let (mut arena, root) =
+            wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+            let map = CaretNavigationMap::build(text_area, arena);
+            let (boundary, lower_head) = map
+                .lines
+                .windows(2)
+                .find_map(|pair| {
+                    let upper_tail = pair[0].stops.last()?.char_index;
+                    let lower_head = pair[1].stops.first()?.char_index;
+                    (lower_head > upper_tail).then_some((upper_tail, lower_head))
+                })
+                .expect("fixture should contain a consumed whitespace wrap");
+
+            text_area.cursor_char = boundary;
+            text_area.cursor_affinity = CaretAffinity::Downstream;
+            let (start_x, start_y, _) = text_area.caret_screen_position(arena).expect("caret");
+
+            assert!(text_area.handle_horizontal_arrow(arena, true));
+            assert!(
+                text_area.cursor_char > lower_head,
+                "ArrowRight should skip lower_head={lower_head} when it maps to the same visual slot",
+            );
+            let (target_x, target_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!(
+                (target_x - start_x).abs() > 0.5 || (target_y - start_y).abs() > 0.5,
+                "caret should visibly move after skipping the unpainted wrap-space slot",
+            );
+        });
+    }
+}
 
 /// Tell the platform whether this widget wants OS-level IME composition.
 /// Mirrors egui/Firefox pattern: toggle enable on focus/blur transitions,
@@ -46,12 +519,7 @@ fn set_platform_ime_cursor_rect(text_area: &TextArea, meta: &EventMeta, arena: &
         return;
     };
     let mut vp = meta.viewport();
-    vp.ime_command(ImeCommand::SetCursorRect(
-        x,
-        y,
-        1.0,
-        height.max(1.0),
-    ));
+    vp.ime_command(ImeCommand::SetCursorRect(x, y, 1.0, height.max(1.0)));
 }
 
 impl EventTarget for TextArea {
@@ -93,14 +561,10 @@ impl EventTarget for TextArea {
         // already includes the preedit chars, so the resulting char
         // index matches the new content. Suppress drag-select on the
         // commit-tap (matches v1).
-        let had_preedit =
-            !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
+        let had_preedit = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
         let committed = had_preedit && self.commit_preedit();
-        let target_char = self.cursor_char_at_screen(
-            arena,
-            event.pointer.viewport_x,
-            event.pointer.viewport_y,
-        );
+        let target_char =
+            self.cursor_char_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
         if event.pointer.modifiers.shift() {
             self.extend_selection_to(target_char);
             self.pointer_selecting = !had_preedit;
@@ -142,11 +606,8 @@ impl EventTarget for TextArea {
         if !self.pointer_selecting {
             return;
         }
-        let target_char = self.cursor_char_at_screen(
-            arena,
-            event.pointer.viewport_x,
-            event.pointer.viewport_y,
-        );
+        let target_char =
+            self.cursor_char_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
         self.update_pointer_selection(target_char);
         set_platform_ime_cursor_rect(self, &event.meta, arena);
         event.meta.stop_propagation();
@@ -231,28 +692,68 @@ impl EventTarget for TextArea {
         let modifiers = event.key.modifiers;
         let shift = modifiers.shift();
         let shortcut = modifiers.ctrl() || modifiers.meta();
+        // Word-grain modifier: Alt on macOS, Ctrl on Win/Linux. Ctrl on
+        // macOS is reserved for system gestures (Mission Control / Spaces),
+        // so don't mix it in there.
+        let word = modifiers.alt() || (cfg!(not(target_os = "macos")) && modifiers.ctrl());
+        // macOS Cmd+Arrow jumps to line / document edges (TextEdit / Safari).
+        // Win/Linux equivalents are Home / End / Ctrl+Home / Ctrl+End and
+        // route through the dedicated `Key::Home` / `Key::End` branches.
+        let line_jump = cfg!(target_os = "macos") && modifiers.meta();
         let mut handled = true;
         let prev_content = self.content.clone();
 
         match key {
             Key::ArrowLeft => {
-                if !shift && self.selection_range_chars().is_some() {
-                    let (start, _) = self.selection_range_chars().unwrap();
-                    self.move_cursor_to(start);
+                if line_jump {
+                    self.handle_visual_line_jump(arena, false, shift);
+                } else if shift && word {
+                    self.extend_selection_word_left();
                 } else if shift {
                     self.extend_selection_left();
+                } else if word {
+                    self.move_cursor_word_left();
                 } else {
-                    self.move_cursor_left();
+                    self.handle_horizontal_arrow(arena, false);
                 }
             }
             Key::ArrowRight => {
-                if !shift && self.selection_range_chars().is_some() {
+                if line_jump {
+                    self.handle_visual_line_jump(arena, true, shift);
+                } else if !shift && !word && self.selection_range_chars().is_some() {
                     let (_, end) = self.selection_range_chars().unwrap();
                     self.move_cursor_to(end);
+                } else if shift && word {
+                    self.extend_selection_word_right();
                 } else if shift {
                     self.extend_selection_right();
+                } else if word {
+                    self.move_cursor_word_right();
                 } else {
-                    self.move_cursor_right();
+                    self.handle_horizontal_arrow(arena, true);
+                }
+            }
+            Key::ArrowUp => {
+                if line_jump {
+                    if shift {
+                        self.extend_selection_to(0);
+                    } else {
+                        self.move_cursor_text_home();
+                    }
+                } else {
+                    handled = self.handle_vertical_arrow(arena, VerticalDirection::Up, shift);
+                }
+            }
+            Key::ArrowDown => {
+                if line_jump {
+                    let len = self.content_char_len();
+                    if shift {
+                        self.extend_selection_to(len);
+                    } else {
+                        self.move_cursor_text_end();
+                    }
+                } else {
+                    handled = self.handle_vertical_arrow(arena, VerticalDirection::Down, shift);
                 }
             }
             Key::Home => {
@@ -283,10 +784,18 @@ impl EventTarget for TextArea {
                 }
             }
             Key::Backspace if !self.read_only => {
-                self.delete_backspace();
+                if word {
+                    self.delete_prev_word();
+                } else {
+                    self.delete_backspace();
+                }
             }
             Key::Delete if !self.read_only => {
-                self.delete_forward();
+                if word {
+                    self.delete_next_word();
+                } else {
+                    self.delete_forward();
+                }
             }
             Key::Enter | Key::NumberPadEnter if !self.read_only && self.multiline => {
                 self.insert_text("\n");
@@ -388,8 +897,7 @@ impl EventTarget for TextArea {
             return;
         }
         self.clear_preedit();
-        let inserted =
-            !event.text.is_empty() && self.insert_text(event.text.as_str());
+        let inserted = !event.text.is_empty() && self.insert_text(event.text.as_str());
         if inserted {
             self.notify_change_handlers();
         }

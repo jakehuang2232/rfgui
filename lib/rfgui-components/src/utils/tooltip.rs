@@ -1,7 +1,10 @@
 use crate::use_theme;
+use rfgui::style::{
+    Anchor, ClipMode, Collision, CollisionBoundary, Layout, Length, Operator, Origin, Padding,
+    Position,
+};
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, props, rsx, use_state};
 use rfgui::view::Element;
-use rfgui::style::{Anchor, ClipMode, Collision, CollisionBoundary, Layout, Length, Operator, Origin, Padding, Position};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TooltipPlacement {

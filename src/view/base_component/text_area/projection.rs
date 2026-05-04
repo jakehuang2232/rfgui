@@ -22,9 +22,7 @@
 use std::ops::Range;
 
 use crate::ui::{RsxNode, RsxNodeIdentity};
-use crate::view::base_component::{
-    ElementTrait, TextAreaRenderProjection, TextAreaRenderString,
-};
+use crate::view::base_component::{ElementTrait, TextAreaRenderProjection, TextAreaRenderString};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::TextArea;
@@ -99,10 +97,7 @@ impl TextArea {
         } else {
             self.content.contains('\n')
         };
-        if projections.is_empty()
-            && !display_has_newline
-            && self.has_only_single_run(arena)
-        {
+        if projections.is_empty() && !display_has_newline && self.has_only_single_run(arena) {
             self.update_single_run_in_place(arena);
             self.route_preedit_to_runs(arena);
             return;
@@ -124,9 +119,7 @@ impl TextArea {
         }
         let key = self.children[0];
         arena
-            .with_element_taken_ref(key, |child, _| {
-                child.as_any().is::<TextAreaTextRun>()
-            })
+            .with_element_taken_ref(key, |child, _| child.as_any().is::<TextAreaTextRun>())
             .unwrap_or(false)
     }
 
@@ -231,8 +224,7 @@ impl TextArea {
         let segments = self.slice_into_segments(&projections);
 
         let cursor_char = self.cursor_char.min(self.content.chars().count());
-        let preedit_active =
-            !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
+        let preedit_active = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
         let projection_holding_cursor = projections
             .iter()
             .find(|p| cursor_char >= p.range.start && cursor_char < p.range.end)
@@ -246,14 +238,16 @@ impl TextArea {
         let old_slots = std::mem::take(&mut self.child_slots);
         self.child_char_ranges.clear();
 
-        let mut run_queue: std::collections::VecDeque<NodeKey> =
-            std::collections::VecDeque::new();
+        let mut run_queue: std::collections::VecDeque<NodeKey> = std::collections::VecDeque::new();
         let mut proj_buckets: rustc_hash::FxHashMap<RsxNodeIdentity, Vec<(NodeKey, RsxNode)>> =
             rustc_hash::FxHashMap::default();
         for (key, slot) in old_children.iter().zip(old_slots.into_iter()) {
             match slot {
                 ChildSlot::Run => run_queue.push_back(*key),
-                ChildSlot::Projection { identity, last_node } => {
+                ChildSlot::Projection {
+                    identity,
+                    last_node,
+                } => {
                     proj_buckets
                         .entry(identity)
                         .or_default()
@@ -323,8 +317,7 @@ impl TextArea {
                         TextAreaImeContext {
                             preedit: self.ime_preedit.clone(),
                             preedit_cursor: self.ime_preedit_cursor,
-                            local_cursor_in_projection: cursor_char
-                                .saturating_sub(range.start),
+                            local_cursor_in_projection: cursor_char.saturating_sub(range.start),
                         }
                     } else {
                         TextAreaImeContext {
@@ -470,10 +463,7 @@ impl TextArea {
     /// against the (sorted, disjoint) projection list. Each Plain is
     /// further split at `\n` boundaries so that no Run carries an
     /// embedded newline — see `Segment::Plain.has_trailing_newline`.
-    fn slice_into_segments(
-        &self,
-        projections: &[TextAreaRenderProjection],
-    ) -> Vec<Segment> {
+    fn slice_into_segments(&self, projections: &[TextAreaRenderProjection]) -> Vec<Segment> {
         let total_chars = self.content.chars().count();
 
         // Empty content + placeholder special case (no projection
@@ -547,7 +537,7 @@ impl TextArea {
             self.auto_wrap,
         );
         let desc = crate::view::renderer_adapter::ElementDescriptor::leaf(
-            Box::new(run) as Box<dyn ElementTrait>,
+            Box::new(run) as Box<dyn ElementTrait>
         );
         crate::view::renderer_adapter::commit_descriptor_tree(arena, Some(parent_key), desc)
     }
@@ -595,9 +585,7 @@ impl TextArea {
     /// Inherited style cascaded into projection child subtrees: font /
     /// color from TextArea itself. Mirrors v1.
     fn projection_inherited_style(&self) -> crate::style::Style {
-        use crate::style::{
-            FontFamily, FontSize, FontWeight, ParsedValue, PropertyId, Style,
-        };
+        use crate::style::{FontFamily, FontSize, FontWeight, ParsedValue, PropertyId, Style};
         let mut style = Style::new();
         if !self.font_families.is_empty() {
             style.insert(
@@ -634,8 +622,7 @@ impl TextArea {
     /// the IME context is routed via `<Provider<TextAreaImeContext>>`
     /// during rebuild instead — every Run gets its preedit cleared here.
     pub(super) fn route_preedit_to_runs(&self, arena: &NodeArena) {
-        let preedit_active = !self.ime_preedit.is_empty()
-            || self.ime_preedit_cursor.is_some();
+        let preedit_active = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
         let cursor_char = self.cursor_char;
         let preedit_text = self.ime_preedit.clone();
         let preedit_cursor = self.ime_preedit_cursor;
@@ -645,11 +632,7 @@ impl TextArea {
         // projection owns text rendering via `TextAreaImeContext`, while
         // TextArea only draws IME underline overlay in render.rs.
         let mut cursor_in_projection = false;
-        for (range, &key) in self
-            .child_char_ranges
-            .iter()
-            .zip(self.children.iter())
-        {
+        for (range, &key) in self.child_char_ranges.iter().zip(self.children.iter()) {
             if cursor_char < range.start || cursor_char >= range.end {
                 continue;
             }
@@ -690,12 +673,14 @@ impl TextArea {
                 };
                 last_run_idx = Some(i);
                 if target_idx_local.is_none() && cursor_char < range.end {
-                    let local = cursor_char.saturating_sub(range.start)
+                    let local = cursor_char
+                        .saturating_sub(range.start)
                         .min(range.end.saturating_sub(range.start));
                     target_idx_local = Some((i, local));
                 }
             }
-            if preedit_active && target_idx_local.is_none()
+            if preedit_active
+                && target_idx_local.is_none()
                 && let Some(i) = last_run_idx
                 && let Some(range) = run_range(i)
             {
@@ -712,10 +697,7 @@ impl TextArea {
                     return;
                 };
                 if is_target {
-                    let len = run
-                        .char_range
-                        .end
-                        .saturating_sub(run.char_range.start);
+                    let len = run.char_range.end.saturating_sub(run.char_range.start);
                     let insert_at_local = local.unwrap_or(0).min(len);
                     run.set_inline_preedit(Some(InlinePreedit {
                         insert_at_local,
@@ -792,7 +774,10 @@ fn subtract_overlap(
 }
 
 fn slice_chars(s: &str, range: Range<usize>) -> String {
-    s.chars().skip(range.start).take(range.end - range.start).collect()
+    s.chars()
+        .skip(range.start)
+        .take(range.end - range.start)
+        .collect()
 }
 
 /// Split `text` (covering global char range `range`) at `\n` boundaries
@@ -951,12 +936,18 @@ mod tests {
                     height: Some(Length::px(42.0)),
                     ..Default::default()
                 };
-                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_prop("style", style)
-                    .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
-                            .with_child(RsxNode::text("XYZ")),
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop("style", style)
+                .with_child(
+                    RsxNode::tagged(
+                        "Text",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
                     )
+                    .with_child(RsxNode::text("XYZ")),
+                )
             });
         }));
 
@@ -1005,8 +996,7 @@ mod tests {
     /// not a missing slot.
     #[test]
     fn projection_commits_when_caret_inside_with_preedit() {
-        let (arena, root) =
-            fixture_with_caret_in_projection("\u{4E2D}", Some((1, 1)));
+        let (arena, root) = fixture_with_caret_in_projection("\u{4E2D}", Some((1, 1)));
 
         let children = arena.children_of(root);
         assert_eq!(
@@ -1093,8 +1083,7 @@ mod tests {
     /// underline overlay in render.rs.
     #[test]
     fn projection_preedit_does_not_route_to_adjacent_run_when_caret_in_projection() {
-        let (arena, root) =
-            fixture_with_caret_in_projection("\u{4E2D}\u{6587}", Some((2, 2)));
+        let (arena, root) = fixture_with_caret_in_projection("\u{4E2D}\u{6587}", Some((2, 2)));
 
         let children = arena.children_of(root);
         assert_eq!(children.len(), 3, "expected Run / projection / Run");
@@ -1174,13 +1163,19 @@ mod tests {
                     height: Some(Length::px(20.0)),
                     ..Default::default()
                 };
-                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_key(RsxKey::Local(0xC0AC_C0AC_0001))
-                    .with_prop("style", style)
-                    .with_child(
-                        RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
-                            .with_child(RsxNode::text("X")),
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_key(RsxKey::Local(0xC0AC_C0AC_0001))
+                .with_prop("style", style)
+                .with_child(
+                    RsxNode::tagged(
+                        "Text",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
                     )
+                    .with_child(RsxNode::text("X")),
+                )
             });
         }));
 
@@ -1274,23 +1269,28 @@ mod tests {
                 .as_any_mut()
                 .downcast_mut::<TextArea>()
                 .expect("TextArea root");
-            ta.on_render_handler =
-                Some(crate::ui::on_text_area_render(move |render| {
-                    render.range(2..5, |_text_area_node| {
-                        let style = ElementStylePropSchema {
-                            width: Some(Length::px(40.0)),
-                            height: Some(Length::px(20.0)),
-                            ..Default::default()
-                        };
-                        RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                            .with_key(RsxKey::Local(0xC0AC_C0AC_0002))
-                            .with_prop("style", style)
-                            .with_child(
-                                RsxNode::tagged("Text", RsxTagDescriptor::for_tag::<crate::view::tags::Text>())
-                                    .with_child(RsxNode::text("X")),
-                            )
-                    });
-                }));
+            ta.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+                render.range(2..5, |_text_area_node| {
+                    let style = ElementStylePropSchema {
+                        width: Some(Length::px(40.0)),
+                        height: Some(Length::px(20.0)),
+                        ..Default::default()
+                    };
+                    RsxNode::tagged(
+                        "Element",
+                        RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                    )
+                    .with_key(RsxKey::Local(0xC0AC_C0AC_0002))
+                    .with_prop("style", style)
+                    .with_child(
+                        RsxNode::tagged(
+                            "Text",
+                            RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+                        )
+                        .with_child(RsxNode::text("X")),
+                    )
+                });
+            }));
             ta.mark_content_dirty();
         });
         relayout(&mut arena, root);
@@ -1341,9 +1341,7 @@ mod tests {
             el.as_any_mut()
                 .downcast_mut::<TextArea>()
                 .expect("TextArea root")
-                .set_content_from_external(
-                    "line one\nline two\nline three".to_string(),
-                );
+                .set_content_from_external("line one\nline two\nline three".to_string());
         });
         relayout(&mut arena, root);
 
@@ -1373,28 +1371,34 @@ mod tests {
             let key_first = if swapped { key_b } else { key_a };
             let key_second = if swapped { key_a } else { key_b };
             render.range(1..2, move |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_key(key_first)
-                    .with_prop(
-                        "style",
-                        ElementStylePropSchema {
-                            width: Some(Length::px(20.0)),
-                            height: Some(Length::px(20.0)),
-                            ..Default::default()
-                        },
-                    )
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_key(key_first)
+                .with_prop(
+                    "style",
+                    ElementStylePropSchema {
+                        width: Some(Length::px(20.0)),
+                        height: Some(Length::px(20.0)),
+                        ..Default::default()
+                    },
+                )
             });
             render.range(3..4, move |_text_area_node| {
-                RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<crate::view::tags::Element>())
-                    .with_key(key_second)
-                    .with_prop(
-                        "style",
-                        ElementStylePropSchema {
-                            width: Some(Length::px(20.0)),
-                            height: Some(Length::px(20.0)),
-                            ..Default::default()
-                        },
-                    )
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_key(key_second)
+                .with_prop(
+                    "style",
+                    ElementStylePropSchema {
+                        width: Some(Length::px(20.0)),
+                        height: Some(Length::px(20.0)),
+                        ..Default::default()
+                    },
+                )
             });
         }));
 

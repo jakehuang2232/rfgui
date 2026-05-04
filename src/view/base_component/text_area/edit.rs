@@ -119,6 +119,55 @@ impl TextArea {
         true
     }
 
+    /// Word-granular backspace (Alt+Backspace on macOS, Ctrl+Backspace on
+    /// Win/Linux). Falls through to selection-delete when a range is
+    /// active, mirroring `delete_backspace`.
+    pub(super) fn delete_prev_word(&mut self) -> bool {
+        if self.delete_selected_text() {
+            return true;
+        }
+        if self.cursor_char == 0 {
+            return false;
+        }
+        let target = self.prev_word_boundary_at(self.cursor_char);
+        if target >= self.cursor_char {
+            return false;
+        }
+        let start_byte = byte_index_at_char(&self.content, target);
+        let end_byte = byte_index_at_char(&self.content, self.cursor_char);
+        self.content.replace_range(start_byte..end_byte, "");
+        self.cursor_char = target;
+        self.mark_content_dirty();
+        self.reset_caret_blink();
+        self.clear_vertical_goal();
+        self.sync_bound_text();
+        true
+    }
+
+    /// Word-granular forward delete (Alt+Delete on macOS, Ctrl+Delete on
+    /// Win/Linux).
+    pub(super) fn delete_next_word(&mut self) -> bool {
+        if self.delete_selected_text() {
+            return true;
+        }
+        let len = self.content.chars().count();
+        if self.cursor_char >= len {
+            return false;
+        }
+        let target = self.next_word_boundary_at(self.cursor_char);
+        if target <= self.cursor_char {
+            return false;
+        }
+        let start_byte = byte_index_at_char(&self.content, self.cursor_char);
+        let end_byte = byte_index_at_char(&self.content, target);
+        self.content.replace_range(start_byte..end_byte, "");
+        self.mark_content_dirty();
+        self.reset_caret_blink();
+        self.clear_vertical_goal();
+        self.sync_bound_text();
+        true
+    }
+
     /// Apply an externally-set content (e.g. the bound `Binding<String>`
     /// changed elsewhere). Cursor / selection clamped, ime preedit cleared.
     /// Skips work if the value already matches to avoid spurious dirty.
@@ -177,10 +226,18 @@ impl TextArea {
 
     pub(super) fn clear_vertical_goal(&mut self) {
         self.vertical_cursor_x = None;
+        // Caret affinity is a sticky bit owned by the cursor position;
+        // every horizontal / arbitrary cursor move that already clears
+        // sticky-x should also reset affinity to Downstream. Cmd+Right
+        // (and similar wrap-tail navigations) reapply Upstream *after*
+        // the move so the override survives this reset.
+        self.cursor_affinity =
+            crate::view::base_component::text_area::caret_map::CaretAffinity::Downstream;
     }
 
     pub(super) fn reset_caret_blink(&mut self) {
         self.caret_blink_started_at = crate::time::Instant::now();
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
     }
 
     /// Mark that content / range mapping changed → run subtree must rebuild
@@ -224,4 +281,71 @@ pub(super) fn byte_index_at_char(value: &str, char_index: usize) -> usize {
         .nth(char_index)
         .map(|(idx, _)| idx)
         .unwrap_or(value.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ta(text: &str, cursor: usize) -> TextArea {
+        let mut t = TextArea::new();
+        t.content = text.to_string();
+        t.cursor_char = cursor;
+        t
+    }
+
+    #[test]
+    fn delete_prev_word_strips_back_to_word_start() {
+        let mut t = ta("foo bar baz", 11);
+        assert!(t.delete_prev_word());
+        assert_eq!(t.content, "foo bar ");
+        assert_eq!(t.cursor_char, 8);
+    }
+
+    #[test]
+    fn delete_prev_word_eats_trailing_whitespace_then_word() {
+        let mut t = ta("foo bar  ", 9);
+        assert!(t.delete_prev_word());
+        assert_eq!(t.content, "foo ");
+        assert_eq!(t.cursor_char, 4);
+    }
+
+    #[test]
+    fn delete_prev_word_at_start_is_noop() {
+        let mut t = ta("foo", 0);
+        assert!(!t.delete_prev_word());
+        assert_eq!(t.content, "foo");
+    }
+
+    #[test]
+    fn delete_next_word_strips_to_word_end() {
+        let mut t = ta("foo bar baz", 0);
+        assert!(t.delete_next_word());
+        assert_eq!(t.content, " bar baz");
+        assert_eq!(t.cursor_char, 0);
+    }
+
+    #[test]
+    fn delete_next_word_eats_leading_whitespace_then_word() {
+        let mut t = ta("  foo bar", 0);
+        assert!(t.delete_next_word());
+        assert_eq!(t.content, " bar");
+        assert_eq!(t.cursor_char, 0);
+    }
+
+    #[test]
+    fn delete_next_word_at_end_is_noop() {
+        let mut t = ta("foo", 3);
+        assert!(!t.delete_next_word());
+        assert_eq!(t.content, "foo");
+    }
+
+    #[test]
+    fn delete_prev_word_with_selection_falls_through_to_selection_delete() {
+        let mut t = ta("hello world", 11);
+        t.select_range(2, 8);
+        assert!(t.delete_prev_word());
+        assert_eq!(t.content, "herld");
+        assert_eq!(t.cursor_char, 2);
+    }
 }

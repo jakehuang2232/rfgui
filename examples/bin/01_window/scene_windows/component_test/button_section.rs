@@ -1,6 +1,6 @@
+use crate::rfgui::style::{Layout, Length};
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui::style::{Layout, Length};
 use crate::rfgui_components::{
     Button, ButtonColor, ButtonSize, ButtonVariant, DeleteIcon, EditIcon, FavoriteIcon,
     FormatAlignCenterIcon, FormatAlignLeftIcon, FormatAlignRightIcon, FormatBoldIcon,
