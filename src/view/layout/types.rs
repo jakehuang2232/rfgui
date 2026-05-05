@@ -10,7 +10,9 @@ use crate::view::base_component::{Position, Size};
 
 /// Aggregated layout-output state for a component.
 ///
-/// Owned by host components (currently only `Element`; later `TextArea`).
+/// Owned by host components (`Element`, `TextArea`, `Text`). Each host keeps
+/// its own `LayoutState` slot rather than sharing a child node, so render and
+/// event paths read post-place coordinates without arena lookups.
 /// Written by layout free functions, read by render and event paths.
 ///
 /// # Fields

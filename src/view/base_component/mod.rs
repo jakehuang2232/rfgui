@@ -2878,23 +2878,17 @@ pub fn has_animation_frame_request(
 
 /// Forward `EventTarget` methods to an inner field (typically `element`).
 ///
-/// Two forms:
-/// - `forward_event_target!(full element)` — forwards every method, used by
-///   wrappers that want the inner `Element` to own all event state
-///   (scroll, hover, transitions…). Image / Svg.
-/// - `forward_event_target!(dispatch_only element)` — only forwards the
-///   pointer/keyboard/focus dispatch pair + `cursor`; the remaining methods
-///   fall back to trait defaults. Text.
+/// One form: `forward_event_target!(full element)` — forwards every method,
+/// including `cursor()`. Used by Image / Svg.
+///
+/// Earlier `dispatch_only` / `dispatch_pair` arms supported `Text`'s wrapping
+/// `Element`; both went away with the M6 NOT-IS-A refactor (Text dropped its
+/// inner `Element` and now impls `EventTarget` directly with trait defaults
+/// for the dispatch methods).
 macro_rules! forward_event_target {
     (full $field:ident) => {
         $crate::view::base_component::forward_event_target!(@dispatch $field);
         $crate::view::base_component::forward_event_target!(@state_and_requests $field);
-    };
-    (dispatch_only $field:ident) => {
-        $crate::view::base_component::forward_event_target!(@dispatch $field);
-        fn cursor(&self) -> $crate::style::Cursor {
-            self.$field.cursor()
-        }
     };
     (@dispatch $field:ident) => {
         fn dispatch_pointer_down(
