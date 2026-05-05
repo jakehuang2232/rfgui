@@ -1,43 +1,15 @@
-//! Clipboard wiring: viewport-level Cmd/Ctrl+C/X/V detection and the
-//! corresponding `dispatch_copy_event` / `dispatch_cut_event` /
-//! `dispatch_paste_event` round-trips through `TextArea`.
+//! Clipboard wiring: `dispatch_copy_event` / `dispatch_cut_event` /
+//! `dispatch_paste_event` round-trips through `TextArea`. The runner owns
+//! the Cmd/Ctrl+C/X/V key → semantic-event translation, so these tests
+//! call the semantic dispatchers directly (mirroring what the runner does
+//! after detecting the shortcut).
 
 #![cfg(test)]
 
 use super::Viewport;
-use crate::platform::{Key, Modifiers};
-use crate::ui::{KeyEventData, KeyLocation, RsxNode, RsxTagDescriptor};
+use crate::ui::{RsxNode, RsxTagDescriptor};
 use crate::view::base_component::{LayoutConstraints, LayoutPlacement, TextArea};
 use crate::view::tags::TextArea as TextAreaTag;
-
-fn modifiers_for(shift: bool, ctrl: bool, alt: bool, meta: bool) -> Modifiers {
-    let mut mods = Modifiers::empty();
-    if shift {
-        mods |= Modifiers::SHIFT;
-    }
-    if ctrl {
-        mods |= Modifiers::CTRL;
-    }
-    if alt {
-        mods |= Modifiers::ALT;
-    }
-    if meta {
-        mods |= Modifiers::META;
-    }
-    mods
-}
-
-fn key_data(key: Key, ctrl: bool, meta: bool) -> KeyEventData {
-    KeyEventData {
-        key,
-        characters: None,
-        modifiers: modifiers_for(false, ctrl, false, meta),
-        repeat: false,
-        is_composing: false,
-        location: KeyLocation::Standard,
-        timestamp: crate::time::Instant::now(),
-    }
-}
 
 fn text_area_tree(content: &str) -> RsxNode {
     RsxNode::tagged("TextArea", RsxTagDescriptor::for_tag::<TextAreaTag>())
@@ -114,12 +86,12 @@ fn read_content(viewport: &mut Viewport, root: crate::view::node_arena::NodeKey)
 }
 
 #[test]
-fn cmd_c_with_selection_queues_clipboard_write() {
+fn copy_event_with_selection_queues_clipboard_write() {
     let (mut viewport, root) = build_viewport("hello world");
     set_selection(&mut viewport, root, 0, 5);
 
-    let handled = viewport.dispatch_key_down_event(key_data(Key::KeyC, false, true));
-    assert!(handled, "Cmd+C should be marked handled");
+    let handled = viewport.dispatch_copy_event();
+    assert!(handled, "copy should be marked handled");
 
     assert_eq!(
         viewport.pending_platform_requests.clipboard_write.as_deref(),
@@ -129,10 +101,10 @@ fn cmd_c_with_selection_queues_clipboard_write() {
 }
 
 #[test]
-fn cmd_c_without_selection_writes_nothing() {
+fn copy_event_without_selection_writes_nothing() {
     let (mut viewport, _root) = build_viewport("hello world");
 
-    viewport.dispatch_key_down_event(key_data(Key::KeyC, false, true));
+    viewport.dispatch_copy_event();
 
     assert!(
         viewport.pending_platform_requests.clipboard_write.is_none(),
@@ -141,11 +113,11 @@ fn cmd_c_without_selection_writes_nothing() {
 }
 
 #[test]
-fn cmd_x_writes_clipboard_and_deletes_selection() {
+fn cut_event_writes_clipboard_and_deletes_selection() {
     let (mut viewport, root) = build_viewport("hello world");
     set_selection(&mut viewport, root, 0, 5);
 
-    viewport.dispatch_key_down_event(key_data(Key::KeyX, false, true));
+    viewport.dispatch_cut_event();
 
     assert_eq!(
         viewport.pending_platform_requests.clipboard_write.as_deref(),
@@ -155,7 +127,7 @@ fn cmd_x_writes_clipboard_and_deletes_selection() {
 }
 
 #[test]
-fn cmd_x_on_read_only_copies_but_does_not_delete() {
+fn cut_event_on_read_only_copies_but_does_not_delete() {
     let (mut viewport, root) = build_viewport("hello world");
     {
         let mut arena = std::mem::take(&mut viewport.scene.node_arena);
@@ -169,25 +141,13 @@ fn cmd_x_on_read_only_copies_but_does_not_delete() {
     }
     set_selection(&mut viewport, root, 0, 5);
 
-    viewport.dispatch_key_down_event(key_data(Key::KeyX, false, true));
+    viewport.dispatch_cut_event();
 
     assert_eq!(
         viewport.pending_platform_requests.clipboard_write.as_deref(),
         Some("hello"),
     );
     assert_eq!(read_content(&mut viewport, root), "hello world");
-}
-
-#[test]
-fn cmd_v_sets_request_paste_flag() {
-    let (mut viewport, _root) = build_viewport("");
-
-    viewport.dispatch_key_down_event(key_data(Key::KeyV, false, true));
-
-    assert!(
-        viewport.pending_platform_requests.request_paste,
-        "Cmd+V should ask the runner for a paste",
-    );
 }
 
 #[test]
@@ -225,19 +185,4 @@ fn paste_event_on_read_only_does_not_modify_content() {
 
     viewport.dispatch_paste_event("XYZ".to_string());
     assert_eq!(read_content(&mut viewport, root), "locked");
-}
-
-#[test]
-fn ctrl_shift_c_does_not_trigger_copy() {
-    let (mut viewport, root) = build_viewport("hello world");
-    set_selection(&mut viewport, root, 0, 5);
-
-    let mut data = key_data(Key::KeyC, true, false);
-    data.modifiers = modifiers_for(true, true, false, false);
-    viewport.dispatch_key_down_event(data);
-
-    assert!(
-        viewport.pending_platform_requests.clipboard_write.is_none(),
-        "Ctrl+Shift+C must not trigger Copy",
-    );
 }
