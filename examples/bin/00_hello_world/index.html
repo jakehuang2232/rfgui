@@ -6,11 +6,27 @@
     <title>RFGUI Example</title>
     <style>
       @font-face {
+        font-family: "Noto Sans";
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url("assets/NotoSans-Regular.ttf") format("truetype");
+      }
+
+      @font-face {
         font-family: "Noto Sans CJK TC";
         font-style: normal;
         font-weight: 400;
         font-display: swap;
         src: url("https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf") format("opentype");
+      }
+
+      @font-face {
+        font-family: "Noto Color Emoji";
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url("https://raw.githubusercontent.com/googlefonts/noto-emoji/main/fonts/NotoColorEmoji.ttf") format("truetype");
       }
 
       :root {
@@ -32,7 +48,7 @@
 
       body {
         overflow: hidden;
-        font-family: "Noto Sans CJK TC", "PingFang TC", "Segoe UI", sans-serif;
+        font-family: "Noto Sans", "Noto Sans CJK TC", "Noto Color Emoji", "PingFang TC", "Segoe UI", sans-serif;
       }
 
       canvas {
@@ -131,6 +147,12 @@
     </div>
     <canvas id="app-canvas" tabindex="0"></canvas>
     <script>
+      window.__RFGUI_FONT_URLS__ = [
+        "assets/NotoSans-Regular.ttf",
+        "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf",
+        "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/fonts/NotoColorEmoji.ttf",
+      ];
+
       const bootOverlay = document.getElementById("boot-overlay");
       const bootStatus = document.getElementById("boot-status");
 
