@@ -585,7 +585,9 @@ impl TextArea {
     /// Inherited style cascaded into projection child subtrees: font /
     /// color from TextArea itself. Mirrors v1.
     fn projection_inherited_style(&self) -> crate::style::Style {
-        use crate::style::{FontFamily, FontSize, FontWeight, ParsedValue, PropertyId, Style};
+        use crate::style::{
+            FontFamily, FontSize, FontWeight, ParsedValue, PropertyId, Style, TextWrap,
+        };
         let mut style = Style::new();
         if !self.font_families.is_empty() {
             style.insert(
@@ -603,6 +605,20 @@ impl TextArea {
         );
         style.insert(PropertyId::Color, ParsedValue::Color(self.color.into()));
         style.insert(PropertyId::Cursor, ParsedValue::Cursor(self.cursor));
+        // When TextArea has wrap disabled, projection subtrees must also not
+        // wrap. Without this cascade, a `<Text>` inside a projection keeps
+        // its default `TextWrap::Wrap` and the outer measure pass passes
+        // down a tight `first_available_width` once preceding inline content
+        // has consumed line space — Text then emits multi-fragment output
+        // with `force_break_after=true` on non-last fragments, and the
+        // outer flex_solver breaks the line via `force_break_pending` even
+        // though `solver_wrap=false`.
+        if !self.auto_wrap {
+            style.insert(
+                PropertyId::TextWrap,
+                ParsedValue::TextWrap(TextWrap::NoWrap),
+            );
+        }
         style
     }
 
