@@ -48,6 +48,7 @@ impl TextArea {
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         self.sync_bound_text();
         true
     }
@@ -79,6 +80,7 @@ impl TextArea {
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         self.sync_bound_text();
         true
     }
@@ -97,6 +99,7 @@ impl TextArea {
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         self.sync_bound_text();
         true
     }
@@ -115,6 +118,7 @@ impl TextArea {
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         self.sync_bound_text();
         true
     }
@@ -140,6 +144,7 @@ impl TextArea {
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         self.sync_bound_text();
         true
     }
@@ -164,6 +169,7 @@ impl TextArea {
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         self.sync_bound_text();
         true
     }
@@ -192,6 +198,7 @@ impl TextArea {
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         true
     }
 
@@ -233,6 +240,11 @@ impl TextArea {
         // the move so the override survives this reset.
         self.cursor_affinity =
             crate::view::base_component::text_area::caret_map::CaretAffinity::Downstream;
+    }
+
+    pub(super) fn mark_caret_scroll_pending(&mut self) {
+        self.pending_caret_scroll = true;
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::PLACE);
     }
 
     pub(super) fn reset_caret_blink(&mut self) {
