@@ -5612,13 +5612,16 @@ mod tests {
         let inline_node_height = arena
             .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a)[0].height)
             .expect("inline node size");
-        // Inner content y stays at the outer line top (== paint top
-        // after the inline-block-style box fix), and outer line spacing
-        // now reserves the full padded box height (inline node height
-        // includes vertical padding/border, paint top sits AT placement.y).
+        // CSS inline rule: vertical padding/border on a non-replaced
+        // inline (no explicit width/height) paints OUTSIDE the line
+        // box and MUST NOT contribute to line height. Inner text Y
+        // matches sibling text Y on the same line; paint top extends
+        // 12px (padding-y) above the line top; inline node height
+        // exposed to outer solver stays at text_height; paint height
+        // includes the full v_inset (12 + 12 = 24).
         assert!((badge_y - trailing_y).abs() < 0.5);
-        assert!((badge_y - paint_top).abs() < 0.5);
-        assert!((inline_node_height - (text_height + 24.0)).abs() < 0.5);
+        assert!((badge_y - paint_top - 12.0).abs() < 0.5);
+        assert!((inline_node_height - text_height).abs() < 0.5);
         assert!((paint_height - (text_height + 24.0)).abs() < 0.5);
     }
 
@@ -5682,6 +5685,121 @@ mod tests {
             let actual = nested_text.inline_fragment_positions().len();
             assert_eq!(actual, expected, "width={width}, actual={actual}, expected={expected}, fragments={:?}", nested_text.inline_fragment_positions());
         }
+    }
+
+    /// CSS inline rule: a fragmentable inline wrapper's vertical
+    /// padding/border MUST NOT contribute to the line height seen by
+    /// the outer inline solver. Two sibling padded wrappers wrapping
+    /// multi-line text under a common Inline parent should produce
+    /// per-line text Y intervals equal to (text ascent + descent),
+    /// NOT (ascent + descent + v_inset). Regression guard against
+    /// cba6a24 which folded v_inset into `Element::get_inline_nodes_size`.
+    #[test]
+    fn fragmentable_padded_wrapper_line_interval_excludes_padding() {
+        let width = 200.0_f32;
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut sib_a = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut sib_a_style = Style::new();
+        sib_a_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
+        sib_a.apply_style(sib_a_style);
+        let sib_a_key = commit_child(&mut arena, parent_key, Box::new(sib_a));
+        let text_a_key = commit_child(
+            &mut arena,
+            sib_a_key,
+            Box::new(Text::from_content(
+                "Sibling A wraps over many lines because its content is long enough to span several visual rows in the outer inline context.",
+            )),
+        );
+
+        let mut sib_b = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut sib_b_style = Style::new();
+        sib_b_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
+        sib_b.apply_style(sib_b_style);
+        let sib_b_key = commit_child(&mut arena, parent_key, Box::new(sib_b));
+        let text_b_key = commit_child(
+            &mut arena,
+            sib_b_key,
+            Box::new(Text::from_content(
+                "Sibling B begins after A and likewise wraps over multiple lines.",
+            )),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: width,
+                max_height: 600.0,
+                viewport_width: width,
+                viewport_height: 600.0,
+                percent_base_width: Some(width),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: width,
+                available_height: 600.0,
+                viewport_width: width,
+                viewport_height: 600.0,
+                percent_base_width: Some(width),
+                percent_base_height: Some(600.0),
+            },
+        );
+
+        let a_paints: Vec<_> = {
+            let el = crate::view::test_support::get_element::<Element>(&arena, sib_a_key);
+            el.inline_paint_fragments.iter().map(|r| (r.x, r.y, r.width, r.height)).collect()
+        };
+        let b_paints: Vec<_> = {
+            let el = crate::view::test_support::get_element::<Element>(&arena, sib_b_key);
+            el.inline_paint_fragments.iter().map(|r| (r.x, r.y, r.width, r.height)).collect()
+        };
+        let text_a: Vec<_> = {
+            let t = crate::view::test_support::get_element::<Text>(&arena, text_a_key);
+            t.inline_fragment_positions().iter().map(|(_, p)| (p.x, p.y)).collect()
+        };
+        let text_b: Vec<_> = {
+            let t = crate::view::test_support::get_element::<Text>(&arena, text_b_key);
+            t.inline_fragment_positions().iter().map(|(_, p)| (p.x, p.y)).collect()
+        };
+        let a_inline_nodes = arena
+            .with_element_taken(sib_a_key, |el, a| el.get_inline_nodes_size(a))
+            .unwrap_or_default();
+        let b_inline_nodes = arena
+            .with_element_taken(sib_b_key, |el, a| el.get_inline_nodes_size(a))
+            .unwrap_or_default();
+
+        let _ = (b_paints, text_b, b_inline_nodes);
+
+        // Inline node height seen by outer solver = ascent + descent
+        // of inner text line. NOT ascent + descent + v_inset.
+        let baseline = a_inline_nodes[0].baseline;
+        let inner_h = a_inline_nodes[0].height;
+        let v_inset = 16.0_f32;
+        assert!(
+            (inner_h - baseline).abs() < 0.5 || inner_h < baseline + v_inset - 0.5,
+            "inline node height ({inner_h}) must not include vertical padding ({v_inset}); baseline={baseline}"
+        );
+
+        // Per-line text Y interval = text ascent+descent (not padded).
+        // Verify by checking consecutive text fragments are spaced by
+        // ~text-line-height, NOT (text-line-height + v_inset).
+        let dy = text_a[1].1 - text_a[0].1;
+        assert!(
+            dy < baseline * 2.0,
+            "text line interval ({dy}) suggests padding was folded into line height (baseline={baseline}, v_inset={v_inset})"
+        );
+        let _ = (a_paints,);
     }
 
     #[test]
@@ -7339,9 +7457,10 @@ mod tests {
     }
 
     /// Padded fragmentable inline wrapper sharing an outer line with
-    /// non-padded text siblings: the wrapper's painted box top must
-    /// sit AT the outer line top (not above it), and the wrapper's
-    /// inner text fragment.position.y must match its non-padded
+    /// non-padded text siblings: per CSS, the wrapper's vertical
+    /// padding paints OUTSIDE the line box, so the painted box top
+    /// extends above the line top by `padding-top`. The wrapper's
+    /// inner text fragment.position.y must still match its non-padded
     /// siblings' fragment.position.y on the same line. Mirrors the
     /// inline-test demo's "Mixed Text / Element" scene where a padded
     /// badge flows inline alongside `<Text>` siblings.
@@ -7432,10 +7551,11 @@ mod tests {
             (lead_y - trailing_y).abs() < 0.5,
             "lead_y={lead_y} trailing_y={trailing_y} should match (both on line 0)"
         );
-        // Box top sits at the outer line top — does NOT extend above by padding-top.
+        // Box top sits `padding-top` (8 px) above the outer line top
+        // (CSS inline: vertical padding paints outside the line box).
         assert!(
-            (wrapper_paint_y - lead_y).abs() < 0.5,
-            "wrapper_paint_y={wrapper_paint_y} lead_y={lead_y} — box top should sit at line top, not above"
+            (lead_y - wrapper_paint_y - 8.0).abs() < 0.5,
+            "wrapper_paint_y={wrapper_paint_y} lead_y={lead_y} — box top should sit padding-top above line top"
         );
     }
 
