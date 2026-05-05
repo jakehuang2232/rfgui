@@ -29,6 +29,7 @@ use rfgui::platform::{
 };
 use rfgui::ui::run_due_timers;
 use rfgui::view::viewport::{RenderFrameResult, SurfaceFormatPreference, Viewport};
+use rfgui::view::{load_browser_fonts, load_web_font_from_url, set_default_font_families};
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -118,6 +119,12 @@ impl Runner {
         let viewport_slot = self.viewport.clone();
         let pending_app = self.pending_app.clone();
         spawn_local(async move {
+            let loaded_from_manifest = load_declared_font_urls().await;
+            let loaded_from_browser = load_browser_fonts().await.unwrap_or(0);
+            if loaded_from_manifest + loaded_from_browser > 0 {
+                set_default_font_families("Noto Sans", "Noto Sans", "Noto Sans");
+            }
+
             let mut viewport = Viewport::new();
             if let Some(app) = pending_app.borrow_mut().take() {
                 viewport.set_app(app);
@@ -800,6 +807,26 @@ impl ApplicationHandler for Runner {
         // ControlFlow setting we choose here.
         event_loop.set_control_flow(ControlFlow::Wait);
     }
+}
+
+async fn load_declared_font_urls() -> usize {
+    let Some(window) = web_sys::window() else {
+        return 0;
+    };
+    let Ok(value) = js_sys::Reflect::get(&window, &"__RFGUI_FONT_URLS__".into()) else {
+        return 0;
+    };
+    let urls = js_sys::Array::from(&value);
+    let mut loaded = 0usize;
+    for url in urls.iter() {
+        let Some(url) = url.as_string() else {
+            continue;
+        };
+        if matches!(load_web_font_from_url(&url).await, Ok(true)) {
+            loaded += 1;
+        }
+    }
+    loaded
 }
 
 /// `RedrawRequester` impl that records into a per-runner `Cell` instead

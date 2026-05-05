@@ -13,12 +13,8 @@ use wasm_bindgen_futures::JsFuture;
 
 #[cfg(target_arch = "wasm32")]
 const WASM_FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../assets/NotoSans-Regular.ttf");
-#[cfg(target_arch = "wasm32")]
-const WEB_CJK_FONT_FAMILY: &str = "Noto Sans CJK TC";
-#[cfg(target_arch = "wasm32")]
-const WEB_CJK_FONT_URL: &str = "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf";
 
-static RUNTIME_WEB_FONTS: Mutex<Vec<Arc<Vec<u8>>>> = Mutex::new(Vec::new());
+static RUNTIME_FONTS: Mutex<Vec<Arc<Vec<u8>>>> = Mutex::new(Vec::new());
 
 thread_local! {
     static SHARED_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(create_font_system());
@@ -28,7 +24,7 @@ pub(crate) fn create_font_system() -> FontSystem {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut font_system = FontSystem::new();
-        if let Ok(runtime_fonts) = RUNTIME_WEB_FONTS.lock() {
+        if let Ok(runtime_fonts) = RUNTIME_FONTS.lock() {
             for font in runtime_fonts.iter() {
                 font_system
                     .db_mut()
@@ -44,7 +40,7 @@ pub(crate) fn create_font_system() -> FontSystem {
         db.load_font_source(fontdb::Source::Binary(Arc::new(
             WASM_FALLBACK_FONT_BYTES.to_vec(),
         )));
-        if let Ok(runtime_fonts) = RUNTIME_WEB_FONTS.lock() {
+        if let Ok(runtime_fonts) = RUNTIME_FONTS.lock() {
             for font in runtime_fonts.iter() {
                 db.load_font_source(fontdb::Source::Binary(font.clone()));
             }
@@ -66,7 +62,7 @@ pub(crate) fn with_shared_font_system<R>(f: impl FnOnce(&mut FontSystem) -> R) -
 pub fn register_font_bytes(bytes: &[u8]) -> bool {
     let font = Arc::new(bytes.to_vec());
     let inserted = {
-        let Ok(mut fonts) = RUNTIME_WEB_FONTS.lock() else {
+        let Ok(mut fonts) = RUNTIME_FONTS.lock() else {
             return false;
         };
         if fonts.iter().any(|font| font.as_slice() == bytes) {
@@ -203,25 +199,4 @@ fn extract_first_url(src: &str) -> Option<String> {
         return None;
     }
     Some(url.to_string())
-}
-
-/// Load the built-in CJK fallback font from a remote URL and configure
-/// default font families to use it.
-///
-/// This is a convenience wrapper around [`load_web_font_from_url`] +
-/// [`set_default_font_families`]. No-op if runtime fonts are already
-/// registered.
-#[cfg(target_arch = "wasm32")]
-pub async fn load_default_web_cjk_font() -> Result<(), wasm_bindgen::JsValue> {
-    if RUNTIME_WEB_FONTS
-        .lock()
-        .map(|f| !f.is_empty())
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-
-    load_web_font_from_url(WEB_CJK_FONT_URL).await?;
-    set_default_font_families(WEB_CJK_FONT_FAMILY, WEB_CJK_FONT_FAMILY, "Noto Sans");
-    Ok(())
 }
