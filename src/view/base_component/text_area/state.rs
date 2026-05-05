@@ -28,6 +28,7 @@ impl TextArea {
         self.clear_selection();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     pub(super) fn move_cursor_left(&mut self) -> bool {
@@ -38,6 +39,7 @@ impl TextArea {
         self.clear_selection();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         true
     }
 
@@ -49,6 +51,7 @@ impl TextArea {
         self.clear_selection();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
         true
     }
 
@@ -64,6 +67,7 @@ impl TextArea {
         self.clear_selection();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     pub(super) fn move_cursor_line_end(&mut self) {
@@ -76,6 +80,7 @@ impl TextArea {
         self.clear_selection();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     pub(super) fn move_cursor_text_home(&mut self) {
@@ -83,6 +88,7 @@ impl TextArea {
         self.clear_selection();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     pub(super) fn move_cursor_text_end(&mut self) {
@@ -90,6 +96,7 @@ impl TextArea {
         self.clear_selection();
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     /// Shift+arrow / drag-extend semantics. Anchor is set once (at the
@@ -104,6 +111,7 @@ impl TextArea {
         self.cursor_char = focus;
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     pub(super) fn extend_selection_left(&mut self) -> bool {
@@ -200,6 +208,7 @@ impl TextArea {
         self.pointer_selecting = true;
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     pub(super) fn update_pointer_selection(&mut self, focus: usize) {
@@ -211,6 +220,7 @@ impl TextArea {
         self.cursor_char = focus;
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     pub(super) fn end_pointer_selection(&mut self) {
@@ -238,6 +248,7 @@ impl TextArea {
         self.cursor_char = focus;
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
     }
 
     /// Replace the active IME preedit text (decision A7). Returns `true`
@@ -257,6 +268,7 @@ impl TextArea {
         self.ime_preedit_cursor = cursor;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
         self.reset_caret_blink();
+        self.mark_caret_scroll_pending();
         true
     }
 

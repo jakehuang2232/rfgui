@@ -116,6 +116,7 @@ impl TextArea {
         self.vertical_cursor_x = None;
         self.clear_selection();
         self.reset_caret_blink();
+        self.mark_caret_scroll_pending();
         true
     }
 
@@ -170,6 +171,7 @@ impl TextArea {
                 {
                     self.move_cursor_to(target);
                     self.cursor_affinity = alternate_affinity;
+                    self.mark_caret_scroll_pending();
                     return true;
                 }
                 continue;
@@ -177,6 +179,7 @@ impl TextArea {
 
             self.move_cursor_to(target);
             self.cursor_affinity = target_affinity;
+            self.mark_caret_scroll_pending();
             return true;
         }
     }
@@ -195,13 +198,14 @@ impl TextArea {
             return None;
         }
         let affinity = self.cursor_affinity;
-        let sticky_x = self.vertical_cursor_x.or_else(|| {
+        let sticky_content_x = self.vertical_cursor_x.or_else(|| {
             map.caret_stop_for_char(self.cursor_char, affinity)
-                .map(|s| s.x)
+                .map(|s| s.x + self.scroll_x)
         })?;
+        let sticky_screen_x = sticky_content_x - self.scroll_x;
         let target =
-            map.vertical_target_with_affinity(self.cursor_char, affinity, sticky_x, direction)?;
-        Some((target.char_index, target.affinity, sticky_x))
+            map.vertical_target_with_affinity(self.cursor_char, affinity, sticky_screen_x, direction)?;
+        Some((target.char_index, target.affinity, sticky_content_x))
     }
 
     /// Apply Up / Down (and Shift+Up / Shift+Down) using the caret
@@ -235,6 +239,7 @@ impl TextArea {
         // clear it via `clear_vertical_goal`, but consecutive vertical
         // presses must keep walking the same column.
         self.vertical_cursor_x = Some(sticky_x);
+        self.mark_caret_scroll_pending();
         true
     }
 
@@ -265,6 +270,7 @@ impl TextArea {
                 // (line head sits at x=0 on its own line).
                 if end {
                     self.cursor_affinity = CaretAffinity::Upstream;
+                    self.mark_caret_scroll_pending();
                 }
             }
             None => match (end, shift) {
@@ -328,6 +334,62 @@ mod tests {
             },
         );
         (arena, root)
+    }
+
+    fn nowrap_text_area(
+        content: &str,
+        cursor_char: usize,
+        max_width: f32,
+    ) -> (NodeArena, NodeKey) {
+        let mut text_area = HostTextArea::new();
+        text_area.content = content.to_string();
+        text_area.cursor_char = cursor_char;
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.auto_wrap = false;
+        text_area.is_focused = true;
+        text_area.pending_caret_scroll = true;
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        place_nowrap_text_area(&mut arena, root, max_width);
+        (arena, root)
+    }
+
+    fn place_nowrap_text_area(arena: &mut NodeArena, root: NodeKey, max_width: f32) {
+        crate::view::test_support::measure_and_place(
+            arena,
+            root,
+            LayoutConstraints {
+                max_width,
+                max_height: 600.0,
+                viewport_width: max_width,
+                viewport_height: 600.0,
+                percent_base_width: Some(max_width),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: max_width,
+                available_height: 600.0,
+                viewport_width: max_width,
+                viewport_height: 600.0,
+                percent_base_width: Some(max_width),
+                percent_base_height: Some(600.0),
+            },
+        );
     }
 
     fn first_boundary_with_neighbor(
@@ -494,6 +556,66 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn vertical_arrow_preserves_content_x_when_horizontal_scroll_changes() {
+        let long = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let content = format!("{long}\nshort\n{long}");
+        let first_line_end = long.chars().count();
+        let third_line_start = first_line_end + 1 + "short".chars().count() + 1;
+        let (mut arena, root) = nowrap_text_area(&content, first_line_end, 80.0);
+
+        let original_content_x = arena
+            .with_element_taken_ref(root, |el, arena| {
+                let text_area = el.as_any().downcast_ref::<HostTextArea>().unwrap();
+                assert!(text_area.scroll_x > 0.0);
+                let (x, _, _) = text_area.caret_screen_position(arena).expect("caret");
+                x + text_area.scroll_x
+            })
+            .unwrap();
+
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+            assert!(text_area.handle_vertical_arrow(arena, VerticalDirection::Down, false));
+            assert!(text_area.scroll_caret_into_view(arena));
+        });
+        place_nowrap_text_area(&mut arena, root, 80.0);
+
+        let scroll_after_short_line = arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<HostTextArea>()
+                    .unwrap()
+                    .scroll_x
+            })
+            .unwrap();
+        assert!(
+            scroll_after_short_line < original_content_x - 80.0,
+            "moving to the short line should reduce horizontal scroll enough to expose the stale-screen-x bug",
+        );
+
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+            assert!(text_area.handle_vertical_arrow(arena, VerticalDirection::Down, false));
+            assert!(
+                text_area.cursor_char > third_line_start + first_line_end / 2,
+                "second Down should return near the original far-right content column, got cursor_char={}",
+                text_area.cursor_char,
+            );
+            let (x, _, _) = text_area.caret_screen_position(arena).expect("caret");
+            let final_content_x = x + text_area.scroll_x;
+            assert!(
+                (final_content_x - original_content_x).abs() <= 8.0,
+                "sticky x should be content-space: original={original_content_x}, final={final_content_x}",
+            );
+        });
+    }
 }
 
 /// Tell the platform whether this widget wants OS-level IME composition.
@@ -591,6 +713,8 @@ impl EventTarget for TextArea {
                 self.notify_change_handlers();
             }
         }
+        self.mark_caret_scroll_pending();
+        self.scroll_caret_into_view(arena);
         set_platform_ime_cursor_rect(self, &event.meta, arena);
         event.meta.stop_propagation();
         control.request_redraw();
@@ -609,6 +733,7 @@ impl EventTarget for TextArea {
         let target_char =
             self.cursor_char_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
         self.update_pointer_selection(target_char);
+        self.scroll_caret_into_view(arena);
         set_platform_ime_cursor_rect(self, &event.meta, arena);
         event.meta.stop_propagation();
         control.request_redraw();
@@ -636,6 +761,8 @@ impl EventTarget for TextArea {
         self_key: NodeKey,
     ) {
         self.set_focused(true);
+        self.mark_caret_scroll_pending();
+        self.scroll_caret_into_view(arena);
         set_platform_ime(&event.meta, true);
         set_platform_ime_cursor_rect(self, &event.meta, arena);
         if !self.on_focus_handlers.is_empty() {
@@ -816,6 +943,8 @@ impl EventTarget for TextArea {
             self.notify_change_handlers();
         }
         if handled {
+            self.mark_caret_scroll_pending();
+            self.scroll_caret_into_view(arena);
             set_platform_ime_cursor_rect(self, &event.meta, arena);
             event.meta.stop_propagation();
             control.request_redraw();
@@ -852,6 +981,7 @@ impl EventTarget for TextArea {
             if had_preedit {
                 self.route_preedit_to_runs(arena);
             }
+            self.scroll_caret_into_view(arena);
             set_platform_ime_cursor_rect(self, &event.meta, arena);
             event.meta.stop_propagation();
             control.request_redraw();
@@ -874,6 +1004,7 @@ impl EventTarget for TextArea {
             self.set_preedit(event.text.clone(), event.cursor);
         }
         self.route_preedit_to_runs(arena);
+        self.scroll_caret_into_view(arena);
         set_platform_ime_cursor_rect(self, &event.meta, arena);
         event.meta.stop_propagation();
         control.request_redraw();
@@ -902,6 +1033,7 @@ impl EventTarget for TextArea {
             self.notify_change_handlers();
         }
         self.route_preedit_to_runs(arena);
+        self.scroll_caret_into_view(arena);
         set_platform_ime_cursor_rect(self, &event.meta, arena);
         event.meta.stop_propagation();
         control.request_redraw();
