@@ -13,9 +13,9 @@
 
 use crate::platform::ImeCommand;
 use crate::ui::{
-    BlurEvent, EventMeta, FocusEvent, ImeCommitEvent, ImeDisabledEvent, ImeEnabledEvent,
-    ImePreeditEvent, InputType, KeyDownEvent, PointerButton, PointerDownEvent, PointerMoveEvent,
-    PointerUpEvent, TextAreaFocusEvent, TextInputEvent,
+    BlurEvent, CopyEvent, CutEvent, EventMeta, FocusEvent, ImeCommitEvent, ImeDisabledEvent,
+    ImeEnabledEvent, ImePreeditEvent, InputType, KeyDownEvent, PasteEvent, PointerButton,
+    PointerDownEvent, PointerMoveEvent, PointerUpEvent, TextAreaFocusEvent, TextInputEvent,
 };
 use crate::view::base_component::EventTarget;
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -1065,6 +1065,70 @@ impl EventTarget for TextArea {
         // session starts clean.
         if self.clear_preedit() {
             self.route_preedit_to_runs(arena);
+            control.request_redraw();
+        }
+        event.meta.stop_propagation();
+    }
+
+    fn dispatch_copy(
+        &mut self,
+        event: &mut CopyEvent,
+        _control: &mut ViewportControl<'_>,
+        _arena: &NodeArena,
+        _self_key: NodeKey,
+    ) {
+        if let Some(text) = self.selected_text() {
+            event.data.set_text(text);
+        }
+        event.meta.stop_propagation();
+    }
+
+    fn dispatch_cut(
+        &mut self,
+        event: &mut CutEvent,
+        control: &mut ViewportControl<'_>,
+        _arena: &NodeArena,
+        _self_key: NodeKey,
+    ) {
+        let Some(text) = self.selected_text() else {
+            event.meta.stop_propagation();
+            return;
+        };
+        event.data.set_text(text);
+        if !self.read_only {
+            let prev = self.content.clone();
+            if self.delete_selected_text() && self.content != prev {
+                self.notify_change_handlers();
+            }
+            control.request_redraw();
+        }
+        event.meta.stop_propagation();
+    }
+
+    fn dispatch_paste(
+        &mut self,
+        event: &mut PasteEvent,
+        control: &mut ViewportControl<'_>,
+        arena: &NodeArena,
+        _self_key: NodeKey,
+    ) {
+        if self.read_only {
+            event.meta.stop_propagation();
+            return;
+        }
+        let Some(text) = event.data.text() else {
+            event.meta.stop_propagation();
+            return;
+        };
+        if text.is_empty() {
+            event.meta.stop_propagation();
+            return;
+        }
+        let prev = self.content.clone();
+        if self.insert_text(&text) && self.content != prev {
+            self.notify_change_handlers();
+            self.scroll_caret_into_view(arena);
+            set_platform_ime_cursor_rect(self, &event.meta, arena);
             control.request_redraw();
         }
         event.meta.stop_propagation();

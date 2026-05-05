@@ -332,8 +332,15 @@ impl Runner {
                 let _ = viewport.dispatch_platform_key_event(&platform_event);
             }
         }
-        // Clipboard shortcuts: Cmd/Ctrl+C/X/V.
-        if pressed && !self.ime_composing && modifiers.command() {
+        // Clipboard shortcuts: Cmd/Ctrl+C/X/V. Shift / Alt disqualify so
+        // Ctrl+Shift+C (devtools) and Cmd+Alt+V (format-paste) keep their
+        // raw-key semantics.
+        if pressed
+            && !self.ime_composing
+            && modifiers.command()
+            && !modifiers.shift()
+            && !modifiers.alt()
+        {
             use rfgui::platform::input::Key;
             match rf_key {
                 Key::KeyC => {

@@ -178,11 +178,18 @@ impl Runner {
             );
             let _ = viewport.dispatch_platform_key_event(&platform_event);
         }
-        // Clipboard shortcuts: Cmd/Ctrl+C/X/V on key-down. Fire the
-        // semantic event in addition to the raw key event so apps can
-        // react either way. Skip during IME composition to avoid
-        // stepping on conversion gestures.
-        if pressed && !self.ime_composing && modifiers.command() {
+        // Clipboard shortcuts: Cmd/Ctrl+C/X/V on key-down. Translate the
+        // raw key into the matching semantic event so apps can handle
+        // either path. Skip during IME composition to avoid stepping on
+        // conversion gestures. Shift / Alt disqualify so paired shortcuts
+        // (Ctrl+Shift+C devtools, Cmd+Alt+V format-paste) keep their
+        // meaning for handlers that listen for the raw key.
+        if pressed
+            && !self.ime_composing
+            && modifiers.command()
+            && !modifiers.shift()
+            && !modifiers.alt()
+        {
             use rfgui::platform::input::Key;
             match rf_key {
                 Key::KeyC => {

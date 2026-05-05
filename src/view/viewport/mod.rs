@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 use rustc_hash::{FxHashMap, FxHashSet};
 
+#[cfg(test)]
+mod clipboard_tests;
 mod debug;
 mod dispatch;
 mod frame;
