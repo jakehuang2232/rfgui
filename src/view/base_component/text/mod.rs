@@ -175,6 +175,11 @@ impl Text {
     pub(crate) fn vertical_align(&self) -> crate::style::VerticalAlign {
         self.vertical_align
     }
+
+    #[cfg(test)]
+    pub(crate) fn text_wrap(&self) -> crate::style::TextWrap {
+        self.text_wrap
+    }
 }
 
 use self::measure::measure_text_layout;

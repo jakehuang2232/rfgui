@@ -28,12 +28,12 @@ use rustc_hash::FxHashMap;
 
 use crate::style::Style;
 use crate::ui::{PropValue, RsxElementNode, RsxNode, RsxNodeIdentity};
-use crate::view::base_component::{Element, Text};
+use crate::view::base_component::{Element, ElementTrait, Text};
 use crate::view::fiber_work::{ApplyContext, PropApplyOutcome};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{
-    arena_insert_child, arena_remove_child, rsx_to_descriptors_scoped_with_context,
-    text_with_text_area_ime_preedit,
+    InheritedTextStyle, arena_insert_child, arena_remove_child,
+    rsx_to_descriptors_scoped_with_context, text_with_text_area_ime_preedit,
 };
 
 pub(crate) fn reconcile_existing_subtree(
@@ -45,7 +45,7 @@ pub(crate) fn reconcile_existing_subtree(
     inherited_style: &Style,
     scope: &[u64],
 ) -> Result<(), &'static str> {
-    with_new_provider_contexts(new, |new_inner| {
+    let result = with_new_provider_contexts(new, |new_inner| {
         reconcile_existing_subtree_inner(
             arena,
             anchor,
@@ -55,7 +55,40 @@ pub(crate) fn reconcile_existing_subtree(
             inherited_style,
             scope,
         )
-    })
+    });
+    // Reconcile only diffs RSX props; cascading text props (font / color
+    // / text_wrap / cursor) flow through `InheritedTextStyle`, which a
+    // pure prop-diff would miss when a TextArea-side cascade input
+    // (e.g. `auto_wrap`) flips between renders. Replay the cascade onto
+    // the live subtree so existing Text leaves pick up the new values.
+    if result.is_ok() {
+        let inherited = InheritedTextStyle::from_viewport_style(
+            inherited_style,
+            apply_ctx.viewport_width,
+            apply_ctx.viewport_height,
+        );
+        cascade_inherited_text_style(arena, anchor, &inherited);
+    }
+    result
+}
+
+fn cascade_inherited_text_style(
+    arena: &mut NodeArena,
+    key: NodeKey,
+    inherited: &InheritedTextStyle,
+) {
+    let mut child_inherited: Option<InheritedTextStyle> = None;
+    arena.with_element_taken(key, |element, _| {
+        element.apply_inherited(inherited);
+        if let Some(el) = element.as_any().downcast_ref::<Element>() {
+            child_inherited = Some(el.child_inherited_text_style(inherited));
+        }
+    });
+    let child_cascade = child_inherited.unwrap_or_else(|| inherited.clone());
+    let children = arena.children_of(key);
+    for child_key in children {
+        cascade_inherited_text_style(arena, child_key, &child_cascade);
+    }
 }
 
 fn reconcile_existing_subtree_inner(
