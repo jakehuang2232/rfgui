@@ -154,6 +154,10 @@ impl Text {
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
     }
 
+    pub fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
     pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
         if self.text_wrap != text_wrap {
             self.text_wrap = text_wrap;

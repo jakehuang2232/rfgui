@@ -1,20 +1,5 @@
 use super::*;
 
-#[derive(Clone)]
-pub(super) enum ViewportPointerUpListener {
-    Persistent(crate::ui::PointerUpHandlerProp),
-    Until(PointerUpUntilHandler),
-}
-
-impl ViewportPointerUpListener {
-    pub(super) fn id(&self) -> u64 {
-        match self {
-            Self::Persistent(handler) => handler.id(),
-            Self::Until(handler) => handler.id(),
-        }
-    }
-}
-
 pub use crate::platform::input::PlatformPointerButton as PointerButton;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

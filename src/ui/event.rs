@@ -14,7 +14,6 @@ use std::cell::RefCell;
 use std::fmt;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Canonical pointer button type. Aliased from
 /// [`crate::platform::input::PlatformPointerButton`]; ui and viewport
@@ -31,49 +30,6 @@ pub struct PointerButtons {
     pub middle: bool,
     pub back: bool,
     pub forward: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ViewportListenerHandle(pub u64);
-
-#[derive(Clone)]
-pub struct PointerUpUntilHandler {
-    id: u64,
-    handler: Rc<RefCell<dyn FnMut(&mut PointerUpEvent) -> bool>>,
-}
-
-impl PointerUpUntilHandler {
-    pub fn new<F>(handler: F) -> Self
-    where
-        F: FnMut(&mut PointerUpEvent) -> bool + 'static,
-    {
-        Self {
-            id: next_handler_id(),
-            handler: Rc::new(RefCell::new(handler)),
-        }
-    }
-
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    pub fn call(&self, event: &mut PointerUpEvent) -> bool {
-        (self.handler.borrow_mut())(event)
-    }
-}
-
-impl PartialEq for PointerUpUntilHandler {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl fmt::Debug for PointerUpUntilHandler {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PointerUpUntilHandler")
-            .field("id", &self.id)
-            .finish()
-    }
 }
 
 /// Dispatch lifecycle phase.
@@ -115,6 +71,49 @@ pub enum EventSource {
     Accessibility,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventMetaSnapshot {
+    pub target_id: NodeId,
+    pub target_bounds: Rect,
+    pub target_local_bounds: Rect,
+    pub current_target_id: NodeId,
+    pub current_target_bounds: Rect,
+    pub current_target_local_bounds: Rect,
+    pub related_target_id: Option<NodeId>,
+    pub related_target_bounds: Rect,
+    pub related_target_local_bounds: Rect,
+    pub phase: EventPhase,
+    pub source: EventSource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewportPointerDownEvent {
+    pub meta: EventMetaSnapshot,
+    pub pointer: PointerEventData,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewportPointerMoveEvent {
+    pub meta: EventMetaSnapshot,
+    pub pointer: PointerEventData,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewportPointerUpEvent {
+    pub meta: EventMetaSnapshot,
+    pub pointer: PointerEventData,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ViewportPointerState {
+    pub latest_down: Option<ViewportPointerDownEvent>,
+    pub latest_move: Option<ViewportPointerMoveEvent>,
+    pub latest_up: Option<ViewportPointerUpEvent>,
+    pub position: Option<(f32, f32)>,
+    pub buttons: PointerButtons,
+    pub target: Option<EventMetaSnapshot>,
+}
+
 /// Scroll alignment requested by [`EventCommand::ScrollIntoView`].
 /// Matches the DOM `ScrollLogicalPosition` options used by
 /// `Element.scrollIntoView`.
@@ -150,9 +149,6 @@ pub struct ScrollIntoViewOptions {
 /// event finishes bubbling.
 #[derive(Clone, Debug)]
 pub enum EventCommand {
-    AddPointerMoveListener(PointerMoveHandlerProp),
-    AddPointerUpListener(PointerUpHandlerProp),
-    AddPointerUpListenerUntil(PointerUpUntilHandler),
     SetFocus(Option<NodeId>),
     SetCursor(Option<Cursor>),
     SelectTextRangeAll(NodeId),
@@ -161,7 +157,6 @@ pub enum EventCommand {
         start: usize,
         end: usize,
     },
-    RemoveListener(ViewportListenerHandle),
     // --- Sprint 5 command additions ---
     /// Ask the runner to schedule another redraw.
     RequestRedraw,
@@ -290,8 +285,14 @@ impl Default for EventMetaState {
 }
 
 fn next_event_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    thread_local! {
+        static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    }
+    NEXT_ID.with(|next| {
+        let id = next.get();
+        next.set(id.saturating_add(1));
+        id
+    })
 }
 
 #[derive(Clone)]
@@ -451,6 +452,23 @@ impl EventMeta {
     /// lifetime of the event; use for log correlation and trace spans.
     pub fn event_id(&self) -> u64 {
         self.state.borrow().event_id
+    }
+
+    pub fn snapshot(&self) -> EventMetaSnapshot {
+        let state = self.state.borrow();
+        EventMetaSnapshot {
+            target_id: state.target_id,
+            target_bounds: state.target_bounds,
+            target_local_bounds: state.target_local_bounds,
+            current_target_id: state.current_target_id,
+            current_target_bounds: state.current_target_bounds,
+            current_target_local_bounds: state.current_target_local_bounds,
+            related_target_id: state.related_target_id,
+            related_target_bounds: state.related_target_bounds,
+            related_target_local_bounds: state.related_target_local_bounds,
+            phase: state.phase,
+            source: state.source,
+        }
     }
 
     /// Current dispatch lifecycle phase. See [`EventPhase`].
@@ -650,52 +668,6 @@ impl fmt::Debug for EventViewport {
 }
 
 impl EventViewport {
-    pub fn add_pointer_move_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
-    where
-        F: FnMut(&mut PointerMoveEvent) + 'static,
-    {
-        let handler_prop = PointerMoveHandlerProp::new(handler);
-        let handle = ViewportListenerHandle(handler_prop.id());
-        self.state
-            .borrow_mut()
-            .viewport_listener_actions
-            .push(EventCommand::AddPointerMoveListener(handler_prop));
-        handle
-    }
-
-    pub fn add_pointer_up_listener<F>(&mut self, handler: F) -> ViewportListenerHandle
-    where
-        F: FnMut(&mut PointerUpEvent) + 'static,
-    {
-        let handler_prop = PointerUpHandlerProp::new(handler);
-        let handle = ViewportListenerHandle(handler_prop.id());
-        self.state
-            .borrow_mut()
-            .viewport_listener_actions
-            .push(EventCommand::AddPointerUpListener(handler_prop));
-        handle
-    }
-
-    pub fn add_pointer_up_listener_until<F>(&mut self, handler: F) -> ViewportListenerHandle
-    where
-        F: FnMut(&mut PointerUpEvent) -> bool + 'static,
-    {
-        let handler_prop = PointerUpUntilHandler::new(handler);
-        let handle = ViewportListenerHandle(handler_prop.id());
-        self.state
-            .borrow_mut()
-            .viewport_listener_actions
-            .push(EventCommand::AddPointerUpListenerUntil(handler_prop));
-        handle
-    }
-
-    pub fn remove_listener(&mut self, handle: ViewportListenerHandle) {
-        self.state
-            .borrow_mut()
-            .viewport_listener_actions
-            .push(EventCommand::RemoveListener(handle));
-    }
-
     pub fn set_cursor(&mut self, cursor: Option<Cursor>) {
         self.state
             .borrow_mut()
@@ -1354,157 +1326,131 @@ pub struct PasteEvent {
 
 #[derive(Clone)]
 pub struct PointerDownHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut PointerDownEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct PointerUpHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut PointerUpEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct PointerMoveHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut PointerMoveEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct PointerEnterHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut PointerEnterEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct PointerLeaveHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut PointerLeaveEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct ClickHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut ClickEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct ContextMenuHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut ContextMenuEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct WheelHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut WheelEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct KeyDownHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut KeyDownEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct KeyUpHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut KeyUpEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct FocusHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut FocusEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct BlurHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut BlurEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct ImeCommitHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut ImeCommitEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct ImeEnabledHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut ImeEnabledEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct ImeDisabledHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut ImeDisabledEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct DragStartHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut DragStartEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct DragOverHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut DragOverEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct DragLeaveHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut DragLeaveEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct DropHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut DropEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct DragEndHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut DragEndEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct CopyHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut CopyEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct CutHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut CutEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct PasteHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut PasteEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct TextAreaFocusHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut TextAreaFocusEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct TextChangeHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut TextChangeEvent)>>,
 }
 
 #[derive(Clone)]
 pub struct TextAreaRenderHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(&mut TextAreaRenderString)>>,
 }
 
@@ -1571,11 +1517,6 @@ where
     NoArgHandler(f)
 }
 
-fn next_handler_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
-}
-
 macro_rules! impl_handler_prop {
     ($ty:ident, $event_ty:ty) => {
         impl $ty {
@@ -1584,13 +1525,8 @@ macro_rules! impl_handler_prop {
                 F: for<'a> FnMut(&'a mut $event_ty) + 'static,
             {
                 Self {
-                    id: next_handler_id(),
                     handler: Rc::new(RefCell::new(handler)),
                 }
-            }
-
-            pub fn id(&self) -> u64 {
-                self.id
             }
 
             pub fn call(&self, event: &mut $event_ty) {
@@ -1600,14 +1536,14 @@ macro_rules! impl_handler_prop {
 
         impl PartialEq for $ty {
             fn eq(&self, other: &Self) -> bool {
-                self.id == other.id
+                Rc::ptr_eq(&self.handler, &other.handler)
             }
         }
 
         impl fmt::Debug for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_struct(stringify!($ty))
-                    .field("id", &self.id)
+                    .field("handler", &Rc::as_ptr(&self.handler))
                     .finish()
             }
         }

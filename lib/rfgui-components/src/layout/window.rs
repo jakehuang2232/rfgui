@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::use_theme;
 use rfgui::style::ClipMode::{AnchorParent, Parent};
@@ -11,7 +10,8 @@ use rfgui::style::{
 };
 use rfgui::ui::{
     BlurHandlerProp, FocusHandlerProp, PointerButton, PointerDownHandlerProp, RsxComponent,
-    RsxNode, ViewportListenerHandle, on_pointer_down, props, rsx, use_state,
+    RsxNode, on_pointer_down, props, rsx, use_state, use_viewport_pointer_move,
+    use_viewport_pointer_up,
 };
 use rfgui::view::{Element, Text};
 
@@ -23,7 +23,6 @@ const RESIZE_CORNER_SIZE: f32 = 14.0;
 
 #[derive(Clone)]
 pub struct ResizeHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(f32, f32)>>,
 }
 
@@ -33,13 +32,8 @@ impl ResizeHandlerProp {
         F: FnMut(f32, f32) + 'static,
     {
         Self {
-            id: next_resize_handler_id(),
             handler: Rc::new(RefCell::new(handler)),
         }
-    }
-
-    pub fn id(&self) -> u64 {
-        self.id
     }
 
     pub fn call(&self, width: f32, height: f32) {
@@ -49,14 +43,14 @@ impl ResizeHandlerProp {
 
 impl PartialEq for ResizeHandlerProp {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        Rc::ptr_eq(&self.handler, &other.handler)
     }
 }
 
 impl fmt::Debug for ResizeHandlerProp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResizeHandlerProp")
-            .field("id", &self.id)
+            .field("handler", &Rc::as_ptr(&self.handler))
             .finish()
     }
 }
@@ -70,7 +64,6 @@ where
 
 #[derive(Clone)]
 pub struct MoveHandlerProp {
-    id: u64,
     handler: Rc<RefCell<dyn FnMut(f32, f32)>>,
 }
 
@@ -80,13 +73,8 @@ impl MoveHandlerProp {
         F: FnMut(f32, f32) + 'static,
     {
         Self {
-            id: next_move_handler_id(),
             handler: Rc::new(RefCell::new(handler)),
         }
-    }
-
-    pub fn id(&self) -> u64 {
-        self.id
     }
 
     pub fn call(&self, x: f32, y: f32) {
@@ -96,14 +84,14 @@ impl MoveHandlerProp {
 
 impl PartialEq for MoveHandlerProp {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        Rc::ptr_eq(&self.handler, &other.handler)
     }
 }
 
 impl fmt::Debug for MoveHandlerProp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MoveHandlerProp")
-            .field("id", &self.id)
+            .field("handler", &Rc::as_ptr(&self.handler))
             .finish()
     }
 }
@@ -113,16 +101,6 @@ where
     F: FnMut(f32, f32) + 'static,
 {
     MoveHandlerProp::new(handler)
-}
-
-fn next_resize_handler_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-fn next_move_handler_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -168,12 +146,6 @@ impl ResizeEdge {
             Self::BottomRight => Cursor::NwseResize,
         }
     }
-}
-
-#[derive(Clone, Copy, Default, PartialEq)]
-struct WindowViewportListenerState {
-    move_listener: Option<ViewportListenerHandle>,
-    up_listener: Option<ViewportListenerHandle>,
 }
 
 pub struct Window;
@@ -297,7 +269,6 @@ fn WindowView(
     let position_state = use_state(|| position.unwrap_or((0.0, 0.0)));
     let size = use_state(|| (initial_width, initial_height));
     let interaction = use_state(|| WindowInteraction::Idle);
-    let viewport_listeners = use_state(WindowViewportListenerState::default);
 
     let (x, y) = position.unwrap_or_else(|| position_state.get());
     let (width, height) = size.get();
@@ -358,13 +329,123 @@ fn WindowView(
         .and_then(|style| style.background)
         .unwrap_or_else(|| color_like_to_color(theme.color.layer.surface.as_ref()));
 
+    {
+        let interaction_for_move = interaction.binding();
+        let position_for_move = position_state.binding();
+        let size_for_move = size.binding();
+        let on_move_for_move = on_move.clone();
+        let on_resize_for_move = on_resize.clone();
+        let controlled = position.is_some();
+        use_viewport_pointer_move(move |move_event| match interaction_for_move.get() {
+            WindowInteraction::Dragging {
+                start_mouse_x,
+                start_mouse_y,
+                start_x,
+                start_y,
+            } => {
+                let next_x = start_x + (move_event.pointer.viewport_x - start_mouse_x);
+                let next_y = start_y + (move_event.pointer.viewport_y - start_mouse_y);
+                if !controlled {
+                    position_for_move.set((next_x, next_y));
+                }
+                if let Some(handler) = &on_move_for_move {
+                    handler.call(next_x, next_y);
+                }
+            }
+            WindowInteraction::Resizing {
+                edge,
+                start_mouse_x,
+                start_mouse_y,
+                start_x,
+                start_y,
+                start_width,
+                start_height,
+            } => {
+                let dx = move_event.pointer.viewport_x - start_mouse_x;
+                let dy = move_event.pointer.viewport_y - start_mouse_y;
+
+                let mut next_x = start_x;
+                let mut next_y = start_y;
+                let mut next_width = start_width;
+                let mut next_height = start_height;
+
+                match edge {
+                    ResizeEdge::Right => {
+                        next_width = (start_width + dx).max(MIN_WIDTH);
+                    }
+                    ResizeEdge::Bottom => {
+                        next_height = (start_height + dy).max(MIN_HEIGHT);
+                    }
+                    ResizeEdge::TopLeft => {
+                        let raw_width = start_width - dx;
+                        next_width = raw_width.max(MIN_WIDTH);
+                        next_x = start_x + (start_width - next_width);
+
+                        let raw_height = start_height - dy;
+                        next_height = raw_height.max(MIN_HEIGHT);
+                        next_y = start_y + (start_height - next_height);
+                    }
+                    ResizeEdge::TopRight => {
+                        next_width = (start_width + dx).max(MIN_WIDTH);
+
+                        let raw_height = start_height - dy;
+                        next_height = raw_height.max(MIN_HEIGHT);
+                        next_y = start_y + (start_height - next_height);
+                    }
+                    ResizeEdge::BottomRight => {
+                        next_width = (start_width + dx).max(MIN_WIDTH);
+                        next_height = (start_height + dy).max(MIN_HEIGHT);
+                    }
+                    ResizeEdge::Left => {
+                        let raw_width = start_width - dx;
+                        next_width = raw_width.max(MIN_WIDTH);
+                        next_x = start_x + (start_width - next_width);
+                    }
+                    ResizeEdge::Top => {
+                        let raw_height = start_height - dy;
+                        next_height = raw_height.max(MIN_HEIGHT);
+                        next_y = start_y + (start_height - next_height);
+                    }
+                    ResizeEdge::BottomLeft => {
+                        let raw_width = start_width - dx;
+                        next_width = raw_width.max(MIN_WIDTH);
+                        next_x = start_x + (start_width - next_width);
+                        next_height = (start_height + dy).max(MIN_HEIGHT);
+                    }
+                }
+
+                if !controlled {
+                    position_for_move.set((next_x, next_y));
+                }
+                size_for_move.set((next_width, next_height));
+                if let Some(handler) = &on_move_for_move {
+                    handler.call(next_x, next_y);
+                }
+                if let Some(handler) = &on_resize_for_move {
+                    handler.call(next_width, next_height);
+                }
+            }
+            WindowInteraction::Idle => {}
+        });
+    }
+
+    {
+        let interaction_for_up = interaction.binding();
+        let viewport = rfgui::ui::use_viewport();
+        use_viewport_pointer_up(move |up_event| {
+            if up_event.pointer.button != Some(PointerButton::Left) {
+                return;
+            }
+            if let WindowInteraction::Resizing { .. } = interaction_for_up.get() {
+                viewport.set_cursor(None);
+            }
+            interaction_for_up.set(WindowInteraction::Idle);
+        });
+    }
+
     let title_down: PointerDownHandlerProp = {
         let interaction = interaction.binding();
-        let position_state = position_state.binding();
         let current_position = (x, y);
-        let on_move = on_move.clone();
-        let controlled = position.is_some();
-        let viewport_listeners = viewport_listeners.binding();
         on_pointer_down(move |event| {
             if !draggable || event.pointer.button != Some(PointerButton::Left) {
                 return;
@@ -379,56 +460,6 @@ fn WindowView(
                 start_x,
                 start_y,
             });
-            let listeners = viewport_listeners.get();
-            if let Some(handle) = listeners.move_listener {
-                event.viewport.remove_listener(handle);
-            }
-            if let Some(handle) = listeners.up_listener {
-                event.viewport.remove_listener(handle);
-            }
-            let interaction_for_move = interaction.clone();
-            let position_for_move = position_state.clone();
-            let on_move_for_move = on_move.clone();
-            let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
-                match interaction_for_move.get() {
-                    WindowInteraction::Dragging {
-                        start_mouse_x,
-                        start_mouse_y,
-                        start_x,
-                        start_y,
-                    } => {
-                        let next_x = start_x + (move_event.pointer.viewport_x - start_mouse_x);
-                        let next_y = start_y + (move_event.pointer.viewport_y - start_mouse_y);
-                        if !controlled {
-                            position_for_move.set((next_x, next_y));
-                        }
-                        if let Some(handler) = &on_move_for_move {
-                            handler.call(next_x, next_y);
-                        }
-                        move_event.meta.stop_propagation();
-                    }
-                    WindowInteraction::Resizing { .. } => {}
-                    WindowInteraction::Idle => {}
-                }
-            });
-            let interaction_for_up = interaction.clone();
-            let viewport_listeners_for_up = viewport_listeners.clone();
-            let up_listener = event
-                .viewport
-                .add_pointer_up_listener_until(move |up_event| {
-                    if up_event.pointer.button != Some(PointerButton::Left) {
-                        return false;
-                    }
-                    up_event.viewport.remove_listener(move_listener);
-                    interaction_for_up.set(WindowInteraction::Idle);
-                    viewport_listeners_for_up.set(WindowViewportListenerState::default());
-                    up_event.meta.stop_propagation();
-                    true
-                });
-            viewport_listeners.set(WindowViewportListenerState {
-                move_listener: Some(move_listener),
-                up_listener: Some(up_listener),
-            });
             event.meta.stop_propagation();
         })
     };
@@ -436,12 +467,7 @@ fn WindowView(
     let make_resize_down = |edge: ResizeEdge| {
         let interaction = interaction.binding();
         let size = size.binding();
-        let position_state = position_state.binding();
         let current_position = (x, y);
-        let on_move = on_move.clone();
-        let controlled = position.is_some();
-        let on_resize = on_resize.clone();
-        let viewport_listeners = viewport_listeners.binding();
         on_pointer_down(move |event| {
             if event.pointer.button != Some(PointerButton::Left) {
                 return;
@@ -460,116 +486,6 @@ fn WindowView(
                 start_y,
                 start_width,
                 start_height,
-            });
-            let listeners = viewport_listeners.get();
-            if let Some(handle) = listeners.move_listener {
-                event.viewport.remove_listener(handle);
-            }
-            if let Some(handle) = listeners.up_listener {
-                event.viewport.remove_listener(handle);
-            }
-            let interaction_for_move = interaction.clone();
-            let size_for_move = size.clone();
-            let position_for_move = position_state.clone();
-            let on_move_for_move = on_move.clone();
-            let on_resize_for_move = on_resize.clone();
-            let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
-                if let WindowInteraction::Resizing {
-                    edge,
-                    start_mouse_x,
-                    start_mouse_y,
-                    start_x,
-                    start_y,
-                    start_width,
-                    start_height,
-                } = interaction_for_move.get()
-                {
-                    let dx = move_event.pointer.viewport_x - start_mouse_x;
-                    let dy = move_event.pointer.viewport_y - start_mouse_y;
-
-                    let mut next_x = start_x;
-                    let mut next_y = start_y;
-                    let mut next_width = start_width;
-                    let mut next_height = start_height;
-
-                    match edge {
-                        ResizeEdge::Right => {
-                            next_width = (start_width + dx).max(MIN_WIDTH);
-                        }
-                        ResizeEdge::Bottom => {
-                            next_height = (start_height + dy).max(MIN_HEIGHT);
-                        }
-                        ResizeEdge::TopLeft => {
-                            let raw_width = start_width - dx;
-                            next_width = raw_width.max(MIN_WIDTH);
-                            next_x = start_x + (start_width - next_width);
-
-                            let raw_height = start_height - dy;
-                            next_height = raw_height.max(MIN_HEIGHT);
-                            next_y = start_y + (start_height - next_height);
-                        }
-                        ResizeEdge::TopRight => {
-                            next_width = (start_width + dx).max(MIN_WIDTH);
-
-                            let raw_height = start_height - dy;
-                            next_height = raw_height.max(MIN_HEIGHT);
-                            next_y = start_y + (start_height - next_height);
-                        }
-                        ResizeEdge::BottomRight => {
-                            next_width = (start_width + dx).max(MIN_WIDTH);
-                            next_height = (start_height + dy).max(MIN_HEIGHT);
-                        }
-                        ResizeEdge::Left => {
-                            let raw_width = start_width - dx;
-                            next_width = raw_width.max(MIN_WIDTH);
-                            next_x = start_x + (start_width - next_width);
-                        }
-                        ResizeEdge::Top => {
-                            let raw_height = start_height - dy;
-                            next_height = raw_height.max(MIN_HEIGHT);
-                            next_y = start_y + (start_height - next_height);
-                        }
-                        ResizeEdge::BottomLeft => {
-                            let raw_width = start_width - dx;
-                            next_width = raw_width.max(MIN_WIDTH);
-                            next_x = start_x + (start_width - next_width);
-                            next_height = (start_height + dy).max(MIN_HEIGHT);
-                        }
-                    }
-
-                    if !controlled {
-                        position_for_move.set((next_x, next_y));
-                    }
-                    size_for_move.set((next_width, next_height));
-                    if let Some(handler) = &on_move_for_move {
-                        handler.call(next_x, next_y);
-                    }
-                    if let Some(handler) = &on_resize_for_move {
-                        handler.call(next_width, next_height);
-                    }
-                    move_event.meta.stop_propagation();
-                }
-            });
-            let interaction_for_up = interaction.clone();
-            let viewport_listeners_for_up = viewport_listeners.clone();
-            let up_listener = event
-                .viewport
-                .add_pointer_up_listener_until(move |up_event| {
-                    if up_event.pointer.button != Some(PointerButton::Left) {
-                        return false;
-                    }
-                    up_event.viewport.remove_listener(move_listener);
-                    if let WindowInteraction::Resizing { .. } = interaction_for_up.get() {
-                        up_event.viewport.set_cursor(None);
-                    }
-                    interaction_for_up.set(WindowInteraction::Idle);
-                    viewport_listeners_for_up.set(WindowViewportListenerState::default());
-                    up_event.meta.stop_propagation();
-                    true
-                });
-            viewport_listeners.set(WindowViewportListenerState {
-                move_listener: Some(move_listener),
-                up_listener: Some(up_listener),
             });
             event.meta.stop_propagation();
         })

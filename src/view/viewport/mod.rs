@@ -34,9 +34,8 @@ use crate::transition::{
 use crate::ui::{
     BlurEvent, ClickEvent, EventCommand, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent,
     KeyDownEvent, KeyEventData, KeyUpEvent, NodeId, Patch, PointerButtons as UiPointerButtons,
-    PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PointerUpUntilHandler,
-    PropValue, RsxNode, TextInputEvent, ViewportListenerHandle, peek_state_dirty, reconcile,
-    take_state_dirty,
+    PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PropValue, RsxNode,
+    TextInputEvent, peek_state_dirty, reconcile, take_state_dirty,
 };
 use crate::view::ElementStylePropSchema;
 use crate::view::base_component::Renderable;
@@ -77,9 +76,7 @@ pub use self::frame::FrameParts;
 use self::frame::{
     BeginFrameProfile, EndFrameProfile, FrameState, FrameStats, FrameTimings, LayoutPassResult,
 };
-use self::input::{
-    DragState, InputState, PendingClick, ViewportPointerUpListener, is_valid_click_candidate,
-};
+use self::input::{DragState, InputState, PendingClick, is_valid_click_candidate};
 pub use self::input::{PointerButton, ViewportDebugOptions};
 use self::transitions_tick::TransitionHostAdapter;
 use crate::app::App;
@@ -211,8 +208,6 @@ pub struct Viewport {
     /// every render. Hosts query this via `is_animating()` to decide
     /// whether to pump another frame immediately or idle.
     is_animating: bool,
-    viewport_pointer_move_listeners: Vec<crate::ui::PointerMoveHandlerProp>,
-    viewport_pointer_up_listeners: Vec<ViewportPointerUpListener>,
     app: Option<Box<dyn App>>,
     cached_rsx: Option<RsxNode>,
     needs_rebuild: bool,
@@ -527,8 +522,6 @@ impl Viewport {
             last_recorded_cursor: None,
             pending_platform_requests: PlatformRequests::default(),
             is_animating: false,
-            viewport_pointer_move_listeners: Vec::new(),
-            viewport_pointer_up_listeners: Vec::new(),
             app: None,
             cached_rsx: None,
             needs_rebuild: true,

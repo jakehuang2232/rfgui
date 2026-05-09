@@ -1078,6 +1078,9 @@ impl Viewport {
                 crate::ui::ViewportAction::SetClearColor(color) => {
                     self.set_clear_color(Box::new(color));
                 }
+                crate::ui::ViewportAction::SetCursor(cursor) => {
+                    self.set_cursor(cursor);
+                }
                 crate::ui::ViewportAction::RequestRedraw => self.request_redraw(),
             }
         }
