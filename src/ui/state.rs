@@ -4,7 +4,11 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::time::{Duration, Instant};
-use crate::ui::{FromPropValue, GlobalKey, IntoPropValue, PropValue, RsxKey, SharedPropValue};
+use crate::ui::{
+    EventMetaSnapshot, FromPropValue, GlobalKey, IntoPropValue, PointerButtons, PropValue, RsxKey,
+    SharedPropValue, ViewportPointerDownEvent, ViewportPointerMoveEvent, ViewportPointerState,
+    ViewportPointerUpEvent,
+};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
@@ -281,6 +285,7 @@ struct MemoEntry {
     live_keys: FxHashSet<ComponentKey>,
     live_global_keys: FxHashSet<GlobalKey>,
     live_timer_hooks: FxHashSet<TimerHookKey>,
+    live_viewport_pointer_hooks: FxHashSet<ViewportPointerHookKey>,
 }
 
 /// A scope that captures which keys/hooks were registered during a render
@@ -292,6 +297,7 @@ struct MemoFrame {
     live_keys: FxHashSet<ComponentKey>,
     live_global_keys: FxHashSet<GlobalKey>,
     live_timer_hooks: FxHashSet<TimerHookKey>,
+    live_viewport_pointer_hooks: FxHashSet<ViewportPointerHookKey>,
 }
 
 fn memo_props_eq<P: PartialEq + 'static>(a: &dyn Any, b: &dyn Any) -> bool {
@@ -387,6 +393,29 @@ where
     }
 }
 
+#[derive(Clone, Eq)]
+struct ViewportPointerHookKey {
+    component: ComponentKey,
+    hook_index: usize,
+}
+
+impl PartialEq for ViewportPointerHookKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.component == other.component && self.hook_index == other.hook_index
+    }
+}
+
+impl Hash for ViewportPointerHookKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.component.hash(state);
+        self.hook_index.hash(state);
+    }
+}
+
+type ViewportPointerDownCallback = Rc<RefCell<dyn FnMut(&ViewportPointerDownEvent)>>;
+type ViewportPointerMoveCallback = Rc<RefCell<dyn FnMut(&ViewportPointerMoveEvent)>>;
+type ViewportPointerUpCallback = Rc<RefCell<dyn FnMut(&ViewportPointerUpEvent)>>;
+
 thread_local! {
     static STORE: RefCell<StateStore> = RefCell::new(StateStore::default());
     static GLOBAL_STORE: RefCell<FxHashMap<TypeId, Box<dyn Any>>> = RefCell::new(FxHashMap::default());
@@ -398,6 +427,12 @@ thread_local! {
     static LIVE_TIMER_HOOKS: RefCell<FxHashSet<TimerHookKey>> = RefCell::new(FxHashSet::default());
     static MOUNT_STORE: RefCell<FxHashMap<MountHookKey, MountEntry>> = RefCell::new(FxHashMap::default());
     static LIVE_MOUNT_HOOKS: RefCell<FxHashSet<MountHookKey>> = RefCell::new(FxHashSet::default());
+    static VIEWPORT_POINTER_DOWN_HOOKS: RefCell<FxHashMap<ViewportPointerHookKey, ViewportPointerDownCallback>> = RefCell::new(FxHashMap::default());
+    static VIEWPORT_POINTER_MOVE_HOOKS: RefCell<FxHashMap<ViewportPointerHookKey, ViewportPointerMoveCallback>> = RefCell::new(FxHashMap::default());
+    static VIEWPORT_POINTER_UP_HOOKS: RefCell<FxHashMap<ViewportPointerHookKey, ViewportPointerUpCallback>> = RefCell::new(FxHashMap::default());
+    static VIEWPORT_POINTER_STATE_HOOKS: RefCell<FxHashSet<ViewportPointerHookKey>> = RefCell::new(FxHashSet::default());
+    static LIVE_VIEWPORT_POINTER_HOOKS: RefCell<FxHashSet<ViewportPointerHookKey>> = RefCell::new(FxHashSet::default());
+    static VIEWPORT_POINTER_STATE: RefCell<ViewportPointerState> = RefCell::new(ViewportPointerState::default());
     static PENDING_MOUNTS: RefCell<Vec<Box<dyn FnOnce()>>> = const { RefCell::new(Vec::new()) };
     /// Stack of in-progress memoized-component renders. Every registration of
     /// a `ComponentKey`, `GlobalKey`, or timer hook while this stack is
@@ -429,6 +464,15 @@ fn memo_stack_record_timer_hook(key: &TimerHookKey) {
         let mut stack = s.borrow_mut();
         if let Some(top) = stack.last_mut() {
             top.live_timer_hooks.insert(key.clone());
+        }
+    });
+}
+
+fn memo_stack_record_viewport_pointer_hook(key: &ViewportPointerHookKey) {
+    MEMO_STACK.with(|s| {
+        let mut stack = s.borrow_mut();
+        if let Some(top) = stack.last_mut() {
+            top.live_viewport_pointer_hooks.insert(key.clone());
         }
     });
 }
@@ -513,6 +557,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
             store.components_rendered_in_build = false;
             LIVE_TIMER_HOOKS.with(|hooks| hooks.borrow_mut().clear());
             LIVE_MOUNT_HOOKS.with(|hooks| hooks.borrow_mut().clear());
+            LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| hooks.borrow_mut().clear());
         }
         store.build_depth += 1;
     });
@@ -548,6 +593,21 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
                     mounts
                         .borrow_mut()
                         .retain(|key, _| live_hooks.contains(key));
+                });
+            });
+            LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
+                let live_hooks = hooks.borrow().clone();
+                VIEWPORT_POINTER_DOWN_HOOKS.with(|store| {
+                    store.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                });
+                VIEWPORT_POINTER_MOVE_HOOKS.with(|store| {
+                    store.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                });
+                VIEWPORT_POINTER_UP_HOOKS.with(|store| {
+                    store.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                });
+                VIEWPORT_POINTER_STATE_HOOKS.with(|store| {
+                    store.borrow_mut().retain(|key| live_hooks.contains(key));
                 });
             });
             drain_pending_mounts();
@@ -758,10 +818,11 @@ where
             entry.live_keys.clone(),
             entry.live_global_keys.clone(),
             entry.live_timer_hooks.clone(),
+            entry.live_viewport_pointer_hooks.clone(),
         ))
     });
 
-    if let Some((node, lk, lgk, lth)) = cached_hit {
+    if let Some((node, lk, lgk, lth, lvph)) = cached_hit {
         // Replay descendants — both into the thread-local live sets that
         // `build_scope` uses for GC, and into any enclosing memo frame.
         STORE.with(|store| {
@@ -779,6 +840,12 @@ where
                 hooks.insert(k.clone());
             }
         });
+        LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
+            let mut hooks = hooks.borrow_mut();
+            for k in &lvph {
+                hooks.insert(k.clone());
+            }
+        });
         MEMO_STACK.with(|stack| {
             let mut stack = stack.borrow_mut();
             if let Some(top) = stack.last_mut() {
@@ -790,6 +857,9 @@ where
                 }
                 for k in &lth {
                     top.live_timer_hooks.insert(k.clone());
+                }
+                for k in &lvph {
+                    top.live_viewport_pointer_hooks.insert(k.clone());
                 }
             }
         });
@@ -840,6 +910,9 @@ where
             for k in &frame.live_timer_hooks {
                 top.live_timer_hooks.insert(k.clone());
             }
+            for k in &frame.live_viewport_pointer_hooks {
+                top.live_viewport_pointer_hooks.insert(k.clone());
+            }
         }
     });
 
@@ -853,6 +926,7 @@ where
                 live_keys: frame.live_keys,
                 live_global_keys: frame.live_global_keys,
                 live_timer_hooks: frame.live_timer_hooks,
+                live_viewport_pointer_hooks: frame.live_viewport_pointer_hooks,
             },
         );
     });
@@ -971,6 +1045,176 @@ where
     F: FnMut() + 'static,
 {
     use_timer(TimerMode::Interval, enabled, interval, callback);
+}
+
+fn next_viewport_pointer_hook_key(name: &str) -> ViewportPointerHookKey {
+    let (component, hook_index) = CONTEXT.with(|context| {
+        let mut context = context.borrow_mut();
+        let frame = context
+            .frames
+            .last_mut()
+            .unwrap_or_else(|| panic!("{name}() must be called inside #[component] render"));
+        let index = frame.hook_cursor;
+        frame.hook_cursor += 1;
+        (frame.key.clone(), index)
+    });
+
+    let key = ViewportPointerHookKey {
+        component,
+        hook_index,
+    };
+    LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
+        hooks.borrow_mut().insert(key.clone());
+    });
+    memo_stack_record_viewport_pointer_hook(&key);
+    key
+}
+
+pub fn use_viewport_pointer_down<F>(handler: F)
+where
+    F: FnMut(&ViewportPointerDownEvent) + 'static,
+{
+    let key = next_viewport_pointer_hook_key("use_viewport_pointer_down");
+    VIEWPORT_POINTER_DOWN_HOOKS.with(|store| {
+        store
+            .borrow_mut()
+            .insert(key, Rc::new(RefCell::new(handler)));
+    });
+}
+
+pub fn use_viewport_pointer_move<F>(handler: F)
+where
+    F: FnMut(&ViewportPointerMoveEvent) + 'static,
+{
+    let key = next_viewport_pointer_hook_key("use_viewport_pointer_move");
+    VIEWPORT_POINTER_MOVE_HOOKS.with(|store| {
+        store
+            .borrow_mut()
+            .insert(key, Rc::new(RefCell::new(handler)));
+    });
+}
+
+pub fn use_viewport_pointer_up<F>(handler: F)
+where
+    F: FnMut(&ViewportPointerUpEvent) + 'static,
+{
+    let key = next_viewport_pointer_hook_key("use_viewport_pointer_up");
+    VIEWPORT_POINTER_UP_HOOKS.with(|store| {
+        store
+            .borrow_mut()
+            .insert(key, Rc::new(RefCell::new(handler)));
+    });
+}
+
+pub fn use_viewport_pointer_state() -> ViewportPointerState {
+    let key = next_viewport_pointer_hook_key("use_viewport_pointer_state");
+    VIEWPORT_POINTER_STATE_HOOKS.with(|store| {
+        store.borrow_mut().insert(key);
+    });
+    VIEWPORT_POINTER_STATE.with(|state| state.borrow().clone())
+}
+
+pub fn use_viewport_pointer_position() -> Option<(f32, f32)> {
+    use_viewport_pointer_state().position
+}
+
+pub fn use_viewport_pointer_target() -> Option<EventMetaSnapshot> {
+    use_viewport_pointer_state().target
+}
+
+pub fn use_viewport_pointer_buttons() -> PointerButtons {
+    use_viewport_pointer_state().buttons
+}
+
+#[doc(hidden)]
+pub fn has_viewport_pointer_hooks() -> bool {
+    VIEWPORT_POINTER_DOWN_HOOKS.with(|down| {
+        if !down.borrow().is_empty() {
+            return true;
+        }
+        VIEWPORT_POINTER_MOVE_HOOKS.with(|move_hooks| {
+            if !move_hooks.borrow().is_empty() {
+                return true;
+            }
+            VIEWPORT_POINTER_UP_HOOKS.with(|up| !up.borrow().is_empty())
+        })
+    })
+}
+
+fn has_viewport_pointer_state_hooks() -> bool {
+    VIEWPORT_POINTER_STATE_HOOKS.with(|hooks| !hooks.borrow().is_empty())
+}
+
+fn notify_viewport_pointer_state_changed() {
+    if has_viewport_pointer_state_hooks() {
+        notify_state_changed(UiDirtyState::REBUILD, None);
+    }
+}
+
+#[doc(hidden)]
+pub fn dispatch_viewport_pointer_down_hook(event: ViewportPointerDownEvent) {
+    let callbacks = VIEWPORT_POINTER_DOWN_HOOKS.with(|store| {
+        store
+            .borrow()
+            .values()
+            .cloned()
+            .collect::<Vec<ViewportPointerDownCallback>>()
+    });
+    VIEWPORT_POINTER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.position = Some((event.pointer.viewport_x, event.pointer.viewport_y));
+        state.buttons = event.pointer.buttons;
+        state.target = Some(event.meta.clone());
+        state.latest_down = Some(event.clone());
+    });
+    notify_viewport_pointer_state_changed();
+    for callback in callbacks {
+        (callback.borrow_mut())(&event);
+    }
+}
+
+#[doc(hidden)]
+pub fn dispatch_viewport_pointer_move_hook(event: ViewportPointerMoveEvent) {
+    let callbacks = VIEWPORT_POINTER_MOVE_HOOKS.with(|store| {
+        store
+            .borrow()
+            .values()
+            .cloned()
+            .collect::<Vec<ViewportPointerMoveCallback>>()
+    });
+    VIEWPORT_POINTER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.position = Some((event.pointer.viewport_x, event.pointer.viewport_y));
+        state.buttons = event.pointer.buttons;
+        state.target = Some(event.meta.clone());
+        state.latest_move = Some(event.clone());
+    });
+    notify_viewport_pointer_state_changed();
+    for callback in callbacks {
+        (callback.borrow_mut())(&event);
+    }
+}
+
+#[doc(hidden)]
+pub fn dispatch_viewport_pointer_up_hook(event: ViewportPointerUpEvent) {
+    let callbacks = VIEWPORT_POINTER_UP_HOOKS.with(|store| {
+        store
+            .borrow()
+            .values()
+            .cloned()
+            .collect::<Vec<ViewportPointerUpCallback>>()
+    });
+    VIEWPORT_POINTER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.position = Some((event.pointer.viewport_x, event.pointer.viewport_y));
+        state.buttons = event.pointer.buttons;
+        state.target = Some(event.meta.clone());
+        state.latest_up = Some(event.clone());
+    });
+    notify_viewport_pointer_state_changed();
+    for callback in callbacks {
+        (callback.borrow_mut())(&event);
+    }
 }
 
 /// Run a mount callback exactly once when the component first renders. If

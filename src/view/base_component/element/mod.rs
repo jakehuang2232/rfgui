@@ -2502,62 +2502,6 @@ impl ElementTrait for Element {
                 self.replace_style(style);
                 PropApplyOutcome::Applied
             }
-            "opacity" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_opacity(v);
-                PropApplyOutcome::Applied
-            }
-            "padding" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_padding(v);
-                PropApplyOutcome::Applied
-            }
-            "padding_x" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_padding_x(v);
-                PropApplyOutcome::Applied
-            }
-            "padding_y" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_padding_y(v);
-                PropApplyOutcome::Applied
-            }
-            "padding_left" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_padding_left(v);
-                PropApplyOutcome::Applied
-            }
-            "padding_right" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_padding_right(v);
-                PropApplyOutcome::Applied
-            }
-            "padding_top" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_padding_top(v);
-                PropApplyOutcome::Applied
-            }
-            "padding_bottom" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_padding_bottom(v);
-                PropApplyOutcome::Applied
-            }
             "anchor" => {
                 let Ok(name_str) = as_owned_string(&value, name) else {
                     return PropApplyOutcome::DecodeFailed(name);
@@ -2592,40 +2536,8 @@ impl ElementTrait for Element {
                 self.replace_style(Style::new());
                 PropApplyOutcome::Applied
             }
-            "opacity" => {
-                self.set_opacity(1.0);
-                PropApplyOutcome::Applied
-            }
             "anchor" => {
                 self.set_anchor_name(None);
-                PropApplyOutcome::Applied
-            }
-            "padding" => {
-                self.set_padding(0.0);
-                PropApplyOutcome::Applied
-            }
-            "padding_x" => {
-                self.set_padding_x(0.0);
-                PropApplyOutcome::Applied
-            }
-            "padding_y" => {
-                self.set_padding_y(0.0);
-                PropApplyOutcome::Applied
-            }
-            "padding_left" => {
-                self.set_padding_left(0.0);
-                PropApplyOutcome::Applied
-            }
-            "padding_right" => {
-                self.set_padding_right(0.0);
-                PropApplyOutcome::Applied
-            }
-            "padding_top" => {
-                self.set_padding_top(0.0);
-                PropApplyOutcome::Applied
-            }
-            "padding_bottom" => {
-                self.set_padding_bottom(0.0);
                 PropApplyOutcome::Applied
             }
             other if RSX_EVENT_HANDLER_PROPS.contains(&other) => {

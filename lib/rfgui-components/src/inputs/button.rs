@@ -6,9 +6,10 @@ use rfgui::style::{
 use rfgui::ui::{
     ClickEvent, ClickHandlerProp, EventMeta, NodeId, PointerButton, PointerDownHandlerProp,
     PointerEnterHandlerProp, PointerEventData, PointerLeaveHandlerProp, RsxComponent, RsxNode,
-    component, props, rsx, use_interval, use_state,
+    component, props, rsx, use_interval, use_state, use_viewport_pointer_move,
+    use_viewport_pointer_up,
 };
-use rfgui::view::{Element};
+use rfgui::view::Element;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -373,6 +374,43 @@ fn ButtonView(
     let resolved_hover_background = resolve_color(hover_background.as_ref());
     let resolved_text_color = resolve_color(text_color.as_ref());
 
+    {
+        let repeat_state_for_move = repeat_state.binding();
+        use_viewport_pointer_move(move |move_event| {
+            if !repeat_enabled {
+                return;
+            }
+            let snapshot = repeat_state_for_move.get();
+            if !snapshot.pressed {
+                return;
+            }
+            let Some(trigger) = snapshot.trigger else {
+                return;
+            };
+            repeat_state_for_move.update(|state| {
+                state.hovered = move_event.meta.target_id == trigger.target_id;
+            });
+        });
+    }
+
+    {
+        let repeat_state_for_up = repeat_state.binding();
+        use_viewport_pointer_up(move |up_event| {
+            if !repeat_enabled || up_event.pointer.button != Some(PointerButton::Left) {
+                return;
+            }
+            repeat_state_for_up.update(|state| {
+                if state.pressed {
+                    state.pressed = false;
+                    state.hovered = false;
+                    state.repeating_started = false;
+                    state.remaining_until_fire = None;
+                    state.trigger = None;
+                }
+            });
+        });
+    }
+
     let mouse_down = if repeat_enabled {
         let repeat_state = repeat_state.binding();
         let on_click = on_click.clone();
@@ -395,41 +433,6 @@ fn ButtonView(
                 trigger: Some(trigger.clone()),
             });
             trigger_click(handler, &trigger);
-
-            let button_target_id = trigger.target_id;
-            let repeat_state_for_move = repeat_state.clone();
-            let move_listener = event.viewport.add_pointer_move_listener(move |move_event| {
-                if move_event.meta.target_id() == NodeId::default()
-                    && move_event.meta.current_target_id() == NodeId::default()
-                {
-                    repeat_state_for_move.update(|state| {
-                        if state.pressed {
-                            state.hovered = false;
-                        }
-                    });
-                } else if move_event.meta.current_target_id() == button_target_id {
-                    repeat_state_for_move.update(|state| {
-                        if state.pressed {
-                            state.hovered = true;
-                        }
-                    });
-                }
-            });
-
-            let repeat_state_for_up = repeat_state.clone();
-            event
-                .viewport
-                .add_pointer_up_listener_until(move |up_event| {
-                    up_event.viewport.remove_listener(move_listener);
-                    repeat_state_for_up.update(|state| {
-                        state.pressed = false;
-                        state.hovered = false;
-                        state.repeating_started = false;
-                        state.remaining_until_fire = None;
-                        state.trigger = None;
-                    });
-                    true
-                });
         }))
     } else {
         None

@@ -1691,23 +1691,21 @@ mod tests {
         );
     }
 
-    /// M4 #7: a FiberWork::Update with `removed = ["opacity"]` on an
-    /// Element host resets opacity to the default 1.0. Exercises the
-    /// gate + `apply_remove_to_element` path directly since
-    /// HostElement's RSX schema doesn't expose `opacity` as a
-    /// top-level prop (reconciler only surfaces it in the `style`
-    /// map), so this is the smallest test that touches the
-    /// opacity-reset branch.
+    /// A FiberWork::Update with `removed = ["opacity"]` on a Text host
+    /// resets opacity to the default 1.0. Element's schema folds opacity
+    /// into the `style` map (no top-level reset arm); Text still exposes
+    /// `opacity` as a named prop with its own reset arm, so it's the
+    /// smallest case that exercises the named-prop reset branch.
     #[test]
-    fn fiber_work_removes_opacity_resets_to_default_on_element() {
-        use crate::view::base_component::Element;
+    fn fiber_work_removes_opacity_resets_to_default_on_text() {
+        use crate::view::base_component::Text;
         use crate::view::node_arena::Node;
 
         let mut arena = NodeArena::new();
-        let mut el = Element::new(0.0, 0.0, 100.0, 100.0);
-        el.set_opacity(0.3);
-        assert!((el.opacity() - 0.3).abs() < 1e-4);
-        let k = arena.insert(Node::new(Box::new(el)));
+        let mut text = Text::new(0.0, 0.0, 100.0, 20.0, "hello");
+        text.set_opacity(0.3);
+        assert!((text.opacity() - 0.3).abs() < 1e-4);
+        let k = arena.insert(Node::new(Box::new(text)));
 
         apply_fiber_works(
             &mut arena,
@@ -1720,15 +1718,15 @@ mod tests {
         );
 
         let node = arena.get(k).expect("node survived");
-        let el = node
+        let text = node
             .element
             .as_any()
-            .downcast_ref::<Element>()
-            .expect("Element host");
+            .downcast_ref::<Text>()
+            .expect("Text host");
         assert!(
-            (el.opacity() - 1.0).abs() < 1e-4,
+            (text.opacity() - 1.0).abs() < 1e-4,
             "removed opacity must reset to default 1.0, got {}",
-            el.opacity()
+            text.opacity()
         );
     }
 }

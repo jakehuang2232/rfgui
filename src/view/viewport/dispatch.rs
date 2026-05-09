@@ -1,51 +1,6 @@
 use super::*;
 
 impl Viewport {
-    fn dispatch_viewport_pointer_move_listeners(&mut self, event: &mut PointerMoveEvent) -> bool {
-        if self.viewport_pointer_move_listeners.is_empty() {
-            return false;
-        }
-        let mut handled = false;
-        for listener in &mut self.viewport_pointer_move_listeners {
-            listener.call(event);
-            handled = true;
-            if event.meta.propagation_stopped() {
-                break;
-            }
-        }
-        handled
-    }
-
-    fn dispatch_viewport_pointer_up_listeners(&mut self, event: &mut PointerUpEvent) -> bool {
-        if self.viewport_pointer_up_listeners.is_empty() {
-            return false;
-        }
-        let mut handled = false;
-        let mut remove_ids = Vec::new();
-        for listener in &mut self.viewport_pointer_up_listeners {
-            match listener {
-                ViewportPointerUpListener::Persistent(handler) => {
-                    handler.call(event);
-                    handled = true;
-                }
-                ViewportPointerUpListener::Until(handler) => {
-                    handled = true;
-                    if handler.call(event) {
-                        remove_ids.push(handler.id());
-                    }
-                }
-            }
-            if event.meta.propagation_stopped() {
-                break;
-            }
-        }
-        if !remove_ids.is_empty() {
-            self.viewport_pointer_up_listeners
-                .retain(|listener| !remove_ids.contains(&listener.id()));
-        }
-        handled
-    }
-
     #[doc(hidden)]
     pub fn dispatch_pointer_down_event(&mut self, button: PointerButton) -> bool {
         let Some((x, y)) = self.pointer_position_viewport() else {
@@ -130,6 +85,10 @@ impl Viewport {
             self.input_state.pointer_capture_node_id = Some(capture_target_id);
         }
         self.apply_viewport_listener_actions(event.meta.take_viewport_listener_actions());
+        crate::ui::dispatch_viewport_pointer_down_hook(crate::ui::ViewportPointerDownEvent {
+            meta: event.meta.snapshot(),
+            pointer: event.pointer,
+        });
         self.sync_focus_dispatch();
         if handled {
             let clicked_target = event.meta.target_id();
@@ -258,14 +217,17 @@ impl Viewport {
             }
         }
         event.meta.detach_dispatch_ctx();
-        let listener_handled = self.dispatch_viewport_pointer_up_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
         self.apply_viewport_listener_actions(pending_actions);
+        crate::ui::dispatch_viewport_pointer_up_hook(crate::ui::ViewportPointerUpEvent {
+            meta: event.meta.snapshot(),
+            pointer: event.pointer,
+        });
         self.sync_focus_dispatch();
-        if handled || listener_handled {
+        if handled {
             self.request_redraw();
         }
-        handled || listener_handled
+        handled
     }
 
     #[doc(hidden)]
@@ -366,15 +328,18 @@ impl Viewport {
             }
         }
         event.meta.detach_dispatch_ctx();
-        let listener_handled = self.dispatch_viewport_pointer_move_listeners(&mut event);
         let pending_actions = event.meta.take_viewport_listener_actions();
         self.apply_viewport_listener_actions(pending_actions);
+        crate::ui::dispatch_viewport_pointer_move_hook(crate::ui::ViewportPointerMoveEvent {
+            meta: event.meta.snapshot(),
+            pointer: event.pointer,
+        });
         self.sync_focus_dispatch();
         let redraw_requested_during_event = !redraw_requested_before && self.redraw_requested;
         if hover_changed || hover_event_dispatched || redraw_requested_during_event {
             self.request_redraw();
         }
-        handled || hover_changed || hover_event_dispatched || listener_handled
+        handled || hover_changed || hover_event_dispatched
     }
 
     #[doc(hidden)]
@@ -1685,25 +1650,14 @@ impl Viewport {
 
 impl Viewport {
     pub fn has_viewport_pointer_listeners(&self) -> bool {
-        !self.viewport_pointer_move_listeners.is_empty()
-            || !self.viewport_pointer_up_listeners.is_empty()
+        crate::ui::has_viewport_pointer_hooks()
+            && !self.input_state.pressed_pointer_buttons.is_empty()
     }
 
     fn apply_viewport_listener_actions(&mut self, actions: Vec<EventCommand>) {
         let mut selection_changed = false;
         for action in actions {
             match action {
-                EventCommand::AddPointerMoveListener(handler) => {
-                    self.viewport_pointer_move_listeners.push(handler);
-                }
-                EventCommand::AddPointerUpListener(handler) => {
-                    self.viewport_pointer_up_listeners
-                        .push(ViewportPointerUpListener::Persistent(handler));
-                }
-                EventCommand::AddPointerUpListenerUntil(handler) => {
-                    self.viewport_pointer_up_listeners
-                        .push(ViewportPointerUpListener::Until(handler));
-                }
                 EventCommand::SetFocus(node_id) => {
                     self.set_focused_node_id(node_id);
                 }
@@ -1753,9 +1707,6 @@ impl Viewport {
                             break;
                         }
                     }
-                }
-                EventCommand::RemoveListener(handle) => {
-                    self.remove_viewport_listener(handle);
                 }
                 EventCommand::RequestRedraw => {
                     self.request_redraw();
@@ -1829,13 +1780,6 @@ impl Viewport {
         if selection_changed {
             self.request_redraw();
         }
-    }
-
-    fn remove_viewport_listener(&mut self, handle: ViewportListenerHandle) {
-        self.viewport_pointer_move_listeners
-            .retain(|listener| listener.id() != handle.0);
-        self.viewport_pointer_up_listeners
-            .retain(|listener| listener.id() != handle.0);
     }
 
     pub fn set_selects(&mut self, selects: Vec<u64>) {
@@ -1919,8 +1863,6 @@ impl Viewport {
         let previous_hovered_node_id = self.input_state.hovered_node_id;
         self.input_state = InputState::default();
         self.input_state.hovered_node_id = previous_hovered_node_id;
-        self.viewport_pointer_move_listeners.clear();
-        self.viewport_pointer_up_listeners.clear();
         self.dispatched_focus_node_id = None;
         let root_keys = self.scene.ui_root_keys.clone();
         let pointer_data = synthetic_pointer_data(

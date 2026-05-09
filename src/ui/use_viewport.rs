@@ -16,7 +16,7 @@
 //! `ViewportAction`s into a thread-local buffer; the viewport drains and
 //! applies the buffer at the top of each render pass.
 
-use crate::style::Color;
+use crate::style::{Color, Cursor};
 use std::cell::RefCell;
 
 thread_local! {
@@ -37,6 +37,7 @@ pub enum ViewportAction {
     SetDebugGeometryOverlay(bool),
     SetPromotionEnabled(bool),
     SetClearColor(Color),
+    SetCursor(Option<Cursor>),
     RequestRedraw,
 }
 
@@ -85,6 +86,10 @@ impl ViewportHandle {
 
     pub fn set_clear_color(&self, color: Color) {
         Self::push(ViewportAction::SetClearColor(color));
+    }
+
+    pub fn set_cursor(&self, cursor: Option<Cursor>) {
+        Self::push(ViewportAction::SetCursor(cursor));
     }
 
     pub fn request_redraw(&self) {
