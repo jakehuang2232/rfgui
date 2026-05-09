@@ -1324,135 +1324,100 @@ pub struct PasteEvent {
     pub data: DataTransfer,
 }
 
-#[derive(Clone)]
-pub struct PointerDownHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut PointerDownEvent)>>,
+pub struct Handler<H: ?Sized> {
+    handler: Rc<RefCell<H>>,
 }
 
-#[derive(Clone)]
-pub struct PointerUpHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut PointerUpEvent)>>,
+impl<H: ?Sized> Clone for Handler<H> {
+    fn clone(&self) -> Self {
+        Self {
+            handler: self.handler.clone(),
+        }
+    }
 }
 
-#[derive(Clone)]
-pub struct PointerMoveHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut PointerMoveEvent)>>,
+impl<H: ?Sized> PartialEq for Handler<H> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.handler, &other.handler)
+    }
 }
 
-#[derive(Clone)]
-pub struct PointerEnterHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut PointerEnterEvent)>>,
+impl<H: ?Sized> fmt::Debug for Handler<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Handler")
+            .field("handler", &Rc::as_ptr(&self.handler))
+            .finish()
+    }
 }
 
-#[derive(Clone)]
-pub struct PointerLeaveHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut PointerLeaveEvent)>>,
+impl<A: 'static, B: 'static> Handler<dyn FnMut(A, B)> {
+    pub fn new<F>(handler: F) -> Self
+    where
+        F: FnMut(A, B) + 'static,
+    {
+        Self {
+            handler: Rc::new(RefCell::new(handler)),
+        }
+    }
+
+    pub fn call(&self, a: A, b: B) {
+        (self.handler.borrow_mut())(a, b);
+    }
 }
 
-#[derive(Clone)]
-pub struct ClickHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut ClickEvent)>>,
-}
+pub type OnPointerDown = Handler<dyn FnMut(&mut PointerDownEvent)>;
+pub type OnPointerUp = Handler<dyn FnMut(&mut PointerUpEvent)>;
+pub type OnPointerMove = Handler<dyn FnMut(&mut PointerMoveEvent)>;
+pub type OnPointerEnter = Handler<dyn FnMut(&mut PointerEnterEvent)>;
+pub type OnPointerLeave = Handler<dyn FnMut(&mut PointerLeaveEvent)>;
+pub type OnClick = Handler<dyn FnMut(&mut ClickEvent)>;
+pub type OnContextMenu = Handler<dyn FnMut(&mut ContextMenuEvent)>;
+pub type OnWheel = Handler<dyn FnMut(&mut WheelEvent)>;
+pub type OnKeyDown = Handler<dyn FnMut(&mut KeyDownEvent)>;
+pub type OnKeyUp = Handler<dyn FnMut(&mut KeyUpEvent)>;
+pub type OnFocus = Handler<dyn FnMut(&mut FocusEvent)>;
+pub type OnBlur = Handler<dyn FnMut(&mut BlurEvent)>;
+pub type OnImeCommit = Handler<dyn FnMut(&mut ImeCommitEvent)>;
+pub type OnImeEnabled = Handler<dyn FnMut(&mut ImeEnabledEvent)>;
+pub type OnImeDisabled = Handler<dyn FnMut(&mut ImeDisabledEvent)>;
+pub type OnDragStart = Handler<dyn FnMut(&mut DragStartEvent)>;
+pub type OnDragOver = Handler<dyn FnMut(&mut DragOverEvent)>;
+pub type OnDragLeave = Handler<dyn FnMut(&mut DragLeaveEvent)>;
+pub type OnDrop = Handler<dyn FnMut(&mut DropEvent)>;
+pub type OnDragEnd = Handler<dyn FnMut(&mut DragEndEvent)>;
+pub type OnCopy = Handler<dyn FnMut(&mut CopyEvent)>;
+pub type OnCut = Handler<dyn FnMut(&mut CutEvent)>;
+pub type OnPaste = Handler<dyn FnMut(&mut PasteEvent)>;
+pub type OnTextAreaFocus = Handler<dyn FnMut(&mut TextAreaFocusEvent)>;
+pub type OnChange = Handler<dyn FnMut(&mut TextChangeEvent)>;
+pub type OnTextAreaRender = Handler<dyn FnMut(&mut TextAreaRenderString)>;
 
-#[derive(Clone)]
-pub struct ContextMenuHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut ContextMenuEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct WheelHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut WheelEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct KeyDownHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut KeyDownEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct KeyUpHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut KeyUpEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct FocusHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut FocusEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct BlurHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut BlurEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct ImeCommitHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut ImeCommitEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct ImeEnabledHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut ImeEnabledEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct ImeDisabledHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut ImeDisabledEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct DragStartHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut DragStartEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct DragOverHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut DragOverEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct DragLeaveHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut DragLeaveEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct DropHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut DropEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct DragEndHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut DragEndEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct CopyHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut CopyEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct CutHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut CutEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct PasteHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut PasteEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct TextAreaFocusHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut TextAreaFocusEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct TextChangeHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut TextChangeEvent)>>,
-}
-
-#[derive(Clone)]
-pub struct TextAreaRenderHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(&mut TextAreaRenderString)>>,
-}
+pub type PointerDownHandlerProp = OnPointerDown;
+pub type PointerUpHandlerProp = OnPointerUp;
+pub type PointerMoveHandlerProp = OnPointerMove;
+pub type PointerEnterHandlerProp = OnPointerEnter;
+pub type PointerLeaveHandlerProp = OnPointerLeave;
+pub type ClickHandlerProp = OnClick;
+pub type ContextMenuHandlerProp = OnContextMenu;
+pub type WheelHandlerProp = OnWheel;
+pub type KeyDownHandlerProp = OnKeyDown;
+pub type KeyUpHandlerProp = OnKeyUp;
+pub type FocusHandlerProp = OnFocus;
+pub type BlurHandlerProp = OnBlur;
+pub type ImeCommitHandlerProp = OnImeCommit;
+pub type ImeEnabledHandlerProp = OnImeEnabled;
+pub type ImeDisabledHandlerProp = OnImeDisabled;
+pub type DragStartHandlerProp = OnDragStart;
+pub type DragOverHandlerProp = OnDragOver;
+pub type DragLeaveHandlerProp = OnDragLeave;
+pub type DropHandlerProp = OnDrop;
+pub type DragEndHandlerProp = OnDragEnd;
+pub type CopyHandlerProp = OnCopy;
+pub type CutHandlerProp = OnCut;
+pub type PasteHandlerProp = OnPaste;
+pub type TextAreaFocusHandlerProp = OnTextAreaFocus;
+pub type TextChangeHandlerProp = OnChange;
+pub type TextAreaRenderHandlerProp = OnTextAreaRender;
 
 pub struct NoArgHandler<F>(F);
 
@@ -1518,13 +1483,13 @@ where
 }
 
 macro_rules! impl_handler_prop {
-    ($ty:ident, $event_ty:ty) => {
+    ($ty:ty, $event_ty:ty) => {
         impl $ty {
             pub fn new<F>(handler: F) -> Self
             where
                 F: for<'a> FnMut(&'a mut $event_ty) + 'static,
             {
-                Self {
+                Handler {
                     handler: Rc::new(RefCell::new(handler)),
                 }
             }
@@ -1534,26 +1499,12 @@ macro_rules! impl_handler_prop {
             }
         }
 
-        impl PartialEq for $ty {
-            fn eq(&self, other: &Self) -> bool {
-                Rc::ptr_eq(&self.handler, &other.handler)
-            }
-        }
-
-        impl fmt::Debug for $ty {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.debug_struct(stringify!($ty))
-                    .field("handler", &Rc::as_ptr(&self.handler))
-                    .finish()
-            }
-        }
-
         impl<F> From<F> for $ty
         where
             F: for<'a> FnMut(&'a mut $event_ty) + 'static,
         {
             fn from(handler: F) -> Self {
-                $ty::new(handler)
+                <$ty>::new(handler)
             }
         }
 
@@ -1563,7 +1514,7 @@ macro_rules! impl_handler_prop {
         {
             fn from(handler: NoArgHandler<F>) -> Self {
                 let mut f = handler.0;
-                $ty::new(move |_event: &mut $event_ty| f())
+                <$ty>::new(move |_event: &mut $event_ty| f())
             }
         }
 

@@ -2489,7 +2489,7 @@ impl ElementTrait for Element {
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
-        use crate::view::renderer_adapter::{as_element_style, as_f32, as_owned_string};
+        use crate::view::renderer_adapter::{as_element_style, as_owned_string};
 
         match name {
             "style" => {
@@ -2538,6 +2538,10 @@ impl ElementTrait for Element {
             }
             "anchor" => {
                 self.set_anchor_name(None);
+                PropApplyOutcome::Applied
+            }
+            "opacity" => {
+                self.set_opacity(1.0);
                 PropApplyOutcome::Applied
             }
             other if RSX_EVENT_HANDLER_PROPS.contains(&other) => {

@@ -65,7 +65,10 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                     let badge_text = tx.clone();
                     let slice: String = content_chars[start..end].iter().collect();
                     render.range(start..end, move |_text_area_node| {
-                        let slice = slice.clone();
+                        // let slice = slice.clone();
+                        // let hover = use_state(|| false);
+                        // let hover_clone = hover.clone();
+
                         rsx! {
                             <Element style={{
                                 background: badge_background.clone(),
@@ -74,7 +77,9 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                                 padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
                                 color: badge_text.clone(),
                                 font_size: theme.typography.size.xl,
+                                // opacity: hover.get().then_some(0.8).unwrap_or(1.0),
                             }}>
+                            // }} on_pointer_enter={move |_| {hover.set(true)}} on_pointer_leave={move |_| {hover_clone.set(false)}}>
                                 <Text>{slice}</Text>
                             </Element>
                         }

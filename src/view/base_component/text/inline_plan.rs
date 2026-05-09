@@ -4,18 +4,18 @@ use std::sync::Arc;
 
 use cosmic_text::{Buffer as GlyphBuffer, Hinting, Wrap};
 
+use super::Text;
 use super::cache::{
     FirstLineLayoutCacheEntry, FirstLineLayoutCacheKey, InlinePlanCacheKey, MeasuredTextLayout,
     WrappedSuffixCacheKey, quantize_milli,
 };
 use super::measure_text_layout;
 use super::profile::{record_text_measure_profile, text_measure_profile_enabled};
-use super::Text;
 use crate::style::TextWrap;
 use crate::time::Instant;
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct InlineTextFragment {
+pub(in crate::view::base_component) struct InlineTextFragment {
     pub(super) content: String,
     pub(super) width: f32,
     pub(super) height: f32,
@@ -28,7 +28,7 @@ pub(super) struct InlineTextFragment {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct InlineTextPlan {
+pub(in crate::view::base_component) struct InlineTextPlan {
     pub(super) runs: Vec<InlineTextFragment>,
     pub(super) max_width: f32,
     pub(super) max_height: f32,

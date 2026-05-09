@@ -1011,11 +1011,7 @@ fn text_area_auto_wrap_false_keeps_projection_and_trailing_run_on_same_line() {
     measure_and_place(&mut arena, root, narrow, placement);
 
     let children = arena.children_of(root);
-    assert_eq!(
-        children.len(),
-        3,
-        "expected Run / projection / Run layout"
-    );
+    assert_eq!(children.len(), 3, "expected Run / projection / Run layout");
     let y_values: Vec<f32> = children
         .iter()
         .map(|key| arena.get(*key).unwrap().element.box_model_snapshot().y)
@@ -1039,7 +1035,6 @@ fn text_area_auto_wrap_toggle_cascades_to_existing_projection_text() {
     // and the visual bug recurs every time the user flips the toggle.
     use crate::style::TextWrap;
 
-    let mut auto_wrap_value = true;
     let make_tree = |auto_wrap: bool| {
         host_text_area_node()
             .with_prop("auto_wrap", auto_wrap)
@@ -1057,11 +1052,10 @@ fn text_area_auto_wrap_toggle_cascades_to_existing_projection_text() {
             )
     };
     let mut arena = crate::view::test_support::new_test_arena();
-    let roots = commit_rsx_tree(&mut arena, &make_tree(auto_wrap_value));
+    let roots = commit_rsx_tree(&mut arena, &make_tree(true));
     let root = *roots.first().expect("single root");
     measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
-    auto_wrap_value = false;
     let ctx = crate::view::fiber_work::ApplyContext {
         viewport_style: &crate::style::Style::new(),
         viewport_width: 800.0,

@@ -8,16 +8,15 @@ use std::sync::Arc;
 use crate::view::font_system::with_shared_font_system;
 use crate::view::text_layout::build_text_buffer;
 
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct InlinePlanCacheKey {
+pub(in crate::view::base_component) struct InlinePlanCacheKey {
     pub(super) first_width_milli: i32,
     pub(super) full_width_milli: i32,
     pub(super) text_wrap: u8,
 }
 
 #[derive(Clone)]
-pub(super) struct MeasuredTextLayout {
+pub(in crate::view::base_component) struct MeasuredTextLayout {
     pub(super) buffer: Arc<GlyphBuffer>,
     pub(super) width: f32,
     pub(super) height: f32,
@@ -40,24 +39,24 @@ pub(super) struct GlobalShapedText {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct TextLayoutCacheKey {
+pub(in crate::view::base_component) struct TextLayoutCacheKey {
     pub(super) width_milli: i32,
     pub(super) allow_wrap: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct FirstLineLayoutCacheKey {
+pub(in crate::view::base_component) struct FirstLineLayoutCacheKey {
     pub(super) first_width_milli: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct WrappedSuffixCacheKey {
+pub(in crate::view::base_component) struct WrappedSuffixCacheKey {
     pub(super) suffix_start: usize,
     pub(super) full_width_milli: i32,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct FirstLineLayoutCacheEntry {
+pub(in crate::view::base_component) struct FirstLineLayoutCacheEntry {
     pub(super) consumed_bytes: usize,
     pub(super) fragment: super::InlineTextFragment,
 }

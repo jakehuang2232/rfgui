@@ -1,7 +1,3 @@
-use std::cell::RefCell;
-use std::fmt;
-use std::rc::Rc;
-
 use crate::use_theme;
 use rfgui::style::ClipMode::{AnchorParent, Parent};
 use rfgui::style::{
@@ -9,8 +5,8 @@ use rfgui::style::{
     Layout, Length, Padding, Position, ScrollDirection,
 };
 use rfgui::ui::{
-    BlurHandlerProp, FocusHandlerProp, PointerButton, PointerDownHandlerProp, RsxComponent,
-    RsxNode, on_pointer_down, props, rsx, use_state, use_viewport_pointer_move,
+    BlurHandlerProp, FocusHandlerProp, Handler, PointerButton, PointerDownHandlerProp,
+    RsxComponent, RsxNode, on_pointer_down, props, rsx, use_state, use_viewport_pointer_move,
     use_viewport_pointer_up,
 };
 use rfgui::view::{Element, Text};
@@ -21,39 +17,8 @@ const TITLE_BAR_HEIGHT: f32 = 24.0;
 const RESIZE_EDGE_THICKNESS: f32 = 2.0;
 const RESIZE_CORNER_SIZE: f32 = 14.0;
 
-#[derive(Clone)]
-pub struct ResizeHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(f32, f32)>>,
-}
-
-impl ResizeHandlerProp {
-    pub fn new<F>(handler: F) -> Self
-    where
-        F: FnMut(f32, f32) + 'static,
-    {
-        Self {
-            handler: Rc::new(RefCell::new(handler)),
-        }
-    }
-
-    pub fn call(&self, width: f32, height: f32) {
-        (self.handler.borrow_mut())(width, height);
-    }
-}
-
-impl PartialEq for ResizeHandlerProp {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.handler, &other.handler)
-    }
-}
-
-impl fmt::Debug for ResizeHandlerProp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResizeHandlerProp")
-            .field("handler", &Rc::as_ptr(&self.handler))
-            .finish()
-    }
-}
+pub type OnResize = Handler<dyn FnMut(f32, f32)>;
+pub type ResizeHandlerProp = OnResize;
 
 pub fn on_resize<F>(handler: F) -> ResizeHandlerProp
 where
@@ -62,39 +27,8 @@ where
     ResizeHandlerProp::new(handler)
 }
 
-#[derive(Clone)]
-pub struct MoveHandlerProp {
-    handler: Rc<RefCell<dyn FnMut(f32, f32)>>,
-}
-
-impl MoveHandlerProp {
-    pub fn new<F>(handler: F) -> Self
-    where
-        F: FnMut(f32, f32) + 'static,
-    {
-        Self {
-            handler: Rc::new(RefCell::new(handler)),
-        }
-    }
-
-    pub fn call(&self, x: f32, y: f32) {
-        (self.handler.borrow_mut())(x, y);
-    }
-}
-
-impl PartialEq for MoveHandlerProp {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.handler, &other.handler)
-    }
-}
-
-impl fmt::Debug for MoveHandlerProp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MoveHandlerProp")
-            .field("handler", &Rc::as_ptr(&self.handler))
-            .finish()
-    }
-}
+pub type OnMove = Handler<dyn FnMut(f32, f32)>;
+pub type MoveHandlerProp = OnMove;
 
 pub fn on_move<F>(handler: F) -> MoveHandlerProp
 where
