@@ -1,52 +1,35 @@
 use crate::view::frame_graph::{
-    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
+    FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_sample_count, resolve_texture_ref,
+    render_target_format, render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use crate::view::text_layout::TextLayout;
+use crate::view::text_layout::{TextGlyph, TextLayout};
 use parley::FontData as ParleyFontData;
 use rustc_hash::FxHashMap;
-use std::collections::VecDeque;
-use std::num::NonZeroU64;
+use std::cell::RefCell;
+#[cfg(test)]
+use std::collections::hash_map::DefaultHasher;
+#[cfg(test)]
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Mutex, OnceLock};
+use swash::FontRef as SwashFontRef;
 use swash::scale::image::{Content as SwashRasterContent, Image as SwashRasterImage};
 use swash::scale::{
     Render as SwashRender, ScaleContext as SwashScaleContext, Source, StrikeWith as SwashStrikeWith,
 };
 use swash::zeno::{Format as SwashFormat, Vector as SwashVector};
 use wgpu::util::DeviceExt;
+
 pub struct TextPass {
     params: TextPassParams,
     prepared: Option<TextPreparedState>,
     input: TextInput,
     output: TextOutput,
-}
-
-const TEXT_RASTER_SCALE_SMALL: f32 = 2.0;
-const TEXT_RASTER_SCALE_LARGE: f32 = 1.0;
-const TEXT_RASTER_SMALL_FONT_SIZE: f32 = 24.0;
-const TEXT_RASTER_LARGE_FONT_SIZE: f32 = 96.0;
-
-fn text_raster_scale(font_size: f32) -> f32 {
-    if !font_size.is_finite() {
-        return TEXT_RASTER_SCALE_SMALL;
-    }
-    if font_size <= TEXT_RASTER_SMALL_FONT_SIZE {
-        return TEXT_RASTER_SCALE_SMALL;
-    }
-    if font_size >= TEXT_RASTER_LARGE_FONT_SIZE {
-        return TEXT_RASTER_SCALE_LARGE;
-    }
-
-    let t = (font_size - TEXT_RASTER_SMALL_FONT_SIZE)
-        / (TEXT_RASTER_LARGE_FONT_SIZE - TEXT_RASTER_SMALL_FONT_SIZE);
-    TEXT_RASTER_SCALE_SMALL + (TEXT_RASTER_SCALE_LARGE - TEXT_RASTER_SCALE_SMALL) * t
 }
 
 #[derive(Clone)]
@@ -96,200 +79,6 @@ impl TextPassParams {
     }
 }
 
-struct TextPreparedState {
-    renderer_key: TextRendererKey,
-    mask_draws: Vec<(u16, PreparedTextDraw)>,
-    color_draws: Vec<(u16, PreparedTextDraw)>,
-    screen_buffer: wgpu::Buffer,
-    fragment_buffer: wgpu::Buffer,
-    globals_bind_group: wgpu::BindGroup,
-    fragment_capacity: usize,
-    globals_signature: u64,
-    draw_signature: u64,
-    prepared_draw_epoch: u64,
-    atlas_generation: AtlasGenerations,
-    stencil_clip_id: Option<u8>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct TextRendererKey {
-    sample_count: u32,
-    stencil_enabled: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum TextPipelineKind {
-    Mask,
-    Color,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-struct AtlasGenerations {
-    mask: u64,
-    color: u64,
-}
-
-struct TextDebugOverlay {
-    vertices: Vec<TextDebugVertex>,
-    indices: Vec<u32>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct TextBounds {
-    pub left: i32,
-    pub top: i32,
-    pub right: i32,
-    pub bottom: i32,
-}
-
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct TextScreenUniform {
-    screen_size: [f32; 2],
-    _pad: [f32; 2],
-}
-
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct TextFragmentUniform {
-    origin: [f32; 2],
-    clip_min: [f32; 2],
-    clip_max: [f32; 2],
-    _pad: [f32; 2],
-}
-
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct TextGlyphVertex {
-    local_pos: [f32; 2],
-    size: [f32; 2],
-    uv_min: [f32; 2],
-    uv_max: [f32; 2],
-    color: [f32; 4],
-    opacity: f32,
-    fragment_index: u32,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct TextRenderLine {
-    line_top: f32,
-    line_y: f32,
-    line_height: f32,
-    glyph_runs: Vec<TextRenderGlyphRun>,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct TextRenderGlyphRun {
-    glyphs: Vec<TextRenderGlyph>,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct TextRenderGlyph {
-    font_identity: Option<TextFontIdentity>,
-    parley_font_data: Option<ParleyFontData>,
-    font_id_hash: u64,
-    glyph_id: u32,
-    advance: f32,
-    x: f32,
-    y: f32,
-    width: f32,
-    font_size: f32,
-    x_offset: f32,
-    y_offset: f32,
-    color: Option<TextColor>,
-    flags: TextRasterFlags,
-    glyph_cache_key: Option<TextGlyphRasterKey>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-struct TextFontIdentity {
-    hash: u64,
-    source: TextFontSourceIdentity,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-enum TextFontSourceIdentity {
-    ParleyFontData { blob_id: u64, face_index: u32 },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-struct TextGlyphRasterKey {
-    font_identity_hash: u64,
-    glyph_id: u32,
-    source_font_size_bits: u32,
-    raster_scale_bits: u32,
-    raster_font_size_bits: u32,
-    x_subpixel_bucket: u8,
-    y_subpixel_bucket: u8,
-    style_hash: u64,
-    normalized_coords_hash: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
-struct TextRasterFlags {
-    fake_italic: bool,
-    disable_hinting: bool,
-    pixel_font: bool,
-}
-
-struct TextArea {
-    left: f32,
-    top: f32,
-    scale: f32,
-    clip_min: [f32; 2],
-    clip_max: [f32; 2],
-    default_color: TextColor,
-    render_lines: Vec<TextRenderLine>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct TextColor {
-    rgba: [u8; 4],
-}
-
-impl TextColor {
-    fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { rgba: [r, g, b, a] }
-    }
-
-    fn as_rgba(self) -> [u8; 4] {
-        self.rgba
-    }
-}
-
-#[derive(Clone)]
-struct PreparedTextDraw {
-    vertex_buffer: wgpu::Buffer,
-    vertex_count: u32,
-}
-
-#[derive(Clone, Default)]
-struct PreparedTextDrawSet {
-    mask_draws: Vec<(u16, PreparedTextDraw)>,
-    color_draws: Vec<(u16, PreparedTextDraw)>,
-}
-
-impl PreparedTextDrawSet {
-    fn destroy(&self) {
-        for (_, draw) in &self.mask_draws {
-            draw.vertex_buffer.destroy();
-        }
-        for (_, draw) in &self.color_draws {
-            draw.vertex_buffer.destroy();
-        }
-    }
-}
-
-#[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct TextDebugVertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-
 #[derive(Default)]
 pub struct TextInput {
     pub pass_context: RenderPassContext,
@@ -309,101 +98,115 @@ impl TextPass {
             output,
         }
     }
+}
 
-    fn globals_signature(
-        &self,
-        scale: f32,
-        screen_size: (u32, u32),
-        target_origin: (u32, u32),
-    ) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.params.font_size.to_bits().hash(&mut hasher);
-        self.params.line_height.to_bits().hash(&mut hasher);
-        self.params.font_weight.hash(&mut hasher);
-        self.params.font_families.hash(&mut hasher);
-        self.params.allow_wrap.hash(&mut hasher);
-        self.params.scissor_rect.hash(&mut hasher);
-        self.params.stencil_clip_id.hash(&mut hasher);
-        scale.to_bits().hash(&mut hasher);
-        screen_size.hash(&mut hasher);
-        target_origin.hash(&mut hasher);
-        for fragment in &self.params.fragments {
-            fragment.x.to_bits().hash(&mut hasher);
-            fragment.y.to_bits().hash(&mut hasher);
-            fragment.content.hash(&mut hasher);
-            fragment.width.to_bits().hash(&mut hasher);
-            fragment.height.to_bits().hash(&mut hasher);
-            fragment.opacity.to_bits().hash(&mut hasher);
-            for channel in fragment.color {
-                channel.to_bits().hash(&mut hasher);
-            }
-        }
-        hasher.finish()
+struct TextPreparedState {
+    renderer_key: TextRendererKey,
+    globals_bind_group: wgpu::BindGroup,
+    screen_buffer: wgpu::Buffer,
+    fragment_buffer: wgpu::Buffer,
+    mask_draw: Option<PreparedTextDraw>,
+    color_draw: Option<PreparedTextDraw>,
+    scissor_rect: Option<[u32; 4]>,
+    stencil_clip_id: Option<u8>,
+}
+
+impl Drop for TextPreparedState {
+    fn drop(&mut self) {
+        self.screen_buffer.destroy();
+        self.fragment_buffer.destroy();
     }
 }
 
-fn draw_signature_for_text_areas(
-    params: &TextPassParams,
-    scale: f32,
-    text_areas: &[TextArea],
-) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    params.font_size.to_bits().hash(&mut hasher);
-    params.line_height.to_bits().hash(&mut hasher);
-    params.font_weight.hash(&mut hasher);
-    params.font_families.hash(&mut hasher);
-    params.allow_wrap.hash(&mut hasher);
-    scale.to_bits().hash(&mut hasher);
-    params.fragments.len().hash(&mut hasher);
-    for fragment in &params.fragments {
-        fragment.content.hash(&mut hasher);
-        fragment.width.to_bits().hash(&mut hasher);
-        fragment.height.to_bits().hash(&mut hasher);
-        fragment.opacity.to_bits().hash(&mut hasher);
-        for channel in fragment.color {
-            channel.to_bits().hash(&mut hasher);
-        }
+struct PreparedTextDraw {
+    vertex_buffer: wgpu::Buffer,
+    instance_count: u32,
+    atlas_texture: wgpu::Texture,
+    atlas_view: wgpu::TextureView,
+    atlas_bind_group: wgpu::BindGroup,
+}
+
+impl Drop for PreparedTextDraw {
+    fn drop(&mut self) {
+        self.vertex_buffer.destroy();
+        self.atlas_texture.destroy();
     }
-    text_areas.len().hash(&mut hasher);
-    for text_area in text_areas {
-        text_area.scale.to_bits().hash(&mut hasher);
-        text_area.clip_min[0].to_bits().hash(&mut hasher);
-        text_area.clip_min[1].to_bits().hash(&mut hasher);
-        text_area.clip_max[0].to_bits().hash(&mut hasher);
-        text_area.clip_max[1].to_bits().hash(&mut hasher);
-        text_area.default_color.as_rgba().hash(&mut hasher);
-        text_area.render_lines.len().hash(&mut hasher);
-        for line in &text_area.render_lines {
-            line.line_top.to_bits().hash(&mut hasher);
-            line.line_y.to_bits().hash(&mut hasher);
-            line.line_height.to_bits().hash(&mut hasher);
-            line.glyph_runs.len().hash(&mut hasher);
-            for run in &line.glyph_runs {
-                run.glyphs.len().hash(&mut hasher);
-                for glyph in &run.glyphs {
-                    glyph.glyph_cache_key.hash(&mut hasher);
-                    glyph.advance.to_bits().hash(&mut hasher);
-                    glyph.x.to_bits().hash(&mut hasher);
-                    glyph.y.to_bits().hash(&mut hasher);
-                    glyph.width.to_bits().hash(&mut hasher);
-                    glyph.font_size.to_bits().hash(&mut hasher);
-                    glyph.x_offset.to_bits().hash(&mut hasher);
-                    glyph.y_offset.to_bits().hash(&mut hasher);
-                    glyph.color.hash(&mut hasher);
-                }
-            }
-        }
-    }
-    hasher.finish()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TextRendererKey {
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    stencil_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum TextPipelineKind {
+    Mask,
+    Color,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum AtlasKind {
+    Mask,
+    Color,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ScreenUniform {
+    screen_size: [f32; 2],
+    _pad: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct FragmentUniform {
+    origin: [f32; 2],
+    clip_min: [f32; 2],
+    clip_max: [f32; 2],
+    _pad: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct TextGlyphInstance {
+    local_pos: [f32; 2],
+    size: [f32; 2],
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+    color: [f32; 4],
+    opacity: f32,
+    fragment_index: u32,
+}
+
+struct PendingGlyphInstance {
+    kind: AtlasKind,
+    local_pos: [f32; 2],
+    size: [f32; 2],
+    image: SwashRasterImage,
+    color: [f32; 4],
+    opacity: f32,
+    fragment_index: u32,
+}
+
+#[derive(Default)]
+struct TextResources {
+    screen_layout: Option<wgpu::BindGroupLayout>,
+    atlas_layout: Option<wgpu::BindGroupLayout>,
+    sampler: Option<wgpu::Sampler>,
+    pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
+    scale_context: SwashScaleContext,
+}
+
+thread_local! {
+    static TEXT_RESOURCES: RefCell<TextResources> = RefCell::new(TextResources::default());
 }
 
 impl GraphicsPass for TextPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        if let Some(target) = builder.texture_target(&self.output.render_target) {
-            let _ = target;
+        if builder.texture_target(&self.output.render_target).is_some() {
             builder.write_color(
                 &self.output.render_target,
                 GraphicsColorAttachmentOps::load(),
@@ -411,13 +214,7 @@ impl GraphicsPass for TextPass {
         } else {
             builder.write_surface_color(GraphicsColorAttachmentOps::load());
         }
-        self.params.scissor_rect = intersect_scissor_rects(
-            self.input.pass_context.scissor_rect,
-            self.params.scissor_rect,
-        );
-        if self.params.stencil_clip_id.is_none() {
-            self.params.stencil_clip_id = self.input.pass_context.stencil_clip_id;
-        }
+
         if self.input.pass_context.uses_depth_stencil {
             builder.read_output_depth();
             builder.read_output_stencil();
@@ -425,620 +222,265 @@ impl GraphicsPass for TextPass {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        if self.params.fragments.is_empty() {
-            return;
-        }
-
-        let output_handle = self.output.render_target.handle();
-        let fallback_surface_size = ctx.viewport.surface_size();
-        let target_meta = resolve_texture_ref(output_handle, ctx, fallback_surface_size, None);
-        let target_size = target_meta.physical_size;
-        let target_origin = output_handle
-            .and_then(|handle| render_target_origin(ctx, handle))
-            .unwrap_or((0, 0));
-        let output_sample_count = output_handle
-            .and_then(|handle| render_target_sample_count(ctx, handle))
-            .unwrap_or_else(|| ctx.viewport.msaa_sample_count());
-
-        let viewport = &mut ctx.viewport;
-        let device = match viewport.device().cloned() {
-            Some(device) => device,
-            None => return,
-        };
-        let queue = match viewport.queue().cloned() {
-            Some(queue) => queue,
-            None => return,
-        };
-        let (screen_w, screen_h) = target_size;
-        let scale = viewport.scale_factor();
-        let format = viewport.offscreen_format();
-        with_text_resources(&device, &queue, format, |resources| {
-            let renderer_key = TextRendererKey {
-                sample_count: output_sample_count,
-                stencil_enabled: self.input.pass_context.uses_depth_stencil,
-            };
-            let atlas_generation = resources.atlas_generations();
-            let globals_signature =
-                self.globals_signature(scale, (screen_w, screen_h), target_origin);
-            let physical_scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
-                logical_scissor_to_target_physical(
-                    viewport,
-                    scissor_rect,
-                    target_origin,
-                    (screen_w, screen_h),
-                )
-            });
-            let mut resolved_bounds = vec![None; self.params.fragments.len()];
-            let mut combined_bounds: Option<TextBounds> = None;
-
-            for (index, fragment) in self.params.fragments.iter().enumerate() {
-                if fragment.content.is_empty()
-                    || fragment.width <= 0.0
-                    || fragment.height <= 0.0
-                    || !fragment.x.is_finite()
-                    || !fragment.y.is_finite()
-                    || !fragment.width.is_finite()
-                    || !fragment.height.is_finite()
-                {
-                    continue;
-                }
-                let [fragment_left, fragment_top] = text_fragment_physical_origin(
-                    fragment,
-                    scale,
-                    target_origin,
-                    target_meta.logical_origin,
-                );
-                let bounds = match resolve_text_bounds(
-                    fragment_left,
-                    fragment_top,
-                    fragment.width * scale,
-                    fragment.height * scale,
-                    screen_w,
-                    screen_h,
-                    physical_scissor_rect,
-                ) {
-                    Some(bounds) => bounds,
-                    None => continue,
-                };
-                resolved_bounds[index] = Some(bounds);
-                combined_bounds = Some(match combined_bounds {
-                    Some(current) => TextBounds {
-                        left: current.left.min(bounds.left),
-                        top: current.top.min(bounds.top),
-                        right: current.right.max(bounds.right),
-                        bottom: current.bottom.max(bounds.bottom),
-                    },
-                    None => bounds,
-                });
-            }
-            let Some(_bounds) = combined_bounds else {
-                return;
-            };
-            let mut text_areas = Vec::new();
-            for (index, fragment) in self.params.fragments.iter().enumerate() {
-                let Some(fragment_bounds) = resolved_bounds[index] else {
-                    continue;
-                };
-                let [fragment_left, fragment_top] = text_fragment_physical_origin(
-                    fragment,
-                    scale,
-                    target_origin,
-                    target_meta.logical_origin,
-                );
-                text_areas.push(build_text_area(
-                    fragment.text_layout.as_deref(),
-                    fragment_left,
-                    fragment_top,
-                    scale,
-                    fragment_bounds,
-                    to_text_color(fragment.color, fragment.opacity),
-                ));
-            }
-            let draw_signature = draw_signature_for_text_areas(&self.params, scale, &text_areas);
-            if let Some(prepared) = self.prepared.as_mut() {
-                if prepared.renderer_key == renderer_key
-                    && prepared.globals_signature == globals_signature
-                    && prepared.draw_signature == draw_signature
-                    && prepared.prepared_draw_epoch == resources.prepared_draw_epoch
-                    && prepared.atlas_generation == atlas_generation
-                {
-                    prepared.stencil_clip_id = self.params.stencil_clip_id;
-                    return;
-                }
-            }
-            let existing_globals = self.prepared.as_ref().map(|prepared| {
-                (
-                    &prepared.screen_buffer,
-                    &prepared.fragment_buffer,
-                    &prepared.globals_bind_group,
-                    prepared.fragment_capacity,
-                )
-            });
-            let (screen_buffer, fragment_buffer, globals_bind_group, fragment_capacity) = resources
-                .create_globals_bind_group(
-                    &device,
-                    &queue,
-                    screen_w as f32,
-                    screen_h as f32,
-                    &text_areas,
-                    existing_globals,
-                );
-            if let Some(draw) =
-                resources.take_prepared_draw(renderer_key, draw_signature, atlas_generation)
-            {
-                self.prepared = Some(TextPreparedState {
-                    renderer_key,
-                    mask_draws: draw.mask_draws,
-                    color_draws: draw.color_draws,
-                    screen_buffer,
-                    fragment_buffer,
-                    globals_bind_group,
-                    fragment_capacity,
-                    globals_signature,
-                    draw_signature,
-                    prepared_draw_epoch: resources.prepared_draw_epoch,
-                    atlas_generation,
-                    stencil_clip_id: self.params.stencil_clip_id,
-                });
-                return;
-            }
-            if viewport.debug_options().geometry_overlay {
-                let (overlay_w, overlay_h) = viewport.surface_size();
-                let overlay = build_text_debug_overlay_multi(
-                    &text_areas,
-                    [
-                        target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
-                        target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
-                    ],
-                    overlay_w as f32,
-                    overlay_h as f32,
-                );
-                if !overlay.vertices.is_empty() && !overlay.indices.is_empty() {
-                    let overlay_vertices: Vec<
-                        crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex,
-                    > = overlay
-                        .vertices
-                        .iter()
-                        .map(|vertex| {
-                            crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex {
-                                position: vertex.position,
-                                color: vertex.color,
-                            }
-                        })
-                        .collect();
-                    viewport.push_debug_overlay_geometry(&overlay_vertices, &overlay.indices);
-                }
-            }
-
-            let (mask_vertices_per_page, color_vertices_per_page) = {
-                let mut retry_count = 0;
-                loop {
-                    let mut mask_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
-                    let mut color_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
-                    let mut atlas_full = false;
-                    for (fragment_index, text_area) in text_areas.iter().enumerate() {
-                        if resources
-                            .prepare_text_area(
-                                &device,
-                                &queue,
-                                text_area,
-                                fragment_index as u32,
-                                &mut mask_vertices,
-                                &mut color_vertices,
-                            )
-                            .is_err()
-                        {
-                            atlas_full = true;
-                            break;
-                        }
-                    }
-                    if !atlas_full {
-                        break (mask_vertices, color_vertices);
-                    }
-                    if retry_count >= 1 {
-                        break (Vec::new(), Vec::new());
-                    }
-                    retry_count += 1;
-                    resources.reset_atlas();
-                }
-            };
-            let mask_total: usize = mask_vertices_per_page.iter().map(|v| v.len()).sum();
-            let color_total: usize = color_vertices_per_page.iter().map(|v| v.len()).sum();
-            if mask_total == 0 && color_total == 0 {
-                return;
-            }
-            resources.flush_atlas_uploads(&queue);
-            let mut mask_draws = Vec::new();
-            for (page_idx, verts) in mask_vertices_per_page.iter().enumerate() {
-                if verts.is_empty() {
-                    continue;
-                }
-                if let Some(draw) =
-                    create_prepared_draw(&device, "Text Mask Glyph Vertex Buffer", verts)
-                {
-                    mask_draws.push((page_idx as u16, draw));
-                }
-            }
-            let mut color_draws = Vec::new();
-            for (page_idx, verts) in color_vertices_per_page.iter().enumerate() {
-                if verts.is_empty() {
-                    continue;
-                }
-                if let Some(draw) =
-                    create_prepared_draw(&device, "Text Color Glyph Vertex Buffer", verts)
-                {
-                    color_draws.push((page_idx as u16, draw));
-                }
-            }
-            let prepared_draw = PreparedTextDrawSet {
-                mask_draws,
-                color_draws,
-            };
-            let atlas_generation = resources.atlas_generations();
-            resources.put_prepared_draw(
-                renderer_key,
-                draw_signature,
-                atlas_generation,
-                prepared_draw.clone(),
-            );
-            self.prepared = Some(TextPreparedState {
-                renderer_key,
-                mask_draws: prepared_draw.mask_draws,
-                color_draws: prepared_draw.color_draws,
-                screen_buffer,
-                fragment_buffer,
-                globals_bind_group,
-                fragment_capacity,
-                globals_signature,
-                draw_signature,
-                prepared_draw_epoch: resources.prepared_draw_epoch,
-                atlas_generation,
-                stencil_clip_id: self.params.stencil_clip_id,
-            });
-        });
+        self.prepared = prepare_text_pass(&self.params, &self.input, &self.output, ctx);
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        let Some(prepared) = self.prepared.as_mut() else {
+        let Some(prepared) = self.prepared.as_ref() else {
             return;
         };
-        let device = match ctx.viewport().device().cloned() {
-            Some(device) => device,
-            None => return,
-        };
-        let format = ctx.viewport().offscreen_format();
-        with_text_resources_for_render(format, |resources| {
-            let fallback_surface_size = ctx.viewport().surface_size();
-            let target_meta = resolve_texture_ref(
-                self.output.render_target.handle(),
-                ctx.frame_resources(),
-                fallback_surface_size,
-                None,
-            );
-            let target_size = target_meta.physical_size;
-            let target_origin = self
-                .output
-                .render_target
-                .handle()
-                .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-                .unwrap_or((0, 0));
-            let scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
-                logical_scissor_to_target_physical(
-                    ctx.viewport(),
-                    scissor_rect,
-                    target_origin,
-                    target_size,
-                )
-            });
-            let stencil_reference = prepared.stencil_clip_id.map(|id| id as u32).unwrap_or(0);
-            if let Some([x, y, width, height]) = scissor_rect {
-                ctx.set_scissor_rect(x, y, width, height);
-            } else {
-                ctx.set_scissor_rect(0, 0, target_size.0, target_size.1);
-            }
-            ctx.set_stencil_reference(stencil_reference);
-            ctx.set_bind_group(0, &prepared.globals_bind_group, &[]);
-            if !prepared.mask_draws.is_empty() {
-                resources.ensure_pipeline(&device, prepared.renderer_key, TextPipelineKind::Mask);
-                let pipeline = resources.pipeline(prepared.renderer_key, TextPipelineKind::Mask);
-                ctx.set_pipeline(pipeline);
-                for (page_idx, draw) in &prepared.mask_draws {
-                    let Some(bind_group) = resources.mask_atlas.page_bind_group(*page_idx) else {
-                        continue;
-                    };
-                    ctx.set_bind_group(1, bind_group, &[]);
-                    ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
-                    ctx.draw(0..6, 0..draw.vertex_count);
-                }
-            }
-            if !prepared.color_draws.is_empty() {
-                resources.ensure_pipeline(&device, prepared.renderer_key, TextPipelineKind::Color);
-                let pipeline = resources.pipeline(prepared.renderer_key, TextPipelineKind::Color);
-                ctx.set_pipeline(pipeline);
-                for (page_idx, draw) in &prepared.color_draws {
-                    let Some(bind_group) = resources.color_atlas.page_bind_group(*page_idx) else {
-                        continue;
-                    };
-                    ctx.set_bind_group(1, bind_group, &[]);
-                    ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
-                    ctx.draw(0..6, 0..draw.vertex_count);
-                }
-            }
-        });
-    }
-}
-
-fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(rect), None) | (None, Some(rect)) => Some(rect),
-        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
-            let a_right = ax.saturating_add(aw);
-            let a_bottom = ay.saturating_add(ah);
-            let b_right = bx.saturating_add(bw);
-            let b_bottom = by.saturating_add(bh);
-            let left = ax.max(bx);
-            let top = ay.max(by);
-            let right = a_right.min(b_right);
-            let bottom = a_bottom.min(b_bottom);
-            if right <= left || bottom <= top {
-                return None;
-            }
-            Some([left, top, right - left, bottom - top])
+        if let Some(scissor) = prepared.scissor_rect {
+            ctx.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
         }
+        if let Some(reference) = prepared.stencil_clip_id {
+            ctx.set_stencil_reference(reference as u32);
+        }
+
+        draw_prepared_text(
+            ctx,
+            prepared,
+            TextPipelineKind::Mask,
+            prepared.mask_draw.as_ref(),
+        );
+        draw_prepared_text(
+            ctx,
+            prepared,
+            TextPipelineKind::Color,
+            prepared.color_draw.as_ref(),
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "TextPass"
     }
 }
 
-fn to_text_color(color: [f32; 4], opacity: f32) -> TextColor {
-    fn to_u8(v: f32) -> u8 {
-        (v.clamp(0.0, 1.0) * 255.0).round() as u8
-    }
-
-    let alpha = to_u8(color[3] * opacity.clamp(0.0, 1.0));
-    TextColor::rgba(to_u8(color[0]), to_u8(color[1]), to_u8(color[2]), alpha)
-}
-
-fn intersect_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    let left = a[0].max(b[0]);
-    let top = a[1].max(b[1]);
-    let right = a[2].min(b[2]);
-    let bottom = a[3].min(b[3]);
-    [left, top, right, bottom]
-}
-
-fn text_fragment_physical_origin(
-    fragment: &TextPassFragment,
-    scale: f32,
-    target_origin: (u32, u32),
-    logical_origin: (u32, u32),
-) -> [f32; 2] {
-    [
-        fragment.x * scale - target_origin.0 as f32 + logical_origin.0 as f32,
-        fragment.y * scale - target_origin.1 as f32 + logical_origin.1 as f32,
-    ]
-}
-
-fn resolve_text_bounds(
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    screen_w: u32,
-    screen_h: u32,
-    scissor_rect: Option<[u32; 4]>,
-) -> Option<TextBounds> {
-    let viewport_bounds = [0.0, 0.0, screen_w as f32, screen_h as f32];
-    let text_bounds = [x, y, (x + width).max(x), (y + height).max(y)];
-    let mut clipped = intersect_rect(text_bounds, viewport_bounds);
-
-    if let Some([sx, sy, sw, sh]) = scissor_rect {
-        let scissor_bounds = [
-            sx as f32,
-            sy as f32,
-            sx.saturating_add(sw) as f32,
-            sy.saturating_add(sh) as f32,
-        ];
-        clipped = intersect_rect(clipped, scissor_bounds);
-    }
-
-    if clipped[2] <= clipped[0] || clipped[3] <= clipped[1] {
+fn prepare_text_pass(
+    params: &TextPassParams,
+    input: &TextInput,
+    output: &TextOutput,
+    ctx: &mut PrepareContext<'_, '_>,
+) -> Option<TextPreparedState> {
+    if params.fragments.is_empty() {
         return None;
     }
 
-    Some(TextBounds {
-        left: clipped[0].floor() as i32,
-        top: clipped[1].floor() as i32,
-        right: clipped[2].ceil() as i32,
-        bottom: clipped[3].ceil() as i32,
+    let target_handle = output.render_target.handle();
+    let (device, queue, surface_format, surface_size, scale_factor) = {
+        let viewport = ctx.viewport();
+        (
+            viewport.device()?.clone(),
+            viewport.queue()?.clone(),
+            viewport.surface_format(),
+            viewport.surface_size(),
+            viewport.scale_factor().max(0.0001),
+        )
+    };
+
+    let target_format = target_handle
+        .and_then(|handle| render_target_format(ctx, handle))
+        .unwrap_or(surface_format);
+    let sample_count = target_handle
+        .and_then(|handle| render_target_sample_count(ctx, handle))
+        .unwrap_or(1)
+        .max(1);
+    let target = resolve_texture_ref(target_handle, ctx, surface_size, None);
+    let target_origin = target_handle
+        .and_then(|handle| render_target_origin(ctx, handle))
+        .unwrap_or((0, 0));
+    let scissor_rect = params
+        .scissor_rect
+        .or(input.pass_context.scissor_rect)
+        .and_then(|rect| {
+            logical_scissor_to_target_physical(
+                ctx.viewport(),
+                rect,
+                target_origin,
+                target.physical_size,
+            )
+        });
+    let stencil_clip_id = params
+        .stencil_clip_id
+        .or(input.pass_context.stencil_clip_id);
+
+    let renderer_key = TextRendererKey {
+        format: target_format,
+        sample_count,
+        stencil_enabled: input.pass_context.uses_depth_stencil,
+    };
+
+    let mut fragments = Vec::with_capacity(params.fragments.len());
+    let mut pending = Vec::new();
+    for fragment in params.fragments.iter() {
+        if fragment.content.is_empty() || fragment.opacity <= 0.0 {
+            continue;
+        }
+        let width = fragment.width.max(1.0);
+        let height = fragment.height.max(1.0);
+        let origin = [
+            fragment.x * scale_factor - target_origin.0 as f32 + target.logical_origin.0 as f32,
+            fragment.y * scale_factor - target_origin.1 as f32 + target.logical_origin.1 as f32,
+        ];
+        fragments.push(FragmentUniform {
+            origin,
+            clip_min: origin,
+            clip_max: [
+                origin[0] + width * scale_factor,
+                origin[1] + height * scale_factor,
+            ],
+            _pad: [0.0, 0.0],
+        });
+        let Some(layout) = fragment.text_layout.as_ref() else {
+            continue;
+        };
+        let active_fragment_index = (fragments.len() - 1) as u32;
+        collect_fragment_glyphs(
+            layout,
+            origin,
+            fragment.color,
+            fragment.opacity,
+            active_fragment_index,
+            scale_factor,
+            &mut pending,
+        );
+    }
+
+    if fragments.is_empty() {
+        return None;
+    }
+
+    let screen_uniform = ScreenUniform {
+        screen_size: [
+            target.physical_size.0.max(1) as f32,
+            target.physical_size.1.max(1) as f32,
+        ],
+        _pad: [0.0, 0.0],
+    };
+    let screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Text Screen Uniform Buffer"),
+        contents: bytemuck::bytes_of(&screen_uniform),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let fragment_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Text Fragment Storage Buffer"),
+        contents: bytemuck::cast_slice(&fragments),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    let (globals_bind_group, mask_draw, color_draw) = TEXT_RESOURCES.with(|slot| {
+        let mut resources = slot.borrow_mut();
+        resources.ensure_common(&device);
+        let screen_layout = resources
+            .screen_layout
+            .as_ref()
+            .expect("screen bind group layout initialized");
+        let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Text Globals Bind Group"),
+            layout: screen_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: fragment_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let mask_draw = build_prepared_draw(
+            &device,
+            &queue,
+            &mut resources,
+            AtlasKind::Mask,
+            pending.iter().filter(|glyph| glyph.kind == AtlasKind::Mask),
+        );
+        let color_draw = build_prepared_draw(
+            &device,
+            &queue,
+            &mut resources,
+            AtlasKind::Color,
+            pending
+                .iter()
+                .filter(|glyph| glyph.kind == AtlasKind::Color),
+        );
+        resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Mask);
+        resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Color);
+        (globals_bind_group, mask_draw, color_draw)
+    });
+
+    if mask_draw.is_none() && color_draw.is_none() {
+        screen_buffer.destroy();
+        fragment_buffer.destroy();
+        return None;
+    }
+
+    Some(TextPreparedState {
+        renderer_key,
+        globals_bind_group,
+        screen_buffer,
+        fragment_buffer,
+        mask_draw,
+        color_draw,
+        scissor_rect,
+        stencil_clip_id,
     })
 }
 
-#[cfg(test)]
-fn physical_scissor_rect(
-    scissor_rect: Option<[u32; 4]>,
-    scale: f32,
-    target_size: (u32, u32),
-) -> Option<[u32; 4]> {
-    let [x, y, width, height] = scissor_rect?;
-    let scale = scale.max(0.0001);
-    let left = (x as f32 * scale).floor().max(0.0) as i64;
-    let top = (y as f32 * scale).floor().max(0.0) as i64;
-    let right = ((x as f32 + width as f32) * scale).ceil().max(0.0) as i64;
-    let bottom = ((y as f32 + height as f32) * scale).ceil().max(0.0) as i64;
-    let max_w = target_size.0 as i64;
-    let max_h = target_size.1 as i64;
-
-    let clamped_left = left.clamp(0, max_w);
-    let clamped_top = top.clamp(0, max_h);
-    let clamped_right = right.clamp(0, max_w);
-    let clamped_bottom = bottom.clamp(0, max_h);
-    if clamped_right <= clamped_left || clamped_bottom <= clamped_top {
-        return None;
-    }
-
-    Some([
-        clamped_left as u32,
-        clamped_top as u32,
-        (clamped_right - clamped_left) as u32,
-        (clamped_bottom - clamped_top) as u32,
-    ])
-}
-
-fn build_text_area(
-    text_layout: Option<&TextLayout>,
-    left: f32,
-    top: f32,
-    scale: f32,
-    bounds: TextBounds,
-    default_color: TextColor,
-) -> TextArea {
-    let render_lines = text_layout
-        .map(|text_layout| text_render_lines_from_text_layout(text_layout, scale))
-        .unwrap_or_default();
-    TextArea {
-        left,
-        top,
-        scale,
-        clip_min: [bounds.left as f32 - left, bounds.top as f32 - top],
-        clip_max: [bounds.right as f32 - left, bounds.bottom as f32 - top],
-        default_color,
-        render_lines,
-    }
-}
-
-fn text_render_lines_from_text_layout(text_layout: &TextLayout, scale: f32) -> Vec<TextRenderLine> {
-    text_layout
-        .lines()
-        .into_iter()
-        .map(|line| TextRenderLine {
-            line_top: line.y,
-            line_y: line.y + line.baseline,
-            line_height: line.height,
-            glyph_runs: vec![TextRenderGlyphRun {
-                glyphs: line
-                    .glyphs
-                    .into_iter()
-                    .map(|glyph| {
-                        let font_identity = glyph
-                            .font_data
-                            .as_ref()
-                            .map(text_font_identity_from_parley_font);
-                        let raster_scale = text_raster_scale(glyph.font_size * scale);
-                        let raster_font_size = glyph.font_size * scale * raster_scale;
-                        let x_subpixel_bucket =
-                            text_subpixel_bucket_index(glyph.x * scale * raster_scale);
-                        let y_subpixel_bucket = text_subpixel_bucket_index(text_render_trunc(
-                            glyph.y * scale * raster_scale,
-                        ));
-                        let flags = TextRasterFlags::default();
-                        let glyph_cache_key = font_identity.map(|identity| {
-                            text_parley_glyph_cache_key(
-                                identity,
-                                glyph.id,
-                                glyph.font_size,
-                                raster_font_size,
-                                raster_scale,
-                                x_subpixel_bucket,
-                                y_subpixel_bucket,
-                                flags,
-                                glyph.normalized_coords_hash,
-                            )
-                        });
-                        TextRenderGlyph {
-                            font_identity,
-                            parley_font_data: glyph.font_data,
-                            font_id_hash: font_identity.map(|identity| identity.hash).unwrap_or(0),
-                            glyph_id: glyph.id,
-                            advance: glyph.width.max(0.0),
-                            x: glyph.x,
-                            y: glyph.y,
-                            width: glyph.width,
-                            font_size: glyph.font_size,
-                            x_offset: 0.0,
-                            y_offset: 0.0,
-                            color: None,
-                            flags,
-                            glyph_cache_key,
-                        }
-                    })
-                    .collect(),
-            }],
-        })
-        .collect()
-}
-
-fn text_font_identity_from_parley_font(font: &ParleyFontData) -> TextFontIdentity {
-    let source = TextFontSourceIdentity::ParleyFontData {
-        blob_id: font.data.id(),
-        face_index: font.index,
-    };
-    TextFontIdentity {
-        hash: hash_text_render_value(&source),
-        source,
-    }
-}
-
-fn text_parley_glyph_cache_key(
-    font_identity: TextFontIdentity,
-    glyph_id: u32,
-    source_font_size: f32,
-    raster_font_size: f32,
-    raster_scale: f32,
-    x_subpixel_bucket: u8,
-    y_subpixel_bucket: u8,
-    flags: TextRasterFlags,
-    normalized_coords_hash: u64,
-) -> TextGlyphRasterKey {
-    TextGlyphRasterKey {
-        font_identity_hash: font_identity.hash,
-        glyph_id,
-        source_font_size_bits: source_font_size.to_bits(),
-        raster_scale_bits: raster_scale.to_bits(),
-        raster_font_size_bits: raster_font_size.to_bits(),
-        x_subpixel_bucket,
-        y_subpixel_bucket,
-        style_hash: hash_text_render_value(&flags),
-        normalized_coords_hash,
-    }
-}
-
-fn text_subpixel_bucket_index(pos: f32) -> u8 {
-    let trunc = pos as i32;
-    let fract = pos - trunc as f32;
-
-    if pos.is_sign_negative() {
-        if fract > -0.125 {
-            0
-        } else if fract > -0.375 {
-            3
-        } else if fract > -0.625 {
-            2
-        } else if fract > -0.875 {
-            1
-        } else {
-            0
+fn collect_fragment_glyphs(
+    layout: &TextLayout,
+    fragment_origin: [f32; 2],
+    color: [f32; 4],
+    opacity: f32,
+    fragment_index: u32,
+    scale_factor: f32,
+    out: &mut Vec<PendingGlyphInstance>,
+) {
+    TEXT_RESOURCES.with(|slot| {
+        let mut resources = slot.borrow_mut();
+        for line in layout.lines() {
+            let baseline_y = line.y + line.baseline;
+            for glyph in line.glyphs {
+                let Some(image) =
+                    rasterize_glyph(&mut resources.scale_context, &glyph, scale_factor)
+                else {
+                    continue;
+                };
+                let width = image.placement.width.max(1) as f32;
+                let height = image.placement.height.max(1) as f32;
+                if width <= 0.0 || height <= 0.0 || image.data.is_empty() {
+                    continue;
+                }
+                let kind = match image.content {
+                    SwashRasterContent::Color => AtlasKind::Color,
+                    SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => AtlasKind::Mask,
+                };
+                let local_pos = snap_text_local_pos(
+                    fragment_origin,
+                    [
+                        (line.x + glyph.x) * scale_factor + image.placement.left as f32,
+                        (baseline_y + glyph.y) * scale_factor - image.placement.top as f32,
+                    ],
+                );
+                out.push(PendingGlyphInstance {
+                    kind,
+                    local_pos,
+                    size: [width, height],
+                    image,
+                    color,
+                    opacity,
+                    fragment_index,
+                });
+            }
         }
-    } else if fract < 0.125 {
-        0
-    } else if fract < 0.375 {
-        1
-    } else if fract < 0.625 {
-        2
-    } else if fract < 0.875 {
-        3
-    } else {
-        0
-    }
+    });
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn text_raster_flags_from_bits(bits: u32) -> TextRasterFlags {
-    TextRasterFlags {
-        fake_italic: bits & 1 != 0,
-        disable_hinting: bits & 2 != 0,
-        pixel_font: bits & 4 != 0,
-    }
+fn snap_text_local_pos(fragment_origin: [f32; 2], local_pos: [f32; 2]) -> [f32; 2] {
+    [
+        text_render_trunc(fragment_origin[0] + local_pos[0]) - fragment_origin[0],
+        text_render_trunc(fragment_origin[1] + local_pos[1]) - fragment_origin[1],
+    ]
 }
 
 fn text_render_trunc(value: f32) -> f32 {
@@ -1049,784 +491,330 @@ fn text_render_trunc(value: f32) -> f32 {
     }
 }
 
-fn hash_text_render_value<T: std::hash::Hash>(value: &T) -> u64 {
-    use std::hash::Hasher;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(value, &mut hasher);
-    hasher.finish()
+fn rasterize_glyph(
+    scale_context: &mut SwashScaleContext,
+    glyph: &TextGlyph,
+    scale_factor: f32,
+) -> Option<SwashRasterImage> {
+    let font_data = glyph.font_data.as_ref()?;
+    let font_ref = swash_font_ref(font_data)?;
+    let mut scaler = scale_context
+        .builder(font_ref)
+        .size((glyph.font_size * scale_factor).max(1.0))
+        .hint(false)
+        .build();
+    let sources = [
+        Source::ColorBitmap(SwashStrikeWith::BestFit),
+        Source::ColorOutline(0),
+        Source::Bitmap(SwashStrikeWith::BestFit),
+        Source::Outline,
+    ];
+    let mut image = SwashRasterImage::new();
+    let rendered = SwashRender::new(&sources)
+        .format(SwashFormat::Alpha)
+        .offset(SwashVector::new(0.0, 0.0))
+        .render_into(&mut scaler, glyph.id as u16, &mut image);
+    rendered.then_some(image)
 }
 
-fn create_prepared_draw(
+fn swash_font_ref(font_data: &ParleyFontData) -> Option<SwashFontRef<'_>> {
+    SwashFontRef::from_index(font_data.data.data(), font_data.index as usize)
+}
+
+fn build_prepared_draw<'a>(
     device: &wgpu::Device,
-    label: &'static str,
-    vertices: &[TextGlyphVertex],
+    queue: &wgpu::Queue,
+    resources: &mut TextResources,
+    atlas_kind: AtlasKind,
+    glyphs: impl Iterator<Item = &'a PendingGlyphInstance>,
 ) -> Option<PreparedTextDraw> {
-    if vertices.is_empty() {
+    let glyphs = glyphs.collect::<Vec<_>>();
+    if glyphs.is_empty() {
         return None;
     }
+    let atlas = pack_atlas(atlas_kind, glyphs.as_slice())?;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(match atlas_kind {
+            AtlasKind::Mask => "Text Mask Atlas",
+            AtlasKind::Color => "Text Color Atlas",
+        }),
+        size: wgpu::Extent3d {
+            width: atlas.width,
+            height: atlas.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        atlas.pixels.as_slice(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(atlas.width.saturating_mul(4)),
+            rows_per_image: Some(atlas.height),
+        },
+        wgpu::Extent3d {
+            width: atlas.width,
+            height: atlas.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let atlas_layout = resources
+        .atlas_layout
+        .as_ref()
+        .expect("atlas bind group layout initialized");
+    let sampler = resources.sampler.as_ref().expect("sampler initialized");
+    let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Text Atlas Bind Group"),
+        layout: atlas_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::cast_slice(vertices),
+        label: Some("Text Glyph Instance Buffer"),
+        contents: bytemuck::cast_slice(atlas.instances.as_slice()),
         usage: wgpu::BufferUsages::VERTEX,
     });
     Some(PreparedTextDraw {
         vertex_buffer,
-        vertex_count: vertices.len() as u32,
+        instance_count: atlas.instances.len() as u32,
+        atlas_texture: texture,
+        atlas_view: view,
+        atlas_bind_group,
     })
 }
 
-#[derive(Clone, Copy)]
-struct AtlasGlyph {
-    x: u32,
-    y: u32,
-    raster_scale: f32,
-    layout_width: f32,
-    layout_height: f32,
-    layout_left: f32,
-    layout_top: f32,
-}
-
-struct AtlasUpload {
-    x: u32,
-    y: u32,
+struct PackedAtlas {
     width: u32,
     height: u32,
-    data: Vec<u8>,
+    pixels: Vec<u8>,
+    instances: Vec<TextGlyphInstance>,
 }
 
-enum TextAtlasCacheError {
-    #[allow(dead_code)]
-    Full,
-}
+fn pack_atlas(atlas_kind: AtlasKind, glyphs: &[&PendingGlyphInstance]) -> Option<PackedAtlas> {
+    const PADDING: u32 = 1;
+    const MAX_WIDTH: u32 = 2048;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TextRasterContent {
-    Color,
-    Mask,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TextRasterPlacement {
-    width: u32,
-    height: u32,
-    left: i32,
-    top: i32,
-}
-
-#[derive(Clone, Debug)]
-struct TextRasterImage {
-    content: TextRasterContent,
-    placement: TextRasterPlacement,
-    data: Vec<u8>,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct TextRasterRequest {
-    font_identity: Option<TextFontIdentity>,
-    parley_font_data: Option<ParleyFontData>,
-    font_identity_hash: u64,
-    glyph_id: u32,
-    source_font_size: f32,
-    raster_scale: f32,
-    raster_font_size: f32,
-    x_subpixel_bucket: u8,
-    y_subpixel_bucket: u8,
-    flags: TextRasterFlags,
-    style_hash: u64,
-    normalized_coords_hash: u64,
-}
-
-trait TextRasterProvider {
-    fn raster_image(&mut self, request: &TextRasterRequest) -> Option<TextRasterImage>;
-}
-
-#[allow(dead_code)]
-struct DirectSwashRasterProvider<'a> {
-    scale_context: &'a mut SwashScaleContext,
-}
-
-impl TextRasterProvider for DirectSwashRasterProvider<'_> {
-    fn raster_image(&mut self, request: &TextRasterRequest) -> Option<TextRasterImage> {
-        direct_swash_raster_image(self.scale_context, request)
-    }
-}
-
-#[allow(dead_code)]
-fn direct_swash_raster_image(
-    scale_context: &mut SwashScaleContext,
-    request: &TextRasterRequest,
-) -> Option<TextRasterImage> {
-    if request.normalized_coords_hash != 0 {
-        // TODO(text-raster): Add variation coords support before enabling
-        // direct raster for variable-font glyph instances.
-        return None;
-    }
-    if request.flags.fake_italic || request.flags.pixel_font {
-        // TODO(text-raster): Add direct raster support for fake italic and
-        // pixel/bitmap fonts before removing the final legacy text fallback.
-        return None;
-    }
-
-    let glyph_id = u16::try_from(request.glyph_id).ok()?;
-    let parley_font_data = request.parley_font_data.as_ref()?;
-    let font_data = parley_font_data.data.data();
-    let face_index = parley_font_data.index;
-    let font_ref = swash::FontRef::from_index(font_data, face_index as usize)?;
-    let mut scaler = scale_context
-        .builder(font_ref)
-        .size(request.raster_font_size)
-        .hint(!request.flags.disable_hinting)
-        .build();
-    let image = SwashRender::new(&[
-        Source::ColorOutline(0),
-        Source::ColorBitmap(SwashStrikeWith::BestFit),
-        Source::Outline,
-    ])
-    .format(SwashFormat::Alpha)
-    .offset(SwashVector::new(
-        text_subpixel_bucket_offset(request.x_subpixel_bucket),
-        text_subpixel_bucket_offset(request.y_subpixel_bucket),
-    ))
-    .render(&mut scaler, glyph_id)?;
-    Some(text_raster_image_from_swash(&image))
-}
-
-fn text_subpixel_bucket_offset(bucket: u8) -> f32 {
-    match bucket {
-        1 => 0.25,
-        2 => 0.5,
-        3 => 0.75,
-        _ => 0.0,
-    }
-}
-
-fn trace_direct_text_raster_enabled() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        static ENABLED: OnceLock<bool> = OnceLock::new();
-        *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_DIRECT_TEXT_RASTER").is_ok())
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        false
-    }
-}
-
-fn text_raster_request_from_glyph(
-    glyph: &TextRenderGlyph,
-    raster_scale: f32,
-) -> Option<TextRasterRequest> {
-    let glyph_cache_key = glyph.glyph_cache_key?;
-    Some(TextRasterRequest {
-        font_identity: glyph.font_identity,
-        parley_font_data: glyph.parley_font_data.clone(),
-        font_identity_hash: glyph_cache_key.font_identity_hash,
-        glyph_id: glyph_cache_key.glyph_id,
-        source_font_size: f32::from_bits(glyph_cache_key.source_font_size_bits),
-        raster_scale,
-        raster_font_size: f32::from_bits(glyph_cache_key.raster_font_size_bits),
-        x_subpixel_bucket: glyph_cache_key.x_subpixel_bucket,
-        y_subpixel_bucket: glyph_cache_key.y_subpixel_bucket,
-        flags: glyph.flags,
-        style_hash: glyph_cache_key.style_hash,
-        normalized_coords_hash: glyph_cache_key.normalized_coords_hash,
-    })
-}
-
-fn text_raster_image_from_swash(image: &SwashRasterImage) -> TextRasterImage {
-    let placement = TextRasterPlacement {
-        width: image.placement.width,
-        height: image.placement.height,
-        left: image.placement.left,
-        top: image.placement.top,
-    };
-    match image.content {
-        SwashRasterContent::Color => TextRasterImage {
-            content: TextRasterContent::Color,
-            placement,
-            data: swash_color_image_to_rgba(image),
-        },
-        SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => TextRasterImage {
-            content: TextRasterContent::Mask,
-            placement,
-            data: swash_mask_image_to_r8(image),
-        },
-    }
-}
-
-fn swash_color_image_to_rgba(image: &SwashRasterImage) -> Vec<u8> {
-    let pixel_count = image.placement.width.saturating_mul(image.placement.height) as usize;
-    let mut out = Vec::with_capacity(pixel_count * 4);
-    for index in 0..pixel_count {
-        let offset = index * 4;
-        if offset + 4 <= image.data.len() {
-            out.extend_from_slice(&image.data[offset..offset + 4]);
-        } else {
-            out.extend_from_slice(&[0, 0, 0, 0]);
+    let mut x = PADDING;
+    let mut y = PADDING;
+    let mut row_height = 0;
+    let mut placements = Vec::with_capacity(glyphs.len());
+    let mut atlas_width = PADDING;
+    for glyph in glyphs {
+        let w = glyph.image.placement.width.max(1);
+        let h = glyph.image.placement.height.max(1);
+        if x + w + PADDING > MAX_WIDTH && x > PADDING {
+            y += row_height + PADDING;
+            x = PADDING;
+            row_height = 0;
         }
+        placements.push((x, y, w, h));
+        atlas_width = atlas_width.max(x + w + PADDING);
+        x += w + PADDING;
+        row_height = row_height.max(h);
     }
-    out
-}
+    let atlas_height = (y + row_height + PADDING).max(1);
+    let atlas_width = atlas_width.max(1);
+    let mut pixels = vec![0_u8; atlas_width as usize * atlas_height as usize * 4];
+    let mut instances = Vec::with_capacity(glyphs.len());
 
-fn swash_mask_image_to_r8(image: &SwashRasterImage) -> Vec<u8> {
-    let pixel_count = image.placement.width.saturating_mul(image.placement.height) as usize;
-    let mut out = Vec::with_capacity(pixel_count);
-    match image.content {
-        SwashRasterContent::Mask => {
-            for index in 0..pixel_count {
-                out.push(image.data.get(index).copied().unwrap_or(0));
-            }
-        }
-        SwashRasterContent::SubpixelMask => {
-            for index in 0..pixel_count {
-                let offset = index * 3;
-                let chunk = image
-                    .data
-                    .get(offset..offset.saturating_add(3))
-                    .unwrap_or(&[]);
-                out.push(chunk.iter().copied().max().unwrap_or(0));
-            }
-        }
-        SwashRasterContent::Color => {}
-    }
-    out
-}
-
-#[derive(Clone, Copy)]
-struct PagedAtlasConfig {
-    label: &'static str,
-    format: wgpu::TextureFormat,
-    bytes_per_pixel: u32,
-    plot_size: u32,
-    plots_per_row: u32,
-    soft_page_cap: u32,
-}
-
-impl PagedAtlasConfig {
-    const COLOR: Self = Self {
-        label: "Text Color Atlas",
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        bytes_per_pixel: 4,
-        plot_size: 512,
-        plots_per_row: 4,
-        soft_page_cap: 2,
-    };
-    const MASK: Self = Self {
-        label: "Text Mask Atlas",
-        format: wgpu::TextureFormat::R8Unorm,
-        bytes_per_pixel: 1,
-        plot_size: 256,
-        plots_per_row: 8,
-        soft_page_cap: 2,
-    };
-
-    fn page_size(&self) -> u32 {
-        self.plot_size * self.plots_per_row
-    }
-
-    fn plots_per_page(&self) -> usize {
-        (self.plots_per_row * self.plots_per_row) as usize
-    }
-}
-
-#[derive(Clone, Default)]
-struct Plot {
-    cursor_x: u32,
-    cursor_y: u32,
-    row_height: u32,
-    last_use_frame: u64,
-    keys: Vec<TextGlyphRasterKey>,
-}
-
-#[derive(Clone, Copy)]
-struct GlyphLocation {
-    page: u16,
-    plot: u8,
-    glyph: AtlasGlyph,
-}
-
-struct PagedAtlasPage {
-    texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
-    plots: Vec<Plot>,
-    pending_uploads: Vec<AtlasUpload>,
-}
-
-impl PagedAtlasPage {
-    fn new(
-        config: &PagedAtlasConfig,
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
-    ) -> Self {
-        let page_size = config.page_size();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(config.label),
-            size: wgpu::Extent3d {
-                width: page_size,
-                height: page_size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: config.format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(config.label),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-        Self {
-            texture,
-            bind_group,
-            plots: vec![Plot::default(); config.plots_per_page()],
-            pending_uploads: Vec::new(),
-        }
-    }
-
-    fn try_allocate(
-        &mut self,
-        config: &PagedAtlasConfig,
-        padded_w: u32,
-        padded_h: u32,
-        current_frame: u64,
-    ) -> Option<(u8, u32, u32)> {
-        if padded_w > config.plot_size || padded_h > config.plot_size {
-            return None;
-        }
-        for (idx, plot) in self.plots.iter_mut().enumerate() {
-            let mut cx = plot.cursor_x;
-            let mut cy = plot.cursor_y;
-            let mut rh = plot.row_height;
-            if cx + padded_w > config.plot_size {
-                cx = 0;
-                cy = cy.saturating_add(rh);
-                rh = 0;
-            }
-            if cy + padded_h > config.plot_size {
-                continue;
-            }
-            let px = (idx as u32 % config.plots_per_row) * config.plot_size;
-            let py = (idx as u32 / config.plots_per_row) * config.plot_size;
-            let abs_x = px + cx;
-            let abs_y = py + cy;
-            plot.cursor_x = cx + padded_w;
-            plot.cursor_y = cy;
-            plot.row_height = rh.max(padded_h);
-            plot.last_use_frame = current_frame;
-            return Some((idx as u8, abs_x, abs_y));
-        }
-        None
-    }
-}
-
-struct PagedAtlas {
-    config: PagedAtlasConfig,
-    bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    pages: Vec<PagedAtlasPage>,
-    glyphs: FxHashMap<TextGlyphRasterKey, GlyphLocation>,
-    generation: u64,
-    current_frame: u64,
-}
-
-impl PagedAtlas {
-    fn new(device: &wgpu::Device, config: PagedAtlasConfig) -> Self {
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some(config.label),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some(config.label),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        Self {
-            config,
-            bind_group_layout,
-            sampler,
-            pages: Vec::new(),
-            glyphs: FxHashMap::default(),
-            generation: 0,
-            current_frame: 0,
-        }
-    }
-
-    fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    fn page_size(&self) -> u32 {
-        self.config.page_size()
-    }
-
-    fn page_bind_group(&self, idx: u16) -> Option<&wgpu::BindGroup> {
-        self.pages.get(idx as usize).map(|p| &p.bind_group)
-    }
-
-    fn begin_frame(&mut self) {
-        self.current_frame = self.current_frame.wrapping_add(1);
-    }
-
-    fn reset(&mut self) {
-        for page in self.pages.drain(..) {
-            page.texture.destroy();
-        }
-        self.glyphs.clear();
-        self.generation = self.generation.wrapping_add(1);
-    }
-
-    fn get_glyph(&mut self, key: TextGlyphRasterKey) -> Option<(u16, AtlasGlyph)> {
-        let entry = *self.glyphs.get(&key)?;
-        if let Some(page) = self.pages.get_mut(entry.page as usize) {
-            if let Some(plot) = page.plots.get_mut(entry.plot as usize) {
-                plot.last_use_frame = self.current_frame;
-            }
-        }
-        Some((entry.page, entry.glyph))
-    }
-
-    fn evict_lru_plot(&mut self) -> bool {
-        let mut target: Option<(u16, u8, u64)> = None;
-        for (pi, page) in self.pages.iter().enumerate() {
-            for (li, plot) in page.plots.iter().enumerate() {
-                if plot.keys.is_empty() {
-                    continue;
-                }
-                if plot.last_use_frame >= self.current_frame {
-                    continue;
-                }
-                match target {
-                    Some((_, _, best)) if best <= plot.last_use_frame => {}
-                    _ => target = Some((pi as u16, li as u8, plot.last_use_frame)),
-                }
-            }
-        }
-        let Some((page_idx, plot_idx, _)) = target else {
-            return false;
-        };
-        let plot = &mut self.pages[page_idx as usize].plots[plot_idx as usize];
-        let keys = std::mem::take(&mut plot.keys);
-        plot.cursor_x = 0;
-        plot.cursor_y = 0;
-        plot.row_height = 0;
-        plot.last_use_frame = 0;
-        for key in keys {
-            self.glyphs.remove(&key);
-        }
-        self.generation = self.generation.wrapping_add(1);
-        true
-    }
-
-    fn cache_glyph(
-        &mut self,
-        device: &wgpu::Device,
-        cache_key: TextGlyphRasterKey,
-        image_data: Vec<u8>,
-        width: u32,
-        height: u32,
-        left: i32,
-        top: i32,
-        raster_scale: f32,
-    ) -> Result<Option<(u16, AtlasGlyph)>, TextAtlasCacheError> {
-        if let Some(g) = self.get_glyph(cache_key) {
-            return Ok(Some(g));
-        }
-        if width == 0 || height == 0 {
-            return Ok(None);
-        }
-        let padded_w = width.saturating_add(2);
-        let padded_h = height.saturating_add(2);
-        if padded_w > self.config.plot_size || padded_h > self.config.plot_size {
-            return Ok(None);
-        }
-        let current_frame = self.current_frame;
-        let try_existing = |pages: &mut Vec<PagedAtlasPage>,
-                            config: &PagedAtlasConfig|
-         -> Option<(u16, u8, u32, u32)> {
-            for (page_idx, page) in pages.iter_mut().enumerate() {
-                if let Some((plot_idx, ax, ay)) =
-                    page.try_allocate(config, padded_w, padded_h, current_frame)
-                {
-                    return Some((page_idx as u16, plot_idx, ax, ay));
-                }
-            }
-            None
-        };
-        let mut slot = try_existing(&mut self.pages, &self.config);
-        if slot.is_none() && self.pages.len() as u32 >= self.config.soft_page_cap {
-            while self.evict_lru_plot() {
-                slot = try_existing(&mut self.pages, &self.config);
-                if slot.is_some() {
-                    break;
-                }
-            }
-        }
-        let (page_idx, plot_idx, alloc_x, alloc_y) = match slot {
-            Some(v) => v,
-            None => {
-                let mut page = PagedAtlasPage::new(
-                    &self.config,
-                    device,
-                    &self.bind_group_layout,
-                    &self.sampler,
-                );
-                let (plot_idx, ax, ay) = page
-                    .try_allocate(&self.config, padded_w, padded_h, current_frame)
-                    .expect("fresh page must fit a glyph within plot bounds");
-                self.pages.push(page);
-                ((self.pages.len() - 1) as u16, plot_idx, ax, ay)
-            }
-        };
-        let bpp = self.config.bytes_per_pixel;
-        let mut padded_data = vec![0_u8; padded_w as usize * padded_h as usize * bpp as usize];
-        for row in 0..height as usize {
-            let row_bytes = width as usize * bpp as usize;
-            let source_start = row * row_bytes;
-            let source_end = source_start + row_bytes;
-            let target_start = ((row + 1) * padded_w as usize + 1) * bpp as usize;
-            let target_end = target_start + row_bytes;
-            padded_data[target_start..target_end]
-                .copy_from_slice(&image_data[source_start..source_end]);
-        }
-        self.pages[page_idx as usize]
-            .pending_uploads
-            .push(AtlasUpload {
-                x: alloc_x,
-                y: alloc_y,
-                width: padded_w,
-                height: padded_h,
-                data: padded_data,
-            });
-        let glyph = AtlasGlyph {
-            x: alloc_x + 1,
-            y: alloc_y + 1,
-            raster_scale,
-            layout_width: width as f32 / raster_scale,
-            layout_height: height as f32 / raster_scale,
-            layout_left: left as f32 / raster_scale,
-            layout_top: top as f32 / raster_scale,
-        };
-        self.pages[page_idx as usize].plots[plot_idx as usize]
-            .keys
-            .push(cache_key);
-        self.glyphs.insert(
-            cache_key,
-            GlyphLocation {
-                page: page_idx,
-                plot: plot_idx,
-                glyph,
-            },
+    for (glyph, (dst_x, dst_y, width, height)) in glyphs.iter().zip(placements) {
+        copy_glyph_to_atlas(
+            atlas_kind,
+            &glyph.image,
+            &mut pixels,
+            atlas_width,
+            dst_x,
+            dst_y,
         );
-        Ok(Some((page_idx, glyph)))
+        let uv_min = [
+            dst_x as f32 / atlas_width as f32,
+            dst_y as f32 / atlas_height as f32,
+        ];
+        let uv_max = [
+            (dst_x + width) as f32 / atlas_width as f32,
+            (dst_y + height) as f32 / atlas_height as f32,
+        ];
+        instances.push(TextGlyphInstance {
+            local_pos: glyph.local_pos,
+            size: glyph.size,
+            uv_min,
+            uv_max,
+            color: glyph.color,
+            opacity: glyph.opacity,
+            fragment_index: glyph.fragment_index,
+        });
     }
 
-    fn flush_uploads(&mut self, queue: &wgpu::Queue) {
-        let bpp = self.config.bytes_per_pixel;
-        for page in self.pages.iter_mut() {
-            let uploads = std::mem::take(&mut page.pending_uploads);
-            for up in &uploads {
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &page.texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: up.x,
-                            y: up.y,
-                            z: 0,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &up.data,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(up.width * bpp),
-                        rows_per_image: None,
-                    },
-                    wgpu::Extent3d {
-                        width: up.width,
-                        height: up.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
+    Some(PackedAtlas {
+        width: atlas_width,
+        height: atlas_height,
+        pixels,
+        instances,
+    })
+}
+
+fn copy_glyph_to_atlas(
+    atlas_kind: AtlasKind,
+    image: &SwashRasterImage,
+    pixels: &mut [u8],
+    atlas_width: u32,
+    dst_x: u32,
+    dst_y: u32,
+) {
+    let width = image.placement.width;
+    let height = image.placement.height;
+    for row in 0..height {
+        for col in 0..width {
+            let dst = (((dst_y + row) * atlas_width + dst_x + col) * 4) as usize;
+            match (atlas_kind, image.content) {
+                (AtlasKind::Color, SwashRasterContent::Color) => {
+                    let src = ((row * width + col) * 4) as usize;
+                    if src + 3 < image.data.len() && dst + 3 < pixels.len() {
+                        pixels[dst..dst + 4].copy_from_slice(&image.data[src..src + 4]);
+                    }
+                }
+                (_, SwashRasterContent::Mask) => {
+                    let src = (row * width + col) as usize;
+                    if src < image.data.len() && dst + 3 < pixels.len() {
+                        let coverage = image.data[src];
+                        pixels[dst] = coverage;
+                        pixels[dst + 1] = coverage;
+                        pixels[dst + 2] = coverage;
+                        pixels[dst + 3] = coverage;
+                    }
+                }
+                (_, SwashRasterContent::SubpixelMask) => {
+                    let src = ((row * width + col) * 4) as usize;
+                    if src + 3 < image.data.len() && dst + 3 < pixels.len() {
+                        let coverage = image.data[src]
+                            .max(image.data[src + 1])
+                            .max(image.data[src + 2]);
+                        pixels[dst] = coverage;
+                        pixels[dst + 1] = coverage;
+                        pixels[dst + 2] = coverage;
+                        pixels[dst + 3] = image.data[src + 3].max(coverage);
+                    }
+                }
+                (AtlasKind::Mask, SwashRasterContent::Color) => {}
             }
         }
     }
 }
 
-struct TextResources {
-    direct_swash_context: SwashScaleContext,
-    mask_atlas: PagedAtlas,
-    color_atlas: PagedAtlas,
-    format: wgpu::TextureFormat,
-    screen_bind_group_layout: wgpu::BindGroupLayout,
-    pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
-    prepared_draws: FxHashMap<PreparedTextDrawKey, PreparedTextDrawSet>,
-    prepared_draw_lru: VecDeque<PreparedTextDrawKey>,
-    prepared_draw_epoch: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct PreparedTextDrawKey {
-    renderer_key: TextRendererKey,
-    draw_signature: u64,
-    atlas_generation: AtlasGenerations,
+fn draw_prepared_text(
+    ctx: &mut GraphicsCtx<'_, '_, '_, '_>,
+    prepared: &TextPreparedState,
+    kind: TextPipelineKind,
+    draw: Option<&PreparedTextDraw>,
+) {
+    let Some(draw) = draw else {
+        return;
+    };
+    if draw.instance_count == 0 {
+        return;
+    }
+    TEXT_RESOURCES.with(|slot| {
+        let resources = slot.borrow();
+        let Some(pipeline) = resources.pipelines.get(&(prepared.renderer_key, kind)) else {
+            return;
+        };
+        let _ = &draw.atlas_view;
+        ctx.set_pipeline(pipeline);
+        ctx.set_bind_group(0, &prepared.globals_bind_group, &[]);
+        ctx.set_bind_group(1, &draw.atlas_bind_group, &[]);
+        ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
+        ctx.draw(0..6, 0..draw.instance_count);
+    });
 }
 
 impl TextResources {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let screen_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Text Screen Bind Group Layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: Some(
-                                NonZeroU64::new(std::mem::size_of::<TextScreenUniform>() as u64)
-                                    .expect("text screen uniform size must be non-zero"),
-                            ),
+    fn ensure_common(&mut self, device: &wgpu::Device) {
+        if self.screen_layout.is_none() {
+            self.screen_layout = Some(device.create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Text Globals Bind Group Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
                         },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: Some(
-                                NonZeroU64::new(std::mem::size_of::<TextFragmentUniform>() as u64)
-                                    .expect("text fragment uniform size must be non-zero"),
-                            ),
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
                         },
-                        count: None,
-                    },
-                ],
-            });
-        let mask_atlas = PagedAtlas::new(device, PagedAtlasConfig::MASK);
-        let color_atlas = PagedAtlas::new(device, PagedAtlasConfig::COLOR);
-
-        Self {
-            direct_swash_context: SwashScaleContext::new(),
-            mask_atlas,
-            color_atlas,
-            format,
-            screen_bind_group_layout,
-            pipelines: FxHashMap::default(),
-            prepared_draws: FxHashMap::default(),
-            prepared_draw_lru: VecDeque::new(),
-            prepared_draw_epoch: 0,
+                    ],
+                },
+            ));
         }
-    }
-
-    fn reset_atlas(&mut self) {
-        self.mask_atlas.reset();
-        self.color_atlas.reset();
-        self.clear_prepared_draws();
-    }
-
-    fn atlas_generations(&self) -> AtlasGenerations {
-        AtlasGenerations {
-            mask: self.mask_atlas.generation(),
-            color: self.color_atlas.generation(),
+        if self.atlas_layout.is_none() {
+            self.atlas_layout = Some(device.create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Text Atlas Bind Group Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                },
+            ));
         }
-    }
-
-    fn flush_atlas_uploads(&mut self, queue: &wgpu::Queue) {
-        self.mask_atlas.flush_uploads(queue);
-        self.color_atlas.flush_uploads(queue);
-    }
-
-    fn take_prepared_draw(
-        &mut self,
-        renderer_key: TextRendererKey,
-        draw_signature: u64,
-        atlas_generation: AtlasGenerations,
-    ) -> Option<PreparedTextDrawSet> {
-        let key = PreparedTextDrawKey {
-            renderer_key,
-            draw_signature,
-            atlas_generation,
-        };
-        let draw = self.prepared_draws.get(&key).cloned()?;
-        self.prepared_draw_lru.retain(|current| *current != key);
-        self.prepared_draw_lru.push_back(key);
-        Some(draw)
-    }
-
-    fn put_prepared_draw(
-        &mut self,
-        renderer_key: TextRendererKey,
-        draw_signature: u64,
-        atlas_generation: AtlasGenerations,
-        draw: PreparedTextDrawSet,
-    ) {
-        let key = PreparedTextDrawKey {
-            renderer_key,
-            draw_signature,
-            atlas_generation,
-        };
-        self.prepared_draws.insert(key, draw);
-        self.prepared_draw_lru.retain(|current| *current != key);
-        self.prepared_draw_lru.push_back(key);
-        while self.prepared_draw_lru.len() > 512 {
-            if let Some(old_key) = self.prepared_draw_lru.pop_front() {
-                if let Some(draw_set) = self.prepared_draws.remove(&old_key) {
-                    draw_set.destroy();
-                    self.prepared_draw_epoch = self.prepared_draw_epoch.wrapping_add(1);
-                }
-            }
+        if self.sampler.is_none() {
+            self.sampler = Some(device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Text Atlas Sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            }));
         }
-    }
-
-    fn clear_prepared_draws(&mut self) {
-        for draw_set in self.prepared_draws.values() {
-            draw_set.destroy();
-        }
-        self.prepared_draws.clear();
-        self.prepared_draw_lru.clear();
-        self.prepared_draw_epoch = self.prepared_draw_epoch.wrapping_add(1);
     }
 
     fn ensure_pipeline(
@@ -1835,606 +823,100 @@ impl TextResources {
         key: TextRendererKey,
         kind: TextPipelineKind,
     ) {
+        self.ensure_common(device);
         if self.pipelines.contains_key(&(key, kind)) {
             return;
         }
-        let pipeline = create_text_pipeline(
-            device,
-            self.format,
-            key.sample_count,
-            key.stencil_enabled,
-            kind,
-            &self.screen_bind_group_layout,
-            &self.mask_atlas.bind_group_layout,
-        );
+        let screen_layout = self.screen_layout.as_ref().expect("screen layout");
+        let atlas_layout = self.atlas_layout.as_ref().expect("atlas layout");
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Text Pipeline Layout"),
+            bind_group_layouts: &[Some(screen_layout), Some(atlas_layout)],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Text Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/text.wgsl").into()),
+        });
+        let fragment_entry = match kind {
+            TextPipelineKind::Mask => "fs_mask",
+            TextPipelineKind::Color => "fs_color",
+        };
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Text Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[text_glyph_vertex_layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some(fragment_entry),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: key.format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: key.stencil_enabled.then_some(text_depth_stencil_state()),
+            multisample: wgpu::MultisampleState {
+                count: key.sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
         self.pipelines.insert((key, kind), pipeline);
     }
 
-    fn pipeline(&self, key: TextRendererKey, kind: TextPipelineKind) -> &wgpu::RenderPipeline {
-        self.pipelines
-            .get(&(key, kind))
-            .expect("text pipeline should be created before render")
-    }
-
-    fn create_globals_bind_group(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        screen_w: f32,
-        screen_h: f32,
-        text_areas: &[TextArea],
-        existing: Option<(&wgpu::Buffer, &wgpu::Buffer, &wgpu::BindGroup, usize)>,
-    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, usize) {
-        let screen_uniform = TextScreenUniform {
-            screen_size: [screen_w, screen_h],
-            _pad: [0.0, 0.0],
-        };
-        let fragment_uniforms: Vec<TextFragmentUniform> = text_areas
-            .iter()
-            .map(|text_area| TextFragmentUniform {
-                origin: [text_area.left, text_area.top],
-                clip_min: [
-                    text_area.left + text_area.clip_min[0],
-                    text_area.top + text_area.clip_min[1],
-                ],
-                clip_max: [
-                    text_area.left + text_area.clip_max[0],
-                    text_area.top + text_area.clip_max[1],
-                ],
-                _pad: [0.0, 0.0],
-            })
-            .collect();
-        let fragment_capacity = fragment_uniforms.len().max(1);
-        let (screen_buffer, fragment_buffer, bind_group, capacity) =
-            if let Some((screen_buffer, fragment_buffer, bind_group, capacity)) = existing {
-                if capacity >= fragment_capacity {
-                    (
-                        screen_buffer.clone(),
-                        fragment_buffer.clone(),
-                        bind_group.clone(),
-                        capacity,
-                    )
-                } else {
-                    let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Text Screen Uniform Buffer"),
-                        size: std::mem::size_of::<TextScreenUniform>() as u64,
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
-                    let fragment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Text Fragment Uniform Buffer"),
-                        size: (fragment_capacity * std::mem::size_of::<TextFragmentUniform>())
-                            as u64,
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
-                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Text Globals Bind Group"),
-                        layout: &self.screen_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: screen_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: fragment_buffer.as_entire_binding(),
-                            },
-                        ],
-                    });
-                    (
-                        screen_buffer,
-                        fragment_buffer,
-                        bind_group,
-                        fragment_capacity,
-                    )
-                }
-            } else {
-                let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Text Screen Uniform Buffer"),
-                    size: std::mem::size_of::<TextScreenUniform>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                let fragment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Text Fragment Uniform Buffer"),
-                    size: (fragment_capacity * std::mem::size_of::<TextFragmentUniform>()) as u64,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Text Globals Bind Group"),
-                    layout: &self.screen_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: screen_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: fragment_buffer.as_entire_binding(),
-                        },
-                    ],
-                });
-                (
-                    screen_buffer,
-                    fragment_buffer,
-                    bind_group,
-                    fragment_capacity,
-                )
-            };
-        queue.write_buffer(&screen_buffer, 0, bytemuck::bytes_of(&screen_uniform));
-        if fragment_uniforms.is_empty() {
-            let default_fragment = TextFragmentUniform {
-                origin: [0.0, 0.0],
-                clip_min: [0.0, 0.0],
-                clip_max: [0.0, 0.0],
-                _pad: [0.0, 0.0],
-            };
-            queue.write_buffer(&fragment_buffer, 0, bytemuck::bytes_of(&default_fragment));
-        } else {
-            queue.write_buffer(
-                &fragment_buffer,
-                0,
-                bytemuck::cast_slice(fragment_uniforms.as_slice()),
-            );
-        }
-        (
-            screen_buffer,
-            fragment_buffer,
-            bind_group,
-            capacity.max(fragment_capacity),
-        )
-    }
-
-    fn raster_text_image(
-        &mut self,
-        request: TextRasterRequest,
-        glyph_cache_key: TextGlyphRasterKey,
-    ) -> Option<TextRasterImage> {
-        let direct_image = {
-            let mut direct_provider = DirectSwashRasterProvider {
-                scale_context: &mut self.direct_swash_context,
-            };
-            direct_provider.raster_image(&request)
-        };
-        if let Some(image) = direct_image {
-            debug_assert_eq!(request.glyph_id, glyph_cache_key.glyph_id);
-            debug_assert_eq!(
-                request.font_identity_hash,
-                glyph_cache_key.font_identity_hash
-            );
-            return Some(image);
-        }
-        if trace_direct_text_raster_enabled() {
-            eprintln!(
-                "[text-raster] direct provider skipped unsupported glyph {:?}",
-                glyph_cache_key
-            );
-        }
-        None
-    }
-
-    fn prepare_text_area(
-        &mut self,
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        text_area: &TextArea,
-        fragment_index: u32,
-        mask_out: &mut Vec<Vec<TextGlyphVertex>>,
-        color_out: &mut Vec<Vec<TextGlyphVertex>>,
-    ) -> Result<(), TextAtlasCacheError> {
-        let is_run_visible = |run: &TextRenderLine| {
-            let start_y = run.line_top * text_area.scale;
-            let end_y = start_y + (run.line_height * text_area.scale);
-            start_y <= text_area.clip_max[1] && text_area.clip_min[1] <= end_y
-        };
-        for run in text_area
-            .render_lines
-            .iter()
-            .skip_while(|run| !is_run_visible(run))
-            .take_while(|run| is_run_visible(run))
-        {
-            for glyph_run in run.glyph_runs.iter() {
-                for glyph in glyph_run.glyphs.iter() {
-                    let before_atlas_generation = self.atlas_generations();
-                    let raster_scale = text_raster_scale(glyph.font_size * text_area.scale);
-                    let Some(glyph_cache_key) = glyph.glyph_cache_key else {
-                        continue;
-                    };
-                    let glyph_x_offset = glyph.font_size * glyph.x_offset;
-                    let glyph_y_offset = glyph.font_size * glyph.y_offset;
-                    let color = glyph.color.unwrap_or(text_area.default_color);
-                    let cached_atlas = self
-                        .mask_atlas
-                        .get_glyph(glyph_cache_key)
-                        .map(|(page_idx, atlas_glyph)| {
-                            (
-                                atlas_glyph,
-                                self.mask_atlas.page_size() as f32,
-                                page_idx,
-                                false,
-                            )
-                        })
-                        .or_else(|| {
-                            self.color_atlas.get_glyph(glyph_cache_key).map(
-                                |(page_idx, atlas_glyph)| {
-                                    (
-                                        atlas_glyph,
-                                        self.color_atlas.page_size() as f32,
-                                        page_idx,
-                                        true,
-                                    )
-                                },
-                            )
-                        });
-                    let (atlas_glyph, atlas_size, page_idx, is_color) = if let Some(cached_atlas) =
-                        cached_atlas
-                    {
-                        cached_atlas
-                    } else {
-                        let Some(raster_request) =
-                            text_raster_request_from_glyph(glyph, raster_scale)
-                        else {
-                            continue;
-                        };
-                        let Some(image) = self.raster_text_image(raster_request, glyph_cache_key)
-                        else {
-                            continue;
-                        };
-                        match image.content {
-                            TextRasterContent::Color => {
-                                let Some((page_idx, atlas_glyph)) = self.color_atlas.cache_glyph(
-                                    device,
-                                    glyph_cache_key,
-                                    image.data,
-                                    image.placement.width,
-                                    image.placement.height,
-                                    image.placement.left,
-                                    image.placement.top,
-                                    raster_scale,
-                                )?
-                                else {
-                                    continue;
-                                };
-                                (
-                                    atlas_glyph,
-                                    self.color_atlas.page_size() as f32,
-                                    page_idx,
-                                    true,
-                                )
-                            }
-                            TextRasterContent::Mask => {
-                                let Some((page_idx, atlas_glyph)) = self.mask_atlas.cache_glyph(
-                                    device,
-                                    glyph_cache_key,
-                                    image.data,
-                                    image.placement.width,
-                                    image.placement.height,
-                                    image.placement.left,
-                                    image.placement.top,
-                                    raster_scale,
-                                )?
-                                else {
-                                    continue;
-                                };
-                                (
-                                    atlas_glyph,
-                                    self.mask_atlas.page_size() as f32,
-                                    page_idx,
-                                    false,
-                                )
-                            }
-                        }
-                    };
-                    if self.atlas_generations() != before_atlas_generation {
-                        self.clear_prepared_draws();
-                    }
-
-                    let mut x =
-                        (glyph.x + glyph_x_offset) * text_area.scale + atlas_glyph.layout_left;
-                    let mut y = (run.line_y + glyph.y - glyph_y_offset) * text_area.scale
-                        - atlas_glyph.layout_top;
-                    let mut width = atlas_glyph.layout_width;
-                    let mut height = atlas_glyph.layout_height;
-                    let mut atlas_x = atlas_glyph.x as f32;
-                    let mut atlas_y = atlas_glyph.y as f32;
-                    let max_x = x + width;
-                    let max_y = y + height;
-                    let bounds_left = text_area.clip_min[0];
-                    let bounds_top = text_area.clip_min[1];
-                    let bounds_right = text_area.clip_max[0];
-                    let bounds_bottom = text_area.clip_max[1];
-
-                    if x > bounds_right
-                        || max_x < bounds_left
-                        || y > bounds_bottom
-                        || max_y < bounds_top
-                    {
-                        continue;
-                    }
-                    if x < bounds_left {
-                        let shift = bounds_left - x;
-                        x = bounds_left;
-                        width = max_x - bounds_left;
-                        atlas_x += shift * atlas_glyph.raster_scale;
-                    }
-                    if x + width > bounds_right {
-                        width = bounds_right - x;
-                    }
-                    if y < bounds_top {
-                        let shift = bounds_top - y;
-                        y = bounds_top;
-                        height = max_y - bounds_top;
-                        atlas_y += shift * atlas_glyph.raster_scale;
-                    }
-                    if y + height > bounds_bottom {
-                        height = bounds_bottom - y;
-                    }
-                    width = width.max(0.0);
-                    height = height.max(0.0);
-                    if width <= 0.0 || height <= 0.0 {
-                        continue;
-                    }
-                    if width <= 0.0 || height <= 0.0 {
-                        continue;
-                    }
-
-                    let rgba = color.as_rgba();
-                    let vertex = TextGlyphVertex {
-                        local_pos: [x, y],
-                        size: [width, height],
-                        uv_min: [atlas_x / atlas_size, atlas_y / atlas_size],
-                        uv_max: [
-                            (atlas_x + width * atlas_glyph.raster_scale) / atlas_size,
-                            (atlas_y + height * atlas_glyph.raster_scale) / atlas_size,
-                        ],
-                        color: [
-                            rgba[0] as f32 / 255.0,
-                            rgba[1] as f32 / 255.0,
-                            rgba[2] as f32 / 255.0,
-                            rgba[3] as f32 / 255.0,
-                        ],
-                        opacity: 1.0,
-                        fragment_index,
-                    };
-                    let bucket = if is_color {
-                        &mut *color_out
-                    } else {
-                        &mut *mask_out
-                    };
-                    let idx = page_idx as usize;
-                    if bucket.len() <= idx {
-                        bucket.resize_with(idx + 1, Vec::new);
-                    }
-                    bucket[idx].push(vertex);
-                }
-            }
-        }
-        Ok(())
+    fn destroy(&mut self) {
+        self.pipelines.clear();
+        self.screen_layout = None;
+        self.atlas_layout = None;
+        self.sampler = None;
+        self.scale_context = SwashScaleContext::new();
     }
 }
 
-struct TextGlobalCache {
-    resources: Option<TextResources>,
-}
-
-fn with_text_global_cache<R>(f: impl FnOnce(&mut TextGlobalCache) -> R) -> R {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        static CACHE: OnceLock<Mutex<TextGlobalCache>> = OnceLock::new();
-        let cache = CACHE.get_or_init(|| Mutex::new(TextGlobalCache { resources: None }));
-        f(&mut cache.lock().unwrap())
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        use std::cell::RefCell;
-        thread_local! {
-            static CACHE: RefCell<TextGlobalCache> =
-                const { RefCell::new(TextGlobalCache { resources: None }) };
-        }
-        CACHE.with(|c| f(&mut c.borrow_mut()))
-    }
-}
-
-fn build_text_debug_overlay(
-    text_area: &TextArea,
-    global_origin: [f32; 2],
-    screen_w: f32,
-    screen_h: f32,
-) -> TextDebugOverlay {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let clip_rect = [
-        text_area.left + text_area.clip_min[0],
-        text_area.top + text_area.clip_min[1],
-        text_area.left + text_area.clip_max[0],
-        text_area.top + text_area.clip_max[1],
+fn text_glyph_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    const ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+        0 => Float32x2,
+        1 => Float32x2,
+        2 => Float32x2,
+        3 => Float32x2,
+        4 => Float32x4,
+        5 => Float32,
+        6 => Uint32
     ];
-    for run in &text_area.render_lines {
-        let run_top = text_area.top + run.line_top * text_area.scale;
-        let run_bottom = run_top + run.line_height * text_area.scale;
-        for glyph_run in &run.glyph_runs {
-            for glyph in &glyph_run.glyphs {
-                let glyph_left = text_area.left + glyph.x * text_area.scale;
-                let glyph_right = glyph_left + glyph.width.max(0.0) * text_area.scale;
-                let rect =
-                    intersect_rect([glyph_left, run_top, glyph_right, run_bottom], clip_rect);
-                if rect[2] <= rect[0] || rect[3] <= rect[1] {
-                    continue;
-                }
-                let corners = [
-                    [rect[0] + global_origin[0], rect[1] + global_origin[1]],
-                    [rect[2] + global_origin[0], rect[1] + global_origin[1]],
-                    [rect[2] + global_origin[0], rect[3] + global_origin[1]],
-                    [rect[0] + global_origin[0], rect[3] + global_origin[1]],
-                ];
-                for (u, v) in [(0_usize, 1_usize), (1, 2), (2, 3), (3, 0)] {
-                    append_text_debug_line_quad(
-                        &mut vertices,
-                        &mut indices,
-                        corners[u],
-                        corners[v],
-                        1.0,
-                        [0.2, 1.0, 0.95, 0.9],
-                        screen_w,
-                        screen_h,
-                    );
-                }
-                for corner in corners {
-                    append_text_debug_point_quad(
-                        &mut vertices,
-                        &mut indices,
-                        corner,
-                        2.5,
-                        [1.0, 0.35, 0.2, 0.95],
-                        screen_w,
-                        screen_h,
-                    );
-                }
-            }
-        }
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<TextGlyphInstance>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &ATTRS,
     }
-    TextDebugOverlay { vertices, indices }
-}
-
-fn build_text_debug_overlay_multi(
-    text_areas: &[TextArea],
-    global_origin: [f32; 2],
-    screen_w: f32,
-    screen_h: f32,
-) -> TextDebugOverlay {
-    let mut combined = TextDebugOverlay {
-        vertices: Vec::new(),
-        indices: Vec::new(),
-    };
-    for text_area in text_areas {
-        let overlay = build_text_debug_overlay(text_area, global_origin, screen_w, screen_h);
-        let base = combined.vertices.len() as u32;
-        combined.vertices.extend(overlay.vertices);
-        combined
-            .indices
-            .extend(overlay.indices.into_iter().map(|index| index + base));
-    }
-    combined
-}
-
-fn append_text_debug_line_quad(
-    vertices: &mut Vec<TextDebugVertex>,
-    indices: &mut Vec<u32>,
-    p0: [f32; 2],
-    p1: [f32; 2],
-    thickness_px: f32,
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let len = (dx * dx + dy * dy).sqrt();
-    if len <= 1e-5 {
-        return;
-    }
-    let nx = -dy / len;
-    let ny = dx / len;
-    let half = thickness_px * 0.5;
-    let offset = [nx * half, ny * half];
-    append_text_debug_quad(
-        vertices,
-        indices,
-        [
-            [p0[0] + offset[0], p0[1] + offset[1]],
-            [p0[0] - offset[0], p0[1] - offset[1]],
-            [p1[0] - offset[0], p1[1] - offset[1]],
-            [p1[0] + offset[0], p1[1] + offset[1]],
-        ],
-        color,
-        screen_w,
-        screen_h,
-    );
-}
-
-fn append_text_debug_point_quad(
-    vertices: &mut Vec<TextDebugVertex>,
-    indices: &mut Vec<u32>,
-    center: [f32; 2],
-    size_px: f32,
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let half = size_px * 0.5;
-    append_text_debug_quad(
-        vertices,
-        indices,
-        [
-            [center[0] - half, center[1] - half],
-            [center[0] + half, center[1] - half],
-            [center[0] + half, center[1] + half],
-            [center[0] - half, center[1] + half],
-        ],
-        color,
-        screen_w,
-        screen_h,
-    );
-}
-
-fn append_text_debug_quad(
-    vertices: &mut Vec<TextDebugVertex>,
-    indices: &mut Vec<u32>,
-    quad: [[f32; 2]; 4],
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let base = vertices.len() as u32;
-    for point in quad {
-        vertices.push(TextDebugVertex {
-            position: text_pixel_to_ndc(point[0], point[1], screen_w, screen_h),
-            color,
-        });
-    }
-    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-}
-
-fn text_pixel_to_ndc(x: f32, y: f32, screen_w: f32, screen_h: f32) -> [f32; 2] {
-    let nx = x / screen_w.max(1.0);
-    let ny = y / screen_h.max(1.0);
-    [nx * 2.0 - 1.0, 1.0 - ny * 2.0]
-}
-
-fn with_text_resources<R>(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    format: wgpu::TextureFormat,
-    f: impl FnOnce(&mut TextResources) -> R,
-) -> R {
-    with_text_global_cache(|guard| {
-        let rebuild = guard
-            .resources
-            .as_ref()
-            .map(|r| r.format != format)
-            .unwrap_or(true);
-
-        if rebuild {
-            guard.resources = Some(TextResources::new(device, queue, format));
-        }
-
-        let resources = guard.resources.as_mut().expect("text resources must exist");
-        f(resources)
-    })
-}
-
-fn with_text_resources_for_render(format: wgpu::TextureFormat, f: impl FnOnce(&mut TextResources)) {
-    with_text_global_cache(|guard| {
-        let Some(resources) = guard.resources.as_mut() else {
-            return;
-        };
-        if resources.format != format {
-            return;
-        }
-        f(resources);
-    });
 }
 
 fn text_depth_stencil_state() -> wgpu::DepthStencilState {
@@ -2455,643 +937,167 @@ fn text_depth_stencil_state() -> wgpu::DepthStencilState {
                 depth_fail_op: wgpu::StencilOperation::Keep,
                 pass_op: wgpu::StencilOperation::Keep,
             },
-            read_mask: 0xFF,
-            write_mask: 0xFF,
+            read_mask: 0xff,
+            write_mask: 0x00,
         },
-        bias: wgpu::DepthBiasState::default(),
+        bias: Default::default(),
     }
-}
-
-const TEXT_GLYPH_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
-    0 => Float32x2,
-    1 => Float32x2,
-    2 => Float32x2,
-    3 => Float32x2,
-    4 => Float32x4,
-    5 => Float32,
-    6 => Uint32
-];
-
-fn create_text_pipeline(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-    stencil_enabled: bool,
-    kind: TextPipelineKind,
-    screen_bind_group_layout: &wgpu::BindGroupLayout,
-    atlas_bind_group_layout: &wgpu::BindGroupLayout,
-) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Text Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shader/text.wgsl").into()),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Text Pipeline Layout"),
-        bind_group_layouts: &[
-            Some(screen_bind_group_layout),
-            Some(atlas_bind_group_layout),
-        ],
-        immediate_size: 0,
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Text Pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<TextGlyphVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &TEXT_GLYPH_VERTEX_ATTRIBUTES,
-            }],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some(match kind {
-                TextPipelineKind::Mask => "fs_mask",
-                TextPipelineKind::Color => "fs_color",
-            }),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            ..Default::default()
-        },
-        depth_stencil: stencil_enabled.then(text_depth_stencil_state),
-        multisample: wgpu::MultisampleState {
-            count: sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
 }
 
 pub fn prewarm_text_pipeline(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    _queue: &wgpu::Queue,
     format: wgpu::TextureFormat,
     sample_count: u32,
 ) {
-    // Prewarm kicks a full render, which stalls startup on wasm and gives no
-    // measurable benefit there. Native keeps the prewarm to warm the pipeline
-    // cache before the first user frame.
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (device, queue, format, sample_count);
+        let _ = (device, format, sample_count);
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    with_text_resources(device, queue, format, |resources| {
-        let regular_key = TextRendererKey {
-            sample_count,
+    TEXT_RESOURCES.with(|slot| {
+        let mut resources = slot.borrow_mut();
+        let regular = TextRendererKey {
+            format,
+            sample_count: sample_count.max(1),
             stencil_enabled: false,
         };
-        let stencil_key = TextRendererKey {
-            sample_count,
+        let stencil = TextRendererKey {
             stencil_enabled: true,
+            ..regular
         };
-        for kind in [TextPipelineKind::Mask, TextPipelineKind::Color] {
-            resources.ensure_pipeline(device, regular_key, kind);
-            resources.ensure_pipeline(device, stencil_key, kind);
-        }
+        resources.ensure_pipeline(device, regular, TextPipelineKind::Mask);
+        resources.ensure_pipeline(device, regular, TextPipelineKind::Color);
+        resources.ensure_pipeline(device, stencil, TextPipelineKind::Mask);
+        resources.ensure_pipeline(device, stencil, TextPipelineKind::Color);
     });
 }
 
 pub fn clear_text_resources_cache() {
-    with_text_global_cache(|c| c.resources = None);
+    TEXT_RESOURCES.with(|slot| slot.borrow_mut().destroy());
 }
 
-pub fn begin_text_resources_frame() {
-    with_text_global_cache(|c| {
-        if let Some(resources) = c.resources.as_mut() {
-            resources.mask_atlas.begin_frame();
-            resources.color_atlas.begin_frame();
+pub fn begin_text_resources_frame() {}
+
+#[cfg(test)]
+fn signature_for_params(params: &TextPassParams) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    params.font_size.to_bits().hash(&mut hasher);
+    params.line_height.to_bits().hash(&mut hasher);
+    params.font_weight.hash(&mut hasher);
+    params.font_families.hash(&mut hasher);
+    params.allow_wrap.hash(&mut hasher);
+    params.scissor_rect.hash(&mut hasher);
+    params.stencil_clip_id.hash(&mut hasher);
+    for fragment in &params.fragments {
+        fragment.content.hash(&mut hasher);
+        fragment.x.to_bits().hash(&mut hasher);
+        fragment.y.to_bits().hash(&mut hasher);
+        fragment.width.to_bits().hash(&mut hasher);
+        fragment.height.to_bits().hash(&mut hasher);
+        for channel in fragment.color {
+            channel.to_bits().hash(&mut hasher);
         }
-    });
+        fragment.opacity.to_bits().hash(&mut hasher);
+        if let Some(layout) = fragment.text_layout.as_ref() {
+            Arc::as_ptr(layout).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DirectSwashRasterProvider, TextBounds, TextColor, TextDebugOverlay, TextFontIdentity,
-        TextFontSourceIdentity, TextGlyphVertex, TextInput, TextOutput, TextPass, TextPassFragment,
-        TextPassParams, TextRasterContent, TextRasterFlags, TextRasterProvider, TextRenderGlyph,
-        build_text_area, build_text_debug_overlay, draw_signature_for_text_areas,
-        physical_scissor_rect, text_fragment_physical_origin, text_parley_glyph_cache_key,
-        text_pixel_to_ndc, text_raster_request_from_glyph, text_subpixel_bucket_index,
-    };
-    use crate::view::text_layout::{TextLayoutAlignment, build_text_layout};
-    use std::sync::Arc;
+    use super::*;
 
-    fn test_parley_font_identity() -> TextFontIdentity {
-        TextFontIdentity {
-            hash: 0x7a11_eeee,
-            source: TextFontSourceIdentity::ParleyFontData {
-                blob_id: 7,
-                face_index: 0,
-            },
+    fn fragment(content: &str) -> TextPassFragment {
+        TextPassFragment {
+            content: content.to_string(),
+            x: 1.0,
+            y: 2.0,
+            width: 30.0,
+            height: 40.0,
+            color: [1.0, 0.5, 0.25, 1.0],
+            opacity: 0.75,
+            text_layout: None,
         }
     }
 
-    fn overlay_rects(overlay: &TextDebugOverlay, screen_w: f32, screen_h: f32) -> Vec<[f32; 4]> {
-        overlay
-            .vertices
-            .chunks_exact(4)
-            .map(|quad| {
-                let xs: Vec<f32> = quad
-                    .iter()
-                    .map(|v| ((v.position[0] + 1.0) * 0.5) * screen_w)
-                    .collect();
-                let ys: Vec<f32> = quad
-                    .iter()
-                    .map(|v| ((1.0 - v.position[1]) * 0.5) * screen_h)
-                    .collect();
-                [
-                    xs.iter().copied().fold(f32::INFINITY, f32::min),
-                    ys.iter().copied().fold(f32::INFINITY, f32::min),
-                    xs.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-                    ys.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-                ]
-            })
-            .collect()
-    }
-
     #[test]
-    fn text_debug_overlay_clips_glyph_rects_to_bounds() {
-        let screen_w = 400.0;
-        let screen_h = 300.0;
-        let built = build_text_layout(
-            "clip me please clip me please",
-            Some(80.0),
+    fn single_fragment_preserves_public_fields() {
+        let params = TextPassParams::single_fragment(
+            fragment("hello"),
+            14.0,
+            1.2,
+            500,
+            vec!["Noto Sans".to_string()],
             true,
-            16.0,
-            1.25,
+            Some([1, 2, 3, 4]),
+            Some(9),
+        );
+        assert_eq!(params.fragments.len(), 1);
+        assert_eq!(params.fragments[0].content, "hello");
+        assert_eq!(params.font_size, 14.0);
+        assert_eq!(params.line_height, 1.2);
+        assert_eq!(params.font_weight, 500);
+        assert_eq!(params.font_families, vec!["Noto Sans"]);
+        assert!(params.allow_wrap);
+        assert_eq!(params.scissor_rect, Some([1, 2, 3, 4]));
+        assert_eq!(params.stencil_clip_id, Some(9));
+    }
+
+    #[test]
+    fn allow_wrap_participates_in_signature_without_layout_behavior() {
+        let wrapped = TextPassParams::single_fragment(
+            fragment("same"),
+            14.0,
+            1.2,
             400,
-            TextLayoutAlignment::Left,
-            &[],
-        );
-        let bounds = TextBounds {
-            left: 0,
-            top: 0,
-            right: 80,
-            bottom: 22,
-        };
-
-        let text_area = build_text_area(
-            Some(&built.layout),
-            0.0,
-            0.0,
-            1.0,
-            bounds,
-            TextColor::rgba(255, 255, 255, 255),
-        );
-
-        let overlay = build_text_debug_overlay(&text_area, [0.0, 0.0], screen_w, screen_h);
-        let rects = overlay_rects(&overlay, screen_w, screen_h);
-
-        assert!(!rects.is_empty());
-        assert!(
-            rects.iter().all(|rect| {
-                rect[0] >= -2.0 && rect[1] >= -2.0 && rect[2] <= 82.0 && rect[3] <= 24.0
-            }),
-            "all overlay quads should stay near the resolved text bounds"
-        );
-    }
-
-    #[test]
-    fn text_area_prefers_parley_layout_without_legacy_buffer() {
-        let built = build_text_layout(
-            "Parley renders first",
-            Some(240.0),
-            true,
-            16.0,
-            1.25,
-            400,
-            TextLayoutAlignment::Left,
-            &[],
-        );
-        let bounds = TextBounds {
-            left: 0,
-            top: 0,
-            right: 240,
-            bottom: 40,
-        };
-
-        let text_area = build_text_area(
-            Some(&built.layout),
-            0.0,
-            0.0,
-            1.0,
-            bounds,
-            TextColor::rgba(255, 255, 255, 255),
-        );
-
-        let glyph = text_area
-            .render_lines
-            .iter()
-            .flat_map(|line| &line.glyph_runs)
-            .flat_map(|run| &run.glyphs)
-            .find(|glyph| glyph.glyph_cache_key.is_some())
-            .expect("Parley layout should produce rasterizable glyphs");
-
-        assert!(glyph.parley_font_data.is_some());
-        assert!(matches!(
-            glyph.font_identity.map(|identity| identity.source),
-            Some(TextFontSourceIdentity::ParleyFontData { .. })
-        ));
-    }
-
-    #[test]
-    fn physical_scissor_rect_scales_and_clamps_to_target() {
-        assert_eq!(
-            physical_scissor_rect(Some([10, 5, 40, 20]), 2.0, (90, 40)),
-            Some([20, 10, 70, 30])
-        );
-        assert_eq!(
-            physical_scissor_rect(Some([200, 0, 10, 10]), 1.0, (50, 50)),
-            None
-        );
-    }
-
-    #[test]
-    fn text_pixel_to_ndc_maps_screen_corners() {
-        assert_eq!(text_pixel_to_ndc(0.0, 0.0, 200.0, 100.0), [-1.0, 1.0]);
-        assert_eq!(text_pixel_to_ndc(200.0, 100.0, 200.0, 100.0), [1.0, -1.0]);
-    }
-
-    #[test]
-    fn text_fragment_origin_uses_provided_layout_position_without_extra_snap() {
-        let fragment = TextPassFragment {
-            content: "snap".to_string(),
-            x: 10.25,
-            y: 7.75,
-            width: 40.0,
-            height: 20.0,
-            color: [1.0, 1.0, 1.0, 1.0],
-            opacity: 1.0,
-            text_layout: None,
-        };
-
-        assert_eq!(
-            text_fragment_physical_origin(&fragment, 2.0, (0, 0), (0, 0)),
-            [20.5, 15.5]
-        );
-    }
-
-    #[test]
-    fn glyph_vertices_can_preserve_fractional_positions() {
-        let vertex = TextGlyphVertex {
-            local_pos: [10.25, 20.75],
-            size: [8.5, 12.25],
-            uv_min: [0.0, 0.0],
-            uv_max: [1.0, 1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-            opacity: 1.0,
-            fragment_index: 0,
-        };
-
-        assert!((vertex.local_pos[0] - 10.25).abs() < 0.001);
-        assert!((vertex.local_pos[1] - 20.75).abs() < 0.001);
-        assert!((vertex.size[0] - 8.5).abs() < 0.001);
-        assert!((vertex.size[1] - 12.25).abs() < 0.001);
-    }
-
-    #[test]
-    fn text_draw_signature_ignores_fragment_origin() {
-        let built = build_text_layout(
-            "moving text keeps glyph geometry",
-            Some(220.0),
-            true,
-            16.0,
-            1.25,
-            400,
-            TextLayoutAlignment::Left,
-            &[],
-        );
-        let layout = Arc::new(built.layout);
-        let params_at_a = TextPassParams::single_fragment(
-            TextPassFragment {
-                content: "moving text keeps glyph geometry".to_string(),
-                x: 20.0,
-                y: 30.0,
-                width: 220.0,
-                height: 40.0,
-                color: [1.0, 1.0, 1.0, 1.0],
-                opacity: 1.0,
-                text_layout: Some(layout.clone()),
-            },
-            16.0,
-            1.25,
-            400,
-            Vec::new(),
+            vec!["sans-serif".to_string()],
             true,
             None,
             None,
         );
-        let params_at_b = TextPassParams::single_fragment(
-            TextPassFragment {
-                x: 140.0,
-                y: 90.0,
-                text_layout: Some(layout.clone()),
-                ..params_at_a.fragments[0].clone()
-            },
-            16.0,
-            1.25,
+        let nowrap = TextPassParams::single_fragment(
+            fragment("same"),
+            14.0,
+            1.2,
             400,
-            Vec::new(),
-            true,
-            None,
-            None,
-        );
-        let area_a = build_text_area(
-            Some(&layout),
-            20.0,
-            30.0,
-            1.0,
-            TextBounds {
-                left: 20,
-                top: 30,
-                right: 240,
-                bottom: 70,
-            },
-            TextColor::rgba(255, 255, 255, 255),
-        );
-        let area_b = build_text_area(
-            Some(&layout),
-            140.0,
-            90.0,
-            1.0,
-            TextBounds {
-                left: 140,
-                top: 90,
-                right: 360,
-                bottom: 130,
-            },
-            TextColor::rgba(255, 255, 255, 255),
-        );
-
-        assert_eq!(
-            draw_signature_for_text_areas(&params_at_a, 1.0, &[area_a]),
-            draw_signature_for_text_areas(&params_at_b, 1.0, &[area_b])
-        );
-    }
-
-    #[test]
-    fn text_globals_signature_tracks_fragment_origin() {
-        let layout = Arc::new(
-            build_text_layout(
-                "moving text updates uniforms",
-                Some(220.0),
-                true,
-                16.0,
-                1.25,
-                400,
-                TextLayoutAlignment::Left,
-                &[],
-            )
-            .layout,
-        );
-        let params_at_a = TextPassParams::single_fragment(
-            TextPassFragment {
-                content: "moving text updates uniforms".to_string(),
-                x: 20.0,
-                y: 30.0,
-                width: 220.0,
-                height: 40.0,
-                color: [1.0, 1.0, 1.0, 1.0],
-                opacity: 1.0,
-                text_layout: Some(layout.clone()),
-            },
-            16.0,
-            1.25,
-            400,
-            Vec::new(),
-            true,
-            None,
-            None,
-        );
-        let params_at_b = TextPassParams::single_fragment(
-            TextPassFragment {
-                x: 140.0,
-                y: 90.0,
-                text_layout: Some(layout),
-                ..params_at_a.fragments[0].clone()
-            },
-            16.0,
-            1.25,
-            400,
-            Vec::new(),
-            true,
-            None,
-            None,
-        );
-        let pass_at_a = TextPass::new(params_at_a, TextInput::default(), TextOutput::default());
-        let pass_at_b = TextPass::new(params_at_b, TextInput::default(), TextOutput::default());
-
-        assert_ne!(
-            pass_at_a.globals_signature(1.0, (400, 300), (0, 0)),
-            pass_at_b.globals_signature(1.0, (400, 300), (0, 0))
-        );
-    }
-
-    #[test]
-    fn text_glyph_cache_key_distinguishes_raster_scale_and_subpixel_bucket() {
-        let font_identity = test_parley_font_identity();
-        let key_a = text_parley_glyph_cache_key(
-            font_identity,
-            42,
-            16.0,
-            32.0,
-            2.0,
-            text_subpixel_bucket_index(10.10),
-            text_subpixel_bucket_index(4.0),
-            TextRasterFlags::default(),
-            0,
-        );
-        let key_b = text_parley_glyph_cache_key(
-            font_identity,
-            42,
-            16.0,
-            32.0,
-            2.0,
-            text_subpixel_bucket_index(10.45),
-            text_subpixel_bucket_index(4.0),
-            TextRasterFlags::default(),
-            0,
-        );
-        let key_scaled = text_parley_glyph_cache_key(
-            font_identity,
-            42,
-            16.0,
-            24.0,
-            1.5,
-            text_subpixel_bucket_index(10.10),
-            text_subpixel_bucket_index(4.0),
-            TextRasterFlags::default(),
-            0,
-        );
-
-        assert_ne!(key_a, key_b);
-        assert_ne!(key_a, key_scaled);
-    }
-
-    #[test]
-    fn text_glyph_cache_key_records_glyph_font_size_and_style_inputs() {
-        let font_identity = test_parley_font_identity();
-        let regular = TextRasterFlags::default();
-        let fake_italic = TextRasterFlags {
-            fake_italic: true,
-            ..Default::default()
-        };
-        let key = text_parley_glyph_cache_key(font_identity, 7, 14.0, 28.0, 2.0, 0, 0, regular, 0);
-        let other_glyph =
-            text_parley_glyph_cache_key(font_identity, 8, 14.0, 28.0, 2.0, 0, 0, regular, 0);
-        let other_size =
-            text_parley_glyph_cache_key(font_identity, 7, 16.0, 32.0, 2.0, 0, 0, regular, 0);
-        let other_style =
-            text_parley_glyph_cache_key(font_identity, 7, 14.0, 28.0, 2.0, 0, 0, fake_italic, 0);
-
-        assert_eq!(key.x_subpixel_bucket, 0);
-        assert_ne!(key, other_glyph);
-        assert_ne!(key, other_size);
-        assert_ne!(key, other_style);
-    }
-
-    #[test]
-    fn text_raster_request_carries_direct_provider_inputs() {
-        let font_identity = test_parley_font_identity();
-        let flags = TextRasterFlags {
-            disable_hinting: true,
-            ..Default::default()
-        };
-        let glyph_cache_key = text_parley_glyph_cache_key(
-            font_identity,
-            11,
-            15.0,
-            30.0,
-            2.0,
-            text_subpixel_bucket_index(3.4),
-            text_subpixel_bucket_index(7.1),
-            flags,
-            0,
-        );
-        let glyph = TextRenderGlyph {
-            font_identity: Some(font_identity),
-            parley_font_data: None,
-            font_id_hash: glyph_cache_key.font_identity_hash,
-            glyph_id: glyph_cache_key.glyph_id,
-            advance: 12.0,
-            x: 3.4,
-            y: 7.1,
-            width: 12.0,
-            font_size: 15.0,
-            x_offset: 0.0,
-            y_offset: 0.0,
-            color: None,
-            flags,
-            glyph_cache_key: Some(glyph_cache_key),
-        };
-
-        let request = text_raster_request_from_glyph(&glyph, 2.0).unwrap();
-
-        assert_eq!(request.font_identity, Some(font_identity));
-        assert_eq!(
-            request.font_identity.unwrap().hash,
-            request.font_identity_hash
-        );
-        assert_eq!(
-            request.font_identity.unwrap().source,
-            TextFontSourceIdentity::ParleyFontData {
-                blob_id: 7,
-                face_index: 0,
-            }
-        );
-        assert_eq!(
-            request.font_identity_hash,
-            glyph_cache_key.font_identity_hash
-        );
-        assert_eq!(request.glyph_id, 11);
-        assert_eq!(request.source_font_size, 15.0);
-        assert_eq!(request.raster_scale, 2.0);
-        assert_eq!(request.raster_font_size, 30.0);
-        assert_eq!(request.x_subpixel_bucket, glyph_cache_key.x_subpixel_bucket);
-        assert_eq!(request.y_subpixel_bucket, glyph_cache_key.y_subpixel_bucket);
-        assert_eq!(request.flags, flags);
-        assert_eq!(request.style_hash, glyph_cache_key.style_hash);
-        assert_eq!(
-            request.normalized_coords_hash,
-            glyph_cache_key.normalized_coords_hash
-        );
-    }
-
-    #[test]
-    fn direct_provider_rasterizes_single_outline_glyph_mask() {
-        let built = build_text_layout(
-            "A",
-            Some(80.0),
+            vec!["sans-serif".to_string()],
             false,
-            15.0,
-            1.25,
-            400,
-            TextLayoutAlignment::Left,
-            &[],
+            None,
+            None,
         );
-        let text_area = build_text_area(
-            Some(&built.layout),
-            0.0,
-            0.0,
-            1.0,
-            TextBounds {
-                left: 0,
-                top: 0,
-                right: 80,
-                bottom: 40,
-            },
-            TextColor::rgba(255, 255, 255, 255),
+        assert_ne!(
+            signature_for_params(&wrapped),
+            signature_for_params(&nowrap)
         );
-        let glyph = text_area
-            .render_lines
-            .iter()
-            .flat_map(|line| &line.glyph_runs)
-            .flat_map(|run| &run.glyphs)
-            .find(|glyph| glyph.parley_font_data.is_some() && glyph.glyph_cache_key.is_some())
-            .expect("Parley layout should provide a rasterizable glyph");
-        let request = text_raster_request_from_glyph(glyph, 2.0).unwrap();
-        assert!(request.parley_font_data.is_some());
+    }
 
-        let mut scale_context = swash::scale::ScaleContext::new();
-        let mut provider = DirectSwashRasterProvider {
-            scale_context: &mut scale_context,
-        };
-        let image = provider.raster_image(&request);
+    #[test]
+    fn snap_text_local_pos_snaps_absolute_pixel_position() {
+        let fragment_origin = [10.25, 4.75];
+        let local = snap_text_local_pos(fragment_origin, [3.90, 2.40]);
 
-        let image = image.expect("outline glyph should rasterize as a grayscale mask");
-        assert_eq!(image.content, TextRasterContent::Mask);
-        assert!(image.placement.width > 0);
-        assert!(image.placement.height > 0);
-        assert_eq!(
-            image.data.len(),
-            image.placement.width as usize * image.placement.height as usize
-        );
-        assert!(image.data.iter().any(|alpha| *alpha != 0));
+        assert_eq!(fragment_origin[0] + local[0], 14.0);
+        assert_eq!(fragment_origin[1] + local[1], 7.0);
+    }
+
+    #[test]
+    fn text_render_trunc_moves_toward_zero() {
+        assert_eq!(text_render_trunc(4.9), 4.0);
+        assert_eq!(text_render_trunc(-4.9), -4.0);
+    }
+
+    #[test]
+    fn text_glyph_instance_layout_matches_shader_locations() {
+        assert_eq!(std::mem::size_of::<TextGlyphInstance>(), 56);
+        let attrs = text_glyph_vertex_layout();
+        assert_eq!(attrs.array_stride, 56);
+        assert_eq!(attrs.attributes.len(), 7);
+        assert_eq!(attrs.attributes[0].offset, 0);
+        assert_eq!(attrs.attributes[4].offset, 32);
+        assert_eq!(attrs.attributes[6].offset, 52);
     }
 }

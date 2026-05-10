@@ -443,6 +443,7 @@ fn WindowView(
                 background: root_background,
                 border: root_border,
                 border_radius: root_border_radius,
+                font: theme.typography.font_family.clone(),
                 box_shadow: vec![
                     theme.shadow.level_3,
                 ],
