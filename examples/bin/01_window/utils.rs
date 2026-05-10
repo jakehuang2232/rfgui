@@ -5,8 +5,6 @@
 //! scene modules (about/render/inline/... tests) still depend on them.
 
 use crate::rfgui::view::ImageSource;
-#[cfg(target_arch = "wasm32")]
-use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -30,18 +28,6 @@ pub fn output_image_source(file_name: &str) -> ImageSource {
 
     #[cfg(target_arch = "wasm32")]
     {
-        let bytes = match file_name {
-            "rfgui-logo.png" => include_bytes!("../../assets/rfgui-logo.png").as_slice(),
-            "test.png" => include_bytes!("../../assets/test.png").as_slice(),
-            other => panic!("unsupported embedded asset: {other}"),
-        };
-        let decoded = image::load_from_memory(bytes).expect("failed to decode embedded image");
-        let rgba = decoded.to_rgba8();
-        let (width, height) = rgba.dimensions();
-        ImageSource::Rgba {
-            width,
-            height,
-            pixels: Arc::<[u8]>::from(rgba.into_raw()),
-        }
+        ImageSource::Path(format!("assets/{file_name}").into())
     }
 }

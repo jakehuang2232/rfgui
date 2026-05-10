@@ -77,6 +77,13 @@ struct BlurResources {
     pipeline_format: wgpu::TextureFormat,
 }
 
+impl Drop for BlurResources {
+    fn drop(&mut self) {
+        self.vertex_buffer.destroy();
+        self.index_buffer.destroy();
+    }
+}
+
 impl BlurPass {
     pub fn new(params: BlurPassParams, input: BlurInput, output: BlurOutput) -> Self {
         Self {

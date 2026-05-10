@@ -366,6 +366,10 @@ impl Viewport {
         let texture = device.create_texture(&desc);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        if let Some(old) = self.gpu.depth_texture.take() {
+            old.destroy();
+        }
+        self.gpu.depth_view = None;
         self.gpu.depth_texture = Some(texture);
         self.gpu.depth_view = Some(view);
     }
