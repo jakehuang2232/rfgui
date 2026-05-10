@@ -260,8 +260,7 @@ pub(crate) fn place_inline_fragment(
         layout_state.layout_position.x = layout_state.layout_position.x.min(left);
         layout_state.layout_position.y = layout_state.layout_position.y.min(top);
         layout_state.layout_flow_position = layout_state.layout_position;
-        layout_state.layout_size.width =
-            current_right.max(right) - layout_state.layout_position.x;
+        layout_state.layout_size.width = current_right.max(right) - layout_state.layout_position.x;
         layout_state.layout_size.height =
             current_bottom.max(bottom) - layout_state.layout_position.y;
     } else {

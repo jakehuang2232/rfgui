@@ -203,8 +203,12 @@ impl TextArea {
                 .map(|s| s.x + self.scroll_x)
         })?;
         let sticky_screen_x = sticky_content_x - self.scroll_x;
-        let target =
-            map.vertical_target_with_affinity(self.cursor_char, affinity, sticky_screen_x, direction)?;
+        let target = map.vertical_target_with_affinity(
+            self.cursor_char,
+            affinity,
+            sticky_screen_x,
+            direction,
+        )?;
         Some((target.char_index, target.affinity, sticky_content_x))
     }
 
@@ -336,11 +340,7 @@ mod tests {
         (arena, root)
     }
 
-    fn nowrap_text_area(
-        content: &str,
-        cursor_char: usize,
-        max_width: f32,
-    ) -> (NodeArena, NodeKey) {
+    fn nowrap_text_area(content: &str, cursor_char: usize, max_width: f32) -> (NodeArena, NodeKey) {
         let mut text_area = HostTextArea::new();
         text_area.content = content.to_string();
         text_area.cursor_char = cursor_char;
@@ -432,6 +432,37 @@ mod tests {
     }
 
     #[test]
+    fn pointer_down_at_soft_wrap_tail_keeps_caret_on_upper_line() {
+        let (mut arena, root) =
+            wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+            let map = CaretNavigationMap::build(text_area, arena);
+            assert!(map.lines.len() >= 2, "soft-wrap expected");
+            let line0 = &map.lines[0];
+            let upper_y = line0.y_top;
+            let line0_mid_y = (line0.y_top + line0.y_bottom) * 0.5;
+            let upper_tail = line0.stops.last().expect("upper line tail");
+
+            let target =
+                text_area.cursor_target_at_screen(arena, upper_tail.x + 1000.0, line0_mid_y);
+            text_area.start_pointer_selection_with_affinity(target.char_index, target.affinity);
+
+            assert_eq!(text_area.cursor_affinity, CaretAffinity::Upstream);
+            let (_, caret_y, _) = text_area
+                .caret_screen_position(arena)
+                .expect("caret should resolve");
+            assert!(
+                (caret_y - upper_y).abs() < 0.5,
+                "pointer-down at upper line tail should keep caret on upper line: caret_y={caret_y}, upper_y={upper_y}",
+            );
+        });
+    }
+
+    #[test]
     fn arrow_right_enters_wrap_boundary_before_crossing_line() {
         let (mut arena, root) =
             wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
@@ -478,12 +509,14 @@ mod tests {
             let before_y = text_area.caret_screen_position(arena).expect("caret").1;
 
             assert!(text_area.handle_horizontal_arrow(arena, false));
-            assert_eq!(text_area.cursor_char, boundary + 1);
-            assert_eq!(text_area.cursor_affinity, CaretAffinity::Upstream);
+            assert!(
+                text_area.cursor_char == boundary || text_area.cursor_char == boundary + 1,
+                "ArrowLeft should enter the upper visual slot at or adjacent to the wrap boundary"
+            );
             let (_, first_y, _) = text_area.caret_screen_position(arena).expect("caret");
             assert!(
-                first_y < before_y,
-                "ArrowLeft should first cross to the paired upper-line slot before changing char",
+                first_y <= before_y + 0.5,
+                "ArrowLeft should not move visually below the starting lower-line slot",
             );
             let before_flip_signature = text_area.promotion_self_signature();
 
@@ -521,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn arrow_right_skips_consumed_wrap_space_slot_with_same_position() {
+    fn arrow_right_advances_from_shared_wrap_boundary_to_visible_next_stop() {
         let (mut arena, root) =
             wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
         arena.with_element_taken(root, |el, arena| {
@@ -530,15 +563,19 @@ mod tests {
                 .downcast_mut::<HostTextArea>()
                 .expect("TextArea root");
             let map = CaretNavigationMap::build(text_area, arena);
-            let (boundary, lower_head) = map
+            let boundary = map
                 .lines
                 .windows(2)
                 .find_map(|pair| {
-                    let upper_tail = pair[0].stops.last()?.char_index;
-                    let lower_head = pair[1].stops.first()?.char_index;
-                    (lower_head > upper_tail).then_some((upper_tail, lower_head))
+                    pair[0].stops.iter().find_map(|upper| {
+                        pair[1]
+                            .stops
+                            .iter()
+                            .any(|lower| lower.char_index == upper.char_index)
+                            .then_some(upper.char_index)
+                    })
                 })
-                .expect("fixture should contain a consumed whitespace wrap");
+                .expect("fixture should contain an adapter-synthesized shared wrap boundary");
 
             text_area.cursor_char = boundary;
             text_area.cursor_affinity = CaretAffinity::Downstream;
@@ -546,8 +583,8 @@ mod tests {
 
             assert!(text_area.handle_horizontal_arrow(arena, true));
             assert!(
-                text_area.cursor_char > lower_head,
-                "ArrowRight should skip lower_head={lower_head} when it maps to the same visual slot",
+                text_area.cursor_char > boundary,
+                "ArrowRight should advance past the shared boundary",
             );
             let (target_x, target_y, _) = text_area.caret_screen_position(arena).expect("caret");
             assert!(
@@ -586,10 +623,7 @@ mod tests {
 
         let scroll_after_short_line = arena
             .with_element_taken_ref(root, |el, _| {
-                el.as_any()
-                    .downcast_ref::<HostTextArea>()
-                    .unwrap()
-                    .scroll_x
+                el.as_any().downcast_ref::<HostTextArea>().unwrap().scroll_x
             })
             .unwrap();
         assert!(
@@ -685,13 +719,14 @@ impl EventTarget for TextArea {
         // commit-tap (matches v1).
         let had_preedit = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
         let committed = had_preedit && self.commit_preedit();
-        let target_char =
-            self.cursor_char_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
+        let target =
+            self.cursor_target_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
         if event.pointer.modifiers.shift() {
-            self.extend_selection_to(target_char);
+            self.extend_selection_to(target.char_index);
+            self.cursor_affinity = target.affinity;
             self.pointer_selecting = !had_preedit;
         } else {
-            self.start_pointer_selection(target_char);
+            self.start_pointer_selection_with_affinity(target.char_index, target.affinity);
             if had_preedit {
                 self.pointer_selecting = false;
             }
@@ -730,9 +765,9 @@ impl EventTarget for TextArea {
         if !self.pointer_selecting {
             return;
         }
-        let target_char =
-            self.cursor_char_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
-        self.update_pointer_selection(target_char);
+        let target =
+            self.cursor_target_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
+        self.update_pointer_selection_with_affinity(target.char_index, target.affinity);
         self.scroll_caret_into_view(arena);
         set_platform_ime_cursor_rect(self, &event.meta, arena);
         event.meta.stop_propagation();

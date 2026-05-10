@@ -2,14 +2,11 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use crate::style::{ColorLike, Cursor, HexColor, TextWrap};
-use cosmic_text::{Align, Buffer as GlyphBuffer};
+use crate::view::text_layout::{TextLayout, TextLayoutAlignment};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use super::{
-    BoxModelSnapshot, ElementTrait, InlineMeasureContext,
-    Position, Size,
-};
+use super::{BoxModelSnapshot, ElementTrait, InlineMeasureContext, Position, Size};
 use crate::view::layout::LayoutState;
 use crate::view::promotion::PromotionNodeInfo;
 
@@ -27,14 +24,14 @@ mod style;
 #[cfg(test)]
 mod tests;
 
-use self::cache::{
-    FirstLineLayoutCacheEntry, FirstLineLayoutCacheKey, InlinePlanCacheKey,
-    MeasuredTextLayout, TextLayoutCacheKey, WrappedSuffixCacheKey,
+use self::cache::{InlinePlanCacheKey, MeasuredTextLayout, TextLayoutCacheKey};
+
+use self::inline_plan::InlineTextPlan;
+pub(in crate::view::base_component) use self::measure::measure_text_layout;
+
+pub(crate) use self::hit_test::{
+    TextAreaSelectionRenderContext, with_text_area_selection_render_context,
 };
-
-use self::inline_plan::{InlineTextFragment, InlineTextPlan};
-
-pub(crate) use self::hit_test::{with_text_area_selection_render_context, TextAreaSelectionRenderContext};
 
 pub struct Text {
     pub(super) position: Position,
@@ -48,7 +45,7 @@ pub struct Text {
     pub(super) font_size: f32,
     pub(super) line_height: f32,
     pub(super) font_weight: u16,
-    pub(super) align: Align,
+    pub(super) align: TextLayoutAlignment,
     pub(super) opacity: f32,
     pub(super) auto_width: bool,
     pub(super) auto_height: bool,
@@ -64,9 +61,7 @@ pub struct Text {
     pub(super) cached_height_for_width: Option<(u64, f32, f32)>,
     pub(super) layout_cache: FxHashMap<TextLayoutCacheKey, MeasuredTextLayout>,
     pub(super) inline_plan_cache: FxHashMap<InlinePlanCacheKey, InlineTextPlan>,
-    pub(super) first_line_fragment_cache: FxHashMap<FirstLineLayoutCacheKey, FirstLineLayoutCacheEntry>,
-    pub(super) wrapped_suffix_cache: FxHashMap<WrappedSuffixCacheKey, Vec<InlineTextFragment>>,
-    pub(super) layout_buffer: Option<Arc<GlyphBuffer>>,
+    pub(super) text_layout: Option<Arc<TextLayout>>,
     pub(super) inline_plan: Option<InlineTextPlan>,
     pub(super) last_inline_measure_context: Option<InlineMeasureContext>,
     pub(super) node_id: u64,
@@ -90,8 +85,8 @@ pub struct Text {
 }
 
 pub(crate) use self::profile::{
-    reset_text_measure_profile, set_text_measure_profile_enabled, take_text_measure_profile,
-    TextMeasureProfile,
+    TextMeasureProfile, reset_text_measure_profile, set_text_measure_profile_enabled,
+    take_text_measure_profile,
 };
 impl Text {
     pub fn from_content(content: impl Into<String>) -> Self {
@@ -134,7 +129,7 @@ impl Text {
             font_size: 16.0,
             line_height: 1.25,
             font_weight: 400,
-            align: Align::Left,
+            align: TextLayoutAlignment::Left,
             opacity: 1.0,
             auto_width: false,
             auto_height: false,
@@ -147,9 +142,7 @@ impl Text {
             cached_height_for_width: None,
             layout_cache: FxHashMap::default(),
             inline_plan_cache: FxHashMap::default(),
-            first_line_fragment_cache: FxHashMap::default(),
-            wrapped_suffix_cache: FxHashMap::default(),
-            layout_buffer: None,
+            text_layout: None,
             inline_plan: None,
             last_inline_measure_context: None,
             dirty_flags: super::DirtyFlags::ALL,
@@ -182,7 +175,6 @@ impl Text {
     }
 }
 
-use self::measure::measure_text_layout;
 #[cfg(test)]
 pub(crate) use self::measure::measure_text_size;
 
@@ -237,18 +229,36 @@ impl ElementTrait for Text {
     fn promotion_self_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.layout_state.should_render.hash(&mut hasher);
-        self.layout_state.layout_position.x.to_bits().hash(&mut hasher);
-        self.layout_state.layout_position.y.to_bits().hash(&mut hasher);
+        self.layout_state
+            .layout_position
+            .x
+            .to_bits()
+            .hash(&mut hasher);
+        self.layout_state
+            .layout_position
+            .y
+            .to_bits()
+            .hash(&mut hasher);
         self.content.hash(&mut hasher);
         self.color.to_rgba_u8().hash(&mut hasher);
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
         self.line_height.to_bits().hash(&mut hasher);
         self.font_weight.hash(&mut hasher);
-        std::mem::discriminant(&self.align).hash(&mut hasher);
+        self.align.hash(&mut hasher);
         self.allow_wrap.hash(&mut hasher);
-        self.layout_state.layout_size.width.max(0.0).to_bits().hash(&mut hasher);
-        self.layout_state.layout_size.height.max(0.0).to_bits().hash(&mut hasher);
+        self.layout_state
+            .layout_size
+            .width
+            .max(0.0)
+            .to_bits()
+            .hash(&mut hasher);
+        self.layout_state
+            .layout_size
+            .height
+            .max(0.0)
+            .to_bits()
+            .hash(&mut hasher);
         let inline_runs = self
             .inline_plan
             .as_ref()
@@ -316,4 +326,3 @@ impl ElementTrait for Text {
         Text::reset_prop_impl(self, arena, self_key, ctx, name)
     }
 }
-

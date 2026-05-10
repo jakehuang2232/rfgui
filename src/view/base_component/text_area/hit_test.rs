@@ -23,7 +23,7 @@
 use crate::view::node_arena::NodeArena;
 
 use super::TextArea;
-use super::caret_map::CaretNavigationMap;
+use super::caret_map::{CaretAffinity, CaretNavigationMap, VerticalTarget};
 
 impl TextArea {
     /// Resolve a screen-space `(x, y)` hit to a root-content char index.
@@ -31,13 +31,29 @@ impl TextArea {
     /// char index — falls back to the current `cursor_char` only when
     /// the TextArea has no children (empty content with no placeholder).
     pub(super) fn cursor_char_at_screen(&self, arena: &NodeArena, x: f32, y: f32) -> usize {
+        self.cursor_target_at_screen(arena, x, y).char_index
+    }
+
+    pub(super) fn cursor_target_at_screen(
+        &self,
+        arena: &NodeArena,
+        x: f32,
+        y: f32,
+    ) -> VerticalTarget {
+        let fallback = VerticalTarget {
+            char_index: self.cursor_char.min(self.content.chars().count()),
+            affinity: CaretAffinity::Downstream,
+        };
         if self.children.is_empty() {
-            return self.cursor_char.min(self.content.chars().count());
+            return fallback;
         }
         let map = CaretNavigationMap::build(self, arena);
         map.pointer_target(x, y)
-            .map(|c| c.min(self.content.chars().count()))
-            .unwrap_or_else(|| self.cursor_char.min(self.content.chars().count()))
+            .map(|mut target| {
+                target.char_index = target.char_index.min(self.content.chars().count());
+                target
+            })
+            .unwrap_or(fallback)
     }
 }
 

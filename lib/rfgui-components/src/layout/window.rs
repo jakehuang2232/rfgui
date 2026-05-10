@@ -177,9 +177,9 @@ impl rfgui::ui::RsxTag for Window {
 
     fn create_node(
         props: Self::StrictProps,
-        children: Vec<rfgui::ui::RsxNode>,
+        children: Vec<RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
-    ) -> rfgui::ui::RsxNode {
+    ) -> RsxNode {
         <Self as RsxComponent<WindowProps>>::render(props, children)
     }
 }
@@ -254,7 +254,7 @@ fn WindowView(
         .unwrap_or_else(|| color_like_to_color(theme.color.layer.on_inverse.as_ref()));
     let title_text_weight = title_text_style_slot
         .and_then(|style| style.font_weight)
-        .unwrap_or(FontWeight::semi_bold());
+        .unwrap_or(FontWeight::medium());
     let content_padding = content_style_slot
         .and_then(|style| style.padding)
         .unwrap_or(theme.component.card.padding);

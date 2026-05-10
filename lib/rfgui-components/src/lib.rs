@@ -1,6 +1,6 @@
-pub mod material_symbol;
 mod inputs;
 mod layout;
+pub mod material_symbol;
 mod theme;
 mod utils;
 

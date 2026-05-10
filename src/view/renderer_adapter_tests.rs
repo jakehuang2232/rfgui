@@ -158,6 +158,25 @@ fn std_placement() -> crate::view::base_component::LayoutPlacement {
     }
 }
 
+fn first_text_descendant(
+    arena: &crate::view::node_arena::NodeArena,
+    root: crate::view::node_arena::NodeKey,
+) -> crate::view::node_arena::NodeKey {
+    let mut stack: Vec<_> = arena.children_of(root).into_iter().rev().collect();
+    while let Some(key) = stack.pop() {
+        if arena
+            .get(key)
+            .is_some_and(|node| node.element.as_any().is::<Text>())
+        {
+            return key;
+        }
+        for child in arena.children_of(key).into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    panic!("expected Text descendant");
+}
+
 fn walk_layout(
     arena: &crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
@@ -941,10 +960,7 @@ fn text_area_auto_wrap_false_cascades_nowrap_to_projection_text() {
     measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
     let projection_key = arena.children_of(root)[1];
-    let inner_text_key = *arena
-        .children_of(projection_key)
-        .first()
-        .expect("projection wrapper Element should have inner Text child");
+    let inner_text_key = first_text_descendant(&arena, projection_key);
     let text_wrap = {
         let node = arena.get(inner_text_key).expect("inner Text node");
         node.element
@@ -1027,6 +1043,69 @@ fn text_area_auto_wrap_false_keeps_projection_and_trailing_run_on_same_line() {
 }
 
 #[test]
+fn text_area_projection_wrap_moves_token_to_next_line_when_remaining_width_is_too_small() {
+    let tree = host_text_area_node()
+        .with_prop("auto_wrap", true)
+        .with_prop(
+            "content",
+            "First line with a long value that can wrap when auto wrap is enabled. {{API_HOST}}/v1/users/",
+        )
+        .with_prop(
+            "on_render",
+            crate::ui::on_text_area_render(
+                |render: &mut crate::view::base_component::TextAreaRenderString| {
+                    render.range(70..82, |_text_area_node| {
+                        host_element_node().with_child(host_text_node().with_child(
+                            RsxNode::text("{{API_HOST}}"),
+                        ))
+                    });
+                },
+            ),
+        );
+    let mut arena = crate::view::test_support::new_test_arena();
+    let roots = commit_rsx_tree(&mut arena, &tree);
+    let root = *roots.first().expect("single root");
+    let narrow = crate::view::base_component::LayoutConstraints {
+        max_width: 160.0,
+        max_height: 600.0,
+        viewport_width: 160.0,
+        viewport_height: 600.0,
+        percent_base_width: Some(160.0),
+        percent_base_height: Some(600.0),
+    };
+    let placement = crate::view::base_component::LayoutPlacement {
+        parent_x: 0.0,
+        parent_y: 0.0,
+        visual_offset_x: 0.0,
+        visual_offset_y: 0.0,
+        available_width: 160.0,
+        available_height: 600.0,
+        viewport_width: 160.0,
+        viewport_height: 600.0,
+        percent_base_width: Some(160.0),
+        percent_base_height: Some(600.0),
+    };
+    measure_and_place(&mut arena, root, narrow, placement);
+
+    let children = arena.children_of(root);
+    assert_eq!(children.len(), 3, "expected Run / projection / Run layout");
+    let text_key = first_text_descendant(&arena, children[1]);
+    let fragments = arena
+        .get(text_key)
+        .unwrap()
+        .element
+        .as_any()
+        .downcast_ref::<Text>()
+        .expect("projection Text")
+        .inline_fragment_positions();
+    assert_eq!(
+        fragments.first().map(|(content, _)| content.as_str()),
+        Some("{{API_HOST}}"),
+        "projection token should not be split to fill a tiny remaining line fragment: {fragments:?}",
+    );
+}
+
+#[test]
 fn text_area_auto_wrap_toggle_cascades_to_existing_projection_text() {
     // Toggling `auto_wrap` after the initial commit goes through the
     // projection reconcile path (identity-matched RSX, same Element +
@@ -1073,10 +1152,7 @@ fn text_area_auto_wrap_toggle_cascades_to_existing_projection_text() {
     measure_and_place(&mut arena, root, std_constraints(), std_placement());
 
     let projection_key = arena.children_of(root)[1];
-    let inner_text_key = *arena
-        .children_of(projection_key)
-        .first()
-        .expect("projection wrapper Element should have inner Text child");
+    let inner_text_key = first_text_descendant(&arena, projection_key);
     let text_wrap = {
         let node = arena.get(inner_text_key).expect("inner Text node");
         node.element
@@ -1089,6 +1165,32 @@ fn text_area_auto_wrap_toggle_cascades_to_existing_projection_text() {
         text_wrap,
         TextWrap::NoWrap,
         "after toggling auto_wrap=true→false, projection's existing Text must pick up the new cascade",
+    );
+
+    arena.with_element_taken(root, |element, arena_ref| {
+        element.apply_prop(
+            arena_ref,
+            root,
+            &ctx,
+            "auto_wrap",
+            crate::ui::PropValue::Bool(true),
+        );
+    });
+    measure_and_place(&mut arena, root, std_constraints(), std_placement());
+
+    let inner_text_key = first_text_descendant(&arena, projection_key);
+    let text_wrap = {
+        let node = arena.get(inner_text_key).expect("inner Text node");
+        node.element
+            .as_any()
+            .downcast_ref::<Text>()
+            .expect("inner Text component")
+            .text_wrap()
+    };
+    assert_eq!(
+        text_wrap,
+        TextWrap::Wrap,
+        "after toggling auto_wrap=false→true, projection's existing Text must fall back to its own/default wrap",
     );
 }
 

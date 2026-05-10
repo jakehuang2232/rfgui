@@ -5,10 +5,10 @@
 use super::{ElementTrait, Text, measure_text_size};
 use crate::style::TextWrap;
 use crate::view::base_component::{
-    DirtyFlags, InlineMeasureContext, LayoutConstraints, Layoutable, LayoutPlacement,
+    DirtyFlags, InlineMeasureContext, LayoutConstraints, LayoutPlacement, Layoutable,
 };
 use crate::view::node_arena::NodeArena;
-use cosmic_text::Align;
+use crate::view::text_layout::TextLayoutAlignment;
 
 fn arena() -> NodeArena {
     NodeArena::new()
@@ -488,8 +488,16 @@ fn auto_measured_text_size_preserves_fractional_precision() {
 fn auto_width_uses_precise_text_width_before_final_pixel_rounding() {
     let mut a = arena();
     let content = "Option 4";
-    let (precise_width, precise_height) =
-        measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
+    let (precise_width, precise_height) = measure_text_size(
+        content,
+        None,
+        false,
+        16.0,
+        1.25,
+        400,
+        TextLayoutAlignment::Left,
+        &[],
+    );
     assert!(precise_width.fract() > 0.0);
 
     let mut text = Text::from_content(content);
@@ -520,8 +528,16 @@ fn auto_width_uses_precise_text_width_before_final_pixel_rounding() {
 fn inline_measure_does_not_split_word_when_available_width_matches_precise_measurement() {
     let mut a = arena();
     let content = "Reset";
-    let (precise_width, _) =
-        measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
+    let (precise_width, _) = measure_text_size(
+        content,
+        None,
+        false,
+        16.0,
+        1.25,
+        400,
+        TextLayoutAlignment::Left,
+        &[],
+    );
     let mut text = Text::from_content(content);
     text.measure_inline(
         InlineMeasureContext {
@@ -599,6 +615,37 @@ fn inline_wrap_uses_first_available_width_for_first_fragment() {
 }
 
 #[test]
+fn inline_wrap_moves_first_token_to_full_width_line_when_remaining_width_too_small() {
+    let mut a = arena();
+    let mut text = Text::from_content("{{API_HOST}}");
+    text.measure_inline(
+        InlineMeasureContext {
+            first_available_width: 12.0,
+            full_available_width: 160.0,
+            viewport_width: 200.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(120.0),
+        },
+        &mut a,
+    );
+
+    let fragments: Vec<_> = text
+        .inline_plan
+        .as_ref()
+        .expect("inline plan should be built")
+        .runs
+        .iter()
+        .map(|fragment| fragment.content.clone())
+        .collect();
+    assert_eq!(
+        fragments.first().map(String::as_str),
+        Some("{{API_HOST}}"),
+        "first inline fragment should move the whole first token to a full-width line, got {fragments:?}",
+    );
+}
+
+#[test]
 fn wrapped_inline_fragments_force_break_so_parent_does_not_pack_them() {
     let mut a = arena();
     let mut text = Text::from_content("note note note note note note note");
@@ -625,8 +672,7 @@ fn wrapped_inline_fragments_force_break_so_parent_does_not_pack_them() {
             assert!(
                 node.force_break_after,
                 "fragment {idx} (not last) must force a break — otherwise parent inline solver \
-                 packs adjacent fragments with no whitespace separator (cosmic_text strips \
-                 trailing whitespace at wrap)"
+                 packs adjacent pre-wrapped fragments side-by-side"
             );
         } else {
             assert!(
@@ -642,8 +688,16 @@ fn wrapped_inline_fragments_force_break_so_parent_does_not_pack_them() {
 fn auto_height_uses_precise_auto_width_to_avoid_spurious_wrap_height() {
     let mut a = arena();
     let content = "Start";
-    let (precise_width, precise_height) =
-        measure_text_size(content, None, false, 16.0, 1.25, 400, Align::Left, &[]);
+    let (precise_width, precise_height) = measure_text_size(
+        content,
+        None,
+        false,
+        16.0,
+        1.25,
+        400,
+        TextLayoutAlignment::Left,
+        &[],
+    );
     let mut text = Text::from_content(content);
     text.measure(
         LayoutConstraints {

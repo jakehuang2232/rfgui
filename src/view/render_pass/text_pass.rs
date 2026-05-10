@@ -1,4 +1,3 @@
-use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
@@ -8,16 +7,19 @@ use crate::view::render_pass::render_target::{
     render_target_origin, render_target_sample_count, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use crate::view::text_layout::build_text_buffer;
-use cosmic_text::{
-    Align, Buffer, CacheKey, Color as CosmicColor, FontSystem, SwashCache, SwashContent, SwashImage,
-};
+use crate::view::text_layout::TextLayout;
+use parley::FontData as ParleyFontData;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Mutex, OnceLock};
+use swash::scale::image::{Content as SwashRasterContent, Image as SwashRasterImage};
+use swash::scale::{
+    Render as SwashRender, ScaleContext as SwashScaleContext, Source, StrikeWith as SwashStrikeWith,
+};
+use swash::zeno::{Format as SwashFormat, Vector as SwashVector};
 use wgpu::util::DeviceExt;
 pub struct TextPass {
     params: TextPassParams,
@@ -56,7 +58,7 @@ pub struct TextPassFragment {
     pub height: f32,
     pub color: [f32; 4],
     pub opacity: f32,
-    pub layout_buffer: Option<Arc<Buffer>>,
+    pub(crate) text_layout: Option<Arc<TextLayout>>,
 }
 
 pub struct TextPassParams {
@@ -65,7 +67,6 @@ pub struct TextPassParams {
     pub line_height: f32,
     pub font_weight: u16,
     pub font_families: Vec<String>,
-    pub align: Align,
     pub allow_wrap: bool,
     pub scissor_rect: Option<[u32; 4]>,
     pub stencil_clip_id: Option<u8>,
@@ -78,7 +79,6 @@ impl TextPassParams {
         line_height: f32,
         font_weight: u16,
         font_families: Vec<String>,
-        align: Align,
         allow_wrap: bool,
         scissor_rect: Option<[u32; 4]>,
         stencil_clip_id: Option<u8>,
@@ -89,7 +89,6 @@ impl TextPassParams {
             line_height,
             font_weight,
             font_families,
-            align,
             allow_wrap,
             scissor_rect,
             stencil_clip_id,
@@ -101,8 +100,13 @@ struct TextPreparedState {
     renderer_key: TextRendererKey,
     mask_draws: Vec<(u16, PreparedTextDraw)>,
     color_draws: Vec<(u16, PreparedTextDraw)>,
+    screen_buffer: wgpu::Buffer,
+    fragment_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
-    prepare_signature: u64,
+    fragment_capacity: usize,
+    globals_signature: u64,
+    draw_signature: u64,
+    prepared_draw_epoch: u64,
     atlas_generation: AtlasGenerations,
     stencil_clip_id: Option<u8>,
 }
@@ -166,14 +170,94 @@ struct TextGlyphVertex {
     fragment_index: u32,
 }
 
-struct TextArea<'a> {
-    buffer: &'a Buffer,
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct TextRenderLine {
+    line_top: f32,
+    line_y: f32,
+    line_height: f32,
+    glyph_runs: Vec<TextRenderGlyphRun>,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct TextRenderGlyphRun {
+    glyphs: Vec<TextRenderGlyph>,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct TextRenderGlyph {
+    font_identity: Option<TextFontIdentity>,
+    parley_font_data: Option<ParleyFontData>,
+    font_id_hash: u64,
+    glyph_id: u32,
+    advance: f32,
+    x: f32,
+    y: f32,
+    width: f32,
+    font_size: f32,
+    x_offset: f32,
+    y_offset: f32,
+    color: Option<TextColor>,
+    flags: TextRasterFlags,
+    glyph_cache_key: Option<TextGlyphRasterKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+struct TextFontIdentity {
+    hash: u64,
+    source: TextFontSourceIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+enum TextFontSourceIdentity {
+    ParleyFontData { blob_id: u64, face_index: u32 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+struct TextGlyphRasterKey {
+    font_identity_hash: u64,
+    glyph_id: u32,
+    source_font_size_bits: u32,
+    raster_scale_bits: u32,
+    raster_font_size_bits: u32,
+    x_subpixel_bucket: u8,
+    y_subpixel_bucket: u8,
+    style_hash: u64,
+    normalized_coords_hash: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+struct TextRasterFlags {
+    fake_italic: bool,
+    disable_hinting: bool,
+    pixel_font: bool,
+}
+
+struct TextArea {
     left: f32,
     top: f32,
     scale: f32,
     clip_min: [f32; 2],
     clip_max: [f32; 2],
-    default_color: CosmicColor,
+    default_color: TextColor,
+    render_lines: Vec<TextRenderLine>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TextColor {
+    rgba: [u8; 4],
+}
+
+impl TextColor {
+    fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { rgba: [r, g, b, a] }
+    }
+
+    fn as_rgba(self) -> [u8; 4] {
+        self.rgba
+    }
 }
 
 #[derive(Clone)]
@@ -186,6 +270,17 @@ struct PreparedTextDraw {
 struct PreparedTextDrawSet {
     mask_draws: Vec<(u16, PreparedTextDraw)>,
     color_draws: Vec<(u16, PreparedTextDraw)>,
+}
+
+impl PreparedTextDrawSet {
+    fn destroy(&self) {
+        for (_, draw) in &self.mask_draws {
+            draw.vertex_buffer.destroy();
+        }
+        for (_, draw) in &self.color_draws {
+            draw.vertex_buffer.destroy();
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -215,7 +310,7 @@ impl TextPass {
         }
     }
 
-    fn prepare_signature(
+    fn globals_signature(
         &self,
         scale: f32,
         screen_size: (u32, u32),
@@ -227,7 +322,6 @@ impl TextPass {
         self.params.line_height.to_bits().hash(&mut hasher);
         self.params.font_weight.hash(&mut hasher);
         self.params.font_families.hash(&mut hasher);
-        std::mem::discriminant(&self.params.align).hash(&mut hasher);
         self.params.allow_wrap.hash(&mut hasher);
         self.params.scissor_rect.hash(&mut hasher);
         self.params.stencil_clip_id.hash(&mut hasher);
@@ -247,6 +341,62 @@ impl TextPass {
         }
         hasher.finish()
     }
+}
+
+fn draw_signature_for_text_areas(
+    params: &TextPassParams,
+    scale: f32,
+    text_areas: &[TextArea],
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    params.font_size.to_bits().hash(&mut hasher);
+    params.line_height.to_bits().hash(&mut hasher);
+    params.font_weight.hash(&mut hasher);
+    params.font_families.hash(&mut hasher);
+    params.allow_wrap.hash(&mut hasher);
+    scale.to_bits().hash(&mut hasher);
+    params.fragments.len().hash(&mut hasher);
+    for fragment in &params.fragments {
+        fragment.content.hash(&mut hasher);
+        fragment.width.to_bits().hash(&mut hasher);
+        fragment.height.to_bits().hash(&mut hasher);
+        fragment.opacity.to_bits().hash(&mut hasher);
+        for channel in fragment.color {
+            channel.to_bits().hash(&mut hasher);
+        }
+    }
+    text_areas.len().hash(&mut hasher);
+    for text_area in text_areas {
+        text_area.scale.to_bits().hash(&mut hasher);
+        text_area.clip_min[0].to_bits().hash(&mut hasher);
+        text_area.clip_min[1].to_bits().hash(&mut hasher);
+        text_area.clip_max[0].to_bits().hash(&mut hasher);
+        text_area.clip_max[1].to_bits().hash(&mut hasher);
+        text_area.default_color.as_rgba().hash(&mut hasher);
+        text_area.render_lines.len().hash(&mut hasher);
+        for line in &text_area.render_lines {
+            line.line_top.to_bits().hash(&mut hasher);
+            line.line_y.to_bits().hash(&mut hasher);
+            line.line_height.to_bits().hash(&mut hasher);
+            line.glyph_runs.len().hash(&mut hasher);
+            for run in &line.glyph_runs {
+                run.glyphs.len().hash(&mut hasher);
+                for glyph in &run.glyphs {
+                    glyph.glyph_cache_key.hash(&mut hasher);
+                    glyph.advance.to_bits().hash(&mut hasher);
+                    glyph.x.to_bits().hash(&mut hasher);
+                    glyph.y.to_bits().hash(&mut hasher);
+                    glyph.width.to_bits().hash(&mut hasher);
+                    glyph.font_size.to_bits().hash(&mut hasher);
+                    glyph.x_offset.to_bits().hash(&mut hasher);
+                    glyph.y_offset.to_bits().hash(&mut hasher);
+                    glyph.color.hash(&mut hasher);
+                }
+            }
+        }
+    }
+    hasher.finish()
 }
 
 impl GraphicsPass for TextPass {
@@ -308,39 +458,8 @@ impl GraphicsPass for TextPass {
                 stencil_enabled: self.input.pass_context.uses_depth_stencil,
             };
             let atlas_generation = resources.atlas_generations();
-            let prepare_signature =
-                self.prepare_signature(scale, (screen_w, screen_h), target_origin);
-            if let Some(prepared) = self.prepared.as_mut() {
-                if prepared.renderer_key == renderer_key
-                    && prepared.prepare_signature == prepare_signature
-                    && prepared.atlas_generation == atlas_generation
-                {
-                    prepared.stencil_clip_id = self.params.stencil_clip_id;
-                    return;
-                }
-            }
-            // Fast path: if both the globals bind group and the glyph vertex draw are cached,
-            // skip the fragment loop entirely.
-            let cached_globals = resources
-                .globals_bind_groups
-                .get(&prepare_signature)
-                .cloned();
-            if let Some(ref globals) = cached_globals {
-                if let Some(draw) =
-                    resources.take_prepared_draw(renderer_key, prepare_signature, atlas_generation)
-                {
-                    self.prepared = Some(TextPreparedState {
-                        renderer_key,
-                        mask_draws: draw.mask_draws,
-                        color_draws: draw.color_draws,
-                        globals_bind_group: globals.bind_group.clone(),
-                        prepare_signature,
-                        atlas_generation,
-                        stencil_clip_id: self.params.stencil_clip_id,
-                    });
-                    return;
-                }
-            }
+            let globals_signature =
+                self.globals_signature(scale, (screen_w, screen_h), target_origin);
             let physical_scissor_rect = self.params.scissor_rect.and_then(|scissor_rect| {
                 logical_scissor_to_target_physical(
                     viewport,
@@ -349,7 +468,6 @@ impl GraphicsPass for TextPass {
                     (screen_w, screen_h),
                 )
             });
-            let mut resolved_buffers = vec![None; self.params.fragments.len()];
             let mut resolved_bounds = vec![None; self.params.fragments.len()];
             let mut combined_bounds: Option<TextBounds> = None;
 
@@ -364,11 +482,15 @@ impl GraphicsPass for TextPass {
                 {
                     continue;
                 }
+                let [fragment_left, fragment_top] = text_fragment_physical_origin(
+                    fragment,
+                    scale,
+                    target_origin,
+                    target_meta.logical_origin,
+                );
                 let bounds = match resolve_text_bounds(
-                    fragment.x * scale - target_origin.0 as f32
-                        + target_meta.logical_origin.0 as f32,
-                    fragment.y * scale - target_origin.1 as f32
-                        + target_meta.logical_origin.1 as f32,
+                    fragment_left,
+                    fragment_top,
                     fragment.width * scale,
                     fragment.height * scale,
                     screen_w,
@@ -388,29 +510,6 @@ impl GraphicsPass for TextPass {
                     },
                     None => bounds,
                 });
-                if fragment.layout_buffer.is_none() {
-                    let layout_signature = single_fragment_layout_signature(
-                        fragment,
-                        self.params.font_size,
-                        self.params.line_height,
-                        self.params.font_weight,
-                        self.params.font_families.as_slice(),
-                        self.params.align,
-                        self.params.allow_wrap,
-                    );
-                    resolved_buffers[index] = Some(resources.prepare_buffer_cached(
-                        layout_signature,
-                        fragment.content.as_str(),
-                        fragment.width,
-                        fragment.height,
-                        self.params.font_size,
-                        self.params.line_height,
-                        self.params.font_weight,
-                        self.params.font_families.as_slice(),
-                        self.params.align,
-                        self.params.allow_wrap,
-                    ));
-                }
             }
             let Some(_bounds) = combined_bounds else {
                 return;
@@ -420,39 +519,64 @@ impl GraphicsPass for TextPass {
                 let Some(fragment_bounds) = resolved_bounds[index] else {
                     continue;
                 };
-                let buffer = fragment
-                    .layout_buffer
-                    .as_deref()
-                    .or_else(|| resolved_buffers[index].as_deref())
-                    .expect("buffer should be resolved for visible text fragment");
+                let [fragment_left, fragment_top] = text_fragment_physical_origin(
+                    fragment,
+                    scale,
+                    target_origin,
+                    target_meta.logical_origin,
+                );
                 text_areas.push(build_text_area(
-                    buffer,
-                    fragment.x * scale - target_origin.0 as f32
-                        + target_meta.logical_origin.0 as f32,
-                    fragment.y * scale - target_origin.1 as f32
-                        + target_meta.logical_origin.1 as f32,
+                    fragment.text_layout.as_deref(),
+                    fragment_left,
+                    fragment_top,
                     scale,
                     fragment_bounds,
-                    to_cosmic_color(fragment.color, fragment.opacity),
+                    to_text_color(fragment.color, fragment.opacity),
                 ));
             }
-            let (_, _, globals_bind_group, _) = resources.get_or_create_globals_bind_group(
-                &device,
-                &queue,
-                screen_w as f32,
-                screen_h as f32,
-                &text_areas,
-                prepare_signature,
-            );
+            let draw_signature = draw_signature_for_text_areas(&self.params, scale, &text_areas);
+            if let Some(prepared) = self.prepared.as_mut() {
+                if prepared.renderer_key == renderer_key
+                    && prepared.globals_signature == globals_signature
+                    && prepared.draw_signature == draw_signature
+                    && prepared.prepared_draw_epoch == resources.prepared_draw_epoch
+                    && prepared.atlas_generation == atlas_generation
+                {
+                    prepared.stencil_clip_id = self.params.stencil_clip_id;
+                    return;
+                }
+            }
+            let existing_globals = self.prepared.as_ref().map(|prepared| {
+                (
+                    &prepared.screen_buffer,
+                    &prepared.fragment_buffer,
+                    &prepared.globals_bind_group,
+                    prepared.fragment_capacity,
+                )
+            });
+            let (screen_buffer, fragment_buffer, globals_bind_group, fragment_capacity) = resources
+                .create_globals_bind_group(
+                    &device,
+                    &queue,
+                    screen_w as f32,
+                    screen_h as f32,
+                    &text_areas,
+                    existing_globals,
+                );
             if let Some(draw) =
-                resources.take_prepared_draw(renderer_key, prepare_signature, atlas_generation)
+                resources.take_prepared_draw(renderer_key, draw_signature, atlas_generation)
             {
                 self.prepared = Some(TextPreparedState {
                     renderer_key,
                     mask_draws: draw.mask_draws,
                     color_draws: draw.color_draws,
+                    screen_buffer,
+                    fragment_buffer,
                     globals_bind_group,
-                    prepare_signature,
+                    fragment_capacity,
+                    globals_signature,
+                    draw_signature,
+                    prepared_draw_epoch: resources.prepared_draw_epoch,
                     atlas_generation,
                     stencil_clip_id: self.params.stencil_clip_id,
                 });
@@ -461,12 +585,11 @@ impl GraphicsPass for TextPass {
             if viewport.debug_options().geometry_overlay {
                 let (overlay_w, overlay_h) = viewport.surface_size();
                 let overlay = build_text_debug_overlay_multi(
-                    &self.params.fragments,
-                    &resolved_buffers,
-                    &resolved_bounds,
-                    scale,
-                    target_origin,
-                    target_meta.logical_origin,
+                    &text_areas,
+                    [
+                        target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
+                        target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
+                    ],
                     overlay_w as f32,
                     overlay_h as f32,
                 );
@@ -487,40 +610,38 @@ impl GraphicsPass for TextPass {
                 }
             }
 
-            let (mask_vertices_per_page, color_vertices_per_page) =
-                with_shared_font_system(|font_system| {
-                    let mut retry_count = 0;
-                    loop {
-                        let mut mask_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
-                        let mut color_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
-                        let mut atlas_full = false;
-                        for (fragment_index, text_area) in text_areas.iter().enumerate() {
-                            if resources
-                                .prepare_text_area(
-                                    font_system,
-                                    &device,
-                                    &queue,
-                                    text_area,
-                                    fragment_index as u32,
-                                    &mut mask_vertices,
-                                    &mut color_vertices,
-                                )
-                                .is_err()
-                            {
-                                atlas_full = true;
-                                break;
-                            }
+            let (mask_vertices_per_page, color_vertices_per_page) = {
+                let mut retry_count = 0;
+                loop {
+                    let mut mask_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
+                    let mut color_vertices: Vec<Vec<TextGlyphVertex>> = Vec::new();
+                    let mut atlas_full = false;
+                    for (fragment_index, text_area) in text_areas.iter().enumerate() {
+                        if resources
+                            .prepare_text_area(
+                                &device,
+                                &queue,
+                                text_area,
+                                fragment_index as u32,
+                                &mut mask_vertices,
+                                &mut color_vertices,
+                            )
+                            .is_err()
+                        {
+                            atlas_full = true;
+                            break;
                         }
-                        if !atlas_full {
-                            break (mask_vertices, color_vertices);
-                        }
-                        if retry_count >= 1 {
-                            break (Vec::new(), Vec::new());
-                        }
-                        retry_count += 1;
-                        resources.reset_atlas();
                     }
-                });
+                    if !atlas_full {
+                        break (mask_vertices, color_vertices);
+                    }
+                    if retry_count >= 1 {
+                        break (Vec::new(), Vec::new());
+                    }
+                    retry_count += 1;
+                    resources.reset_atlas();
+                }
+            };
             let mask_total: usize = mask_vertices_per_page.iter().map(|v| v.len()).sum();
             let color_total: usize = color_vertices_per_page.iter().map(|v| v.len()).sum();
             if mask_total == 0 && color_total == 0 {
@@ -556,7 +677,7 @@ impl GraphicsPass for TextPass {
             let atlas_generation = resources.atlas_generations();
             resources.put_prepared_draw(
                 renderer_key,
-                prepare_signature,
+                draw_signature,
                 atlas_generation,
                 prepared_draw.clone(),
             );
@@ -564,8 +685,13 @@ impl GraphicsPass for TextPass {
                 renderer_key,
                 mask_draws: prepared_draw.mask_draws,
                 color_draws: prepared_draw.color_draws,
+                screen_buffer,
+                fragment_buffer,
                 globals_bind_group,
-                prepare_signature,
+                fragment_capacity,
+                globals_signature,
+                draw_signature,
+                prepared_draw_epoch: resources.prepared_draw_epoch,
                 atlas_generation,
                 stencil_clip_id: self.params.stencil_clip_id,
             });
@@ -663,36 +789,13 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
     }
 }
 
-fn single_fragment_layout_signature(
-    fragment: &TextPassFragment,
-    font_size: f32,
-    line_height: f32,
-    font_weight: u16,
-    font_families: &[String],
-    align: Align,
-    allow_wrap: bool,
-) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    fragment.content.hash(&mut hasher);
-    fragment.width.to_bits().hash(&mut hasher);
-    fragment.height.to_bits().hash(&mut hasher);
-    font_size.to_bits().hash(&mut hasher);
-    line_height.to_bits().hash(&mut hasher);
-    font_weight.hash(&mut hasher);
-    font_families.hash(&mut hasher);
-    std::mem::discriminant(&align).hash(&mut hasher);
-    allow_wrap.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn to_cosmic_color(color: [f32; 4], opacity: f32) -> CosmicColor {
+fn to_text_color(color: [f32; 4], opacity: f32) -> TextColor {
     fn to_u8(v: f32) -> u8 {
         (v.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 
     let alpha = to_u8(color[3] * opacity.clamp(0.0, 1.0));
-    CosmicColor::rgba(to_u8(color[0]), to_u8(color[1]), to_u8(color[2]), alpha)
+    TextColor::rgba(to_u8(color[0]), to_u8(color[1]), to_u8(color[2]), alpha)
 }
 
 fn intersect_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -701,6 +804,18 @@ fn intersect_rect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let right = a[2].min(b[2]);
     let bottom = a[3].min(b[3]);
     [left, top, right, bottom]
+}
+
+fn text_fragment_physical_origin(
+    fragment: &TextPassFragment,
+    scale: f32,
+    target_origin: (u32, u32),
+    logical_origin: (u32, u32),
+) -> [f32; 2] {
+    [
+        fragment.x * scale - target_origin.0 as f32 + logical_origin.0 as f32,
+        fragment.y * scale - target_origin.1 as f32 + logical_origin.1 as f32,
+    ]
 }
 
 fn resolve_text_bounds(
@@ -769,23 +884,176 @@ fn physical_scissor_rect(
     ])
 }
 
-fn build_text_area<'a>(
-    buffer: &'a Buffer,
+fn build_text_area(
+    text_layout: Option<&TextLayout>,
     left: f32,
     top: f32,
     scale: f32,
     bounds: TextBounds,
-    default_color: CosmicColor,
-) -> TextArea<'a> {
+    default_color: TextColor,
+) -> TextArea {
+    let render_lines = text_layout
+        .map(|text_layout| text_render_lines_from_text_layout(text_layout, scale))
+        .unwrap_or_default();
     TextArea {
-        buffer,
         left,
         top,
         scale,
         clip_min: [bounds.left as f32 - left, bounds.top as f32 - top],
         clip_max: [bounds.right as f32 - left, bounds.bottom as f32 - top],
         default_color,
+        render_lines,
     }
+}
+
+fn text_render_lines_from_text_layout(text_layout: &TextLayout, scale: f32) -> Vec<TextRenderLine> {
+    text_layout
+        .lines()
+        .into_iter()
+        .map(|line| TextRenderLine {
+            line_top: line.y,
+            line_y: line.y + line.baseline,
+            line_height: line.height,
+            glyph_runs: vec![TextRenderGlyphRun {
+                glyphs: line
+                    .glyphs
+                    .into_iter()
+                    .map(|glyph| {
+                        let font_identity = glyph
+                            .font_data
+                            .as_ref()
+                            .map(text_font_identity_from_parley_font);
+                        let raster_scale = text_raster_scale(glyph.font_size * scale);
+                        let raster_font_size = glyph.font_size * scale * raster_scale;
+                        let x_subpixel_bucket =
+                            text_subpixel_bucket_index(glyph.x * scale * raster_scale);
+                        let y_subpixel_bucket = text_subpixel_bucket_index(text_render_trunc(
+                            glyph.y * scale * raster_scale,
+                        ));
+                        let flags = TextRasterFlags::default();
+                        let glyph_cache_key = font_identity.map(|identity| {
+                            text_parley_glyph_cache_key(
+                                identity,
+                                glyph.id,
+                                glyph.font_size,
+                                raster_font_size,
+                                raster_scale,
+                                x_subpixel_bucket,
+                                y_subpixel_bucket,
+                                flags,
+                                glyph.normalized_coords_hash,
+                            )
+                        });
+                        TextRenderGlyph {
+                            font_identity,
+                            parley_font_data: glyph.font_data,
+                            font_id_hash: font_identity.map(|identity| identity.hash).unwrap_or(0),
+                            glyph_id: glyph.id,
+                            advance: glyph.width.max(0.0),
+                            x: glyph.x,
+                            y: glyph.y,
+                            width: glyph.width,
+                            font_size: glyph.font_size,
+                            x_offset: 0.0,
+                            y_offset: 0.0,
+                            color: None,
+                            flags,
+                            glyph_cache_key,
+                        }
+                    })
+                    .collect(),
+            }],
+        })
+        .collect()
+}
+
+fn text_font_identity_from_parley_font(font: &ParleyFontData) -> TextFontIdentity {
+    let source = TextFontSourceIdentity::ParleyFontData {
+        blob_id: font.data.id(),
+        face_index: font.index,
+    };
+    TextFontIdentity {
+        hash: hash_text_render_value(&source),
+        source,
+    }
+}
+
+fn text_parley_glyph_cache_key(
+    font_identity: TextFontIdentity,
+    glyph_id: u32,
+    source_font_size: f32,
+    raster_font_size: f32,
+    raster_scale: f32,
+    x_subpixel_bucket: u8,
+    y_subpixel_bucket: u8,
+    flags: TextRasterFlags,
+    normalized_coords_hash: u64,
+) -> TextGlyphRasterKey {
+    TextGlyphRasterKey {
+        font_identity_hash: font_identity.hash,
+        glyph_id,
+        source_font_size_bits: source_font_size.to_bits(),
+        raster_scale_bits: raster_scale.to_bits(),
+        raster_font_size_bits: raster_font_size.to_bits(),
+        x_subpixel_bucket,
+        y_subpixel_bucket,
+        style_hash: hash_text_render_value(&flags),
+        normalized_coords_hash,
+    }
+}
+
+fn text_subpixel_bucket_index(pos: f32) -> u8 {
+    let trunc = pos as i32;
+    let fract = pos - trunc as f32;
+
+    if pos.is_sign_negative() {
+        if fract > -0.125 {
+            0
+        } else if fract > -0.375 {
+            3
+        } else if fract > -0.625 {
+            2
+        } else if fract > -0.875 {
+            1
+        } else {
+            0
+        }
+    } else if fract < 0.125 {
+        0
+    } else if fract < 0.375 {
+        1
+    } else if fract < 0.625 {
+        2
+    } else if fract < 0.875 {
+        3
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn text_raster_flags_from_bits(bits: u32) -> TextRasterFlags {
+    TextRasterFlags {
+        fake_italic: bits & 1 != 0,
+        disable_hinting: bits & 2 != 0,
+        pixel_font: bits & 4 != 0,
+    }
+}
+
+fn text_render_trunc(value: f32) -> f32 {
+    if value.is_sign_negative() {
+        value.ceil()
+    } else {
+        value.floor()
+    }
+}
+
+fn hash_text_render_value<T: std::hash::Hash>(value: &T) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(value, &mut hasher);
+    hasher.finish()
 }
 
 fn create_prepared_draw(
@@ -831,7 +1099,164 @@ enum TextAtlasCacheError {
     Full,
 }
 
-fn swash_color_image_to_rgba(image: &SwashImage) -> Vec<u8> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextRasterContent {
+    Color,
+    Mask,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TextRasterPlacement {
+    width: u32,
+    height: u32,
+    left: i32,
+    top: i32,
+}
+
+#[derive(Clone, Debug)]
+struct TextRasterImage {
+    content: TextRasterContent,
+    placement: TextRasterPlacement,
+    data: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct TextRasterRequest {
+    font_identity: Option<TextFontIdentity>,
+    parley_font_data: Option<ParleyFontData>,
+    font_identity_hash: u64,
+    glyph_id: u32,
+    source_font_size: f32,
+    raster_scale: f32,
+    raster_font_size: f32,
+    x_subpixel_bucket: u8,
+    y_subpixel_bucket: u8,
+    flags: TextRasterFlags,
+    style_hash: u64,
+    normalized_coords_hash: u64,
+}
+
+trait TextRasterProvider {
+    fn raster_image(&mut self, request: &TextRasterRequest) -> Option<TextRasterImage>;
+}
+
+#[allow(dead_code)]
+struct DirectSwashRasterProvider<'a> {
+    scale_context: &'a mut SwashScaleContext,
+}
+
+impl TextRasterProvider for DirectSwashRasterProvider<'_> {
+    fn raster_image(&mut self, request: &TextRasterRequest) -> Option<TextRasterImage> {
+        direct_swash_raster_image(self.scale_context, request)
+    }
+}
+
+#[allow(dead_code)]
+fn direct_swash_raster_image(
+    scale_context: &mut SwashScaleContext,
+    request: &TextRasterRequest,
+) -> Option<TextRasterImage> {
+    if request.normalized_coords_hash != 0 {
+        // TODO(text-raster): Add variation coords support before enabling
+        // direct raster for variable-font glyph instances.
+        return None;
+    }
+    if request.flags.fake_italic || request.flags.pixel_font {
+        // TODO(text-raster): Add direct raster support for fake italic and
+        // pixel/bitmap fonts before removing the final legacy text fallback.
+        return None;
+    }
+
+    let glyph_id = u16::try_from(request.glyph_id).ok()?;
+    let parley_font_data = request.parley_font_data.as_ref()?;
+    let font_data = parley_font_data.data.data();
+    let face_index = parley_font_data.index;
+    let font_ref = swash::FontRef::from_index(font_data, face_index as usize)?;
+    let mut scaler = scale_context
+        .builder(font_ref)
+        .size(request.raster_font_size)
+        .hint(!request.flags.disable_hinting)
+        .build();
+    let image = SwashRender::new(&[
+        Source::ColorOutline(0),
+        Source::ColorBitmap(SwashStrikeWith::BestFit),
+        Source::Outline,
+    ])
+    .format(SwashFormat::Alpha)
+    .offset(SwashVector::new(
+        text_subpixel_bucket_offset(request.x_subpixel_bucket),
+        text_subpixel_bucket_offset(request.y_subpixel_bucket),
+    ))
+    .render(&mut scaler, glyph_id)?;
+    Some(text_raster_image_from_swash(&image))
+}
+
+fn text_subpixel_bucket_offset(bucket: u8) -> f32 {
+    match bucket {
+        1 => 0.25,
+        2 => 0.5,
+        3 => 0.75,
+        _ => 0.0,
+    }
+}
+
+fn trace_direct_text_raster_enabled() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_DIRECT_TEXT_RASTER").is_ok())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+fn text_raster_request_from_glyph(
+    glyph: &TextRenderGlyph,
+    raster_scale: f32,
+) -> Option<TextRasterRequest> {
+    let glyph_cache_key = glyph.glyph_cache_key?;
+    Some(TextRasterRequest {
+        font_identity: glyph.font_identity,
+        parley_font_data: glyph.parley_font_data.clone(),
+        font_identity_hash: glyph_cache_key.font_identity_hash,
+        glyph_id: glyph_cache_key.glyph_id,
+        source_font_size: f32::from_bits(glyph_cache_key.source_font_size_bits),
+        raster_scale,
+        raster_font_size: f32::from_bits(glyph_cache_key.raster_font_size_bits),
+        x_subpixel_bucket: glyph_cache_key.x_subpixel_bucket,
+        y_subpixel_bucket: glyph_cache_key.y_subpixel_bucket,
+        flags: glyph.flags,
+        style_hash: glyph_cache_key.style_hash,
+        normalized_coords_hash: glyph_cache_key.normalized_coords_hash,
+    })
+}
+
+fn text_raster_image_from_swash(image: &SwashRasterImage) -> TextRasterImage {
+    let placement = TextRasterPlacement {
+        width: image.placement.width,
+        height: image.placement.height,
+        left: image.placement.left,
+        top: image.placement.top,
+    };
+    match image.content {
+        SwashRasterContent::Color => TextRasterImage {
+            content: TextRasterContent::Color,
+            placement,
+            data: swash_color_image_to_rgba(image),
+        },
+        SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => TextRasterImage {
+            content: TextRasterContent::Mask,
+            placement,
+            data: swash_mask_image_to_r8(image),
+        },
+    }
+}
+
+fn swash_color_image_to_rgba(image: &SwashRasterImage) -> Vec<u8> {
     let pixel_count = image.placement.width.saturating_mul(image.placement.height) as usize;
     let mut out = Vec::with_capacity(pixel_count * 4);
     for index in 0..pixel_count {
@@ -845,16 +1270,16 @@ fn swash_color_image_to_rgba(image: &SwashImage) -> Vec<u8> {
     out
 }
 
-fn swash_mask_image_to_r8(image: &SwashImage) -> Vec<u8> {
+fn swash_mask_image_to_r8(image: &SwashRasterImage) -> Vec<u8> {
     let pixel_count = image.placement.width.saturating_mul(image.placement.height) as usize;
     let mut out = Vec::with_capacity(pixel_count);
     match image.content {
-        SwashContent::Mask => {
+        SwashRasterContent::Mask => {
             for index in 0..pixel_count {
                 out.push(image.data.get(index).copied().unwrap_or(0));
             }
         }
-        SwashContent::SubpixelMask => {
+        SwashRasterContent::SubpixelMask => {
             for index in 0..pixel_count {
                 let offset = index * 3;
                 let chunk = image
@@ -864,7 +1289,7 @@ fn swash_mask_image_to_r8(image: &SwashImage) -> Vec<u8> {
                 out.push(chunk.iter().copied().max().unwrap_or(0));
             }
         }
-        SwashContent::Color => {}
+        SwashRasterContent::Color => {}
     }
     out
 }
@@ -912,7 +1337,7 @@ struct Plot {
     cursor_y: u32,
     row_height: u32,
     last_use_frame: u64,
-    keys: Vec<CacheKey>,
+    keys: Vec<TextGlyphRasterKey>,
 }
 
 #[derive(Clone, Copy)]
@@ -1015,7 +1440,7 @@ struct PagedAtlas {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pages: Vec<PagedAtlasPage>,
-    glyphs: FxHashMap<CacheKey, GlyphLocation>,
+    glyphs: FxHashMap<TextGlyphRasterKey, GlyphLocation>,
     generation: u64,
     current_frame: u64,
 }
@@ -1088,7 +1513,7 @@ impl PagedAtlas {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    fn get_glyph(&mut self, key: CacheKey) -> Option<(u16, AtlasGlyph)> {
+    fn get_glyph(&mut self, key: TextGlyphRasterKey) -> Option<(u16, AtlasGlyph)> {
         let entry = *self.glyphs.get(&key)?;
         if let Some(page) = self.pages.get_mut(entry.page as usize) {
             if let Some(plot) = page.plots.get_mut(entry.plot as usize) {
@@ -1133,7 +1558,7 @@ impl PagedAtlas {
     fn cache_glyph(
         &mut self,
         device: &wgpu::Device,
-        cache_key: CacheKey,
+        cache_key: TextGlyphRasterKey,
         image_data: Vec<u8>,
         width: u32,
         height: u32,
@@ -1267,38 +1692,26 @@ impl PagedAtlas {
 }
 
 struct TextResources {
-    swash_cache: SwashCache,
+    direct_swash_context: SwashScaleContext,
     mask_atlas: PagedAtlas,
     color_atlas: PagedAtlas,
     format: wgpu::TextureFormat,
     screen_bind_group_layout: wgpu::BindGroupLayout,
     pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
-    layout_buffers: FxHashMap<u64, Arc<Buffer>>,
-    layout_buffer_lru: VecDeque<u64>,
     prepared_draws: FxHashMap<PreparedTextDrawKey, PreparedTextDrawSet>,
     prepared_draw_lru: VecDeque<PreparedTextDrawKey>,
-    globals_bind_groups: FxHashMap<u64, CachedGlobalsBindGroup>,
-    globals_bind_group_lru: VecDeque<u64>,
+    prepared_draw_epoch: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct PreparedTextDrawKey {
     renderer_key: TextRendererKey,
-    prepare_signature: u64,
+    draw_signature: u64,
     atlas_generation: AtlasGenerations,
-}
-
-#[derive(Clone)]
-struct CachedGlobalsBindGroup {
-    screen_buffer: wgpu::Buffer,
-    fragment_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    capacity: usize,
 }
 
 impl TextResources {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let swash_cache = SwashCache::new();
         let screen_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Text Screen Bind Group Layout"),
@@ -1335,36 +1748,22 @@ impl TextResources {
         let color_atlas = PagedAtlas::new(device, PagedAtlasConfig::COLOR);
 
         Self {
-            swash_cache,
+            direct_swash_context: SwashScaleContext::new(),
             mask_atlas,
             color_atlas,
             format,
             screen_bind_group_layout,
             pipelines: FxHashMap::default(),
-            layout_buffers: FxHashMap::default(),
-            layout_buffer_lru: VecDeque::new(),
             prepared_draws: FxHashMap::default(),
             prepared_draw_lru: VecDeque::new(),
-            globals_bind_groups: FxHashMap::default(),
-            globals_bind_group_lru: VecDeque::new(),
+            prepared_draw_epoch: 0,
         }
     }
 
     fn reset_atlas(&mut self) {
         self.mask_atlas.reset();
         self.color_atlas.reset();
-        for draw_set in self.prepared_draws.values() {
-            for (_, d) in &draw_set.mask_draws {
-                d.vertex_buffer.destroy();
-            }
-            for (_, d) in &draw_set.color_draws {
-                d.vertex_buffer.destroy();
-            }
-        }
-        self.prepared_draws.clear();
-        self.prepared_draw_lru.clear();
-        self.swash_cache.image_cache.clear();
-        self.swash_cache.outline_command_cache.clear();
+        self.clear_prepared_draws();
     }
 
     fn atlas_generations(&self) -> AtlasGenerations {
@@ -1382,12 +1781,12 @@ impl TextResources {
     fn take_prepared_draw(
         &mut self,
         renderer_key: TextRendererKey,
-        prepare_signature: u64,
+        draw_signature: u64,
         atlas_generation: AtlasGenerations,
     ) -> Option<PreparedTextDrawSet> {
         let key = PreparedTextDrawKey {
             renderer_key,
-            prepare_signature,
+            draw_signature,
             atlas_generation,
         };
         let draw = self.prepared_draws.get(&key).cloned()?;
@@ -1399,13 +1798,13 @@ impl TextResources {
     fn put_prepared_draw(
         &mut self,
         renderer_key: TextRendererKey,
-        prepare_signature: u64,
+        draw_signature: u64,
         atlas_generation: AtlasGenerations,
         draw: PreparedTextDrawSet,
     ) {
         let key = PreparedTextDrawKey {
             renderer_key,
-            prepare_signature,
+            draw_signature,
             atlas_generation,
         };
         self.prepared_draws.insert(key, draw);
@@ -1413,9 +1812,21 @@ impl TextResources {
         self.prepared_draw_lru.push_back(key);
         while self.prepared_draw_lru.len() > 512 {
             if let Some(old_key) = self.prepared_draw_lru.pop_front() {
-                self.prepared_draws.remove(&old_key);
+                if let Some(draw_set) = self.prepared_draws.remove(&old_key) {
+                    draw_set.destroy();
+                    self.prepared_draw_epoch = self.prepared_draw_epoch.wrapping_add(1);
+                }
             }
         }
+    }
+
+    fn clear_prepared_draws(&mut self) {
+        for draw_set in self.prepared_draws.values() {
+            draw_set.destroy();
+        }
+        self.prepared_draws.clear();
+        self.prepared_draw_lru.clear();
+        self.prepared_draw_epoch = self.prepared_draw_epoch.wrapping_add(1);
     }
 
     fn ensure_pipeline(
@@ -1451,7 +1862,7 @@ impl TextResources {
         queue: &wgpu::Queue,
         screen_w: f32,
         screen_h: f32,
-        text_areas: &[TextArea<'_>],
+        text_areas: &[TextArea],
         existing: Option<(&wgpu::Buffer, &wgpu::Buffer, &wgpu::BindGroup, usize)>,
     ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, usize) {
         let screen_uniform = TextScreenUniform {
@@ -1576,270 +1987,231 @@ impl TextResources {
         )
     }
 
-    fn get_or_create_globals_bind_group(
+    fn raster_text_image(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        screen_w: f32,
-        screen_h: f32,
-        text_areas: &[TextArea<'_>],
-        prepare_signature: u64,
-    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, usize) {
-        if let Some(cached) = self.globals_bind_groups.get(&prepare_signature) {
-            let result = (
-                cached.screen_buffer.clone(),
-                cached.fragment_buffer.clone(),
-                cached.bind_group.clone(),
-                cached.capacity,
+        request: TextRasterRequest,
+        glyph_cache_key: TextGlyphRasterKey,
+    ) -> Option<TextRasterImage> {
+        let direct_image = {
+            let mut direct_provider = DirectSwashRasterProvider {
+                scale_context: &mut self.direct_swash_context,
+            };
+            direct_provider.raster_image(&request)
+        };
+        if let Some(image) = direct_image {
+            debug_assert_eq!(request.glyph_id, glyph_cache_key.glyph_id);
+            debug_assert_eq!(
+                request.font_identity_hash,
+                glyph_cache_key.font_identity_hash
             );
-            self.globals_bind_group_lru
-                .retain(|k| *k != prepare_signature);
-            self.globals_bind_group_lru.push_back(prepare_signature);
-            return result;
+            return Some(image);
         }
-        let (screen_buffer, fragment_buffer, bind_group, capacity) =
-            self.create_globals_bind_group(device, queue, screen_w, screen_h, text_areas, None);
-        self.globals_bind_groups.insert(
-            prepare_signature,
-            CachedGlobalsBindGroup {
-                screen_buffer: screen_buffer.clone(),
-                fragment_buffer: fragment_buffer.clone(),
-                bind_group: bind_group.clone(),
-                capacity,
-            },
-        );
-        self.globals_bind_group_lru
-            .retain(|k| *k != prepare_signature);
-        self.globals_bind_group_lru.push_back(prepare_signature);
-        while self.globals_bind_group_lru.len() > 512 {
-            if let Some(old_key) = self.globals_bind_group_lru.pop_front() {
-                self.globals_bind_groups.remove(&old_key);
-            }
+        if trace_direct_text_raster_enabled() {
+            eprintln!(
+                "[text-raster] direct provider skipped unsupported glyph {:?}",
+                glyph_cache_key
+            );
         }
-        (screen_buffer, fragment_buffer, bind_group, capacity)
+        None
     }
 
     fn prepare_text_area(
         &mut self,
-        font_system: &mut FontSystem,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
-        text_area: &TextArea<'_>,
+        text_area: &TextArea,
         fragment_index: u32,
         mask_out: &mut Vec<Vec<TextGlyphVertex>>,
         color_out: &mut Vec<Vec<TextGlyphVertex>>,
     ) -> Result<(), TextAtlasCacheError> {
-        let is_run_visible = |run: &cosmic_text::LayoutRun<'_>| {
+        let is_run_visible = |run: &TextRenderLine| {
             let start_y = run.line_top * text_area.scale;
             let end_y = start_y + (run.line_height * text_area.scale);
             start_y <= text_area.clip_max[1] && text_area.clip_min[1] <= end_y
         };
-
         for run in text_area
-            .buffer
-            .layout_runs()
+            .render_lines
+            .iter()
             .skip_while(|run| !is_run_visible(run))
-            .take_while(is_run_visible)
+            .take_while(|run| is_run_visible(run))
         {
-            for glyph in run.glyphs.iter() {
-                let raster_scale = text_raster_scale(glyph.font_size * text_area.scale);
-                let physical_glyph = glyph.physical((0.0, 0.0), text_area.scale * raster_scale);
-                let glyph_x_offset = glyph.font_size * glyph.x_offset;
-                let glyph_y_offset = glyph.font_size * glyph.y_offset;
-                let color = glyph.color_opt.unwrap_or(text_area.default_color);
-                let Some(image) = self
-                    .swash_cache
-                    .get_image(font_system, physical_glyph.cache_key)
-                    .clone()
-                else {
-                    continue;
-                };
-                let (atlas_glyph, atlas_size, page_idx, is_color) = match image.content {
-                    SwashContent::Color => {
-                        let entry = if let Some(entry) =
-                            self.color_atlas.get_glyph(physical_glyph.cache_key)
-                        {
-                            entry
-                        } else {
-                            let Some(entry) = self.color_atlas.cache_glyph(
-                                device,
-                                physical_glyph.cache_key,
-                                swash_color_image_to_rgba(&image),
-                                image.placement.width,
-                                image.placement.height,
-                                image.placement.left,
-                                image.placement.top,
-                                raster_scale,
-                            )?
-                            else {
-                                continue;
-                            };
-                            entry
+            for glyph_run in run.glyph_runs.iter() {
+                for glyph in glyph_run.glyphs.iter() {
+                    let before_atlas_generation = self.atlas_generations();
+                    let raster_scale = text_raster_scale(glyph.font_size * text_area.scale);
+                    let Some(glyph_cache_key) = glyph.glyph_cache_key else {
+                        continue;
+                    };
+                    let glyph_x_offset = glyph.font_size * glyph.x_offset;
+                    let glyph_y_offset = glyph.font_size * glyph.y_offset;
+                    let color = glyph.color.unwrap_or(text_area.default_color);
+                    let cached_atlas = self
+                        .mask_atlas
+                        .get_glyph(glyph_cache_key)
+                        .map(|(page_idx, atlas_glyph)| {
+                            (
+                                atlas_glyph,
+                                self.mask_atlas.page_size() as f32,
+                                page_idx,
+                                false,
+                            )
+                        })
+                        .or_else(|| {
+                            self.color_atlas.get_glyph(glyph_cache_key).map(
+                                |(page_idx, atlas_glyph)| {
+                                    (
+                                        atlas_glyph,
+                                        self.color_atlas.page_size() as f32,
+                                        page_idx,
+                                        true,
+                                    )
+                                },
+                            )
+                        });
+                    let (atlas_glyph, atlas_size, page_idx, is_color) = if let Some(cached_atlas) =
+                        cached_atlas
+                    {
+                        cached_atlas
+                    } else {
+                        let Some(raster_request) =
+                            text_raster_request_from_glyph(glyph, raster_scale)
+                        else {
+                            continue;
                         };
-                        let (page_idx, atlas_glyph) = entry;
-                        (
-                            atlas_glyph,
-                            self.color_atlas.page_size() as f32,
-                            page_idx,
-                            true,
-                        )
-                    }
-                    SwashContent::Mask | SwashContent::SubpixelMask => {
-                        let entry = if let Some(entry) =
-                            self.mask_atlas.get_glyph(physical_glyph.cache_key)
-                        {
-                            entry
-                        } else {
-                            let Some(entry) = self.mask_atlas.cache_glyph(
-                                device,
-                                physical_glyph.cache_key,
-                                swash_mask_image_to_r8(&image),
-                                image.placement.width,
-                                image.placement.height,
-                                image.placement.left,
-                                image.placement.top,
-                                raster_scale,
-                            )?
-                            else {
-                                continue;
-                            };
-                            entry
+                        let Some(image) = self.raster_text_image(raster_request, glyph_cache_key)
+                        else {
+                            continue;
                         };
-                        let (page_idx, atlas_glyph) = entry;
-                        (
-                            atlas_glyph,
-                            self.mask_atlas.page_size() as f32,
-                            page_idx,
-                            false,
-                        )
+                        match image.content {
+                            TextRasterContent::Color => {
+                                let Some((page_idx, atlas_glyph)) = self.color_atlas.cache_glyph(
+                                    device,
+                                    glyph_cache_key,
+                                    image.data,
+                                    image.placement.width,
+                                    image.placement.height,
+                                    image.placement.left,
+                                    image.placement.top,
+                                    raster_scale,
+                                )?
+                                else {
+                                    continue;
+                                };
+                                (
+                                    atlas_glyph,
+                                    self.color_atlas.page_size() as f32,
+                                    page_idx,
+                                    true,
+                                )
+                            }
+                            TextRasterContent::Mask => {
+                                let Some((page_idx, atlas_glyph)) = self.mask_atlas.cache_glyph(
+                                    device,
+                                    glyph_cache_key,
+                                    image.data,
+                                    image.placement.width,
+                                    image.placement.height,
+                                    image.placement.left,
+                                    image.placement.top,
+                                    raster_scale,
+                                )?
+                                else {
+                                    continue;
+                                };
+                                (
+                                    atlas_glyph,
+                                    self.mask_atlas.page_size() as f32,
+                                    page_idx,
+                                    false,
+                                )
+                            }
+                        }
+                    };
+                    if self.atlas_generations() != before_atlas_generation {
+                        self.clear_prepared_draws();
                     }
-                };
 
-                let mut x = (glyph.x + glyph_x_offset) * text_area.scale + atlas_glyph.layout_left;
-                let mut y = (run.line_y + glyph.y - glyph_y_offset) * text_area.scale
-                    - atlas_glyph.layout_top;
-                let mut width = atlas_glyph.layout_width;
-                let mut height = atlas_glyph.layout_height;
-                let mut atlas_x = atlas_glyph.x as f32;
-                let mut atlas_y = atlas_glyph.y as f32;
-                let max_x = x + width;
-                let max_y = y + height;
-                let bounds_left = text_area.clip_min[0];
-                let bounds_top = text_area.clip_min[1];
-                let bounds_right = text_area.clip_max[0];
-                let bounds_bottom = text_area.clip_max[1];
+                    let mut x =
+                        (glyph.x + glyph_x_offset) * text_area.scale + atlas_glyph.layout_left;
+                    let mut y = (run.line_y + glyph.y - glyph_y_offset) * text_area.scale
+                        - atlas_glyph.layout_top;
+                    let mut width = atlas_glyph.layout_width;
+                    let mut height = atlas_glyph.layout_height;
+                    let mut atlas_x = atlas_glyph.x as f32;
+                    let mut atlas_y = atlas_glyph.y as f32;
+                    let max_x = x + width;
+                    let max_y = y + height;
+                    let bounds_left = text_area.clip_min[0];
+                    let bounds_top = text_area.clip_min[1];
+                    let bounds_right = text_area.clip_max[0];
+                    let bounds_bottom = text_area.clip_max[1];
 
-                if x > bounds_right
-                    || max_x < bounds_left
-                    || y > bounds_bottom
-                    || max_y < bounds_top
-                {
-                    continue;
-                }
-                if x < bounds_left {
-                    let shift = bounds_left - x;
-                    x = bounds_left;
-                    width = max_x - bounds_left;
-                    atlas_x += shift * atlas_glyph.raster_scale;
-                }
-                if x + width > bounds_right {
-                    width = bounds_right - x;
-                }
-                if y < bounds_top {
-                    let shift = bounds_top - y;
-                    y = bounds_top;
-                    height = max_y - bounds_top;
-                    atlas_y += shift * atlas_glyph.raster_scale;
-                }
-                if y + height > bounds_bottom {
-                    height = bounds_bottom - y;
-                }
-                width = width.max(0.0);
-                height = height.max(0.0);
-                if width <= 0.0 || height <= 0.0 {
-                    continue;
-                }
-                if width <= 0.0 || height <= 0.0 {
-                    continue;
-                }
+                    if x > bounds_right
+                        || max_x < bounds_left
+                        || y > bounds_bottom
+                        || max_y < bounds_top
+                    {
+                        continue;
+                    }
+                    if x < bounds_left {
+                        let shift = bounds_left - x;
+                        x = bounds_left;
+                        width = max_x - bounds_left;
+                        atlas_x += shift * atlas_glyph.raster_scale;
+                    }
+                    if x + width > bounds_right {
+                        width = bounds_right - x;
+                    }
+                    if y < bounds_top {
+                        let shift = bounds_top - y;
+                        y = bounds_top;
+                        height = max_y - bounds_top;
+                        atlas_y += shift * atlas_glyph.raster_scale;
+                    }
+                    if y + height > bounds_bottom {
+                        height = bounds_bottom - y;
+                    }
+                    width = width.max(0.0);
+                    height = height.max(0.0);
+                    if width <= 0.0 || height <= 0.0 {
+                        continue;
+                    }
+                    if width <= 0.0 || height <= 0.0 {
+                        continue;
+                    }
 
-                let rgba = color.as_rgba();
-                let vertex = TextGlyphVertex {
-                    local_pos: [x, y],
-                    size: [width, height],
-                    uv_min: [atlas_x / atlas_size, atlas_y / atlas_size],
-                    uv_max: [
-                        (atlas_x + width * atlas_glyph.raster_scale) / atlas_size,
-                        (atlas_y + height * atlas_glyph.raster_scale) / atlas_size,
-                    ],
-                    color: [
-                        rgba[0] as f32 / 255.0,
-                        rgba[1] as f32 / 255.0,
-                        rgba[2] as f32 / 255.0,
-                        rgba[3] as f32 / 255.0,
-                    ],
-                    opacity: 1.0,
-                    fragment_index,
-                };
-                let bucket = if is_color {
-                    &mut *color_out
-                } else {
-                    &mut *mask_out
-                };
-                let idx = page_idx as usize;
-                if bucket.len() <= idx {
-                    bucket.resize_with(idx + 1, Vec::new);
+                    let rgba = color.as_rgba();
+                    let vertex = TextGlyphVertex {
+                        local_pos: [x, y],
+                        size: [width, height],
+                        uv_min: [atlas_x / atlas_size, atlas_y / atlas_size],
+                        uv_max: [
+                            (atlas_x + width * atlas_glyph.raster_scale) / atlas_size,
+                            (atlas_y + height * atlas_glyph.raster_scale) / atlas_size,
+                        ],
+                        color: [
+                            rgba[0] as f32 / 255.0,
+                            rgba[1] as f32 / 255.0,
+                            rgba[2] as f32 / 255.0,
+                            rgba[3] as f32 / 255.0,
+                        ],
+                        opacity: 1.0,
+                        fragment_index,
+                    };
+                    let bucket = if is_color {
+                        &mut *color_out
+                    } else {
+                        &mut *mask_out
+                    };
+                    let idx = page_idx as usize;
+                    if bucket.len() <= idx {
+                        bucket.resize_with(idx + 1, Vec::new);
+                    }
+                    bucket[idx].push(vertex);
                 }
-                bucket[idx].push(vertex);
             }
         }
         Ok(())
-    }
-
-    fn prepare_buffer_cached(
-        &mut self,
-        signature: u64,
-        content: &str,
-        width: f32,
-        height: f32,
-        font_size: f32,
-        line_height: f32,
-        font_weight: u16,
-        font_families: &[String],
-        align: Align,
-        allow_wrap: bool,
-    ) -> Arc<Buffer> {
-        if let Some(buffer) = self.layout_buffers.get(&signature) {
-            self.layout_buffer_lru
-                .retain(|current_signature| *current_signature != signature);
-            self.layout_buffer_lru.push_back(signature);
-            return Arc::clone(buffer);
-        }
-        let buffer = with_shared_font_system(|font_system| {
-            build_text_buffer(
-                font_system,
-                content,
-                Some(width),
-                Some(height),
-                allow_wrap,
-                font_size,
-                line_height,
-                font_weight,
-                align,
-                font_families,
-            )
-        });
-        let buffer = Arc::new(buffer);
-        self.layout_buffers.insert(signature, Arc::clone(&buffer));
-        self.layout_buffer_lru
-            .retain(|current_signature| *current_signature != signature);
-        self.layout_buffer_lru.push_back(signature);
-        while self.layout_buffer_lru.len() > 4096 {
-            if let Some(old_signature) = self.layout_buffer_lru.pop_front() {
-                self.layout_buffers.remove(&old_signature);
-            }
-        }
-        buffer
     }
 }
 
@@ -1866,10 +2238,7 @@ fn with_text_global_cache<R>(f: impl FnOnce(&mut TextGlobalCache) -> R) -> R {
 }
 
 fn build_text_debug_overlay(
-    buffer: &Buffer,
-    left: f32,
-    top: f32,
-    bounds: TextBounds,
+    text_area: &TextArea,
     global_origin: [f32; 2],
     screen_w: f32,
     screen_h: f32,
@@ -1877,49 +2246,52 @@ fn build_text_debug_overlay(
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let clip_rect = [
-        bounds.left as f32,
-        bounds.top as f32,
-        bounds.right as f32,
-        bounds.bottom as f32,
+        text_area.left + text_area.clip_min[0],
+        text_area.top + text_area.clip_min[1],
+        text_area.left + text_area.clip_max[0],
+        text_area.top + text_area.clip_max[1],
     ];
-    for run in buffer.layout_runs() {
-        let run_top = top + run.line_top;
-        let run_bottom = run_top + run.line_height;
-        for glyph in run.glyphs.iter() {
-            let glyph_left = left + glyph.x;
-            let glyph_right = glyph_left + glyph.w.max(0.0);
-            let rect = intersect_rect([glyph_left, run_top, glyph_right, run_bottom], clip_rect);
-            if rect[2] <= rect[0] || rect[3] <= rect[1] {
-                continue;
-            }
-            let corners = [
-                [rect[0] + global_origin[0], rect[1] + global_origin[1]],
-                [rect[2] + global_origin[0], rect[1] + global_origin[1]],
-                [rect[2] + global_origin[0], rect[3] + global_origin[1]],
-                [rect[0] + global_origin[0], rect[3] + global_origin[1]],
-            ];
-            for (u, v) in [(0_usize, 1_usize), (1, 2), (2, 3), (3, 0)] {
-                append_text_debug_line_quad(
-                    &mut vertices,
-                    &mut indices,
-                    corners[u],
-                    corners[v],
-                    1.0,
-                    [0.2, 1.0, 0.95, 0.9],
-                    screen_w,
-                    screen_h,
-                );
-            }
-            for corner in corners {
-                append_text_debug_point_quad(
-                    &mut vertices,
-                    &mut indices,
-                    corner,
-                    2.5,
-                    [1.0, 0.35, 0.2, 0.95],
-                    screen_w,
-                    screen_h,
-                );
+    for run in &text_area.render_lines {
+        let run_top = text_area.top + run.line_top * text_area.scale;
+        let run_bottom = run_top + run.line_height * text_area.scale;
+        for glyph_run in &run.glyph_runs {
+            for glyph in &glyph_run.glyphs {
+                let glyph_left = text_area.left + glyph.x * text_area.scale;
+                let glyph_right = glyph_left + glyph.width.max(0.0) * text_area.scale;
+                let rect =
+                    intersect_rect([glyph_left, run_top, glyph_right, run_bottom], clip_rect);
+                if rect[2] <= rect[0] || rect[3] <= rect[1] {
+                    continue;
+                }
+                let corners = [
+                    [rect[0] + global_origin[0], rect[1] + global_origin[1]],
+                    [rect[2] + global_origin[0], rect[1] + global_origin[1]],
+                    [rect[2] + global_origin[0], rect[3] + global_origin[1]],
+                    [rect[0] + global_origin[0], rect[3] + global_origin[1]],
+                ];
+                for (u, v) in [(0_usize, 1_usize), (1, 2), (2, 3), (3, 0)] {
+                    append_text_debug_line_quad(
+                        &mut vertices,
+                        &mut indices,
+                        corners[u],
+                        corners[v],
+                        1.0,
+                        [0.2, 1.0, 0.95, 0.9],
+                        screen_w,
+                        screen_h,
+                    );
+                }
+                for corner in corners {
+                    append_text_debug_point_quad(
+                        &mut vertices,
+                        &mut indices,
+                        corner,
+                        2.5,
+                        [1.0, 0.35, 0.2, 0.95],
+                        screen_w,
+                        screen_h,
+                    );
+                }
             }
         }
     }
@@ -1927,12 +2299,8 @@ fn build_text_debug_overlay(
 }
 
 fn build_text_debug_overlay_multi(
-    fragments: &[TextPassFragment],
-    resolved_buffers: &[Option<Arc<Buffer>>],
-    resolved_bounds: &[Option<TextBounds>],
-    scale: f32,
-    target_origin: (u32, u32),
-    logical_origin: (u32, u32),
+    text_areas: &[TextArea],
+    global_origin: [f32; 2],
     screen_w: f32,
     screen_h: f32,
 ) -> TextDebugOverlay {
@@ -1940,29 +2308,8 @@ fn build_text_debug_overlay_multi(
         vertices: Vec::new(),
         indices: Vec::new(),
     };
-    for (index, fragment) in fragments.iter().enumerate() {
-        let Some(bounds) = resolved_bounds[index] else {
-            continue;
-        };
-        let Some(buffer) = fragment
-            .layout_buffer
-            .as_deref()
-            .or_else(|| resolved_buffers[index].as_deref())
-        else {
-            continue;
-        };
-        let overlay = build_text_debug_overlay(
-            buffer,
-            fragment.x * scale - target_origin.0 as f32 + logical_origin.0 as f32,
-            fragment.y * scale - target_origin.1 as f32 + logical_origin.1 as f32,
-            bounds,
-            [
-                target_origin.0 as f32 - logical_origin.0 as f32,
-                target_origin.1 as f32 - logical_origin.1 as f32,
-            ],
-            screen_w,
-            screen_h,
-        );
+    for text_area in text_areas {
+        let overlay = build_text_debug_overlay(text_area, global_origin, screen_w, screen_h);
         let base = combined.vertices.len() as u32;
         combined.vertices.extend(overlay.vertices);
         combined
@@ -2245,28 +2592,24 @@ pub fn begin_text_resources_frame() {
 #[cfg(test)]
 mod tests {
     use super::{
-        TextBounds, TextDebugOverlay, TextGlyphVertex, build_text_debug_overlay,
-        physical_scissor_rect, text_pixel_to_ndc,
+        DirectSwashRasterProvider, TextBounds, TextColor, TextDebugOverlay, TextFontIdentity,
+        TextFontSourceIdentity, TextGlyphVertex, TextInput, TextOutput, TextPass, TextPassFragment,
+        TextPassParams, TextRasterContent, TextRasterFlags, TextRasterProvider, TextRenderGlyph,
+        build_text_area, build_text_debug_overlay, draw_signature_for_text_areas,
+        physical_scissor_rect, text_fragment_physical_origin, text_parley_glyph_cache_key,
+        text_pixel_to_ndc, text_raster_request_from_glyph, text_subpixel_bucket_index,
     };
-    use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, Weight, Wrap};
+    use crate::view::text_layout::{TextLayoutAlignment, build_text_layout};
+    use std::sync::Arc;
 
-    fn build_buffer(content: &str, width: f32, font_size: f32, line_height: f32) -> Buffer {
-        let mut font_system = FontSystem::new();
-        let mut buffer = Buffer::new(
-            &mut font_system,
-            Metrics::new(font_size, (font_size * line_height).max(1.0)),
-        );
-        buffer.set_wrap(&mut font_system, Wrap::WordOrGlyph);
-        buffer.set_size(&mut font_system, Some(width.max(1.0)), None);
-        buffer.set_text(
-            &mut font_system,
-            content,
-            &Attrs::new().weight(Weight(400)),
-            Shaping::Advanced,
-            None,
-        );
-        buffer.shape_until_scroll(&mut font_system, false);
-        buffer
+    fn test_parley_font_identity() -> TextFontIdentity {
+        TextFontIdentity {
+            hash: 0x7a11_eeee,
+            source: TextFontSourceIdentity::ParleyFontData {
+                blob_id: 7,
+                face_index: 0,
+            },
+        }
     }
 
     fn overlay_rects(overlay: &TextDebugOverlay, screen_w: f32, screen_h: f32) -> Vec<[f32; 4]> {
@@ -2296,7 +2639,16 @@ mod tests {
     fn text_debug_overlay_clips_glyph_rects_to_bounds() {
         let screen_w = 400.0;
         let screen_h = 300.0;
-        let buffer = build_buffer("clip me please clip me please", 80.0, 16.0, 1.25);
+        let built = build_text_layout(
+            "clip me please clip me please",
+            Some(80.0),
+            true,
+            16.0,
+            1.25,
+            400,
+            TextLayoutAlignment::Left,
+            &[],
+        );
         let bounds = TextBounds {
             left: 0,
             top: 0,
@@ -2304,8 +2656,16 @@ mod tests {
             bottom: 22,
         };
 
-        let overlay =
-            build_text_debug_overlay(&buffer, 0.0, 0.0, bounds, [0.0, 0.0], screen_w, screen_h);
+        let text_area = build_text_area(
+            Some(&built.layout),
+            0.0,
+            0.0,
+            1.0,
+            bounds,
+            TextColor::rgba(255, 255, 255, 255),
+        );
+
+        let overlay = build_text_debug_overlay(&text_area, [0.0, 0.0], screen_w, screen_h);
         let rects = overlay_rects(&overlay, screen_w, screen_h);
 
         assert!(!rects.is_empty());
@@ -2315,6 +2675,49 @@ mod tests {
             }),
             "all overlay quads should stay near the resolved text bounds"
         );
+    }
+
+    #[test]
+    fn text_area_prefers_parley_layout_without_legacy_buffer() {
+        let built = build_text_layout(
+            "Parley renders first",
+            Some(240.0),
+            true,
+            16.0,
+            1.25,
+            400,
+            TextLayoutAlignment::Left,
+            &[],
+        );
+        let bounds = TextBounds {
+            left: 0,
+            top: 0,
+            right: 240,
+            bottom: 40,
+        };
+
+        let text_area = build_text_area(
+            Some(&built.layout),
+            0.0,
+            0.0,
+            1.0,
+            bounds,
+            TextColor::rgba(255, 255, 255, 255),
+        );
+
+        let glyph = text_area
+            .render_lines
+            .iter()
+            .flat_map(|line| &line.glyph_runs)
+            .flat_map(|run| &run.glyphs)
+            .find(|glyph| glyph.glyph_cache_key.is_some())
+            .expect("Parley layout should produce rasterizable glyphs");
+
+        assert!(glyph.parley_font_data.is_some());
+        assert!(matches!(
+            glyph.font_identity.map(|identity| identity.source),
+            Some(TextFontSourceIdentity::ParleyFontData { .. })
+        ));
     }
 
     #[test]
@@ -2336,6 +2739,25 @@ mod tests {
     }
 
     #[test]
+    fn text_fragment_origin_uses_provided_layout_position_without_extra_snap() {
+        let fragment = TextPassFragment {
+            content: "snap".to_string(),
+            x: 10.25,
+            y: 7.75,
+            width: 40.0,
+            height: 20.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            opacity: 1.0,
+            text_layout: None,
+        };
+
+        assert_eq!(
+            text_fragment_physical_origin(&fragment, 2.0, (0, 0), (0, 0)),
+            [20.5, 15.5]
+        );
+    }
+
+    #[test]
     fn glyph_vertices_can_preserve_fractional_positions() {
         let vertex = TextGlyphVertex {
             local_pos: [10.25, 20.75],
@@ -2351,5 +2773,325 @@ mod tests {
         assert!((vertex.local_pos[1] - 20.75).abs() < 0.001);
         assert!((vertex.size[0] - 8.5).abs() < 0.001);
         assert!((vertex.size[1] - 12.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn text_draw_signature_ignores_fragment_origin() {
+        let built = build_text_layout(
+            "moving text keeps glyph geometry",
+            Some(220.0),
+            true,
+            16.0,
+            1.25,
+            400,
+            TextLayoutAlignment::Left,
+            &[],
+        );
+        let layout = Arc::new(built.layout);
+        let params_at_a = TextPassParams::single_fragment(
+            TextPassFragment {
+                content: "moving text keeps glyph geometry".to_string(),
+                x: 20.0,
+                y: 30.0,
+                width: 220.0,
+                height: 40.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+                opacity: 1.0,
+                text_layout: Some(layout.clone()),
+            },
+            16.0,
+            1.25,
+            400,
+            Vec::new(),
+            true,
+            None,
+            None,
+        );
+        let params_at_b = TextPassParams::single_fragment(
+            TextPassFragment {
+                x: 140.0,
+                y: 90.0,
+                text_layout: Some(layout.clone()),
+                ..params_at_a.fragments[0].clone()
+            },
+            16.0,
+            1.25,
+            400,
+            Vec::new(),
+            true,
+            None,
+            None,
+        );
+        let area_a = build_text_area(
+            Some(&layout),
+            20.0,
+            30.0,
+            1.0,
+            TextBounds {
+                left: 20,
+                top: 30,
+                right: 240,
+                bottom: 70,
+            },
+            TextColor::rgba(255, 255, 255, 255),
+        );
+        let area_b = build_text_area(
+            Some(&layout),
+            140.0,
+            90.0,
+            1.0,
+            TextBounds {
+                left: 140,
+                top: 90,
+                right: 360,
+                bottom: 130,
+            },
+            TextColor::rgba(255, 255, 255, 255),
+        );
+
+        assert_eq!(
+            draw_signature_for_text_areas(&params_at_a, 1.0, &[area_a]),
+            draw_signature_for_text_areas(&params_at_b, 1.0, &[area_b])
+        );
+    }
+
+    #[test]
+    fn text_globals_signature_tracks_fragment_origin() {
+        let layout = Arc::new(
+            build_text_layout(
+                "moving text updates uniforms",
+                Some(220.0),
+                true,
+                16.0,
+                1.25,
+                400,
+                TextLayoutAlignment::Left,
+                &[],
+            )
+            .layout,
+        );
+        let params_at_a = TextPassParams::single_fragment(
+            TextPassFragment {
+                content: "moving text updates uniforms".to_string(),
+                x: 20.0,
+                y: 30.0,
+                width: 220.0,
+                height: 40.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+                opacity: 1.0,
+                text_layout: Some(layout.clone()),
+            },
+            16.0,
+            1.25,
+            400,
+            Vec::new(),
+            true,
+            None,
+            None,
+        );
+        let params_at_b = TextPassParams::single_fragment(
+            TextPassFragment {
+                x: 140.0,
+                y: 90.0,
+                text_layout: Some(layout),
+                ..params_at_a.fragments[0].clone()
+            },
+            16.0,
+            1.25,
+            400,
+            Vec::new(),
+            true,
+            None,
+            None,
+        );
+        let pass_at_a = TextPass::new(params_at_a, TextInput::default(), TextOutput::default());
+        let pass_at_b = TextPass::new(params_at_b, TextInput::default(), TextOutput::default());
+
+        assert_ne!(
+            pass_at_a.globals_signature(1.0, (400, 300), (0, 0)),
+            pass_at_b.globals_signature(1.0, (400, 300), (0, 0))
+        );
+    }
+
+    #[test]
+    fn text_glyph_cache_key_distinguishes_raster_scale_and_subpixel_bucket() {
+        let font_identity = test_parley_font_identity();
+        let key_a = text_parley_glyph_cache_key(
+            font_identity,
+            42,
+            16.0,
+            32.0,
+            2.0,
+            text_subpixel_bucket_index(10.10),
+            text_subpixel_bucket_index(4.0),
+            TextRasterFlags::default(),
+            0,
+        );
+        let key_b = text_parley_glyph_cache_key(
+            font_identity,
+            42,
+            16.0,
+            32.0,
+            2.0,
+            text_subpixel_bucket_index(10.45),
+            text_subpixel_bucket_index(4.0),
+            TextRasterFlags::default(),
+            0,
+        );
+        let key_scaled = text_parley_glyph_cache_key(
+            font_identity,
+            42,
+            16.0,
+            24.0,
+            1.5,
+            text_subpixel_bucket_index(10.10),
+            text_subpixel_bucket_index(4.0),
+            TextRasterFlags::default(),
+            0,
+        );
+
+        assert_ne!(key_a, key_b);
+        assert_ne!(key_a, key_scaled);
+    }
+
+    #[test]
+    fn text_glyph_cache_key_records_glyph_font_size_and_style_inputs() {
+        let font_identity = test_parley_font_identity();
+        let regular = TextRasterFlags::default();
+        let fake_italic = TextRasterFlags {
+            fake_italic: true,
+            ..Default::default()
+        };
+        let key = text_parley_glyph_cache_key(font_identity, 7, 14.0, 28.0, 2.0, 0, 0, regular, 0);
+        let other_glyph =
+            text_parley_glyph_cache_key(font_identity, 8, 14.0, 28.0, 2.0, 0, 0, regular, 0);
+        let other_size =
+            text_parley_glyph_cache_key(font_identity, 7, 16.0, 32.0, 2.0, 0, 0, regular, 0);
+        let other_style =
+            text_parley_glyph_cache_key(font_identity, 7, 14.0, 28.0, 2.0, 0, 0, fake_italic, 0);
+
+        assert_eq!(key.x_subpixel_bucket, 0);
+        assert_ne!(key, other_glyph);
+        assert_ne!(key, other_size);
+        assert_ne!(key, other_style);
+    }
+
+    #[test]
+    fn text_raster_request_carries_direct_provider_inputs() {
+        let font_identity = test_parley_font_identity();
+        let flags = TextRasterFlags {
+            disable_hinting: true,
+            ..Default::default()
+        };
+        let glyph_cache_key = text_parley_glyph_cache_key(
+            font_identity,
+            11,
+            15.0,
+            30.0,
+            2.0,
+            text_subpixel_bucket_index(3.4),
+            text_subpixel_bucket_index(7.1),
+            flags,
+            0,
+        );
+        let glyph = TextRenderGlyph {
+            font_identity: Some(font_identity),
+            parley_font_data: None,
+            font_id_hash: glyph_cache_key.font_identity_hash,
+            glyph_id: glyph_cache_key.glyph_id,
+            advance: 12.0,
+            x: 3.4,
+            y: 7.1,
+            width: 12.0,
+            font_size: 15.0,
+            x_offset: 0.0,
+            y_offset: 0.0,
+            color: None,
+            flags,
+            glyph_cache_key: Some(glyph_cache_key),
+        };
+
+        let request = text_raster_request_from_glyph(&glyph, 2.0).unwrap();
+
+        assert_eq!(request.font_identity, Some(font_identity));
+        assert_eq!(
+            request.font_identity.unwrap().hash,
+            request.font_identity_hash
+        );
+        assert_eq!(
+            request.font_identity.unwrap().source,
+            TextFontSourceIdentity::ParleyFontData {
+                blob_id: 7,
+                face_index: 0,
+            }
+        );
+        assert_eq!(
+            request.font_identity_hash,
+            glyph_cache_key.font_identity_hash
+        );
+        assert_eq!(request.glyph_id, 11);
+        assert_eq!(request.source_font_size, 15.0);
+        assert_eq!(request.raster_scale, 2.0);
+        assert_eq!(request.raster_font_size, 30.0);
+        assert_eq!(request.x_subpixel_bucket, glyph_cache_key.x_subpixel_bucket);
+        assert_eq!(request.y_subpixel_bucket, glyph_cache_key.y_subpixel_bucket);
+        assert_eq!(request.flags, flags);
+        assert_eq!(request.style_hash, glyph_cache_key.style_hash);
+        assert_eq!(
+            request.normalized_coords_hash,
+            glyph_cache_key.normalized_coords_hash
+        );
+    }
+
+    #[test]
+    fn direct_provider_rasterizes_single_outline_glyph_mask() {
+        let built = build_text_layout(
+            "A",
+            Some(80.0),
+            false,
+            15.0,
+            1.25,
+            400,
+            TextLayoutAlignment::Left,
+            &[],
+        );
+        let text_area = build_text_area(
+            Some(&built.layout),
+            0.0,
+            0.0,
+            1.0,
+            TextBounds {
+                left: 0,
+                top: 0,
+                right: 80,
+                bottom: 40,
+            },
+            TextColor::rgba(255, 255, 255, 255),
+        );
+        let glyph = text_area
+            .render_lines
+            .iter()
+            .flat_map(|line| &line.glyph_runs)
+            .flat_map(|run| &run.glyphs)
+            .find(|glyph| glyph.parley_font_data.is_some() && glyph.glyph_cache_key.is_some())
+            .expect("Parley layout should provide a rasterizable glyph");
+        let request = text_raster_request_from_glyph(glyph, 2.0).unwrap();
+        assert!(request.parley_font_data.is_some());
+
+        let mut scale_context = swash::scale::ScaleContext::new();
+        let mut provider = DirectSwashRasterProvider {
+            scale_context: &mut scale_context,
+        };
+        let image = provider.raster_image(&request);
+
+        let image = image.expect("outline glyph should rasterize as a grayscale mask");
+        assert_eq!(image.content, TextRasterContent::Mask);
+        assert!(image.placement.width > 0);
+        assert!(image.placement.height > 0);
+        assert_eq!(
+            image.data.len(),
+            image.placement.width as usize * image.placement.height as usize
+        );
+        assert!(image.data.iter().any(|alpha| *alpha != 0));
     }
 }

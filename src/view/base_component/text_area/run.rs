@@ -1,12 +1,11 @@
 //! `TextAreaTextRun` — internal plain-text segment child of `TextArea`.
 //!
-//! P2.1: shapes its segment via cosmic-text, exposes inline measure/place,
+//! P2.1: shapes its segment via the shared text layout adapter, exposes inline measure/place,
 //! and emits a single `TextPassFragment` per visual run during paint. Wrap
-//! happens inside the cosmic-text `Buffer` (controlled by the cascaded
-//! `auto_wrap` flag) — not via parent-level fragment splitting. The Run is
-//! treated as a single atomic inline node by the parent `TextArea`'s
-//! Inline layout solver, so wrapping happens *between* runs at run
-//! boundaries, plus *within* a run via cosmic-text's internal layout.
+//! happens inside the text layout engine (controlled by the cascaded
+//! `auto_wrap` flag), but wrapped visual lines are exposed back to the parent
+//! inline solver as individual fragments so the next sibling receives a
+//! `first_available_width` derived from the real last visual line.
 //!
 //! See `docs/design/textarea-v2.md` (Phase 2) for the role of this
 //! component within the v2 inline pipeline.
@@ -16,16 +15,14 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use cosmic_text::{Align, Buffer as GlyphBuffer};
-
 use crate::style::{ColorLike, Cursor};
 use crate::ui::Rect;
+use crate::view::base_component::text::measure_text_layout;
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, InlineMeasureContext,
     InlineNodeSize, InlinePlacement, LayoutConstraints, LayoutPlacement, Layoutable, Position,
     Renderable, Size, UiBuildContext,
 };
-use crate::view::font_system::with_shared_font_system;
 use crate::view::frame_graph::FrameGraph;
 use crate::view::layout::LayoutState;
 use crate::view::node_arena::NodeKey;
@@ -33,13 +30,13 @@ use crate::view::render_pass::TextPass;
 use crate::view::render_pass::text_pass::{
     TextInput, TextOutput, TextPassFragment, TextPassParams,
 };
-use crate::view::text_layout::{build_text_buffer, measure_buffer_size};
+use crate::view::text_layout::{TextLayout, TextLayoutAlignment};
 
 use super::super::next_ui_node_id;
 use super::edit::byte_index_at_char;
 
 /// IME preedit overlay routed in by the owning `TextArea` when the cursor
-/// falls inside this run. Run reshapes with the preedit text spliced in at
+/// falls inside this run. Run relayouts with the preedit text spliced in at
 /// `insert_at_local`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InlinePreedit {
@@ -58,7 +55,7 @@ pub(crate) struct TextAreaTextRun {
     /// space). When set, `get_inline_nodes_size` reports an extra
     /// zero-height force-wrap fragment so the inline solver advances
     /// to the next line, mirroring CSS `\n` behavior without us having
-    /// to fragment cosmic-text shape across multiple buffers.
+    /// to fragment text layout across multiple shaped runs.
     pub(crate) has_trailing_newline: bool,
 
     // style cascaded from owning TextArea
@@ -74,8 +71,8 @@ pub(crate) struct TextAreaTextRun {
     // IME preedit overlay (TextArea routes via set_inline_preedit)
     pub(crate) inline_preedit: Option<InlinePreedit>,
 
-    // shape state
-    glyph_buffer: Option<Arc<GlyphBuffer>>,
+    // text layout state
+    text_layout: Option<Arc<TextLayout>>,
     last_inline_measure_context: Option<InlineMeasureContext>,
 
     // layout output
@@ -105,7 +102,7 @@ impl TextAreaTextRun {
             auto_wrap: true,
             vertical_align: crate::style::VerticalAlign::Baseline,
             inline_preedit: None,
-            glyph_buffer: None,
+            text_layout: None,
             last_inline_measure_context: None,
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
             inline_paint_fragments: Vec::new(),
@@ -125,7 +122,7 @@ impl TextAreaTextRun {
             return;
         }
         self.inline_preedit = preedit;
-        self.invalidate_shape();
+        self.invalidate_text_layout();
     }
 
     pub(crate) fn set_text(&mut self, text: String, char_range: Range<usize>) {
@@ -134,7 +131,7 @@ impl TextAreaTextRun {
         }
         self.text = text;
         self.char_range = char_range;
-        self.invalidate_shape();
+        self.invalidate_text_layout();
     }
 
     pub(crate) fn set_has_trailing_newline(&mut self, has_trailing_newline: bool) {
@@ -157,7 +154,7 @@ impl TextAreaTextRun {
         cursor: Cursor,
         auto_wrap: bool,
     ) {
-        let shape_changed = self.font_families != font_families
+        let layout_changed = self.font_families != font_families
             || self.font_size != font_size
             || self.line_height != line_height
             || self.font_weight != font_weight
@@ -170,13 +167,13 @@ impl TextAreaTextRun {
         self.color = color;
         self.cursor = cursor;
         self.auto_wrap = auto_wrap;
-        if shape_changed {
-            self.invalidate_shape();
+        if layout_changed {
+            self.invalidate_text_layout();
         }
     }
 
-    fn invalidate_shape(&mut self) {
-        self.glyph_buffer = None;
+    fn invalidate_text_layout(&mut self) {
+        self.text_layout = None;
         self.last_inline_measure_context = None;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
     }
@@ -196,31 +193,27 @@ impl TextAreaTextRun {
         }
     }
 
-    fn shape_to_buffer(&self, max_width: Option<f32>) -> GlyphBuffer {
-        with_shared_font_system(|font_system| {
-            build_text_buffer(
-                font_system,
-                &self.effective_text(),
-                max_width,
-                None,
-                self.auto_wrap,
-                self.font_size,
-                self.line_height,
-                self.font_weight,
-                Align::Left,
-                &self.font_families,
-            )
-        })
+    fn build_run_text_layout(&self, max_width: Option<f32>) -> Arc<TextLayout> {
+        measure_text_layout(
+            &self.effective_text(),
+            max_width,
+            self.auto_wrap,
+            self.font_size,
+            self.line_height,
+            self.font_weight,
+            TextLayoutAlignment::Left,
+            &self.font_families,
+        )
+        .text_layout
     }
 
     /// `local_char` here is in the run's *own* char index
     /// (0..self.text.chars().count()). Returns `(x, y_top, line_height)`
     /// in run-local coordinates.
     ///
-    /// cosmic-text glyph byte offsets are **per-paragraph (line_i) local**,
-    /// against the *shaped* text (which is `effective_text` — preedit
-    /// spliced in). We translate the plain-text local_char to the matching
-    /// byte inside `effective_text`, then hunt the layout_run.
+    /// The plain-text `local_char` is translated into the matching byte
+    /// inside `effective_text` (which includes any spliced preedit text)
+    /// before asking the adapter for caret geometry.
     pub fn local_char_to_screen_position(&self, local_char: usize) -> Option<(f32, f32, f32)> {
         self.local_char_to_screen_position_with_affinity(
             local_char,
@@ -240,7 +233,16 @@ impl TextAreaTextRun {
     ) -> Option<(f32, f32, f32)> {
         let effective = self.effective_text();
         let target_byte = self.plain_local_char_to_effective_byte(local_char, &effective);
-        self.screen_position_for_byte_in(target_byte, &effective, affinity)
+        if let Some(layout) = self.text_layout.as_ref() {
+            let target_char = effective.get(..target_byte)?.chars().count();
+            let geom = layout.caret_geometry_for_char_with_affinity(
+                &effective,
+                target_char,
+                affinity == super::caret_map::CaretAffinity::Upstream,
+            );
+            return Some((geom.x, geom.y, geom.height));
+        }
+        Some(self.empty_line_caret_position())
     }
 
     /// Caret position when the IME preedit is open inside this Run. Honors
@@ -249,20 +251,21 @@ impl TextAreaTextRun {
     /// v1's `preedit_fragment_caret_screen_position`.
     pub fn preedit_caret_local_position(&self) -> Option<(f32, f32, f32)> {
         let preedit = self.inline_preedit.as_ref()?;
-        let effective = self.effective_text();
         let pre_byte = byte_index_at_char(&self.text, preedit.insert_at_local);
         let caret_byte_in_preedit = match preedit.preedit_cursor {
             Some((_, end)) => clamp_utf8_boundary(&preedit.preedit_text, end),
             None => preedit.preedit_text.len(),
         };
         let target_byte = pre_byte + caret_byte_in_preedit;
-        // Preedit caret never sits at a soft-wrap boundary (it lives
-        // inside the composing text), so affinity is moot — Downstream.
-        self.screen_position_for_byte_in(
-            target_byte,
-            &effective,
-            super::caret_map::CaretAffinity::Downstream,
-        )
+        if let Some(layout) = self.text_layout.as_ref() {
+            // TODO: Fold IME composing into `CaretNavigationMap` once the
+            // map can represent transient preedit positions separately from
+            // committed document char indices. For Phase 5A this special
+            // path stays, but its geometry is adapter-backed.
+            let geom = layout.cursor_geometry(target_byte, false);
+            return Some((geom.x, geom.y, geom.height));
+        }
+        Some(self.empty_line_caret_position())
     }
 
     fn plain_local_char_to_effective_byte(&self, local_char: usize, effective: &str) -> usize {
@@ -275,196 +278,91 @@ impl TextAreaTextRun {
         byte_index_at_char(effective, char_in_effective)
     }
 
-    fn screen_position_for_byte_in(
-        &self,
-        target_byte: usize,
-        text: &str,
-        affinity: super::caret_map::CaretAffinity,
-    ) -> Option<(f32, f32, f32)> {
-        let Some(buffer) = self.glyph_buffer.as_ref() else {
-            // Empty paragraph Run: `measure_inline` skips cosmic shaping
-            // (see the `text.is_empty() && inline_preedit.is_none()` branch
-            // in `measure_inline`), so `glyph_buffer` is None even though
-            // the Run claims a `line_height`-tall slot. Return a run-local
-            // caret at the slot's top-left so the caret remains visible
-            // on middle empty paragraphs (`"a\n\nb"` cursor between the
-            // two `\n`s) and other blank-line placements.
-            let line_h = self.font_size.max(1.0) * self.line_height.max(0.8);
-            return Some((0.0, 0.0, line_h));
-        };
-        let line_height = buffer.metrics().line_height;
-        let (target_line_i, target_local_byte) = paragraph_line_and_offset(text, target_byte);
+    fn empty_line_caret_position(&self) -> (f32, f32, f32) {
+        let line_h = self.font_size.max(1.0) * self.line_height.max(0.8);
+        (0.0, 0.0, line_h)
+    }
 
-        // Walk this paragraph's visual layout_runs in y order. Soft-wrap
-        // splits a paragraph across runs and *consumes* the breaking
-        // whitespace — its byte(s) live in a coverage gap between two
-        // adjacent runs, with no glyph on either side.
-        //
-        // The boundary char that lands in this gap is logically one
-        // source position but visually has two caret slots —
-        // `cursor_affinity` decides which:
-        //   * `Upstream`   → upper run's tail.
-        //   * `Downstream` → lower run's head.
-        // The same affinity rule applies when `target_byte` matches a
-        // non-leading run's first-glyph byte exactly (the no-consumed-
-        // whitespace / CJK shared-boundary case).
-        let visual_runs: Vec<_> = buffer
-            .layout_runs()
-            .filter(|r| r.line_i == target_line_i)
-            .collect();
-        let upstream_tail_for = |idx: usize| -> Option<(f32, f32)> {
-            if idx == 0 {
-                return None;
-            }
-            let prev = &visual_runs[idx - 1];
-            let prev_tail_x = prev
-                .glyphs
-                .last()
-                .map(|g| g.x + g.w.max(0.0))
-                .unwrap_or(0.0);
-            Some((prev_tail_x, prev.line_top))
+    fn fallback_first_baseline(&self) -> f32 {
+        let font_size = self.font_size.max(1.0);
+        let line_height = font_size * self.line_height.max(0.8);
+        let approx_ascent = font_size * 0.8779297;
+        let leading = (line_height - font_size).max(0.0);
+        (approx_ascent + leading / 2.0).max(0.0)
+    }
+
+    fn inline_line_nodes(&self) -> Vec<InlineNodeSize> {
+        let Some(layout) = self.text_layout.as_ref() else {
+            return vec![InlineNodeSize {
+                width: self.layout_state.layout_size.width,
+                height: self.layout_state.layout_size.height,
+                baseline: self.fallback_first_baseline(),
+                vertical_align: self.vertical_align,
+                force_break_after: self.has_trailing_newline,
+            }];
         };
-        let upstream = affinity == super::caret_map::CaretAffinity::Upstream;
-        for (idx, run) in visual_runs.iter().enumerate() {
-            let first_byte = run.glyphs.first().map(|g| g.start).unwrap_or(0);
-            let tail_x = run.glyphs.last().map(|g| g.x + g.w.max(0.0)).unwrap_or(0.0);
-            if target_local_byte < first_byte {
-                // Coverage gap before this run = wrap-consumed byte.
-                // Affinity disambiguates: Upstream → upper run tail,
-                // Downstream → this run's head (= lower line head).
-                if upstream && let Some((px, pt)) = upstream_tail_for(idx) {
-                    return Some((px, pt, line_height));
-                }
-                let head_x = run.glyphs.first().map(|g| g.x).unwrap_or(0.0);
-                return Some((head_x, run.line_top, line_height));
-            }
-            for glyph in run.glyphs.iter() {
-                if glyph.start >= target_local_byte {
-                    if upstream
-                        && glyph.start == first_byte
-                        && let Some((px, pt)) = upstream_tail_for(idx)
-                    {
-                        return Some((px, pt, line_height));
-                    }
-                    return Some((glyph.x, run.line_top, line_height));
-                }
-            }
-            // Target byte falls past this run's last glyph; continue to
-            // the next run only if more remain — otherwise we want this
-            // run's tail.
-            if idx + 1 == visual_runs.len() {
-                return Some((tail_x, run.line_top, line_height));
-            }
+        let effective = self.effective_text();
+        let mut nodes: Vec<InlineNodeSize> = layout
+            .inline_line_fragments(&effective)
+            .into_iter()
+            .map(|line| InlineNodeSize {
+                width: line.width,
+                height: line.height,
+                baseline: line.baseline,
+                vertical_align: self.vertical_align,
+                force_break_after: false,
+            })
+            .collect();
+        if nodes.is_empty() {
+            nodes.push(InlineNodeSize {
+                width: 0.0,
+                height: self.font_size.max(1.0) * self.line_height.max(0.8),
+                baseline: self.fallback_first_baseline(),
+                vertical_align: self.vertical_align,
+                force_break_after: self.has_trailing_newline,
+            });
         }
-        if let Some(last) = visual_runs.last() {
-            let tail_x = last
-                .glyphs
-                .last()
-                .map(|g| g.x + g.w.max(0.0))
-                .unwrap_or(0.0);
-            return Some((tail_x, last.line_top, line_height));
+        let last = nodes.len().saturating_sub(1);
+        for (idx, node) in nodes.iter_mut().enumerate() {
+            node.force_break_after = idx < last || (idx == last && self.has_trailing_newline);
         }
-        // Empty paragraph (no layout runs for this line_i) — pin to the
-        // y of the next paragraph's first run if any, else fall back.
-        let mut next_top: Option<f32> = None;
-        for run in buffer.layout_runs() {
-            if run.line_i > target_line_i {
-                next_top = Some(run.line_top);
-                break;
-            }
-        }
-        let y_top = next_top.unwrap_or_else(|| {
-            buffer
-                .layout_runs()
-                .last()
-                .map(|r| r.line_top + line_height)
-                .unwrap_or(0.0)
-        });
-        Some((0.0, y_top - line_height, line_height))
+        nodes
     }
 
     /// Hit-test: run-local (x, y) → char index in `effective_text`
-    /// (i.e. the spliced text the buffer was actually shaped from). When
+    /// (i.e. the spliced text the adapter laid out). When
     /// no preedit is active this matches `self.text`; with preedit, the
     /// returned index counts preedit chars too. Callers in commit-tap
     /// flows commit the preedit first, after which `self.content` matches
     /// the effective text for this Run, so the index maps directly to
     /// the post-commit content char index.
     ///
-    /// `Buffer::hit` returns a `Cursor` whose `index` is **paragraph-local**
-    /// byte offset under `cursor.line` against the shaped text.
     pub fn screen_position_to_local_char(&self, x: f32, y: f32) -> Option<usize> {
-        let buffer = self.glyph_buffer.as_ref()?;
-        let cursor = buffer.hit(x, y)?;
-        let effective = self.effective_text();
-        let paragraph_start_byte = paragraph_start_byte(&effective, cursor.line);
-        let global_byte = (paragraph_start_byte + cursor.index).min(effective.len());
-        let prefix = effective.get(..global_byte)?;
-        Some(prefix.chars().count())
+        if let Some(layout) = self.text_layout.as_ref() {
+            let effective = self.effective_text();
+            let byte = clamp_utf8_boundary(&effective, layout.hit_byte(x, y));
+            let prefix = effective.get(..byte)?;
+            return Some(prefix.chars().count());
+        }
+        None
     }
 
     /// Run-local selection range → visual rects (one per visual line covered).
-    /// Uses paragraph-local byte filtering against each `layout_run.line_i`,
-    /// matching cosmic-text's per-paragraph glyph indexing.
     pub fn local_selection_rects(&self, local_start: usize, local_end: usize) -> Vec<Rect> {
-        let Some(buffer) = self.glyph_buffer.as_ref() else {
-            return Vec::new();
-        };
         let start_char = local_start.min(local_end);
         let end_char = local_start.max(local_end);
         if start_char == end_char {
             return Vec::new();
         }
-        let start_byte = byte_index_at_char(&self.text, start_char);
-        let end_byte = byte_index_at_char(&self.text, end_char);
-        let (start_line_i, start_local) = paragraph_line_and_offset(&self.text, start_byte);
-        let (end_line_i, end_local) = paragraph_line_and_offset(&self.text, end_byte);
-
-        let mut out = Vec::new();
-        let line_height = buffer.metrics().line_height;
-        for run in buffer.layout_runs() {
-            if run.line_i < start_line_i || run.line_i > end_line_i {
-                continue;
-            }
-            let line_local_start = if run.line_i == start_line_i {
-                start_local
-            } else {
-                0
-            };
-            let line_local_end = if run.line_i == end_line_i {
-                end_local
-            } else {
-                usize::MAX
-            };
-            if line_local_end <= line_local_start {
-                continue;
-            }
-            let mut left: Option<f32> = None;
-            let mut right: f32 = 0.0;
-            for glyph in run.glyphs.iter() {
-                if glyph.end <= line_local_start || glyph.start >= line_local_end {
-                    continue;
-                }
-                let gx = glyph.x;
-                let gw = glyph.w.max(0.0);
-                left = Some(left.map(|cur| cur.min(gx)).unwrap_or(gx));
-                right = right.max(gx + gw);
-            }
-            if let Some(left) = left {
-                out.push(Rect {
-                    x: left,
-                    y: run.line_top,
-                    width: (right - left).max(1.0),
-                    height: line_height,
-                });
-            }
+        if let Some(layout) = self.text_layout.as_ref() {
+            return layout.selection_rects(self.text.as_str(), start_char, end_char);
         }
-        out
+        Vec::new()
     }
 
     /// Underline rects (run-local coords) covering the active IME preedit
     /// segment. One rect per visual line the preedit spans. Empty when no
-    /// preedit is active or shape is stale. 1-px-tall stripes pinned to
+    /// preedit is active or layout is stale. 1-px-tall stripes pinned to
     /// the visual-line baseline — matches v1's
     /// `ime_preedit_underline_rects` look.
     pub fn preedit_underline_rects(&self) -> Vec<Rect> {
@@ -474,64 +372,33 @@ impl TextAreaTextRun {
         if preedit.preedit_text.is_empty() {
             return Vec::new();
         }
-        let Some(buffer) = self.glyph_buffer.as_ref() else {
-            return Vec::new();
-        };
         let effective = self.effective_text();
-        let pre_start_byte = byte_index_at_char(&self.text, preedit.insert_at_local);
-        let pre_end_byte = pre_start_byte + preedit.preedit_text.len();
-        let (start_line_i, start_local) = paragraph_line_and_offset(&effective, pre_start_byte);
-        let (end_line_i, end_local) = paragraph_line_and_offset(&effective, pre_end_byte);
-        let line_height = buffer.metrics().line_height;
-        let mut out = Vec::new();
-        for run in buffer.layout_runs() {
-            if run.line_i < start_line_i || run.line_i > end_line_i {
-                continue;
-            }
-            let line_local_start = if run.line_i == start_line_i {
-                start_local
-            } else {
-                0
-            };
-            let line_local_end = if run.line_i == end_line_i {
-                end_local
-            } else {
-                usize::MAX
-            };
-            if line_local_end <= line_local_start {
-                continue;
-            }
-            let mut left: Option<f32> = None;
-            let mut right: f32 = 0.0;
-            for glyph in run.glyphs.iter() {
-                if glyph.end <= line_local_start || glyph.start >= line_local_end {
-                    continue;
-                }
-                let gx = glyph.x;
-                let gw = glyph.w.max(0.0);
-                left = Some(left.map(|cur| cur.min(gx)).unwrap_or(gx));
-                right = right.max(gx + gw);
-            }
-            if let Some(left) = left {
-                let width = (right - left).max(1.0);
-                out.push(Rect {
-                    x: left,
-                    y: run.line_top + line_height - 1.0,
-                    width,
+        if let Some(layout) = self.text_layout.as_ref() {
+            return layout
+                .selection_rects(
+                    &effective,
+                    preedit.insert_at_local,
+                    preedit.insert_at_local + preedit.preedit_text.chars().count(),
+                )
+                .into_iter()
+                .map(|rect| Rect {
+                    x: rect.x,
+                    y: rect.y + rect.height.max(1.0) - 1.0,
+                    width: rect.width.max(1.0),
                     height: 1.0,
-                });
-            }
+                })
+                .collect();
         }
-        out
+        Vec::new()
     }
 
-    /// Number of visual (post-wrap) lines in the shaped buffer. Useful for
+    /// Number of visual (post-wrap) lines in the current layout. Useful for
     /// vertical caret movement and sticky-x bookkeeping.
     pub fn visual_line_count(&self) -> usize {
-        self.glyph_buffer
-            .as_ref()
-            .map(|b| b.layout_runs().count().max(1))
-            .unwrap_or(1)
+        if let Some(layout) = self.text_layout.as_ref() {
+            return layout.lines().len().max(1);
+        }
+        1
     }
 
     /// Run-local caret stops grouped by visual line. Each line carries the
@@ -545,118 +412,89 @@ impl TextAreaTextRun {
     /// **run-local** too (`0..self.text.chars().count()`); the builder adds
     /// `char_range.start` for the root content index.
     ///
-    /// Lines come from cosmic-text's `layout_runs` (one per visual line —
-    /// soft-wrap segments and per-paragraph runs both surface as separate
-    /// entries). Empty paragraphs (created by `\n\n` or a trailing `\n`) get
+    /// Lines come from the shared text layout adapter. Empty paragraphs
+    /// (created by `\n\n` or a trailing `\n`) get
     /// a synthesized line so caret navigation can land on the blank line.
     pub fn caret_stops(&self) -> Vec<RunCaretLine> {
-        let Some(buffer) = self.glyph_buffer.as_ref() else {
-            // Empty Run with no shape (`text.is_empty()` && no preedit).
-            // The Run still claims a `line_height`-tall slot at its
-            // layout position so caret navigation can land on the blank
-            // line — same fallback shape as `get_inline_nodes_size`.
-            let line_height = self.font_size.max(1.0) * self.line_height.max(0.8);
-            return vec![RunCaretLine {
-                local_y_top: 0.0,
-                local_y_bottom: line_height,
-                stops: vec![RunCaretStop {
-                    local_char: 0,
-                    local_x: 0.0,
-                    local_y_top: 0.0,
-                    height: line_height,
-                }],
-            }];
-        };
-        let line_height = buffer.metrics().line_height;
-        let text = self.text.as_str();
-
-        // Map paragraph index → starting global byte (paragraphs split on
-        // `\n`; the newline byte itself closes the previous paragraph).
-        let mut paragraph_byte_offsets: Vec<usize> = vec![0];
-        for (i, b) in text.as_bytes().iter().enumerate() {
-            if *b == b'\n' {
-                paragraph_byte_offsets.push(i + 1);
-            }
-        }
-        let paragraph_count = paragraph_byte_offsets.len();
-
-        // Bucket layout_runs by paragraph index so empty paragraphs can be
-        // synthesized at their natural position. cosmic-text orders runs
-        // by (line_i ASC, line_top ASC); preserve that order per bucket.
-        let mut buckets: Vec<Vec<RunCaretLine>> = vec![Vec::new(); paragraph_count];
-        for layout_run in buffer.layout_runs() {
-            let line_top = layout_run.line_top;
-            let line_bottom = line_top + line_height;
-            let para_idx = layout_run.line_i.min(paragraph_count.saturating_sub(1));
-            let para_byte = paragraph_byte_offsets.get(para_idx).copied().unwrap_or(0);
-
-            let mut stops: Vec<RunCaretStop> = Vec::with_capacity(layout_run.glyphs.len() + 1);
-            for glyph in layout_run.glyphs.iter() {
-                let global_byte = para_byte + glyph.start;
-                let local_char = byte_to_char(text, global_byte);
-                stops.push(RunCaretStop {
-                    local_char,
-                    local_x: glyph.x,
-                    local_y_top: line_top,
-                    height: line_height,
-                });
-            }
-            // Tail stop = caret after the last glyph on this visual line.
-            // Soft-wrapped segments share the wrap-boundary char with the
-            // following segment's first stop — both visual lines list it
-            // so vertical navigation can land on either.
-            let tail_byte_local = layout_run.glyphs.last().map(|g| g.end).unwrap_or(0);
-            let tail_byte_global = para_byte + tail_byte_local;
-            let tail_local_char = byte_to_char(text, tail_byte_global);
-            let tail_x = layout_run
-                .glyphs
-                .last()
-                .map(|g| g.x + g.w.max(0.0))
-                .unwrap_or(0.0);
-            stops.push(RunCaretStop {
-                local_char: tail_local_char,
-                local_x: tail_x,
-                local_y_top: line_top,
-                height: line_height,
-            });
-
-            buckets[para_idx].push(RunCaretLine {
-                local_y_top: line_top,
-                local_y_bottom: line_bottom,
-                stops,
-            });
-        }
-
-        // Walk paragraphs in order; synthesize one empty visual line for
-        // any paragraph cosmic-text didn't emit a layout_run for (`\n\n`,
-        // trailing `\n` paragraphs). Stack synthesized lines after the
-        // preceding emitted bottom so they sit at the right y.
-        let mut out: Vec<RunCaretLine> = Vec::new();
-        let mut next_y_top: f32 = 0.0;
-        for (para_idx, bucket) in buckets.into_iter().enumerate() {
-            if bucket.is_empty() {
-                let para_byte = paragraph_byte_offsets[para_idx];
-                let local_char = byte_to_char(text, para_byte);
-                let synth_top = next_y_top;
-                out.push(RunCaretLine {
-                    local_y_top: synth_top,
-                    local_y_bottom: synth_top + line_height,
+        if let Some(layout) = self.text_layout.as_ref() {
+            let effective = self.effective_text();
+            let mut lines: Vec<RunCaretLine> = layout
+                .visual_caret_lines(&effective)
+                .into_iter()
+                .map(|line| RunCaretLine {
+                    local_y_top: line.y_top,
+                    local_y_bottom: line.y_bottom,
+                    stops: line
+                        .stops
+                        .into_iter()
+                        .map(|stop| RunCaretStop {
+                            local_char: self.effective_char_to_plain_local_char(stop.char_index),
+                            local_x: stop.x,
+                            local_y_top: stop.y_top,
+                            height: stop.height,
+                        })
+                        .collect(),
+                })
+                .collect();
+            if self.has_trailing_newline {
+                let line_height = self.font_size.max(1.0) * self.line_height.max(0.8);
+                let trailing_local_char = self.char_range.end.saturating_sub(self.char_range.start);
+                if let Some(last_line) = lines.last_mut() {
+                    let tail_x = last_line
+                        .stops
+                        .last()
+                        .map(|stop| stop.local_x)
+                        .unwrap_or(0.0);
+                    last_line.stops.push(RunCaretStop {
+                        local_char: trailing_local_char,
+                        local_x: tail_x,
+                        local_y_top: last_line.local_y_top,
+                        height: line_height,
+                    });
+                }
+                let y_top = lines.last().map(|line| line.local_y_bottom).unwrap_or(0.0);
+                lines.push(RunCaretLine {
+                    local_y_top: y_top,
+                    local_y_bottom: y_top + line_height,
                     stops: vec![RunCaretStop {
-                        local_char,
+                        local_char: trailing_local_char,
                         local_x: 0.0,
-                        local_y_top: synth_top,
+                        local_y_top: y_top,
                         height: line_height,
                     }],
                 });
-                next_y_top = synth_top + line_height;
-            } else {
-                for line in bucket {
-                    next_y_top = line.local_y_bottom;
-                    out.push(line);
+            }
+            return lines;
+        }
+
+        let line_height = self.font_size.max(1.0) * self.line_height.max(0.8);
+        vec![RunCaretLine {
+            local_y_top: 0.0,
+            local_y_bottom: line_height,
+            stops: vec![RunCaretStop {
+                local_char: 0,
+                local_x: 0.0,
+                local_y_top: 0.0,
+                height: line_height,
+            }],
+        }]
+    }
+
+    fn effective_char_to_plain_local_char(&self, effective_char: usize) -> usize {
+        match &self.inline_preedit {
+            Some(preedit) => {
+                let preedit_len = preedit.preedit_text.chars().count();
+                let insert_at = preedit.insert_at_local;
+                if effective_char <= insert_at {
+                    effective_char
+                } else if effective_char <= insert_at + preedit_len {
+                    insert_at
+                } else {
+                    effective_char - preedit_len
                 }
             }
+            None => effective_char,
         }
-        out
     }
 }
 
@@ -677,13 +515,6 @@ pub struct RunCaretLine {
     pub stops: Vec<RunCaretStop>,
 }
 
-fn byte_to_char(text: &str, byte: usize) -> usize {
-    let byte = byte.min(text.len());
-    text.get(..byte)
-        .map(|s| s.chars().count())
-        .unwrap_or_else(|| text.char_indices().take_while(|(b, _)| *b < byte).count())
-}
-
 impl Layoutable for TextAreaTextRun {
     fn measure_inline(
         &mut self,
@@ -693,7 +524,7 @@ impl Layoutable for TextAreaTextRun {
         let layout_clean = !self.dirty_flags.intersects(DirtyFlags::LAYOUT);
         if layout_clean
             && self.last_inline_measure_context == Some(context)
-            && self.glyph_buffer.is_some()
+            && self.text_layout.is_some()
         {
             return;
         }
@@ -701,7 +532,7 @@ impl Layoutable for TextAreaTextRun {
         // Shape budget = container's full inner width, not the line's
         // *remaining* width. Otherwise a Run that can't fit in the
         // remaining slot would shape narrow and produce ugly wraps; with
-        // `full_available_width` cosmic-text wraps at the same width as if
+        // `full_available_width` the text engine wraps at the same width as if
         // the Run started on a fresh line, and the inline solver places
         // the Run on the next line if needed.
         let max_width = if self.auto_wrap {
@@ -710,16 +541,16 @@ impl Layoutable for TextAreaTextRun {
             None
         };
         let (width, height) = if self.text.is_empty() && self.inline_preedit.is_none() {
-            // Empty paragraph: skip cosmic shaping (which would substitute a
+            // Empty paragraph: skip shaping (which would substitute a
             // space and report a visible glyph width). The Run still claims
             // a `line_height`-tall slot so the inline solver gives it a
             // proper blank line.
-            self.glyph_buffer = None;
+            self.text_layout = None;
             (0.0_f32, self.font_size.max(1.0) * self.line_height)
         } else {
-            let buffer = self.shape_to_buffer(max_width);
-            let (w, h) = measure_buffer_size(&buffer);
-            self.glyph_buffer = Some(Arc::new(buffer));
+            let layout = self.build_run_text_layout(max_width);
+            let (w, h) = layout.measure_size();
+            self.text_layout = Some(layout);
             (w, h)
         };
         self.last_inline_measure_context = Some(context);
@@ -743,7 +574,7 @@ impl Layoutable for TextAreaTextRun {
         constraints: LayoutConstraints,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
-        // Block-level measurement falls back to inline shape with the
+        // Block-level measurement falls back to inline layout with the
         // available width as the wrap budget.
         self.measure_inline(
             InlineMeasureContext {
@@ -789,22 +620,54 @@ impl Layoutable for TextAreaTextRun {
         placement: InlinePlacement,
         _arena: &mut crate::view::node_arena::NodeArena,
     ) {
-        if placement.node_index != 0 {
-            return; // single-fragment run; ignore extra slots.
-        }
+        let fragments = self.inline_line_nodes();
+        let Some(fragment) = fragments.get(placement.node_index).copied() else {
+            return;
+        };
         let x = placement.x;
         let y = placement.y;
-        self.layout_state.layout_position = Position { x, y };
+        if placement.node_index == 0 {
+            self.inline_paint_fragments.clear();
+            self.layout_state.layout_position = Position { x, y };
+            self.layout_state.layout_size = Size {
+                width: 0.0,
+                height: 0.0,
+            };
+            self.layout_state.should_render = false;
+        }
+        let left = x;
+        let top = y;
+        let right = x + fragment.width.max(0.0);
+        let bottom = y + fragment.height.max(0.0);
+        if self.layout_state.should_render {
+            let current_right =
+                self.layout_state.layout_position.x + self.layout_state.layout_size.width;
+            let current_bottom =
+                self.layout_state.layout_position.y + self.layout_state.layout_size.height;
+            self.layout_state.layout_position.x = self.layout_state.layout_position.x.min(left);
+            self.layout_state.layout_position.y = self.layout_state.layout_position.y.min(top);
+            self.layout_state.layout_size.width =
+                current_right.max(right) - self.layout_state.layout_position.x;
+            self.layout_state.layout_size.height =
+                current_bottom.max(bottom) - self.layout_state.layout_position.y;
+        } else {
+            self.layout_state.layout_position = Position { x: left, y: top };
+            self.layout_state.layout_size = Size {
+                width: (right - left).max(0.0),
+                height: (bottom - top).max(0.0),
+            };
+        }
+        self.layout_state.should_render =
+            self.layout_state.layout_size.width > 0.0 && self.layout_state.layout_size.height > 0.0;
         self.layout_state.layout_inner_position = Position { x, y };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.layout_state.layout_flow_position = self.layout_state.layout_position;
         self.layout_state.layout_flow_inner_position = self.layout_state.layout_inner_position;
-        self.inline_paint_fragments.clear();
         self.inline_paint_fragments.push(Rect {
             x,
             y,
-            width: self.layout_state.layout_size.width,
-            height: self.layout_state.layout_size.height,
+            width: fragment.width.max(0.0),
+            height: fragment.height.max(0.0),
         });
         self.dirty_flags = self.dirty_flags.without(
             DirtyFlags::PLACE
@@ -832,38 +695,7 @@ impl Layoutable for TextAreaTextRun {
         &self,
         _arena: &crate::view::node_arena::NodeArena,
     ) -> Vec<InlineNodeSize> {
-        // Single fragment per Run. Trailing `\n` is signaled via
-        // `force_break_after` so the inline solver wraps the next sibling
-        // even when its `solver_wrap` (soft overflow wrap) is off.
-        // Baseline: per `docs/design/inline-baseline.md` D1, atomic
-        // multi-visual-line runs report the first visual line baseline.
-        // Empty paragraph (no shaped buffer) falls back to a synthesized
-        // baseline using the line-height / font-size leading split, so
-        // blank lines still align to surrounding text.
-        let baseline = if let Some(buffer) = self.glyph_buffer.as_ref() {
-            buffer
-                .layout_runs()
-                .next()
-                .map(|run| (run.line_y - run.line_top).max(0.0))
-                .unwrap_or(0.0)
-        } else {
-            let font_size = self.font_size.max(1.0);
-            let line_height = font_size * self.line_height.max(0.8);
-            // Approximate font ascent at ~0.8 of em (cosmic-text reports
-            // ~0.78–0.83 for typical fonts); empty paragraphs only need a
-            // reasonable baseline so the empty line shares a vertical
-            // anchor with adjacent text runs.
-            let approx_ascent = font_size * 0.8;
-            let leading = (line_height - font_size).max(0.0);
-            (approx_ascent + leading / 2.0).max(0.0)
-        };
-        vec![InlineNodeSize {
-            width: self.layout_state.layout_size.width,
-            height: self.layout_state.layout_size.height,
-            baseline,
-            vertical_align: self.vertical_align,
-            force_break_after: self.has_trailing_newline,
-        }]
+        self.inline_line_nodes()
     }
 
     fn inline_relative_position(&self) -> (f32, f32) {
@@ -884,22 +716,26 @@ impl Renderable for TextAreaTextRun {
         if self.text.is_empty() && self.inline_preedit.is_none() {
             return ctx.into_state();
         }
-        let Some(buffer) = self.glyph_buffer.as_ref().cloned() else {
+        if self.text_layout.is_none() {
             return ctx.into_state();
-        };
+        }
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
+        let [x, y] = ctx.paint_point(
+            self.layout_state.layout_position.x,
+            self.layout_state.layout_position.y,
+        );
 
         let fragment = TextPassFragment {
             content: self.effective_text(),
-            x: self.layout_state.layout_position.x,
-            y: self.layout_state.layout_position.y,
+            x,
+            y,
             width: self.layout_state.layout_size.width.max(1.0),
             height: self.layout_state.layout_size.height.max(1.0),
             color: self.color.to_rgba_f32(),
             opacity: 1.0,
-            layout_buffer: Some(buffer),
+            text_layout: self.text_layout.clone(),
         };
         let pass = TextPass::new(
             TextPassParams::single_fragment(
@@ -908,7 +744,6 @@ impl Renderable for TextAreaTextRun {
                 self.line_height,
                 self.font_weight,
                 self.font_families.clone(),
-                Align::Left,
                 self.auto_wrap,
                 None,
                 None,
@@ -1040,27 +875,6 @@ impl ElementTrait for TextAreaTextRun {
     }
 }
 
-/// Translate a global byte offset within `text` to
-/// `(paragraph_line_i, line_local_byte)` — matching the indexing used by
-/// cosmic-text's `BufferLine` / `LayoutGlyph`. Paragraphs are split by
-/// `\n`; the newline byte itself is treated as the end of the preceding
-/// paragraph (target_byte == newline_byte → end of paragraph above).
-fn paragraph_line_and_offset(text: &str, target_byte: usize) -> (usize, usize) {
-    let target = target_byte.min(text.len());
-    let mut line_i = 0usize;
-    let mut line_start = 0usize;
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i < target {
-        if bytes[i] == b'\n' {
-            line_i += 1;
-            line_start = i + 1;
-        }
-        i += 1;
-    }
-    (line_i, target - line_start)
-}
-
 /// Round `byte_index` down to the nearest valid UTF-8 char boundary in
 /// `value`. Caller protection for IME preedit cursor offsets that may
 /// land on a continuation byte.
@@ -1070,21 +884,4 @@ fn clamp_utf8_boundary(value: &str, mut byte_index: usize) -> usize {
         byte_index -= 1;
     }
     byte_index
-}
-
-/// Global byte offset where paragraph `line_i` starts within `text`.
-fn paragraph_start_byte(text: &str, line_i: usize) -> usize {
-    if line_i == 0 {
-        return 0;
-    }
-    let mut count = 0usize;
-    for (byte, ch) in text.char_indices() {
-        if ch == '\n' {
-            count += 1;
-            if count == line_i {
-                return byte + 1;
-            }
-        }
-    }
-    text.len()
 }

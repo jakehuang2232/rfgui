@@ -267,7 +267,11 @@ impl ElementTrait for TextArea {
             parent_id: self.parent_id,
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
-            width: self.layout_state.layout_size.width,
+            width: self
+                .layout_state
+                .layout_size
+                .width
+                .max(self.viewport_size.width),
             height: self.layout_state.layout_size.height,
             border_radius: 0.0,
             should_render: self.layout_state.should_render,

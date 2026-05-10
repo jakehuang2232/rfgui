@@ -25,9 +25,9 @@ use crate::ui::{RsxNode, RsxNodeIdentity};
 use crate::view::base_component::{ElementTrait, TextAreaRenderProjection, TextAreaRenderString};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
-use super::TextArea;
 use super::ime_context::TextAreaImeContext;
 use super::run::{InlinePreedit, TextAreaTextRun};
+use super::{TextArea, TextAreaProjectionSegment};
 
 /// P6 reconcile metadata, one per `TextArea.children[i]`. Parallel to
 /// `child_char_ranges`. `Run` is the plain-text path (no user state to
@@ -341,15 +341,21 @@ impl TextArea {
 
                     let final_key = match reused_key {
                         Some((existing_key, last_node)) => {
-                            let result = super::reconcile::reconcile_existing_subtree(
-                                arena,
-                                existing_key,
-                                &last_node,
-                                &final_node,
-                                &apply_ctx,
-                                &inherited_style,
-                                &scope,
-                            );
+                            let reconcile_anchor =
+                                self.projection_reconcile_anchor(arena, existing_key);
+                            let result = reconcile_anchor
+                                .ok_or("projection slot wrapper mismatch")
+                                .and_then(|anchor| {
+                                    super::reconcile::reconcile_existing_subtree(
+                                        arena,
+                                        anchor,
+                                        &last_node,
+                                        &final_node,
+                                        &apply_ctx,
+                                        &inherited_style,
+                                        &scope,
+                                    )
+                                });
                             match result {
                                 Ok(()) => Some(existing_key),
                                 Err(_) => {
@@ -358,6 +364,7 @@ impl TextArea {
                                         arena,
                                         self_key,
                                         segment_index,
+                                        range.clone(),
                                         &final_node,
                                         viewport_width,
                                         viewport_height,
@@ -369,6 +376,7 @@ impl TextArea {
                             arena,
                             self_key,
                             segment_index,
+                            range.clone(),
                             &final_node,
                             viewport_width,
                             viewport_height,
@@ -551,13 +559,14 @@ impl TextArea {
         arena: &mut NodeArena,
         parent_key: NodeKey,
         segment_index: usize,
+        range: Range<usize>,
         node: &RsxNode,
         viewport_width: f32,
         viewport_height: f32,
     ) -> Option<NodeKey> {
         let scope = [self.stable_id(), 0x5445_5832, segment_index as u64];
         let inherited_style = self.projection_inherited_style();
-        let mut children = match descriptors_unwrap_providers(
+        let children = match descriptors_unwrap_providers(
             node,
             &scope,
             &inherited_style,
@@ -570,16 +579,29 @@ impl TextArea {
         if children.is_empty() {
             return None;
         }
-        let desc = if children.len() == 1 {
-            children.remove(0)
-        } else {
-            wrap_projection_children(self.stable_id(), segment_index, children)
-        };
+        let desc = wrap_projection_children(self.stable_id(), segment_index, range, children);
         Some(crate::view::renderer_adapter::commit_descriptor_tree(
             arena,
             Some(parent_key),
             desc,
         ))
+    }
+
+    fn projection_reconcile_anchor(
+        &self,
+        arena: &NodeArena,
+        projection_key: NodeKey,
+    ) -> Option<NodeKey> {
+        let is_segment = arena
+            .with_element_taken_ref(projection_key, |el, _| {
+                el.as_any().is::<TextAreaProjectionSegment>()
+            })
+            .unwrap_or(false);
+        if !is_segment {
+            return None;
+        }
+        let children = arena.children_of(projection_key);
+        (children.len() == 1).then_some(children[0])
     }
 
     /// Inherited style cascaded into projection child subtrees: font /
@@ -888,24 +910,14 @@ fn descriptors_unwrap_providers(
 fn wrap_projection_children(
     text_area_stable_id: u64,
     segment_index: usize,
+    range: Range<usize>,
     children: Vec<crate::view::renderer_adapter::ElementDescriptor>,
 ) -> crate::view::renderer_adapter::ElementDescriptor {
-    use crate::style::{Layout, ParsedValue, PropertyId, Style};
-    use crate::view::base_component::Element;
-
     let wrapper_id = text_area_stable_id
         .wrapping_mul(1_000_003)
         .wrapping_add(segment_index as u64 + 1);
-    let mut wrapper = Element::new_with_id(wrapper_id, 0.0, 0.0, 0.0, 0.0);
-    wrapper.set_intrinsic_size_as_percent_base(false);
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Layout,
-        ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
-    );
-    style.insert(PropertyId::Width, ParsedValue::Auto);
-    style.insert(PropertyId::Height, ParsedValue::Auto);
-    wrapper.apply_style(style);
+    let mut wrapper = TextAreaProjectionSegment::with_stable_id(wrapper_id);
+    wrapper.set_char_range(range);
 
     crate::view::renderer_adapter::ElementDescriptor {
         element: Box::new(wrapper) as Box<dyn ElementTrait>,
@@ -928,8 +940,9 @@ mod tests {
     use crate::style::Length;
     use crate::ui::{RsxKey, RsxNode, RsxTagDescriptor};
     use crate::view::ElementStylePropSchema;
+    use crate::view::base_component::text_area::TextAreaProjectionSegment;
     use crate::view::base_component::{
-        DirtyFlags, Element, ElementTrait, LayoutConstraints, LayoutPlacement, Text, TextArea,
+        DirtyFlags, ElementTrait, LayoutConstraints, LayoutPlacement, Text, TextArea,
     };
     use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -1023,16 +1036,18 @@ mod tests {
         );
 
         let projection_key = children[1];
-        let is_element = arena
-            .with_element_taken_ref(projection_key, |el, _| el.as_any().is::<Element>())
+        let is_segment = arena
+            .with_element_taken_ref(projection_key, |el, _| {
+                el.as_any().is::<TextAreaProjectionSegment>()
+            })
             .unwrap_or(false);
         assert!(
-            is_element,
-            "projection slot should hold an Element (the projection root)",
+            is_segment,
+            "projection slot should hold a TextAreaProjectionSegment wrapper",
         );
         assert!(
             !arena.children_of(projection_key).is_empty(),
-            "projection Element should have its descriptor children committed",
+            "projection segment should have its descriptor children committed",
         );
 
         let text_key = first_text_descendant(&arena, projection_key);

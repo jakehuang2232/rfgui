@@ -76,6 +76,15 @@ impl Element {
             return self.build_transformed_subtree(graph, arena, ctx, force_self_opaque);
         }
 
+        let parent_paint_offset = ctx.paint_offset();
+        let [paint_offset_x, paint_offset_y] = parent_paint_offset;
+        let paint_x = self.layout_state.layout_position.x + paint_offset_x;
+        let paint_y = self.layout_state.layout_position.y + paint_offset_y;
+        ctx.translate_paint_offset(
+            round_layout_value(paint_x) - paint_x,
+            round_layout_value(paint_y) - paint_y,
+        );
+
         let previous_scissor_rect = self.apply_self_clip_scissor(&mut ctx);
 
         let outer_radii = normalize_corner_radii(
@@ -201,6 +210,7 @@ impl Element {
         if let Some(previous) = previous_scissor_rect {
             ctx.restore_scissor_rect(previous);
         }
+        ctx.set_paint_offset(parent_paint_offset);
         ctx.into_state()
     }
 
@@ -383,7 +393,10 @@ impl Element {
         );
         let mut fill_pass = DrawRectPass::new(
             RectPassParams {
-                position: [self.layout_state.layout_position.x, self.layout_state.layout_position.y],
+                position: ctx.paint_point(
+                    self.layout_state.layout_position.x,
+                    self.layout_state.layout_position.y,
+                ),
                 size: [self.layout_state.layout_size.width, self.layout_state.layout_size.height],
                 fill_color,
                 opacity,
@@ -404,7 +417,10 @@ impl Element {
 
         let mut border_pass = DrawRectPass::new(
             RectPassParams {
-                position: [self.layout_state.layout_position.x, self.layout_state.layout_position.y],
+                position: ctx.paint_point(
+                    self.layout_state.layout_position.x,
+                    self.layout_state.layout_position.y,
+                ),
                 size: [self.layout_state.layout_size.width, self.layout_state.layout_size.height],
                 fill_color: [0.0, 0.0, 0.0, 0.0],
                 opacity,
@@ -448,7 +464,7 @@ impl Element {
 
             let mut fill_pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [fragment.x, fragment.y],
+                    position: ctx.paint_point(fragment.x, fragment.y),
                     size: [fragment.width, fragment.height],
                     fill_color,
                     opacity,
@@ -468,7 +484,7 @@ impl Element {
 
             let mut border_pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [fragment.x, fragment.y],
+                    position: ctx.paint_point(fragment.x, fragment.y),
                     size: [fragment.width, fragment.height],
                     fill_color: [0.0, 0.0, 0.0, 0.0],
                     opacity,
