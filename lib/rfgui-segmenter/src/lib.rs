@@ -1,18 +1,15 @@
-//! Cross-platform word segmentation for rfgui.
+//! Cross-platform text segmentation for rfgui.
 //!
-//! Provides a `WordSegmenter` trait returning ascending **char-index**
-//! boundaries for a string. Boundaries always include `0` and the total
-//! char length; intermediate entries mark token edges.
+//! Provides explicit char-index APIs for rfgui's editor/navigation code
+//! and byte-index APIs for text engines such as Parley. Boundaries always
+//! include `0` and the input length in the matching index space.
 //!
 //! Backends:
 //! - macOS — `CFStringTokenizer` (system, includes CJK / Thai / Khmer /
 //!   Burmese dictionaries).
 //! - Windows — `Windows.Data.Text.WordsSegmenter` (system, ICU-backed).
 //! - Web (wasm32) — `Intl.Segmenter` (browser, ICU-backed; full CJK).
-//! - Other (Linux / fallback) — UAX#29 via `unicode-segmentation`. CJK
-//!   quality is poor (per-char boundaries) — host can swap in a richer
-//!   impl by implementing `WordSegmenter` and injecting it where the
-//!   segmenter is consumed.
+//! - Other (Linux / fallback) — Unicode rule based segmentation.
 //!
 //! `system_segmenter()` returns the best impl available at compile time.
 
@@ -27,19 +24,61 @@ pub mod windows;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 
-/// Word segmentation interface. Boundaries are **char indices** into the
-/// input `text`, ascending, with `0` and `text.chars().count()` always
-/// present. Whitespace-only spans are still reported as their own
-/// segment — callers that want word-only navigation must filter.
+/// Word segmentation interface.
 pub trait WordSegmenter: Send + Sync {
-    fn boundaries(&self, text: &str) -> Vec<usize>;
+    /// Boundaries as char indices into `text`.
+    fn word_boundaries_char_indices(&self, text: &str) -> Vec<usize> {
+        byte_indices_to_char_indices(text, self.word_boundaries_byte_indices(text))
+    }
+
+    /// Boundaries as byte indices into `text`.
+    fn word_boundaries_byte_indices(&self, text: &str) -> Vec<usize> {
+        char_indices_to_byte_indices(text, self.word_boundaries_char_indices(text))
+    }
 }
 
+/// Line-break opportunity segmentation interface.
+pub trait LineSegmenter: Send + Sync {
+    /// Boundaries as char indices into `text`.
+    fn line_boundaries_char_indices(&self, text: &str) -> Vec<usize> {
+        byte_indices_to_char_indices(text, self.line_boundaries_byte_indices(text))
+    }
+
+    /// Boundaries as byte indices into `text`.
+    fn line_boundaries_byte_indices(&self, text: &str) -> Vec<usize> {
+        char_indices_to_byte_indices(text, self.line_boundaries_char_indices(text))
+    }
+}
+
+/// Grapheme cluster segmentation interface.
+pub trait GraphemeSegmenter: Send + Sync {
+    /// Boundaries as char indices into `text`.
+    fn grapheme_boundaries_char_indices(&self, text: &str) -> Vec<usize> {
+        byte_indices_to_char_indices(text, self.grapheme_boundaries_byte_indices(text))
+    }
+
+    /// Boundaries as byte indices into `text`.
+    fn grapheme_boundaries_byte_indices(&self, text: &str) -> Vec<usize> {
+        char_indices_to_byte_indices(text, self.grapheme_boundaries_char_indices(text))
+    }
+}
+
+/// Full text segmenter used by platform backends.
+pub trait TextSegmenter: WordSegmenter + LineSegmenter + GraphemeSegmenter {}
+
+impl<T> TextSegmenter for T where T: WordSegmenter + LineSegmenter + GraphemeSegmenter {}
+
+/// Default cross-platform segmenter type for non-specialized callers.
+pub type Segmenter = dyn TextSegmenter;
+
+/// Backward-compatible alias for code that still imports `SystemSegmenter`.
+pub type SystemSegmenter = dyn TextSegmenter;
+
 /// Construct the best segmenter available on the current target.
-pub fn system_segmenter() -> Box<dyn WordSegmenter> {
+pub fn system_segmenter() -> Box<dyn TextSegmenter> {
     #[cfg(target_arch = "wasm32")]
     {
-        return Box::new(web::IntlWordSegmenter::new());
+        return Box::new(web::IntlSegmenter::new());
     }
     #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     {
@@ -47,11 +86,11 @@ pub fn system_segmenter() -> Box<dyn WordSegmenter> {
     }
     #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
     {
-        return Box::new(windows::WindowsWordsSegmenter::new());
+        return Box::new(windows::WindowsTextSegmenter::new());
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "windows")))]
     {
-        Box::new(fallback::Uax29Segmenter::new())
+        Box::new(fallback::UnicodeSegmenter::new())
     }
 }
 
@@ -76,10 +115,54 @@ pub(crate) fn build_utf16_to_char_map(text: &str) -> Vec<usize> {
     map
 }
 
+/// Byte-index lookup table for UTF-16 code-unit offsets.
+#[allow(dead_code)] // not all cfgs reach this code path
+pub(crate) fn build_utf16_to_byte_map(text: &str) -> Vec<usize> {
+    let mut map = Vec::new();
+    for (byte_idx, c) in text.char_indices() {
+        for _ in 0..c.len_utf16() {
+            map.push(byte_idx);
+        }
+    }
+    map.push(text.len());
+    map
+}
+
+/// Convert sorted char indices to byte indices.
+pub fn char_indices_to_byte_indices(text: &str, char_indices: Vec<usize>) -> Vec<usize> {
+    let mut char_to_byte: Vec<usize> = text.char_indices().map(|(byte_idx, _)| byte_idx).collect();
+    char_to_byte.push(text.len());
+    char_indices
+        .into_iter()
+        .filter_map(|idx| char_to_byte.get(idx).copied())
+        .collect()
+}
+
+/// Convert sorted byte indices to char indices.
+pub fn byte_indices_to_char_indices(text: &str, byte_indices: Vec<usize>) -> Vec<usize> {
+    let mut out = Vec::with_capacity(byte_indices.len());
+    let mut chars = text.char_indices().enumerate().peekable();
+    let total_chars = text.chars().count();
+    for byte_idx in byte_indices {
+        if byte_idx == text.len() {
+            out.push(total_chars);
+            continue;
+        }
+        while let Some(&(char_idx, (current_byte, _))) = chars.peek() {
+            if current_byte >= byte_idx {
+                out.push(char_idx);
+                break;
+            }
+            let _ = chars.next();
+        }
+    }
+    out
+}
+
 /// Pull `(start, end)` pairs for **word** segments only, dropping
 /// whitespace-only segments. Both indices are char indices into `text`.
 fn word_segments(text: &str, seg: &dyn WordSegmenter) -> Vec<(usize, usize)> {
-    let bs = seg.boundaries(text);
+    let bs = seg.word_boundaries_char_indices(text);
     if bs.len() < 2 {
         return Vec::new();
     }

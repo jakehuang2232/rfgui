@@ -1,0 +1,13 @@
+[package]
+name = "icu_segmenter"
+version = "2.2.0"
+edition = "2024"
+description = "rfgui system segmenter compatibility shim for Parley"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+compiled_data = []
+
+[dependencies]
+rfgui-segmenter = { path = "../../lib/rfgui-segmenter" }
