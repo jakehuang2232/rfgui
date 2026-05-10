@@ -1,73 +1,16 @@
-//! Host-injectable word segmenter for caret word-jump (Option/Alt+Arrow,
-//! double-click word selection, …). Engine core stays platform-clean —
-//! the OS-native dictionary segmentation lives in the separate
-//! `rfgui-segmenter` crate, which the host bridges into rfgui via
-//! [`install_word_segmenter`].
+//! Process-wide text segmenter used by caret word navigation.
 //!
-//! When no host segmenter is installed, [`DefaultWordSegmenter`] falls
-//! back to alphanumeric/underscore runs. CJK then degrades to per-char
-//! navigation; install `rfgui-segmenter::system_segmenter()` from the
-//! host to get OS dictionary support.
+//! The implementation comes directly from `rfgui-segmenter`, so native
+//! and web runners do not need a host-side adapter or install step.
 
 use once_cell::sync::OnceCell;
+pub use rfgui_segmenter::{GraphemeSegmenter, LineSegmenter, TextSegmenter, WordSegmenter};
 
-/// Word segmentation interface. Boundaries are **char indices** into
-/// `text`, ascending, with `0` and `text.chars().count()` always
-/// present. Whitespace/punctuation segments are still reported —
-/// callers that want word-only navigation must filter via
-/// [`prev_word_boundary`] / [`next_word_boundary`].
-pub trait WordSegmenter: Send + Sync {
-    fn boundaries(&self, text: &str) -> Vec<usize>;
-}
+static SYSTEM: OnceCell<Box<dyn TextSegmenter>> = OnceCell::new();
 
-/// Engine fallback. Treats alphanumeric (incl. CJK Unified Ideographs)
-/// + underscore as word chars, everything else as separators. CJK
-/// scripts that need dictionary segmentation should install a richer
-/// impl via [`install_word_segmenter`].
-pub struct DefaultWordSegmenter;
-
-impl WordSegmenter for DefaultWordSegmenter {
-    fn boundaries(&self, text: &str) -> Vec<usize> {
-        let chars: Vec<char> = text.chars().collect();
-        let mut out = vec![0usize];
-        if chars.is_empty() {
-            return out;
-        }
-        let mut prev = is_word_char(chars[0]);
-        for (i, c) in chars.iter().enumerate().skip(1) {
-            let cur = is_word_char(*c);
-            if cur != prev {
-                out.push(i);
-                prev = cur;
-            }
-        }
-        out.push(chars.len());
-        out
-    }
-}
-
-#[inline]
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-static INSTALLED: OnceCell<Box<dyn WordSegmenter>> = OnceCell::new();
-static FALLBACK: DefaultWordSegmenter = DefaultWordSegmenter;
-
-/// Install the process-wide segmenter. Idempotent on first success;
-/// subsequent calls return `Err(seg)` so the caller can drop or retry.
-/// Hosts call this once at startup.
-pub fn install_word_segmenter(seg: Box<dyn WordSegmenter>) -> Result<(), Box<dyn WordSegmenter>> {
-    INSTALLED.set(seg)
-}
-
-/// Active segmenter — installed one if present, else
-/// [`DefaultWordSegmenter`].
-pub fn word_segmenter() -> &'static dyn WordSegmenter {
-    match INSTALLED.get() {
-        Some(b) => &**b,
-        None => &FALLBACK,
-    }
+/// Active system segmenter.
+pub fn word_segmenter() -> &'static dyn TextSegmenter {
+    &**SYSTEM.get_or_init(rfgui_segmenter::system_segmenter)
 }
 
 /// macOS Option+Left target: nearest non-whitespace word **start**
@@ -96,7 +39,7 @@ pub fn next_word_boundary(text: &str, seg: &dyn WordSegmenter, from: usize) -> u
 }
 
 fn word_segments(text: &str, seg: &dyn WordSegmenter) -> Vec<(usize, usize)> {
-    let bs = seg.boundaries(text);
+    let bs = seg.word_boundaries_char_indices(text);
     if bs.len() < 2 {
         return Vec::new();
     }
@@ -119,17 +62,30 @@ fn word_segments(text: &str, seg: &dyn WordSegmenter) -> Vec<(usize, usize)> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn default_ascii_words() {
-        let s = DefaultWordSegmenter;
-        // "foo bar" -> [0, 3, 4, 7]
-        assert_eq!(s.boundaries("foo bar"), vec![0, 3, 4, 7]);
+    struct TestSegmenter;
+
+    impl WordSegmenter for TestSegmenter {
+        fn word_boundaries_char_indices(&self, text: &str) -> Vec<usize> {
+            let mut out = vec![0];
+            for (idx, ch) in text.chars().enumerate() {
+                if ch.is_whitespace() {
+                    out.push(idx);
+                    out.push(idx + 1);
+                }
+            }
+            let total = text.chars().count();
+            if out.last() != Some(&total) {
+                out.push(total);
+            }
+            out.sort_unstable();
+            out.dedup();
+            out
+        }
     }
 
     #[test]
     fn prev_next_skip_whitespace() {
-        let s = DefaultWordSegmenter;
-        // "  foo  bar  "
+        let s = TestSegmenter;
         assert_eq!(prev_word_boundary("  foo  bar  ", &s, 11), 7);
         assert_eq!(next_word_boundary("  foo  bar  ", &s, 0), 5);
         assert_eq!(next_word_boundary("  foo  bar  ", &s, 5), 10);

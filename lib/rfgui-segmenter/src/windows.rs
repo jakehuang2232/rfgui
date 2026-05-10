@@ -1,5 +1,5 @@
-//! Windows — `Windows.Data.Text.WordsSegmenter` (WinRT). ICU-backed,
-//! includes CJK / Thai dictionaries.
+//! Windows — `Windows.Data.Text.WordsSegmenter` (WinRT) for word
+//! segmentation. Line and grapheme boundaries use Unicode fallbacks.
 //!
 //! `WordSegment::SourceTextSegment` reports **UTF-16 code-unit** offsets
 //! into the original string; we translate to char indices for the trait
@@ -8,13 +8,17 @@
 use windows::Data::Text::WordsSegmenter;
 use windows::core::HSTRING;
 
-use crate::{WordSegmenter as WordSegmenterTrait, build_utf16_to_char_map};
+use crate::fallback::UnicodeSegmenter;
+use crate::{
+    GraphemeSegmenter, LineSegmenter, WordSegmenter as WordSegmenterTrait, build_utf16_to_byte_map,
+    build_utf16_to_char_map,
+};
 
-pub struct WindowsWordsSegmenter {
+pub struct WindowsTextSegmenter {
     inner: Option<WordsSegmenter>,
 }
 
-impl WindowsWordsSegmenter {
+impl WindowsTextSegmenter {
     pub fn new() -> Self {
         // Empty language → "undetermined" → WinRT picks a sensible
         // locale-neutral segmenter (still applies CJK dict for CJK text).
@@ -23,52 +27,96 @@ impl WindowsWordsSegmenter {
     }
 }
 
-impl Default for WindowsWordsSegmenter {
+impl Default for WindowsTextSegmenter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl WordSegmenterTrait for WindowsWordsSegmenter {
-    fn boundaries(&self, text: &str) -> Vec<usize> {
-        let total_chars = text.chars().count();
-        if total_chars == 0 {
-            return vec![0];
-        }
+/// Backward-compatible alias.
+pub type WindowsWordsSegmenter = WindowsTextSegmenter;
 
-        let Some(seg) = self.inner.as_ref() else {
-            return vec![0, total_chars];
-        };
-
-        let utf16_to_char = build_utf16_to_char_map(text);
-
-        let mut out = Vec::new();
-        out.push(0usize);
-
-        let hs = HSTRING::from(text);
-        let Ok(tokens) = seg.GetTokens(&hs) else {
-            return vec![0, total_chars];
-        };
-
-        let Ok(count) = tokens.Size() else {
-            return vec![0, total_chars];
-        };
-
-        for i in 0..count {
-            let Ok(token) = tokens.GetAt(i) else { continue };
-            let Ok(span) = token.SourceTextSegment() else {
-                continue;
-            };
-            let end_utf16 = (span.StartPosition + span.Length) as usize;
-            let end_char = utf16_to_char.get(end_utf16).copied().unwrap_or(total_chars);
-            if Some(&end_char) != out.last() {
-                out.push(end_char);
-            }
-        }
-
-        if out.last() != Some(&total_chars) {
-            out.push(total_chars);
-        }
-        out
+impl WordSegmenterTrait for WindowsTextSegmenter {
+    fn word_boundaries_char_indices(&self, text: &str) -> Vec<usize> {
+        windows_word_boundaries(
+            self.inner.as_ref(),
+            text,
+            &build_utf16_to_char_map(text),
+            text.chars().count(),
+        )
     }
+
+    fn word_boundaries_byte_indices(&self, text: &str) -> Vec<usize> {
+        windows_word_boundaries(
+            self.inner.as_ref(),
+            text,
+            &build_utf16_to_byte_map(text),
+            text.len(),
+        )
+    }
+}
+
+impl LineSegmenter for WindowsTextSegmenter {
+    fn line_boundaries_char_indices(&self, text: &str) -> Vec<usize> {
+        UnicodeSegmenter::new().line_boundaries_char_indices(text)
+    }
+
+    fn line_boundaries_byte_indices(&self, text: &str) -> Vec<usize> {
+        UnicodeSegmenter::new().line_boundaries_byte_indices(text)
+    }
+}
+
+impl GraphemeSegmenter for WindowsTextSegmenter {
+    fn grapheme_boundaries_char_indices(&self, text: &str) -> Vec<usize> {
+        UnicodeSegmenter::new().grapheme_boundaries_char_indices(text)
+    }
+
+    fn grapheme_boundaries_byte_indices(&self, text: &str) -> Vec<usize> {
+        UnicodeSegmenter::new().grapheme_boundaries_byte_indices(text)
+    }
+}
+
+fn windows_word_boundaries(
+    seg: Option<&WordsSegmenter>,
+    text: &str,
+    utf16_to_index: &[usize],
+    total: usize,
+) -> Vec<usize> {
+    let total_chars = text.chars().count();
+    if total_chars == 0 {
+        return vec![0];
+    }
+
+    let Some(seg) = seg else {
+        return vec![0, total];
+    };
+
+    let mut out = Vec::new();
+    out.push(0usize);
+
+    let hs = HSTRING::from(text);
+    let Ok(tokens) = seg.GetTokens(&hs) else {
+        return vec![0, total];
+    };
+
+    let Ok(count) = tokens.Size() else {
+        return vec![0, total];
+    };
+
+    for i in 0..count {
+        let Ok(token) = tokens.GetAt(i) else { continue };
+        let Ok(span) = token.SourceTextSegment() else {
+            continue;
+        };
+        let end_utf16 = (span.StartPosition + span.Length) as usize;
+        let end = utf16_to_index.get(end_utf16).copied().unwrap_or(total);
+        if Some(&end) != out.last() {
+            out.push(end);
+        }
+    }
+
+    if out.last() != Some(&total) {
+        out.push(total);
+    }
+    out
 }

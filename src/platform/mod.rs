@@ -34,7 +34,7 @@ pub use input::{
     PlatformTextInput, PlatformWheelEvent, PointerType, WheelDeltaMode, WheelPhase,
 };
 pub use word_segmenter::{
-    DefaultWordSegmenter, WordSegmenter, install_word_segmenter, next_word_boundary,
+    GraphemeSegmenter, LineSegmenter, TextSegmenter, WordSegmenter, next_word_boundary,
     prev_word_boundary, word_segmenter,
 };
 

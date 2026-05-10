@@ -11,4 +11,3 @@ pub mod winit_runner;
 pub mod web_runner;
 
 pub mod winit_key_map;
-pub mod word_segmenter_bridge;

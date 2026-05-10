@@ -22,6 +22,7 @@ once_cell = "1.21.3"
 image = { version = "0.25", default-features = false, features = ["default-formats"] }
 resvg = "0.45.1"
 rfgui-rsx = { version = "0.1.0-alpha.2", path = "rsx-macro" }
+rfgui-segmenter = { version = "0.1.0-alpha.1", path = "lib/rfgui-segmenter" }
 glam = "0.30.5"
 rustc-hash = "2"
 naga_oil = { version = "0.22", default-features = false }
@@ -45,6 +46,9 @@ web-sys = { version = "0.3.85", features = ["HtmlCanvasElement", "HtmlElement", 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26.1"
 objc = "0.2"
+
+[patch.crates-io]
+icu_segmenter = { path = "vendor/icu_segmenter_rfgui_shim" }
 
 [profile.dev]
 opt-level = 1
