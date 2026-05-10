@@ -11,11 +11,11 @@ use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use crate::view::text_layout::{TextGlyph, TextLayout};
 use parley::FontData as ParleyFontData;
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
 #[cfg(test)]
 use std::collections::hash_map::DefaultHasher;
 #[cfg(test)]
 use std::hash::{Hash, Hasher};
+use std::cell::RefCell;
 use std::sync::Arc;
 use swash::FontRef as SwashFontRef;
 use swash::scale::image::{Content as SwashRasterContent, Image as SwashRasterImage};
@@ -23,7 +23,6 @@ use swash::scale::{
     Render as SwashRender, ScaleContext as SwashScaleContext, Source, StrikeWith as SwashStrikeWith,
 };
 use swash::zeno::{Format as SwashFormat, Vector as SwashVector};
-use wgpu::util::DeviceExt;
 
 pub struct TextPass {
     params: TextPassParams,
@@ -190,12 +189,29 @@ struct PendingGlyphInstance {
     fragment_index: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TextRasterKey {
+    font_blob_id: u64,
+    font_index: u32,
+    glyph_id: u32,
+    font_size_bits: u32,
+    scale_factor_bits: u32,
+    normalized_coords_hash: u64,
+}
+
+struct CachedRasterImage {
+    image: SwashRasterImage,
+    last_used_frame: u64,
+}
+
 #[derive(Default)]
 struct TextResources {
     screen_layout: Option<wgpu::BindGroupLayout>,
     atlas_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
     pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
+    raster_cache: FxHashMap<TextRasterKey, CachedRasterImage>,
+    frame_epoch: u64,
     scale_context: SwashScaleContext,
 }
 
@@ -334,15 +350,27 @@ fn prepare_text_pass(
             continue;
         };
         let active_fragment_index = (fragments.len() - 1) as u32;
-        collect_fragment_glyphs(
-            layout,
-            origin,
-            fragment.color,
-            fragment.opacity,
-            active_fragment_index,
-            scale_factor,
-            &mut pending,
-        );
+        TEXT_RESOURCES.with(|slot| {
+            let mut resources = slot.borrow_mut();
+            let frame_epoch = resources.frame_epoch;
+            let TextResources {
+                scale_context,
+                raster_cache,
+                ..
+            } = &mut *resources;
+            collect_fragment_glyphs(
+                scale_context,
+                raster_cache,
+                frame_epoch,
+                layout,
+                origin,
+                fragment.color,
+                fragment.opacity,
+                active_fragment_index,
+                scale_factor,
+                &mut pending,
+            );
+        });
     }
 
     if fragments.is_empty() {
@@ -356,16 +384,22 @@ fn prepare_text_pass(
         ],
         _pad: [0.0, 0.0],
     };
-    let screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Text Screen Uniform Buffer"),
-        contents: bytemuck::bytes_of(&screen_uniform),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let fragment_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Text Fragment Storage Buffer"),
-        contents: bytemuck::cast_slice(&fragments),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
+    let screen_buffer = super::create_transient_buffer(
+        &device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Text Screen Uniform Buffer"),
+            contents: bytemuck::bytes_of(&screen_uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    );
+    let fragment_buffer = super::create_transient_buffer(
+        &device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Text Fragment Storage Buffer"),
+            contents: bytemuck::cast_slice(&fragments),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
 
     let (globals_bind_group, mask_draw, color_draw) = TEXT_RESOURCES.with(|slot| {
         let mut resources = slot.borrow_mut();
@@ -400,9 +434,7 @@ fn prepare_text_pass(
             &queue,
             &mut resources,
             AtlasKind::Color,
-            pending
-                .iter()
-                .filter(|glyph| glyph.kind == AtlasKind::Color),
+            pending.iter().filter(|glyph| glyph.kind == AtlasKind::Color),
         );
         resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Mask);
         resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Color);
@@ -428,6 +460,9 @@ fn prepare_text_pass(
 }
 
 fn collect_fragment_glyphs(
+    scale_context: &mut SwashScaleContext,
+    raster_cache: &mut FxHashMap<TextRasterKey, CachedRasterImage>,
+    frame_epoch: u64,
     layout: &TextLayout,
     fragment_origin: [f32; 2],
     color: [f32; 4],
@@ -436,44 +471,41 @@ fn collect_fragment_glyphs(
     scale_factor: f32,
     out: &mut Vec<PendingGlyphInstance>,
 ) {
-    TEXT_RESOURCES.with(|slot| {
-        let mut resources = slot.borrow_mut();
-        for line in layout.lines() {
-            let baseline_y = line.y + line.baseline;
-            for glyph in line.glyphs {
-                let Some(image) =
-                    rasterize_glyph(&mut resources.scale_context, &glyph, scale_factor)
-                else {
-                    continue;
-                };
-                let width = image.placement.width.max(1) as f32;
-                let height = image.placement.height.max(1) as f32;
-                if width <= 0.0 || height <= 0.0 || image.data.is_empty() {
-                    continue;
-                }
-                let kind = match image.content {
-                    SwashRasterContent::Color => AtlasKind::Color,
-                    SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => AtlasKind::Mask,
-                };
-                let local_pos = snap_text_local_pos(
-                    fragment_origin,
-                    [
-                        (line.x + glyph.x) * scale_factor + image.placement.left as f32,
-                        (baseline_y + glyph.y) * scale_factor - image.placement.top as f32,
-                    ],
-                );
-                out.push(PendingGlyphInstance {
-                    kind,
-                    local_pos,
-                    size: [width, height],
-                    image,
-                    color,
-                    opacity,
-                    fragment_index,
-                });
+    for line in layout.lines() {
+        let baseline_y = line.y + line.baseline;
+        for glyph in line.glyphs {
+            let Some(image) =
+                rasterize_glyph(scale_context, raster_cache, frame_epoch, &glyph, scale_factor)
+            else {
+                continue;
+            };
+            let width = image.placement.width.max(1) as f32;
+            let height = image.placement.height.max(1) as f32;
+            if width <= 0.0 || height <= 0.0 || image.data.is_empty() {
+                continue;
             }
+            let kind = match image.content {
+                SwashRasterContent::Color => AtlasKind::Color,
+                SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => AtlasKind::Mask,
+            };
+            let local_pos = snap_text_local_pos(
+                fragment_origin,
+                [
+                    (line.x + glyph.x) * scale_factor + image.placement.left as f32,
+                    (baseline_y + glyph.y) * scale_factor - image.placement.top as f32,
+                ],
+            );
+            out.push(PendingGlyphInstance {
+                kind,
+                local_pos,
+                size: [width, height],
+                image,
+                color,
+                opacity,
+                fragment_index,
+            });
         }
-    });
+    }
 }
 
 fn snap_text_local_pos(fragment_origin: [f32; 2], local_pos: [f32; 2]) -> [f32; 2] {
@@ -493,10 +525,25 @@ fn text_render_trunc(value: f32) -> f32 {
 
 fn rasterize_glyph(
     scale_context: &mut SwashScaleContext,
+    raster_cache: &mut FxHashMap<TextRasterKey, CachedRasterImage>,
+    frame_epoch: u64,
     glyph: &TextGlyph,
     scale_factor: f32,
 ) -> Option<SwashRasterImage> {
     let font_data = glyph.font_data.as_ref()?;
+    let key = TextRasterKey {
+        font_blob_id: font_data.data.id(),
+        font_index: font_data.index,
+        glyph_id: glyph.id,
+        font_size_bits: glyph.font_size.to_bits(),
+        scale_factor_bits: scale_factor.to_bits(),
+        normalized_coords_hash: glyph.normalized_coords_hash,
+    };
+    if let Some(entry) = raster_cache.get_mut(&key) {
+        entry.last_used_frame = frame_epoch;
+        return Some(entry.image.clone());
+    }
+
     let font_ref = swash_font_ref(font_data)?;
     let mut scaler = scale_context
         .builder(font_ref)
@@ -514,7 +561,17 @@ fn rasterize_glyph(
         .format(SwashFormat::Alpha)
         .offset(SwashVector::new(0.0, 0.0))
         .render_into(&mut scaler, glyph.id as u16, &mut image);
-    rendered.then_some(image)
+    if !rendered {
+        return None;
+    }
+    raster_cache.insert(
+        key,
+        CachedRasterImage {
+            image: image.clone(),
+            last_used_frame: frame_epoch,
+        },
+    );
+    Some(image)
 }
 
 fn swash_font_ref(font_data: &ParleyFontData) -> Option<SwashFontRef<'_>> {
@@ -589,11 +646,14 @@ fn build_prepared_draw<'a>(
             },
         ],
     });
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Text Glyph Instance Buffer"),
-        contents: bytemuck::cast_slice(atlas.instances.as_slice()),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
+    let vertex_buffer = super::create_transient_buffer(
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Text Glyph Instance Buffer"),
+            contents: bytemuck::cast_slice(atlas.instances.as_slice()),
+            usage: wgpu::BufferUsages::VERTEX,
+        },
+    );
     Some(PreparedTextDraw {
         vertex_buffer,
         instance_count: atlas.instances.len() as u32,
@@ -748,6 +808,33 @@ fn draw_prepared_text(
 }
 
 impl TextResources {
+    fn begin_frame(&mut self) {
+        self.frame_epoch = self.frame_epoch.wrapping_add(1);
+        self.evict_raster_cache();
+    }
+
+    fn evict_raster_cache(&mut self) {
+        const MAX_RASTER_CACHE_ENTRIES: usize = 4096;
+        const MAX_UNUSED_FRAMES: u64 = 180;
+        let frame_epoch = self.frame_epoch;
+        self.raster_cache.retain(|_, entry| {
+            frame_epoch.saturating_sub(entry.last_used_frame) <= MAX_UNUSED_FRAMES
+        });
+        if self.raster_cache.len() <= MAX_RASTER_CACHE_ENTRIES {
+            return;
+        }
+        let mut entries = self
+            .raster_cache
+            .iter()
+            .map(|(key, entry)| (*key, entry.last_used_frame))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(_, last_used)| *last_used);
+        let remove_count = self.raster_cache.len() - MAX_RASTER_CACHE_ENTRIES;
+        for (key, _) in entries.into_iter().take(remove_count) {
+            self.raster_cache.remove(&key);
+        }
+    }
+
     fn ensure_common(&mut self, device: &wgpu::Device) {
         if self.screen_layout.is_none() {
             self.screen_layout = Some(device.create_bind_group_layout(
@@ -895,6 +982,7 @@ impl TextResources {
 
     fn destroy(&mut self) {
         self.pipelines.clear();
+        self.raster_cache.clear();
         self.screen_layout = None;
         self.atlas_layout = None;
         self.sampler = None;
@@ -978,7 +1066,9 @@ pub fn clear_text_resources_cache() {
     TEXT_RESOURCES.with(|slot| slot.borrow_mut().destroy());
 }
 
-pub fn begin_text_resources_frame() {}
+pub fn begin_text_resources_frame() {
+    TEXT_RESOURCES.with(|slot| slot.borrow_mut().begin_frame());
+}
 
 #[cfg(test)]
 fn signature_for_params(params: &TextPassParams) -> u64 {

@@ -1,7 +1,7 @@
 use parley::{
     Affinity, Alignment as ParleyAlignment, AlignmentOptions, Cursor as ParleyCursor, FontData,
-    FontFamily, FontFamilyName, FontWeight, GenericFamily, Layout as ParleyLayout, LineHeight,
-    OverflowWrap, StyleProperty, TextWrapMode, YieldData,
+    FontFamily, FontFamilyName, FontWeight, Layout as ParleyLayout, LineHeight, OverflowWrap,
+    StyleProperty, TextWrapMode, YieldData,
 };
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
@@ -601,6 +601,7 @@ fn parley_font_family(font_families: &[String]) -> FontFamily<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parley::GenericFamily;
 
     fn test_layout(content: &str, width: Option<f32>) -> TextLayout {
         build_text_layout(

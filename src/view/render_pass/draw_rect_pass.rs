@@ -1126,6 +1126,13 @@ pub(crate) struct DrawRectResources {
     shape: RectShaderShape,
 }
 
+impl Drop for DrawRectResources {
+    fn drop(&mut self) {
+        self.vertex_buffer.destroy();
+        self.index_buffer.destroy();
+    }
+}
+
 fn create_draw_rect_resources(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,

@@ -1,9 +1,19 @@
 use crate::view::ImageSource;
+#[cfg(target_arch = "wasm32")]
+use js_sys::Uint8Array;
 use rustc_hash::FxHashMap;
 use std::hash::{Hash, Hasher};
-use std::path::{Component, Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Component;
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 #[derive(Clone, Debug)]
 pub struct ReadyImage {
@@ -96,6 +106,7 @@ pub fn take_image_redraw_dirty() -> bool {
     redraw_dirty_flag().swap(false, Ordering::AcqRel)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn absolute_normalized_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -119,6 +130,7 @@ fn absolute_normalized_path(path: &Path) -> PathBuf {
     normalized
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn normalized_path_key(path: &Path) -> (u64, Arc<str>) {
     let normalized = absolute_normalized_path(path);
     let normalized_string = normalized.to_string_lossy().into_owned();
@@ -126,6 +138,23 @@ fn normalized_path_key(path: &Path) -> (u64, Arc<str>) {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     normalized_path.hash(&mut hasher);
     (hasher.finish(), normalized_path)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn path_source_key(path: &Path) -> (u64, Arc<str>) {
+    normalized_path_key(path)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn path_source_key(path: &Path) -> (u64, Arc<str>) {
+    let mut url = path.to_string_lossy().replace('\\', "/");
+    while let Some(stripped) = url.strip_prefix("./") {
+        url = stripped.to_string();
+    }
+    let url: Arc<str> = Arc::from(url.as_str());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    (hasher.finish(), url)
 }
 
 fn rgba_key(width: u32, height: u32, pixels: &Arc<[u8]>) -> u64 {
@@ -137,6 +166,7 @@ fn rgba_key(width: u32, height: u32, pixels: &Arc<[u8]>) -> u64 {
     hasher.finish()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn decode_path_image(path: &Path) -> Result<(u32, u32, Arc<[u8]>), Arc<str>> {
     let decoded = image::open(path).map_err(|err| {
         Arc::<str>::from(format!("Failed to load image {}: {err}", path.display()))
@@ -146,10 +176,36 @@ fn decode_path_image(path: &Path) -> Result<(u32, u32, Arc<[u8]>), Arc<str>> {
     Ok((width, height, Arc::<[u8]>::from(rgba.into_raw())))
 }
 
+#[cfg(target_arch = "wasm32")]
+async fn fetch_path_image(url: &str) -> Result<(u32, u32, Arc<[u8]>), Arc<str>> {
+    let window = web_sys::window().ok_or_else(|| Arc::<str>::from("window not available"))?;
+    let response_value = JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(|err| Arc::<str>::from(format!("Failed to fetch image {url}: {err:?}")))?;
+    let response: web_sys::Response = response_value
+        .dyn_into()
+        .map_err(|err| Arc::<str>::from(format!("Failed to read image response {url}: {err:?}")))?;
+    if !response.ok() {
+        return Err(Arc::<str>::from(format!("Failed to fetch image {url}")));
+    }
+    let buffer =
+        JsFuture::from(response.array_buffer().map_err(|err| {
+            Arc::<str>::from(format!("Failed to read image bytes {url}: {err:?}"))
+        })?)
+        .await
+        .map_err(|err| Arc::<str>::from(format!("Failed to read image bytes {url}: {err:?}")))?;
+    let bytes = Uint8Array::new(&buffer).to_vec();
+    let decoded = image::load_from_memory(&bytes)
+        .map_err(|err| Arc::<str>::from(format!("Failed to decode image {url}: {err}")))?;
+    let rgba = decoded.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok((width, height, Arc::<[u8]>::from(rgba.into_raw())))
+}
+
 pub fn acquire_image_resource(source: &ImageSource) -> ImageHandle {
     match source {
         ImageSource::Path(path) => {
-            let (key, normalized_path) = normalized_path_key(path);
+            let (key, path_key) = path_source_key(path);
             let mut spawn_loader = false;
             {
                 let tick = next_access_tick();
@@ -172,32 +228,35 @@ pub fn acquire_image_resource(source: &ImageSource) -> ImageHandle {
             if spawn_loader {
                 #[cfg(target_arch = "wasm32")]
                 {
-                    let decoded = decode_path_image(Path::new(normalized_path.as_ref()));
-                    let mut entries = image_entries().lock().unwrap();
-                    let Some(entry) = entries.get_mut(&key) else {
-                        return ImageHandle { key };
-                    };
-                    match decoded {
-                        Ok((width, height, pixels)) => {
-                            let generation = next_generation();
-                            entry.state = ImageState::Ready {
-                                width,
-                                height,
-                                pixels,
-                                generation,
-                                uploaded_generation: None,
-                            };
+                    let url = path_key.to_string();
+                    spawn_local(async move {
+                        let decoded = fetch_path_image(&url).await;
+                        let mut entries = image_entries().lock().unwrap();
+                        let Some(entry) = entries.get_mut(&key) else {
+                            return;
+                        };
+                        match decoded {
+                            Ok((width, height, pixels)) => {
+                                let generation = next_generation();
+                                entry.state = ImageState::Ready {
+                                    width,
+                                    height,
+                                    pixels,
+                                    generation,
+                                    uploaded_generation: None,
+                                };
+                            }
+                            Err(message) => {
+                                entry.state = ImageState::Error { message };
+                            }
                         }
-                        Err(message) => {
-                            entry.state = ImageState::Error { message };
-                        }
-                    }
-                    mark_redraw_dirty();
+                        mark_redraw_dirty();
+                    });
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     std::thread::spawn(move || {
-                        let decoded = decode_path_image(Path::new(normalized_path.as_ref()));
+                        let decoded = decode_path_image(Path::new(path_key.as_ref()));
                         let mut entries = image_entries().lock().unwrap();
                         let Some(entry) = entries.get_mut(&key) else {
                             return;
