@@ -14,7 +14,7 @@ use crate::style::ColorLike;
 use crate::ui::Rect;
 use crate::view::base_component::{
     BuildState, DirtyFlags, Renderable, TextAreaSelectionRenderContext, UiBuildContext,
-    with_text_area_selection_render_context,
+    round_layout_value, with_text_area_selection_render_context,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -57,6 +57,47 @@ impl TextArea {
                 self.layout_state.layout_position.y,
                 self.font_size.max(1.0) * self.line_height,
             ));
+        }
+
+        for &child_key in self.children.iter() {
+            if let Some(pos) = arena
+                .with_element_taken_ref(child_key, |el, _| {
+                    let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
+                    if run.inline_preedit.is_none() {
+                        return None;
+                    }
+                    let (x, y_top, lh) = run.preedit_caret_local_position()?;
+                    Some((
+                        run.layout_state.layout_position.x + x,
+                        run.layout_state.layout_position.y + y_top,
+                        lh,
+                    ))
+                })
+                .flatten()
+            {
+                return Some(pos);
+            }
+        }
+
+        let cursor_host_is_projection = self
+            .child_char_ranges
+            .iter()
+            .enumerate()
+            .find_map(|(idx, range)| {
+                (self.cursor_char >= range.start && self.cursor_char < range.end).then_some(idx)
+            })
+            .and_then(|idx| self.children.get(idx).copied())
+            .map(|key| {
+                !arena
+                    .with_element_taken_ref(key, |el, _| el.as_any().is::<TextAreaTextRun>())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if !cursor_host_is_projection {
+            let map = super::caret_map::CaretNavigationMap::build(self, arena);
+            if let Some(stop) = map.caret_stop_for_char(self.cursor_char, self.cursor_affinity) {
+                return Some((stop.x, stop.y_top, stop.height));
+            }
         }
 
         // v1-aligned rule: walk children in order, first child whose
@@ -454,6 +495,15 @@ impl TextArea {
             fill: self.selection_background_color.to_rgba_f32(),
         })
     }
+
+    fn content_paint_anchor(&self, arena: &NodeArena) -> Option<(f32, f32)> {
+        self.children.iter().find_map(|&child_key| {
+            arena.with_element_taken_ref(child_key, |el, _| {
+                let snap = el.box_model_snapshot();
+                snap.should_render.then_some((snap.x, snap.y))
+            })?
+        })
+    }
 }
 
 impl Renderable for TextArea {
@@ -463,14 +513,34 @@ impl Renderable for TextArea {
         arena: &mut NodeArena,
         mut ctx: UiBuildContext,
     ) -> BuildState {
+        let parent_paint_offset = ctx.paint_offset();
+        let [paint_offset_x, paint_offset_y] = parent_paint_offset;
+        let paint_x = self.layout_state.layout_position.x + paint_offset_x;
+        let paint_y = self.layout_state.layout_position.y + paint_offset_y;
+        ctx.translate_paint_offset(
+            round_layout_value(paint_x) - paint_x,
+            round_layout_value(paint_y) - paint_y,
+        );
+
+        if let Some((content_x, content_y)) = self.content_paint_anchor(arena) {
+            let [paint_offset_x, paint_offset_y] = ctx.paint_offset();
+            let paint_x = content_x + paint_offset_x;
+            let paint_y = content_y + paint_offset_y;
+            ctx.translate_paint_offset(
+                round_layout_value(paint_x) - paint_x,
+                round_layout_value(paint_y) - paint_y,
+            );
+        }
+
         // Layer 0 — selection background. Drawn under children so glyphs
         // overlay the highlight.
         if let Some(target) = ctx.current_target() {
             let fill = self.selection_background_color.to_rgba_f32();
             for rect in self.selection_screen_rects(arena) {
+                let [x, y] = ctx.paint_point(rect.x, rect.y);
                 let mut sel_pass = DrawRectPass::new(
                     RectPassParams {
-                        position: [rect.x, rect.y],
+                        position: [x, y],
                         size: [rect.width.max(1.0), rect.height.max(1.0)],
                         fill_color: fill,
                         opacity: 1.0,
@@ -539,9 +609,10 @@ impl Renderable for TextArea {
         if let Some(target) = ctx.current_target() {
             let stroke = self.color.to_rgba_f32();
             for rect in self.preedit_underline_screen_rects(arena) {
+                let [x, y] = ctx.paint_point(rect.x, rect.y);
                 let mut underline_pass = DrawRectPass::new(
                     RectPassParams {
-                        position: [rect.x, rect.y],
+                        position: [x, y],
                         size: [rect.width.max(1.0), rect.height.max(1.0)],
                         fill_color: stroke,
                         opacity: 1.0,
@@ -572,9 +643,10 @@ impl Renderable for TextArea {
             && let Some((cx, cy, line_height)) = self.caret_screen_position(arena)
             && let Some(target) = ctx.current_target()
         {
+            let [x, y] = ctx.paint_point(cx, cy);
             let mut caret_pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [cx, cy],
+                    position: [x, y],
                     size: [CARET_WIDTH, line_height.max(1.0)],
                     fill_color: self.color.to_rgba_f32(),
                     opacity: 1.0,
@@ -600,6 +672,7 @@ impl Renderable for TextArea {
         }
 
         self.dirty_flags = self.dirty_flags.without(DirtyFlags::PAINT);
+        ctx.set_paint_offset(parent_paint_offset);
         ctx.into_state()
     }
 }
@@ -725,13 +798,12 @@ fn query_caret_on(
                 ));
             }
             if let Some(text) = el.as_any().downcast_ref::<Text>() {
-                // Text doesn't take affinity — projection-internal wrap
-                // disambiguation lives at the TextArea layer (see
-                // `caret_screen_position` projection branch).
-                let _ = affinity;
                 let visible = text.content().chars().count();
                 let local = local_char.min(visible);
-                return text.local_char_to_screen_position(local);
+                return text.local_char_to_screen_position_with_affinity(
+                    local,
+                    affinity == super::caret_map::CaretAffinity::Upstream,
+                );
             }
             None
         })
@@ -1095,9 +1167,10 @@ mod tests {
         // Mirror textarea_test: `{{API_HOST}}/v1/users/{{USER_ID}}/activity/...`
         // — single paragraph, badge projection in the middle, narrow
         // wrap forces the second badge to split.
-        let content = "{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/path";
-        let usr_start = content.find("{{USER_ID}}").unwrap();
-        let usr_end = usr_start + "{{USER_ID}}".len();
+        let user_token = "{{USER_ID_WITH_A_VERY_LONG_PROJECTION_BADGE_THAT_MUST_WRAP}}";
+        let content = format!("{{{{API_HOST}}}}/v1/users/{user_token}/activity/with/path");
+        let usr_start = content.find(user_token).unwrap();
+        let usr_end = usr_start + user_token.len();
 
         let mut text_area = TextArea::new();
         text_area.content = content.to_string();
@@ -1118,6 +1191,7 @@ mod tests {
                     .collect();
                 render.range(start..end, move |_node| {
                     let style = ElementStylePropSchema {
+                        width: Some(crate::style::Length::px(120.0)),
                         padding: Some(
                             crate::style::Padding::uniform(crate::style::Length::px(0.0))
                                 .x(crate::style::Length::px(8.0)),

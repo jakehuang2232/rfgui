@@ -1,10 +1,9 @@
 //! Text typography setters + style/inherited cascade.
 
-use cosmic_text::Align;
-
 use crate::style::{ColorLike, Cursor, Style, TextAlign, TextWrap};
 use crate::view::base_component::{DirtyFlags, Position, Size};
 use crate::view::renderer_adapter::InheritedTextStyle;
+use crate::view::text_layout::TextLayoutAlignment;
 
 use super::Text;
 
@@ -134,8 +133,8 @@ impl Text {
         self.font_weight_explicit = true;
     }
 
-    pub fn set_align(&mut self, align: Align) {
-        if std::mem::discriminant(&self.align) != std::mem::discriminant(&align) {
+    pub(crate) fn set_align(&mut self, align: TextLayoutAlignment) {
+        if self.align != align {
             self.align = align;
             self.mark_measure_dirty();
         }
@@ -143,9 +142,9 @@ impl Text {
 
     pub fn set_text_align(&mut self, align: TextAlign) {
         self.set_align(match align {
-            TextAlign::Left => Align::Left,
-            TextAlign::Center => Align::Center,
-            TextAlign::Right => Align::Right,
+            TextAlign::Left => TextLayoutAlignment::Left,
+            TextAlign::Center => TextLayoutAlignment::Center,
+            TextAlign::Right => TextLayoutAlignment::Right,
         });
     }
 
@@ -293,10 +292,7 @@ impl Text {
     /// `true` if any prop changed (so the caller can short-circuit
     /// redundant dirty-marking). Explicit values — anything the
     /// author set via a public setter — are preserved.
-    pub(crate) fn apply_inherited(
-        &mut self,
-        inherited: &InheritedTextStyle,
-    ) -> bool {
+    pub(crate) fn apply_inherited(&mut self, inherited: &InheritedTextStyle) -> bool {
         let mut changed = false;
         if !self.font_family_explicit
             && !inherited.font_families.is_empty()
@@ -329,14 +325,14 @@ impl Text {
             self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
             changed = true;
         }
-        if !self.text_wrap_explicit
-            && let Some(tw) = inherited.text_wrap
-            && self.text_wrap != tw
-        {
-            self.text_wrap = tw;
-            self.clear_layout_caches();
-            self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
-            changed = true;
+        if !self.text_wrap_explicit {
+            let next = inherited.text_wrap.unwrap_or(TextWrap::Wrap);
+            if self.text_wrap != next {
+                self.text_wrap = next;
+                self.clear_layout_caches();
+                self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
+                changed = true;
+            }
         }
         if !self.line_height_explicit
             && let Some(lh) = inherited.line_height

@@ -1,10 +1,10 @@
-use rfgui::style::Align::Center;
 use crate::rfgui::style::{
     Border, BorderRadius, Color, ColorLike, Layout, Length, Padding, VerticalAlign,
 };
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
 use crate::rfgui_components::{Button, NumberField, Theme};
+use rfgui::style::Align::Center;
 
 fn inline_chip(
     label: impl Into<String>,

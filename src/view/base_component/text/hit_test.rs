@@ -2,8 +2,6 @@
 
 use std::cell::RefCell;
 
-use cosmic_text::Buffer as GlyphBuffer;
-
 use crate::ui::Rect;
 use crate::view::base_component::Position;
 
@@ -37,8 +35,24 @@ pub(crate) fn with_text_area_selection_render_context<R>(
     })
 }
 
-pub(super) fn current_text_area_selection_render_context() -> Option<TextAreaSelectionRenderContext> {
+pub(super) fn current_text_area_selection_render_context() -> Option<TextAreaSelectionRenderContext>
+{
     TEXT_AREA_SELECTION_RENDER_CONTEXT.with(|slot| slot.borrow().clone())
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TextCaretStop {
+    pub(crate) local_char: usize,
+    pub(crate) x: f32,
+    pub(crate) y_top: f32,
+    pub(crate) height: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TextCaretLine {
+    pub(crate) y_top: f32,
+    pub(crate) y_bottom: f32,
+    pub(crate) stops: Vec<TextCaretStop>,
 }
 
 // ---------------------------------------------------------------------------
@@ -47,26 +61,26 @@ pub(super) fn current_text_area_selection_render_context() -> Option<TextAreaSel
 
 impl Text {
     /// Translate a `local_char` index into `self.content` to a screen-space
-    /// `(x, y_top, line_height)`. Returns `None` if no glyph buffer is
-    /// available. Used by `TextArea` to query precise caret coordinates
-    /// inside a projection that wraps a `<Text>`.
-    ///
-    /// Inline-laid-out Text uses `inline_plan` (one fragment per visual
-    /// line, each with its own buffer + position relative to Text's
-    /// `layout_position`); block-laid-out Text uses `layout_buffer`. Both
-    /// paths report a `line_height` from the buffer's metrics, *not*
-    /// the element's outer `layout_size.height` — caret stays one visual
-    /// line tall even when the Text wraps internally.
+    /// `(x, y_top, line_height)`. Used by `TextArea` to query precise caret
+    /// coordinates inside a projection that wraps a `<Text>`.
     ///
     /// Returned `(x, y)` are absolute screen coordinates (already
     /// translated by `self.layout_position`).
     pub fn local_char_to_screen_position(&self, local_char: usize) -> Option<(f32, f32, f32)> {
+        self.local_char_to_screen_position_with_affinity(local_char, false)
+    }
+
+    pub fn local_char_to_screen_position_with_affinity(
+        &self,
+        local_char: usize,
+        upstream: bool,
+    ) -> Option<(f32, f32, f32)> {
         let total_chars = self.content.chars().count();
         let target_char = local_char.min(total_chars);
 
         // Inline path: walk inline_plan fragments accumulating char
-        // counts; the fragment hosting `target_char` provides the buffer
-        // (and a position offset relative to Text's layout_position).
+        // counts; the fragment hosting `target_char` provides the layout
+        // and a screen position.
         if let Some(plan) = self.inline_plan.as_ref()
             && !plan.runs.is_empty()
         {
@@ -75,8 +89,6 @@ impl Text {
             for fragment in plan.runs.iter() {
                 let frag_chars = fragment.content.chars().count();
                 let frag_origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
-                let buffer = fragment.layout_buffer.as_ref()?;
-                let line_height = buffer.metrics().line_height;
                 let in_fragment_char = target_char.saturating_sub(consumed_chars);
                 if in_fragment_char <= frag_chars {
                     let local_byte = fragment
@@ -85,11 +97,19 @@ impl Text {
                         .nth(in_fragment_char)
                         .map(|(b, _)| b)
                         .unwrap_or(fragment.content.len());
-                    let pos = caret_position_in_buffer(buffer, local_byte);
-                    let (gx, gy) = pos.unwrap_or((fragment.width.max(0.0), 0.0));
-                    return Some((frag_origin.x + gx, frag_origin.y + gy, line_height));
+                    if let Some(layout) = fragment.text_layout.as_ref() {
+                        let geom = layout.cursor_geometry(local_byte, upstream);
+                        return Some((frag_origin.x + geom.x, frag_origin.y + geom.y, geom.height));
+                    }
+                    return None;
                 }
                 consumed_chars += frag_chars;
+                let line_height = fragment
+                    .text_layout
+                    .as_ref()
+                    .and_then(|layout| layout.visual_line_heads().first().copied())
+                    .map(|head| head.height)
+                    .unwrap_or(fragment.height.max(1.0));
                 last_fragment_end_screen = Some((
                     frag_origin.x + fragment.width.max(0.0),
                     frag_origin.y,
@@ -99,40 +119,98 @@ impl Text {
             return last_fragment_end_screen;
         }
 
-        // Block / non-inline path: query layout_buffer directly.
-        let buffer = self.layout_buffer.as_ref()?;
-        let line_height = buffer.metrics().line_height;
-        let target_byte = self
-            .content
-            .char_indices()
-            .nth(target_char)
-            .map(|(b, _)| b)
-            .unwrap_or(self.content.len());
-        let mut last_x = 0.0_f32;
-        let mut last_top = 0.0_f32;
-        let mut had_run = false;
-        for run in buffer.layout_runs() {
-            had_run = true;
-            last_top = run.line_top;
-            last_x = run.glyphs.last().map(|g| g.x + g.w.max(0.0)).unwrap_or(0.0);
-            for glyph in run.glyphs.iter() {
-                if glyph.start >= target_byte {
-                    return Some((
-                        self.layout_state.layout_position.x + glyph.x,
-                        self.layout_state.layout_position.y + run.line_top,
-                        line_height,
-                    ));
-                }
-            }
-        }
-        if had_run {
+        // Block / non-inline path.
+        if let Some(layout) = self.text_layout.as_ref() {
+            let geom = layout.caret_geometry_for_char_with_affinity(
+                self.content.as_str(),
+                target_char,
+                upstream,
+            );
             return Some((
-                self.layout_state.layout_position.x + last_x,
-                self.layout_state.layout_position.y + last_top,
-                line_height,
+                self.layout_state.layout_position.x + geom.x,
+                self.layout_state.layout_position.y + geom.y,
+                geom.height,
             ));
         }
         None
+    }
+
+    pub(crate) fn visual_caret_screen_lines(&self) -> Vec<TextCaretLine> {
+        if let Some(plan) = self.inline_plan.as_ref()
+            && !plan.runs.is_empty()
+        {
+            let mut out = Vec::new();
+            let mut consumed_chars = 0_usize;
+            for fragment in plan.runs.iter() {
+                let frag_chars = fragment.content.chars().count();
+                let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
+                if let Some(layout) = fragment.text_layout.as_ref() {
+                    for line in layout.visual_caret_lines(fragment.content.as_str()) {
+                        out.push(TextCaretLine {
+                            y_top: origin.y + line.y_top,
+                            y_bottom: origin.y + line.y_bottom,
+                            stops: line
+                                .stops
+                                .into_iter()
+                                .map(|stop| TextCaretStop {
+                                    local_char: consumed_chars + stop.char_index,
+                                    x: origin.x + stop.x,
+                                    y_top: origin.y + stop.y_top,
+                                    height: stop.height,
+                                })
+                                .collect(),
+                        });
+                    }
+                }
+                consumed_chars += frag_chars;
+            }
+            for idx in 1..out.len() {
+                let Some(prev_tail) = out[idx - 1].stops.last().copied() else {
+                    continue;
+                };
+                let next_stops = out[idx].stops.iter().take(2).copied().collect::<Vec<_>>();
+                for next_stop in next_stops {
+                    if out[idx - 1]
+                        .stops
+                        .iter()
+                        .any(|stop| stop.local_char == next_stop.local_char)
+                    {
+                        continue;
+                    }
+                    out[idx - 1].stops.push(TextCaretStop {
+                        local_char: next_stop.local_char,
+                        x: prev_tail.x,
+                        y_top: prev_tail.y_top,
+                        height: prev_tail.height,
+                    });
+                }
+            }
+            return out;
+        }
+
+        if let Some(layout) = self.text_layout.as_ref() {
+            let origin = self.layout_state.layout_position;
+            return layout
+                .visual_caret_lines(self.content.as_str())
+                .into_iter()
+                .map(|line| TextCaretLine {
+                    y_top: origin.y + line.y_top,
+                    y_bottom: origin.y + line.y_bottom,
+                    stops: line
+                        .stops
+                        .into_iter()
+                        .map(|stop| TextCaretStop {
+                            local_char: stop.char_index,
+                            x: origin.x + stop.x,
+                            y_top: origin.y + stop.y_top,
+                            height: stop.height,
+                        })
+                        .collect(),
+                })
+                .collect();
+        }
+
+        Vec::new()
     }
 
     /// Screen-space leading-edge positions of every visual line, in y
@@ -152,29 +230,33 @@ impl Text {
             return plan
                 .runs
                 .iter()
-                .filter_map(|fragment| {
-                    let buffer = fragment.layout_buffer.as_ref()?;
-                    let line_height = buffer.metrics().line_height;
+                .flat_map(|fragment| {
                     let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
-                    Some((origin.x, origin.y, line_height))
+                    if let Some(layout) = fragment.text_layout.as_ref() {
+                        return layout
+                            .visual_line_heads()
+                            .into_iter()
+                            .map(move |head| (origin.x + head.x, origin.y + head.y, head.height))
+                            .collect::<Vec<_>>();
+                    }
+                    Vec::new()
                 })
                 .collect();
         }
-        let Some(buffer) = self.layout_buffer.as_ref() else {
-            return Vec::new();
-        };
-        let line_height = buffer.metrics().line_height;
-        buffer
-            .layout_runs()
-            .map(|run| {
-                let head_x = run.glyphs.first().map(|g| g.x).unwrap_or(0.0);
-                (
-                    self.layout_state.layout_position.x + head_x,
-                    self.layout_state.layout_position.y + run.line_top,
-                    line_height,
-                )
-            })
-            .collect()
+        if let Some(layout) = self.text_layout.as_ref() {
+            return layout
+                .visual_line_heads()
+                .into_iter()
+                .map(|head| {
+                    (
+                        self.layout_state.layout_position.x + head.x,
+                        self.layout_state.layout_position.y + head.y,
+                        head.height,
+                    )
+                })
+                .collect();
+        }
+        Vec::new()
     }
 
     /// Translate a local char selection range into screen-space selection
@@ -201,44 +283,44 @@ impl Text {
                 if frag_end <= start_char || frag_start >= end_char {
                     continue;
                 }
-                let Some(buffer) = fragment.layout_buffer.as_ref() else {
-                    continue;
-                };
                 let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
                 let fragment_start = start_char.saturating_sub(frag_start);
                 let fragment_end = end_char.saturating_sub(frag_start).min(frag_chars);
-                for rect in selection_rects_in_buffer(
-                    buffer,
-                    fragment.content.as_str(),
-                    fragment_start,
-                    fragment_end,
-                ) {
-                    out.push(Rect {
-                        x: origin.x + rect.x,
-                        y: origin.y + rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                    });
+                if let Some(layout) = fragment.text_layout.as_ref() {
+                    for rect in layout.selection_rects(
+                        fragment.content.as_str(),
+                        fragment_start,
+                        fragment_end,
+                    ) {
+                        out.push(Rect {
+                            x: origin.x + rect.x,
+                            y: origin.y + rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                        });
+                    }
+                    continue;
                 }
             }
             return out;
         }
 
-        let Some(buffer) = self.layout_buffer.as_ref() else {
-            return Vec::new();
-        };
         let total_chars = self.content.chars().count();
         let start = start_char.min(total_chars);
         let end = end_char.min(total_chars);
-        selection_rects_in_buffer(buffer, self.content.as_str(), start, end)
-            .into_iter()
-            .map(|rect| Rect {
-                x: self.layout_state.layout_position.x + rect.x,
-                y: self.layout_state.layout_position.y + rect.y,
-                width: rect.width,
-                height: rect.height,
-            })
-            .collect()
+        if let Some(layout) = self.text_layout.as_ref() {
+            return layout
+                .selection_rects(self.content.as_str(), start, end)
+                .into_iter()
+                .map(|rect| Rect {
+                    x: self.layout_state.layout_position.x + rect.x,
+                    y: self.layout_state.layout_position.y + rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                })
+                .collect();
+        }
+        Vec::new()
     }
 
     /// Hit-test a screen-space `(x, y)` to a local char index inside
@@ -247,8 +329,7 @@ impl Text {
     /// of attaching the cursor to clicks that miss the text).
     pub fn screen_position_to_local_char(&self, x: f32, y: f32) -> Option<usize> {
         // Inline path: locate the fragment whose position+size contains
-        // the click; query that fragment's buffer for paragraph-local
-        // hit; map back to Text-content char index by accumulating
+        // the click; query that fragment's adapter layout and map back by accumulating
         // preceding fragments' char counts. Returning `None` when the
         // click misses every fragment (so callers don't snap a click in
         // empty space inside the outer Element to a phantom char).
@@ -265,19 +346,14 @@ impl Text {
                     && y >= frag_y
                     && y <= frag_y + fragment.height.max(0.0);
                 if inside {
-                    let buffer = fragment.layout_buffer.as_ref()?;
                     let local_x = x - frag_x;
                     let local_y = y - frag_y;
-                    let cursor = buffer.hit(local_x, local_y)?;
-                    let mut byte_offset = 0_usize;
-                    for (line_i, paragraph) in fragment.content.split('\n').enumerate() {
-                        if line_i == cursor.line {
-                            let local_byte = cursor.index.min(paragraph.len());
-                            let in_fragment_char =
-                                fragment.content[..byte_offset + local_byte].chars().count();
-                            return Some(consumed_chars + in_fragment_char);
-                        }
-                        byte_offset += paragraph.len() + 1;
+                    if let Some(layout) = fragment.text_layout.as_ref() {
+                        let byte = clamp_utf8_boundary(
+                            &fragment.content,
+                            layout.hit_byte(local_x, local_y),
+                        );
+                        return Some(consumed_chars + fragment.content[..byte].chars().count());
                     }
                     return None;
                 }
@@ -287,22 +363,16 @@ impl Text {
         }
 
         // Block / non-inline path.
-        let buffer = self.layout_buffer.as_ref()?;
-        let local_x = x - self.layout_state.layout_position.x;
-        let local_y = y - self.layout_state.layout_position.y;
-        let bounds_w = self.layout_state.layout_size.width.max(0.0);
-        let bounds_h = self.layout_state.layout_size.height.max(0.0);
-        if local_x < 0.0 || local_y < 0.0 || local_x > bounds_w || local_y > bounds_h {
-            return None;
-        }
-        let cursor = buffer.hit(local_x, local_y)?;
-        let mut byte_offset = 0_usize;
-        for (line_i, paragraph) in self.content.split('\n').enumerate() {
-            if line_i == cursor.line {
-                let local_byte = cursor.index.min(paragraph.len());
-                return Some(self.content[..byte_offset + local_byte].chars().count());
+        if let Some(layout) = self.text_layout.as_ref() {
+            let local_x = x - self.layout_state.layout_position.x;
+            let local_y = y - self.layout_state.layout_position.y;
+            let bounds_w = self.layout_state.layout_size.width.max(0.0);
+            let bounds_h = self.layout_state.layout_size.height.max(0.0);
+            if local_x < 0.0 || local_y < 0.0 || local_x > bounds_w || local_y > bounds_h {
+                return None;
             }
-            byte_offset += paragraph.len() + 1;
+            let byte = clamp_utf8_boundary(&self.content, layout.hit_byte(local_x, local_y));
+            return Some(self.content[..byte].chars().count());
         }
         None
     }
@@ -312,114 +382,10 @@ impl Text {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Find the `(x, y_top)` of the caret at `target_byte` (paragraph-local
-/// byte offset against the buffer's shaped text). Returns `None` when
-/// the buffer has no layout runs. Walks all layout runs in order; the
-/// first glyph with `start >= target_byte` wins, else falls through to
-/// "end of last run". Used by `Text::local_char_to_screen_position` for
-/// the inline-fragment per-line query.
-fn caret_position_in_buffer(buffer: &GlyphBuffer, target_byte: usize) -> Option<(f32, f32)> {
-    let mut last_x = 0.0_f32;
-    let mut last_top = 0.0_f32;
-    let mut had_run = false;
-    for run in buffer.layout_runs() {
-        had_run = true;
-        last_top = run.line_top;
-        last_x = run.glyphs.last().map(|g| g.x + g.w.max(0.0)).unwrap_or(0.0);
-        for glyph in run.glyphs.iter() {
-            if glyph.start >= target_byte {
-                return Some((glyph.x, run.line_top));
-            }
-        }
+fn clamp_utf8_boundary(content: &str, byte_index: usize) -> usize {
+    let mut byte = byte_index.min(content.len());
+    while byte > 0 && !content.is_char_boundary(byte) {
+        byte -= 1;
     }
-    if had_run {
-        return Some((last_x, last_top));
-    }
-    None
-}
-
-fn byte_index_at_char(content: &str, char_index: usize) -> usize {
-    content
-        .char_indices()
-        .nth(char_index)
-        .map(|(byte, _)| byte)
-        .unwrap_or(content.len())
-}
-
-fn paragraph_line_and_offset(content: &str, byte_index: usize) -> (usize, usize) {
-    let clamped = byte_index.min(content.len());
-    let mut line_i = 0_usize;
-    let mut line_start = 0_usize;
-    for (byte, ch) in content.char_indices() {
-        if byte >= clamped {
-            break;
-        }
-        if ch == '\n' {
-            line_i += 1;
-            line_start = byte + ch.len_utf8();
-        }
-    }
-    (line_i, clamped.saturating_sub(line_start))
-}
-
-fn selection_rects_in_buffer(
-    buffer: &GlyphBuffer,
-    content: &str,
-    local_start: usize,
-    local_end: usize,
-) -> Vec<Rect> {
-    let start_char = local_start.min(local_end);
-    let end_char = local_start.max(local_end);
-    if start_char == end_char {
-        return Vec::new();
-    }
-    let start_byte = byte_index_at_char(content, start_char);
-    let end_byte = byte_index_at_char(content, end_char);
-    let (start_line_i, start_local) = paragraph_line_and_offset(content, start_byte);
-    let (end_line_i, end_local) = paragraph_line_and_offset(content, end_byte);
-
-    let mut out = Vec::new();
-    let line_height = buffer.metrics().line_height;
-    for run in buffer.layout_runs() {
-        if run.line_i < start_line_i || run.line_i > end_line_i {
-            continue;
-        }
-        let line_local_start = if run.line_i == start_line_i {
-            start_local
-        } else {
-            0
-        };
-        let line_local_end = if run.line_i == end_line_i {
-            end_local
-        } else {
-            usize::MAX
-        };
-        if line_local_end <= line_local_start {
-            continue;
-        }
-
-        let mut left: Option<f32> = None;
-        let mut right = 0.0_f32;
-        for glyph in run.glyphs.iter() {
-            if glyph.end <= line_local_start || glyph.start >= line_local_end {
-                continue;
-            }
-            let glyph_left = glyph.x;
-            let glyph_right = glyph.x + glyph.w.max(0.0);
-            left = Some(
-                left.map(|current| current.min(glyph_left))
-                    .unwrap_or(glyph_left),
-            );
-            right = right.max(glyph_right);
-        }
-        if let Some(left) = left {
-            out.push(Rect {
-                x: left,
-                y: run.line_top,
-                width: (right - left).max(1.0),
-                height: line_height,
-            });
-        }
-    }
-    out
+    byte
 }

@@ -11,6 +11,7 @@ use crate::platform::word_segmenter::{next_word_boundary, prev_word_boundary, wo
 use crate::view::base_component::DirtyFlags;
 
 use super::TextArea;
+use super::caret_map::CaretAffinity;
 use super::edit::normalize_multiline;
 
 impl TextArea {
@@ -201,6 +202,14 @@ impl TextArea {
     /// pointer_selecting. The pointer-move handler then calls
     /// `update_pointer_selection` to extend.
     pub(super) fn start_pointer_selection(&mut self, at: usize) {
+        self.start_pointer_selection_with_affinity(at, CaretAffinity::Downstream);
+    }
+
+    pub(super) fn start_pointer_selection_with_affinity(
+        &mut self,
+        at: usize,
+        affinity: CaretAffinity,
+    ) {
         let at = self.clamp_char(at);
         self.cursor_char = at;
         self.selection_anchor_char = Some(at);
@@ -208,10 +217,19 @@ impl TextArea {
         self.pointer_selecting = true;
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.cursor_affinity = affinity;
         self.mark_caret_scroll_pending();
     }
 
     pub(super) fn update_pointer_selection(&mut self, focus: usize) {
+        self.update_pointer_selection_with_affinity(focus, CaretAffinity::Downstream);
+    }
+
+    pub(super) fn update_pointer_selection_with_affinity(
+        &mut self,
+        focus: usize,
+        affinity: CaretAffinity,
+    ) {
         if !self.pointer_selecting {
             return;
         }
@@ -220,6 +238,7 @@ impl TextArea {
         self.cursor_char = focus;
         self.reset_caret_blink();
         self.clear_vertical_goal();
+        self.cursor_affinity = affinity;
         self.mark_caret_scroll_pending();
     }
 

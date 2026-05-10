@@ -109,7 +109,7 @@ pub(crate) fn measure_axis_children(inputs: MeasureChildrenInputs<'_>, arena: &m
                 // (e.g. TextAreaTextRun for a `\n` paragraph) leaves
                 // `current_line_width` accumulated from prior paragraphs,
                 // so the *next* child receives a tiny `first_available_width`
-                // and cosmic-text wraps inside it on the wrong boundary —
+                // and the text layout adapter wraps inside it on the wrong boundary —
                 // even though the flex solver later places the next child
                 // on a fresh line. Reset so measure and solver agree.
                 if node.force_break_after {

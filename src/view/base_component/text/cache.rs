@@ -1,12 +1,10 @@
 //! Text cache types: LRU + measure / shape / inline-plan cache keys.
 
-use cosmic_text::{Align, Buffer as GlyphBuffer, ShapeLine};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use crate::view::font_system::with_shared_font_system;
-use crate::view::text_layout::build_text_buffer;
+use crate::view::text_layout::{TextLayout, TextLayoutAlignment};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::view::base_component) struct InlinePlanCacheKey {
@@ -17,48 +15,25 @@ pub(in crate::view::base_component) struct InlinePlanCacheKey {
 
 #[derive(Clone)]
 pub(in crate::view::base_component) struct MeasuredTextLayout {
-    pub(super) buffer: Arc<GlyphBuffer>,
-    pub(super) width: f32,
-    pub(super) height: f32,
+    pub(in crate::view::base_component) text_layout: Arc<TextLayout>,
+    pub(in crate::view::base_component) width: f32,
+    pub(in crate::view::base_component) height: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct TextShapeCacheKey {
-    pub(super) content: String,
-    pub(super) font_size_milli: i32,
-    pub(super) line_height_milli: i32,
-    pub(super) font_weight: u16,
-    pub(super) align: u8,
-    pub(super) font_families: Vec<String>,
-}
-
-#[derive(Clone)]
-pub(super) struct GlobalShapedText {
-    pub(super) buffer: GlyphBuffer,
-    pub(super) shape_line: Option<ShapeLine>,
+impl MeasuredTextLayout {
+    pub(super) fn first_inline_baseline(&self) -> f32 {
+        self.text_layout
+            .lines()
+            .first()
+            .map(|line| line.baseline)
+            .unwrap_or(0.0)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::view::base_component) struct TextLayoutCacheKey {
     pub(super) width_milli: i32,
     pub(super) allow_wrap: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(in crate::view::base_component) struct FirstLineLayoutCacheKey {
-    pub(super) first_width_milli: i32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(in crate::view::base_component) struct WrappedSuffixCacheKey {
-    pub(super) suffix_start: usize,
-    pub(super) full_width_milli: i32,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::view::base_component) struct FirstLineLayoutCacheEntry {
-    pub(super) consumed_bytes: usize,
-    pub(super) fragment: super::InlineTextFragment,
 }
 
 /// LRU cache with generation-based eviction (à la Skia SkStrikeCache).
@@ -119,8 +94,6 @@ impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
 thread_local! {
     pub(super) static MEASURE_TEXT_CACHE: RefCell<LruCache<TextMeasureCacheKey, MeasuredTextLayout>> =
         RefCell::new(LruCache::new());
-    static SHAPED_TEXT_CACHE: RefCell<LruCache<TextShapeCacheKey, Arc<GlobalShapedText>>> =
-        RefCell::new(LruCache::new());
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -144,7 +117,7 @@ pub(super) fn make_measure_cache_key(
     font_size: f32,
     line_height: f32,
     font_weight: u16,
-    align: Align,
+    align: TextLayoutAlignment,
     font_families: &[String],
 ) -> TextMeasureCacheKey {
     TextMeasureCacheKey {
@@ -153,79 +126,17 @@ pub(super) fn make_measure_cache_key(
         font_size_milli: quantize_milli(font_size),
         line_height_milli: quantize_milli(line_height),
         font_weight,
-        align: match align {
-            Align::Left => 0,
-            Align::Center => 1,
-            Align::Right => 2,
-            Align::Justified => 3,
-            Align::End => 4,
-        },
+        align: text_layout_alignment_cache_key(align),
         font_families: font_families.to_vec(),
     }
 }
 
-pub(super) fn make_shape_cache_key(
-    content: &str,
-    font_size: f32,
-    line_height: f32,
-    font_weight: u16,
-    align: Align,
-    font_families: &[String],
-) -> TextShapeCacheKey {
-    TextShapeCacheKey {
-        content: content.to_string(),
-        font_size_milli: quantize_milli(font_size),
-        line_height_milli: quantize_milli(line_height),
-        font_weight,
-        align: match align {
-            Align::Left => 0,
-            Align::Center => 1,
-            Align::Right => 2,
-            Align::Justified => 3,
-            Align::End => 4,
-        },
-        font_families: font_families.to_vec(),
+fn text_layout_alignment_cache_key(align: TextLayoutAlignment) -> u8 {
+    match align {
+        TextLayoutAlignment::Left => 0,
+        TextLayoutAlignment::Center => 1,
+        TextLayoutAlignment::Right => 2,
+        TextLayoutAlignment::Justified => 3,
+        TextLayoutAlignment::End => 4,
     }
-}
-
-pub(super) fn shape_text_global(
-    content: &str,
-    font_size: f32,
-    line_height: f32,
-    font_weight: u16,
-    align: Align,
-    font_families: &[String],
-) -> (bool, Arc<GlobalShapedText>) {
-    let key = make_shape_cache_key(
-        content,
-        font_size,
-        line_height,
-        font_weight,
-        align,
-        font_families,
-    );
-    SHAPED_TEXT_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(cached) = cache.get_cloned(&key) {
-            return (true, cached);
-        }
-        let shaped = with_shared_font_system(|font_system| {
-            let mut buffer = build_text_buffer(
-                font_system,
-                content,
-                None,
-                None,
-                false,
-                font_size,
-                line_height,
-                font_weight,
-                align,
-                font_families,
-            );
-            let shape_line = buffer.line_shape(font_system, 0).cloned();
-            Arc::new(GlobalShapedText { buffer, shape_line })
-        });
-        cache.insert(key, Arc::clone(&shaped));
-        (false, shaped)
-    })
 }

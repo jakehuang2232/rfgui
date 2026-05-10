@@ -357,6 +357,7 @@ pub struct ViewportContext {
     target_format: wgpu::TextureFormat,
     scale_factor: f32,
     render_transform: Option<Mat4>,
+    paint_offset: [f32; 2],
     promoted_node_ids: Arc<FxHashSet<u64>>,
     promoted_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
     promoted_composition_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
@@ -473,6 +474,7 @@ impl UiBuildContext {
                 target_format: viewport_format,
                 scale_factor: scale_factor.max(0.0001),
                 render_transform: None,
+                paint_offset: [0.0, 0.0],
                 promoted_node_ids: Arc::new(FxHashSet::default()),
                 promoted_update_kinds: Arc::new(FxHashMap::default()),
                 promoted_composition_update_kinds: Arc::new(FxHashMap::default()),
@@ -665,6 +667,26 @@ impl UiBuildContext {
 
     pub(crate) fn set_current_render_transform(&mut self, render_transform: Option<Mat4>) {
         self.viewport.render_transform = render_transform;
+    }
+
+    pub(crate) fn paint_offset(&self) -> [f32; 2] {
+        self.viewport.paint_offset
+    }
+
+    pub(crate) fn translate_paint_offset(&mut self, dx: f32, dy: f32) {
+        self.viewport.paint_offset[0] += dx;
+        self.viewport.paint_offset[1] += dy;
+    }
+
+    pub(crate) fn set_paint_offset(&mut self, offset: [f32; 2]) {
+        self.viewport.paint_offset = offset;
+    }
+
+    pub(crate) fn paint_point(&self, x: f32, y: f32) -> [f32; 2] {
+        [
+            x + self.viewport.paint_offset[0],
+            y + self.viewport.paint_offset[1],
+        ]
     }
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {
@@ -916,9 +938,8 @@ pub struct InlineNodeSize {
     /// Distance from the fragment's top to its baseline (cross-axis).
     /// Surfaces typography baseline for `Layout::Inline` cross-axis
     /// alignment per `docs/design/inline-baseline.md`. Conventions:
-    /// - Text / TextAreaTextRun fragment: cosmic-text
-    ///   `LayoutRun.line_y - line_top` (already includes line-height
-    ///   leading/2).
+    /// - Text / TextAreaTextRun fragment: text layout adapter baseline
+    ///   for the first visual line.
     /// - Non-fragmentable Element: `height` (bottom edge).
     /// - Fragmentable Inline element fragment: that fragment's inner
     ///   `line_ascent` (relative to its line box top, excluding outer

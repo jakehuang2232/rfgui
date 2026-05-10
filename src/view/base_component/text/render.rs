@@ -6,11 +6,13 @@ use crate::view::node_arena::NodeArena;
 use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, RectPassParams, RenderTargetIn,
 };
-use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPassFragment, TextPassParams};
+use crate::view::render_pass::text_pass::{
+    TextInput, TextOutput, TextPassFragment, TextPassParams,
+};
 use crate::view::render_pass::{DrawRectPass, TextPass};
 
-use super::hit_test::current_text_area_selection_render_context;
 use super::Text;
+use super::hit_test::current_text_area_selection_render_context;
 
 impl Renderable for Text {
     fn build(
@@ -37,9 +39,10 @@ impl Renderable for Text {
         };
         if let Some(selection) = current_text_area_selection_render_context() {
             for rect in self.local_selection_screen_rects(selection.start, selection.end) {
+                let [rect_x, rect_y] = ctx.paint_point(rect.x, rect.y);
                 let mut selection_pass = DrawRectPass::new(
                     RectPassParams {
-                        position: [rect.x, rect.y],
+                        position: [rect_x, rect_y],
                         size: [rect.width.max(1.0), rect.height.max(1.0)],
                         fill_color: selection.fill,
                         opacity: 1.0,
@@ -77,20 +80,25 @@ impl Renderable for Text {
             .collect::<Vec<_>>();
         let has_inline_fragments = !inline_fragment_indices.is_empty();
         let fragments = if !has_inline_fragments {
-            let layout_buffer = self
-                .layout_buffer
-                .as_ref()
-                .expect("text layout buffer should be prepared during layout")
-                .clone();
+            let [x, y] = ctx.paint_point(
+                self.layout_state.layout_position.x,
+                self.layout_state.layout_position.y,
+            );
             vec![TextPassFragment {
                 content: self.content.clone(),
-                x: self.layout_state.layout_position.x,
-                y: self.layout_state.layout_position.y,
-                width: self.render_size.width.max(self.layout_state.layout_size.width),
-                height: self.render_size.height.max(self.layout_state.layout_size.height),
+                x,
+                y,
+                width: self
+                    .render_size
+                    .width
+                    .max(self.layout_state.layout_size.width),
+                height: self
+                    .render_size
+                    .height
+                    .max(self.layout_state.layout_size.height),
                 color: self.color.to_rgba_f32(),
                 opacity,
-                layout_buffer: Some(layout_buffer),
+                text_layout: self.text_layout.clone(),
             }]
         } else {
             inline_fragment_indices
@@ -98,19 +106,19 @@ impl Renderable for Text {
                 .filter_map(|index| {
                     let fragment = inline_runs.get(index)?;
                     let position = fragment.position?;
+                    let [x, y] = ctx.paint_point(position.x, position.y);
                     let content = fragment.content.clone();
                     let width = fragment.width;
                     let height = fragment.height;
-                    let layout_buffer = fragment.layout_buffer.clone()?;
                     Some(TextPassFragment {
                         content,
-                        x: position.x,
-                        y: position.y,
+                        x,
+                        y,
                         width: width.max(1.0),
                         height: height.max(1.0),
                         color: self.color.to_rgba_f32(),
                         opacity,
-                        layout_buffer: Some(layout_buffer),
+                        text_layout: fragment.text_layout.clone(),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -122,7 +130,6 @@ impl Renderable for Text {
                 line_height: self.line_height,
                 font_weight: self.font_weight,
                 font_families: self.font_families.clone(),
-                align: self.align,
                 allow_wrap: !has_inline_fragments && self.allow_wrap,
                 scissor_rect: None,
                 stencil_clip_id: None,

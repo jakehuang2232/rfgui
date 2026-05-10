@@ -240,7 +240,7 @@ impl CaretNavigationMap {
     /// within that line, (3) return its `char_index`. Clicks above the
     /// first / below the last line clamp to the nearest line. Returns
     /// `None` only when the map is empty (no children at all).
-    pub(super) fn pointer_target(&self, x: f32, y: f32) -> Option<usize> {
+    pub(super) fn pointer_target(&self, x: f32, y: f32) -> Option<VerticalTarget> {
         if self.lines.is_empty() {
             return None;
         }
@@ -248,7 +248,7 @@ impl CaretNavigationMap {
         // returns 0 inside the band, so clicks landing inside a line win
         // outright. Stable order (insertion / y_top sort) breaks ties at
         // a shared edge in favor of the upper line.
-        let line = self.lines.iter().min_by(|a, b| {
+        let (line_idx, line) = self.lines.iter().enumerate().min_by(|(_, a), (_, b)| {
             vertical_distance(a, y)
                 .partial_cmp(&vertical_distance(b, y))
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -256,12 +256,16 @@ impl CaretNavigationMap {
         // Step 2: nearest stop by horizontal distance. Stops are sorted
         // by `x` after build / dedup, so a linear scan is fine.
         let stop = line.stops.iter().min_by(|a, b| {
-            (a.x - x)
-                .abs()
-                .partial_cmp(&(b.x - x).abs())
+            let ad = (a.x - x).abs();
+            let bd = (b.x - x).abs();
+            ad.partial_cmp(&bd)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.char_index.cmp(&a.char_index))
         })?;
-        Some(stop.char_index)
+        Some(VerticalTarget {
+            char_index: stop.char_index,
+            affinity: self.affinity_for_char_on_line(stop.char_index, line_idx),
+        })
     }
 
     pub(super) fn vertical_target(
@@ -489,8 +493,8 @@ mod tests {
 
     #[test]
     fn soft_wrap_within_run_yields_two_visual_lines() {
-        // 60-char-ish content with a tight max_width forces cosmic-text
-        // to soft-wrap inside a single Run.
+        // 60-char-ish content with a tight max_width forces the text
+        // layout adapter to soft-wrap inside a single Run.
         let content = "the quick brown fox jumps over the lazy dog";
         let (map, _) = build_map_for(content, 80.0);
         assert!(
@@ -569,22 +573,29 @@ mod tests {
         let text_area: &crate::view::base_component::TextArea = unsafe { &*text_area_ptr };
         let map = CaretNavigationMap::build(text_area, &arena);
         assert!(map.lines.len() >= 2);
-        let upper_tail = map.lines[0].stops.last().unwrap().char_index;
-        let lower_head = map.lines[1].stops.first().unwrap().char_index;
-        assert!(
-            lower_head > upper_tail,
-            "fixture relies on cosmic-text consuming whitespace at the wrap",
-        );
+        let boundary_char = map
+            .lines
+            .windows(2)
+            .find_map(|pair| {
+                pair[0].stops.iter().find_map(|upper| {
+                    pair[1]
+                        .stops
+                        .iter()
+                        .any(|lower| lower.char_index == upper.char_index)
+                        .then_some(upper.char_index)
+                })
+            })
+            .expect("adapter should synthesize a shared boundary stop at the wrap");
         let run_key = text_area.children.first().copied().expect("run child");
         let (up, down) = arena
             .with_element_taken_ref(run_key, |el, _| {
                 let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
                 let u = run.local_char_to_screen_position_with_affinity(
-                    upper_tail,
+                    boundary_char,
                     CaretAffinity::Upstream,
                 )?;
                 let d = run.local_char_to_screen_position_with_affinity(
-                    upper_tail,
+                    boundary_char,
                     CaretAffinity::Downstream,
                 )?;
                 Some((u, d))
@@ -1191,7 +1202,7 @@ mod tests {
             .pointer_target(0.0, line0.y_top - 1000.0)
             .expect("clamp above-first should find a target");
         let stop = map
-            .caret_stop_for_char(target, CaretAffinity::Downstream)
+            .caret_stop_for_char(target.char_index, target.affinity)
             .expect("stop");
         assert!(
             (stop.y_top - line0.y_top).abs() < 0.5,
@@ -1206,7 +1217,7 @@ mod tests {
             .pointer_target(last_stop_x + 1000.0, line0_mid_y)
             .expect("inside line 0 picks a target");
         assert_eq!(
-            target,
+            target.char_index,
             line0.stops.last().expect("non-empty").char_index,
             "x past line 0 should snap to its rightmost stop",
         );
@@ -1217,11 +1228,32 @@ mod tests {
             .pointer_target(0.0, last_line.y_bottom + 1000.0)
             .expect("clamp below-last");
         let stop_below = map
-            .caret_stop_for_char(target_below, CaretAffinity::Downstream)
+            .caret_stop_for_char(target_below.char_index, target_below.affinity)
             .expect("stop");
         assert!(
             (stop_below.y_top - last_line.y_top).abs() < 0.5,
             "below-last click should clamp to last line",
+        );
+    }
+
+    #[test]
+    fn pointer_target_preserves_upper_affinity_at_soft_wrap_tail() {
+        let content = "the quick brown fox jumps over the lazy dog";
+        let (map, _) = build_map_for(content, 80.0);
+        assert!(map.lines.len() >= 2, "soft-wrap expected");
+        let line0 = &map.lines[0];
+        let line0_mid_y = (line0.y_top + line0.y_bottom) * 0.5;
+        let upper_tail = line0.stops.last().expect("upper line has tail stop");
+
+        let target = map
+            .pointer_target(upper_tail.x + 1000.0, line0_mid_y)
+            .expect("line-tail click should resolve");
+
+        assert_eq!(target.char_index, upper_tail.char_index);
+        assert_eq!(
+            target.affinity,
+            CaretAffinity::Upstream,
+            "clicking the upper visual line tail must keep the caret on that line",
         );
     }
 
@@ -1296,6 +1328,67 @@ fn projection_text_lines(
     span: usize,
 ) -> Option<Vec<CaretVisualLine>> {
     let text_key = find_text_descendant(arena, root_key)?;
+    let adapter_lines = arena
+        .with_element_taken_ref(text_key, |el, _| {
+            if let Some(text) = el.as_any().downcast_ref::<Text>() {
+                let visible = text.content().chars().count();
+                let lines = text
+                    .visual_caret_screen_lines()
+                    .into_iter()
+                    .map(|line| CaretVisualLine {
+                        y_top: line.y_top,
+                        y_bottom: line.y_bottom,
+                        stops: line
+                            .stops
+                            .into_iter()
+                            .filter_map(|stop| {
+                                (stop.local_char <= visible.min(span)).then_some(CaretStop {
+                                    char_index: char_offset + stop.local_char,
+                                    x: stop.x,
+                                    y_top: stop.y_top,
+                                    height: stop.height,
+                                })
+                            })
+                            .collect(),
+                    })
+                    .filter(|line| !line.stops.is_empty())
+                    .collect::<Vec<_>>();
+                return (!lines.is_empty()).then_some(lines);
+            }
+            if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
+                let visible = run.text.chars().count().min(span);
+                let origin_x = run.layout_state.layout_position.x;
+                let origin_y = run.layout_state.layout_position.y;
+                let lines = run
+                    .caret_stops()
+                    .into_iter()
+                    .map(|line| CaretVisualLine {
+                        y_top: origin_y + line.local_y_top,
+                        y_bottom: origin_y + line.local_y_bottom,
+                        stops: line
+                            .stops
+                            .into_iter()
+                            .filter_map(|stop| {
+                                (stop.local_char <= visible).then_some(CaretStop {
+                                    char_index: char_offset + stop.local_char,
+                                    x: origin_x + stop.local_x,
+                                    y_top: origin_y + stop.local_y_top,
+                                    height: stop.height,
+                                })
+                            })
+                            .collect(),
+                    })
+                    .filter(|line| !line.stops.is_empty())
+                    .collect::<Vec<_>>();
+                return (!lines.is_empty()).then_some(lines);
+            }
+            None
+        })
+        .flatten();
+    if adapter_lines.is_some() {
+        return adapter_lines;
+    }
+
     let mut probes: Vec<(usize, f32, f32, f32)> = Vec::with_capacity(span + 1);
     for local in 0..=span {
         let probe = arena

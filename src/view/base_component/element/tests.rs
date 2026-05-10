@@ -7195,6 +7195,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn text_area_run_exposes_wrapped_visual_lines_as_inline_nodes() {
+        use crate::view::base_component::InlineMeasureContext;
+        use crate::view::base_component::text_area::TextAreaTextRun;
+
+        let mut arena = new_test_arena();
+        let content = "First line with a long value that can wrap when auto wrap is enabled.";
+        let mut run = TextAreaTextRun::new(content.to_string(), 0..content.chars().count());
+        run.measure_inline(
+            InlineMeasureContext {
+                first_available_width: 220.0,
+                full_available_width: 220.0,
+                viewport_width: 220.0,
+                viewport_height: 200.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(200.0),
+            },
+            &mut arena,
+        );
+
+        let nodes = run.get_inline_nodes_size(&arena);
+        assert!(
+            nodes.len() >= 2,
+            "wrapped TextAreaTextRun must expose one inline node per visual line, got {nodes:?}"
+        );
+        for (idx, node) in nodes[..nodes.len() - 1].iter().enumerate() {
+            assert!(
+                node.force_break_after,
+                "wrapped visual line {idx} must force a parent inline break"
+            );
+        }
+        assert!(
+            !nodes.last().expect("last visual line").force_break_after,
+            "last soft-wrapped visual line should leave room for following inline siblings"
+        );
+    }
+
     // ---- Sprint 3: D3 vertical-align offset formula ----
 
     /// Helper: build a parent inline container holding two pure
@@ -7635,13 +7672,13 @@ mod tests {
     /// a child following a forced-break sibling receives a tiny
     /// `first_available_width` (residue from the previous line's
     /// accumulated width). The flex solver later places that child on
-    /// a fresh line, but cosmic-text inside fragmentable inline
+    /// a fresh line, but the text layout adapter inside fragmentable inline
     /// children would have already wrapped at the wrong glyph
     /// boundary. Repro: a `TextAreaTextRun` that fills most of the
     /// row and has a trailing newline (force_break) followed by a
     /// fragmentable Auto/Auto Element wrapping a short Text. Without
     /// the fix, the inner Text receives a narrow first_available_width
-    /// and cosmic-text wraps it on the wrong boundary; the chip ends
+    /// and the text layout adapter wraps it on the wrong boundary; the chip ends
     /// up with multiple fragments instead of a single atomic one.
     #[test]
     fn force_break_after_resets_measure_line_state_for_fragmentable_chip() {
@@ -7667,7 +7704,7 @@ mod tests {
 
         // Fragmentable chip: Auto/Auto inline Element wrapping a Text.
         // Text content is short enough to fit on a fresh line; with a
-        // narrow first_available_width residue, cosmic-text would wrap
+        // narrow first_available_width residue, the text layout adapter would wrap
         // it across two fragments.
         let mut chip = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut chip_style = Style::new();
@@ -7718,6 +7755,213 @@ mod tests {
             fragments.len(),
             fragments
         );
+    }
+
+    #[test]
+    fn text_area_projection_segment_wraps_when_first_fragment_cannot_fit_residue() {
+        use crate::view::base_component::text_area::{
+            TextAreaProjectionSegment, TextAreaTextRun,
+        };
+
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(220.0)));
+        parent.apply_style(style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let prev_key = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 214.0, 18.0)),
+        );
+
+        let mut badge = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut badge_style = Style::new();
+        badge_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        badge_style.insert(PropertyId::Width, ParsedValue::Auto);
+        badge_style.insert(PropertyId::Height, ParsedValue::Auto);
+        badge.apply_style(badge_style);
+        badge.set_padding_left(8.0);
+        badge.set_padding_right(8.0);
+        let projection_index = arena.children_of(parent_key).len();
+        let projection_key = crate::view::renderer_adapter::arena_insert_child(
+            &mut arena,
+            parent_key,
+            projection_index,
+            crate::view::renderer_adapter::ElementDescriptor {
+                element: Box::new(TextAreaProjectionSegment::new()),
+                children: vec![crate::view::renderer_adapter::ElementDescriptor {
+                    element: Box::new(badge),
+                    children: vec![crate::view::renderer_adapter::ElementDescriptor::leaf(
+                        Box::new(Text::from_content("{{API_HOST}}")),
+                    )],
+                    side_slots: vec![],
+                }],
+                side_slots: vec![],
+            },
+        );
+
+        let suffix_key = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(TextAreaTextRun::new("/v1/users/".to_string(), 0..10)),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 220.0,
+                max_height: 240.0,
+                viewport_width: 220.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 220.0,
+                available_height: 240.0,
+                viewport_width: 220.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(220.0),
+                percent_base_height: Some(240.0),
+            },
+        );
+
+        let prev = child_snapshot(&arena, prev_key);
+        let projection = child_snapshot(&arena, projection_key);
+        let suffix = child_snapshot(&arena, suffix_key);
+        assert!(
+            projection.y > prev.y + 1.0,
+            "projection must wrap to a fresh line when the residue cannot fit it: prev={prev:?}, projection={projection:?}"
+        );
+        assert!(
+            suffix.y >= projection.y - 1.0
+                && suffix.y < projection.y + projection.height.max(1.0),
+            "suffix should stay within the projection line box: projection={projection:?}, suffix={suffix:?}"
+        );
+        assert!(
+            suffix.x >= projection.x + projection.width - 1.0,
+            "suffix should be placed after the projection, not overlap it: projection={projection:?}, suffix={suffix:?}"
+        );
+    }
+
+    #[test]
+    fn text_area_projection_segment_forces_breaks_between_wrapped_inner_lines() {
+        use crate::view::base_component::text_area::TextAreaProjectionSegment;
+
+        let mut arena = new_test_arena();
+        let mut text = Text::from_content("{{USER_ID_WITH_A_VERY_LONG_PROJECTION_BADGE}}");
+        text.set_auto_width(true);
+        text.set_auto_height(true);
+        let segment_key = crate::view::test_support::commit_descriptor(
+            &mut arena,
+            None,
+            crate::view::renderer_adapter::ElementDescriptor {
+                element: Box::new(TextAreaProjectionSegment::new()),
+                children: vec![crate::view::renderer_adapter::ElementDescriptor::leaf(
+                    Box::new(text),
+                )],
+                side_slots: vec![],
+            },
+        );
+
+        arena.with_element_taken(segment_key, |el, arena| {
+            el.measure_inline(
+                super::InlineMeasureContext {
+                    first_available_width: 120.0,
+                    full_available_width: 120.0,
+                    viewport_width: 120.0,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(120.0),
+                    percent_base_height: Some(240.0),
+                },
+                arena,
+            );
+        });
+
+        let nodes = arena
+            .with_element_taken_ref(segment_key, |el, arena| el.get_inline_nodes_size(arena))
+            .expect("segment inline nodes");
+        assert!(
+            nodes.len() >= 2,
+            "projection segment should expose wrapped inner text lines, got {nodes:?}"
+        );
+        for (idx, node) in nodes[..nodes.len() - 1].iter().enumerate() {
+            assert!(
+                node.force_break_after,
+                "projection fragment {idx} must force a parent inline break"
+            );
+        }
+        assert!(
+            !nodes.last().expect("last projection fragment").force_break_after,
+            "last projection fragment should allow following siblings on the same line"
+        );
+    }
+
+    #[test]
+    fn text_area_projection_segment_preserves_projection_root_vertical_align() {
+        use crate::view::base_component::text_area::TextAreaProjectionSegment;
+
+        let mut arena = new_test_arena();
+        let mut badge = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut badge_style = Style::new();
+        badge_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        badge_style.insert(PropertyId::Width, ParsedValue::Auto);
+        badge_style.insert(PropertyId::Height, ParsedValue::Auto);
+        badge_style.insert(
+            PropertyId::VerticalAlign,
+            ParsedValue::VerticalAlign(VerticalAlign::Middle),
+        );
+        badge.apply_style(badge_style);
+
+        let segment_key = crate::view::test_support::commit_descriptor(
+            &mut arena,
+            None,
+            crate::view::renderer_adapter::ElementDescriptor {
+                element: Box::new(TextAreaProjectionSegment::new()),
+                children: vec![crate::view::renderer_adapter::ElementDescriptor {
+                    element: Box::new(badge),
+                    children: vec![crate::view::renderer_adapter::ElementDescriptor::leaf(
+                        Box::new(Text::from_content("{{API_HOST}}")),
+                    )],
+                    side_slots: vec![],
+                }],
+                side_slots: vec![],
+            },
+        );
+
+        arena.with_element_taken(segment_key, |el, arena| {
+            el.measure_inline(
+                super::InlineMeasureContext {
+                    first_available_width: 120.0,
+                    full_available_width: 120.0,
+                    viewport_width: 120.0,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(120.0),
+                    percent_base_height: Some(240.0),
+                },
+                arena,
+            );
+        });
+
+        let nodes = arena
+            .with_element_taken_ref(segment_key, |el, arena| el.get_inline_nodes_size(arena))
+            .expect("segment inline nodes");
+        assert!(!nodes.is_empty(), "projection segment should expose inline nodes");
+        for (idx, node) in nodes.iter().enumerate() {
+            assert_eq!(
+                node.vertical_align,
+                VerticalAlign::Middle,
+                "projection fragment {idx} must preserve the projection root's vertical_align"
+            );
+        }
     }
 
     // ---- vertical-align as style prop (Style builder + cascade) ----
@@ -7817,10 +8061,8 @@ mod tests {
 
     // ---- Sprint 4: line-height leading verification ----
     //
-    // Sprint 1 already pulls baseline from cosmic-text's
-    // `LayoutRun.line_y - line_top`, which by construction equals
-    // `max_ascent + (line_height - glyph_height)/2` (D4). These tests
-    // exist to lock in the leading/2 distribution invariant and
+    // Text baselines come from the text layout adapter's first visual line.
+    // These tests exist to lock in the leading/2 distribution invariant and
     // confirm the Element-side baseline is untouched by line_height.
 
     /// D4: doubling line-height pushes a Text fragment's baseline down

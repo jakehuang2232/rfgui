@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 
-use cosmic_text::FontSystem;
-use cosmic_text::fontdb;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Uint8Array;
+use parley::fontique::{Blob, GenericFamily};
+use parley::{FontContext as ParleyFontContext, LayoutContext as ParleyLayoutContext};
 use std::sync::Arc;
 use std::sync::Mutex;
 #[cfg(target_arch = "wasm32")]
@@ -17,45 +17,47 @@ const WASM_FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../assets/NotoSans-Re
 static RUNTIME_FONTS: Mutex<Vec<Arc<Vec<u8>>>> = Mutex::new(Vec::new());
 
 thread_local! {
-    static SHARED_FONT_SYSTEM: RefCell<FontSystem> = RefCell::new(create_font_system());
+    static SHARED_PARLEY_CONTEXT: RefCell<ParleyTextContext> =
+        RefCell::new(create_parley_text_context());
 }
 
-pub(crate) fn create_font_system() -> FontSystem {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut font_system = FontSystem::new();
-        if let Ok(runtime_fonts) = RUNTIME_FONTS.lock() {
-            for font in runtime_fonts.iter() {
-                font_system
-                    .db_mut()
-                    .load_font_source(fontdb::Source::Binary(font.clone()));
-            }
+pub(crate) struct ParleyTextContext {
+    pub(crate) font: ParleyFontContext,
+    pub(crate) layout: ParleyLayoutContext,
+}
+
+fn create_parley_text_context() -> ParleyTextContext {
+    let mut ctx = ParleyTextContext {
+        font: ParleyFontContext::new(),
+        layout: ParleyLayoutContext::new(),
+    };
+    if let Ok(runtime_fonts) = RUNTIME_FONTS.lock() {
+        for font in runtime_fonts.iter() {
+            ctx.font
+                .collection
+                .register_fonts(Blob::new(font.clone()), None);
         }
-        return font_system;
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        let mut db = fontdb::Database::new();
-        db.load_font_source(fontdb::Source::Binary(Arc::new(
-            WASM_FALLBACK_FONT_BYTES.to_vec(),
-        )));
-        if let Ok(runtime_fonts) = RUNTIME_FONTS.lock() {
-            for font in runtime_fonts.iter() {
-                db.load_font_source(fontdb::Source::Binary(font.clone()));
-            }
-        }
-        db.set_sans_serif_family("Noto Sans");
-        db.set_serif_family("Noto Sans");
-        db.set_monospace_family("Noto Sans");
-        return FontSystem::new_with_locale_and_db(String::from("en-US"), db);
+        ctx.font.collection.register_fonts(
+            Blob::from(WASM_FALLBACK_FONT_BYTES.to_vec()),
+            Some(parley::fontique::FontInfoOverride {
+                family_name: Some("Noto Sans"),
+                ..Default::default()
+            }),
+        );
+        set_parley_default_font_families(&mut ctx, "Noto Sans", "Noto Sans", "Noto Sans");
     }
+
+    ctx
 }
 
-pub(crate) fn with_shared_font_system<R>(f: impl FnOnce(&mut FontSystem) -> R) -> R {
-    SHARED_FONT_SYSTEM.with(|slot| {
-        let mut font_system = slot.borrow_mut();
-        f(&mut font_system)
+pub(crate) fn with_shared_parley_context<R>(f: impl FnOnce(&mut ParleyTextContext) -> R) -> R {
+    SHARED_PARLEY_CONTEXT.with(|slot| {
+        let mut ctx = slot.borrow_mut();
+        f(&mut ctx)
     })
 }
 
@@ -74,10 +76,10 @@ pub fn register_font_bytes(bytes: &[u8]) -> bool {
     };
 
     if inserted {
-        with_shared_font_system(|font_system| {
-            font_system
-                .db_mut()
-                .load_font_source(fontdb::Source::Binary(font));
+        with_shared_parley_context(|ctx| {
+            ctx.font
+                .collection
+                .register_fonts(Blob::new(font.clone()), None);
         });
     }
 
@@ -90,12 +92,32 @@ pub fn register_font_bytes(bytes: &[u8]) -> bool {
 /// family names (sans-serif, serif, monospace) resolve to the newly
 /// registered typefaces.
 pub fn set_default_font_families(sans_serif: &str, serif: &str, monospace: &str) {
-    with_shared_font_system(|font_system| {
-        let db = font_system.db_mut();
-        db.set_sans_serif_family(sans_serif);
-        db.set_serif_family(serif);
-        db.set_monospace_family(monospace);
+    with_shared_parley_context(|ctx| {
+        set_parley_default_font_families(ctx, sans_serif, serif, monospace);
     });
+}
+
+fn set_parley_default_font_families(
+    ctx: &mut ParleyTextContext,
+    sans_serif: &str,
+    serif: &str,
+    monospace: &str,
+) {
+    if let Some(id) = ctx.font.collection.family_id(sans_serif) {
+        ctx.font
+            .collection
+            .set_generic_families(GenericFamily::SansSerif, [id].into_iter());
+    }
+    if let Some(id) = ctx.font.collection.family_id(serif) {
+        ctx.font
+            .collection
+            .set_generic_families(GenericFamily::Serif, [id].into_iter());
+    }
+    if let Some(id) = ctx.font.collection.family_id(monospace) {
+        ctx.font
+            .collection
+            .set_generic_families(GenericFamily::Monospace, [id].into_iter());
+    }
 }
 
 // ---------------------------------------------------------------------------

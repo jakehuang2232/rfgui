@@ -57,7 +57,12 @@ fn build_viewport(content: &str) -> (Viewport, crate::view::node_arena::NodeKey)
     (viewport, root)
 }
 
-fn set_selection(viewport: &mut Viewport, root: crate::view::node_arena::NodeKey, start: usize, end: usize) {
+fn set_selection(
+    viewport: &mut Viewport,
+    root: crate::view::node_arena::NodeKey,
+    start: usize,
+    end: usize,
+) {
     let mut arena = std::mem::take(&mut viewport.scene.node_arena);
     arena.with_element_taken(root, |el, _| {
         let ta = el
@@ -94,7 +99,10 @@ fn copy_event_with_selection_queues_clipboard_write() {
     assert!(handled, "copy should be marked handled");
 
     assert_eq!(
-        viewport.pending_platform_requests.clipboard_write.as_deref(),
+        viewport
+            .pending_platform_requests
+            .clipboard_write
+            .as_deref(),
         Some("hello"),
         "clipboard_write should hold the selection"
     );
@@ -120,7 +128,10 @@ fn cut_event_writes_clipboard_and_deletes_selection() {
     viewport.dispatch_cut_event();
 
     assert_eq!(
-        viewport.pending_platform_requests.clipboard_write.as_deref(),
+        viewport
+            .pending_platform_requests
+            .clipboard_write
+            .as_deref(),
         Some("hello"),
     );
     assert_eq!(read_content(&mut viewport, root), " world");
@@ -144,7 +155,10 @@ fn cut_event_on_read_only_copies_but_does_not_delete() {
     viewport.dispatch_cut_event();
 
     assert_eq!(
-        viewport.pending_platform_requests.clipboard_write.as_deref(),
+        viewport
+            .pending_platform_requests
+            .clipboard_write
+            .as_deref(),
         Some("hello"),
     );
     assert_eq!(read_content(&mut viewport, root), "hello world");

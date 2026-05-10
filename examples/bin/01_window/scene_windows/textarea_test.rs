@@ -33,7 +33,7 @@ fn projection_token_ranges(content: &str) -> Vec<(usize, usize)> {
 pub fn TextareaTest(theme: Theme) -> RsxNode {
     let content = use_state(|| {
         String::from(
-            "First line with a long value that can wrap when auto wrap is enabled.\n\n{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\nTail line",
+            "First line with a long value that can wrap when auto wrap is enabled.{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\nTail line",
         )
     });
     let multiline = use_state(|| true);
@@ -74,7 +74,7 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                                 background: badge_background.clone(),
                                 border: Border::uniform(Length::px(1.0), &badge_border),
                                 border_radius: BorderRadius::uniform(Length::px(4.0)),
-                                padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
+                                padding: Padding::uniform(Length::px(0.0)).x(Length::px(20.0)),
                                 color: badge_text.clone(),
                                 font_size: theme.typography.size.xl,
                                 // opacity: hover.get().then_some(0.8).unwrap_or(1.0),
