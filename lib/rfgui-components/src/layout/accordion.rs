@@ -120,7 +120,7 @@ fn AccordionView(
             >
                 <Element
                     style={{
-                        font_size: theme.typography.size.md,
+                        font_size: theme.typography.size.sm,
                         flex: flex().grow(1.0),
                         color: if disabled {
                             theme.color.text.disabled.clone()

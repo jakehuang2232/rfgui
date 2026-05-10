@@ -1,8 +1,9 @@
 use parley::{
     Affinity, Alignment as ParleyAlignment, AlignmentOptions, Cursor as ParleyCursor, FontData,
-    FontFamily, FontWeight, Layout as ParleyLayout, LineHeight, OverflowWrap, StyleProperty,
-    TextWrapMode, YieldData,
+    FontFamily, FontFamilyName, FontWeight, GenericFamily, Layout as ParleyLayout, LineHeight,
+    OverflowWrap, StyleProperty, TextWrapMode, YieldData,
 };
+use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 
 use crate::ui::Rect;
@@ -474,11 +475,7 @@ pub(crate) fn build_text_layout_with_style(
         if style.allow_wrap {
             builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
         }
-        let family_source = font_families
-            .first()
-            .map(String::as_str)
-            .unwrap_or("sans-serif");
-        builder.push_default(StyleProperty::FontFamily(FontFamily::from(family_source)));
+        builder.push_default(StyleProperty::FontFamily(parley_font_family(font_families)));
 
         let mut layout = builder.build(content);
         break_parley_lines(&mut layout, style.allow_wrap, width, width);
@@ -511,11 +508,7 @@ fn build_text_layout_with_style_and_line_widths(
         )));
         builder.push_default(StyleProperty::TextWrapMode(TextWrapMode::Wrap));
         builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
-        let family_source = font_families
-            .first()
-            .map(String::as_str)
-            .unwrap_or("sans-serif");
-        builder.push_default(StyleProperty::FontFamily(FontFamily::from(family_source)));
+        builder.push_default(StyleProperty::FontFamily(parley_font_family(font_families)));
 
         let mut layout = builder.build(content);
         break_parley_lines(&mut layout, true, Some(first_width), Some(full_width));
@@ -590,6 +583,21 @@ fn to_parley_alignment(align: TextLayoutAlignment) -> ParleyAlignment {
     }
 }
 
+fn parley_font_family(font_families: &[String]) -> FontFamily<'_> {
+    if font_families.is_empty() {
+        return FontFamily::from("sans-serif");
+    }
+
+    let names = font_families
+        .iter()
+        .map(|family| {
+            FontFamilyName::parse(family.as_str())
+                .unwrap_or_else(|| FontFamilyName::named(family.as_str()))
+        })
+        .collect::<Vec<_>>();
+    FontFamily::List(Cow::Owned(names))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +614,34 @@ mod tests {
             &[],
         )
         .layout
+    }
+
+    #[test]
+    fn parley_font_family_preserves_ordered_family_list() {
+        let families = vec![
+            "Noto Sans CJK TC".to_string(),
+            "PingFang TC".to_string(),
+            "sans-serif".to_string(),
+        ];
+
+        let font_family = parley_font_family(&families);
+
+        let FontFamily::List(list) = font_family else {
+            panic!("expected ordered font family list");
+        };
+        assert_eq!(list.len(), 3);
+        assert!(matches!(
+            &list[0],
+            FontFamilyName::Named(name) if name.as_ref() == "Noto Sans CJK TC"
+        ));
+        assert!(matches!(
+            &list[1],
+            FontFamilyName::Named(name) if name.as_ref() == "PingFang TC"
+        ));
+        assert!(matches!(
+            list[2],
+            FontFamilyName::Generic(GenericFamily::SansSerif)
+        ));
     }
 
     #[test]
