@@ -1059,32 +1059,77 @@ pub(crate) fn scroll_into_view_impl(
     if !arena.contains_key(target_key) {
         return false;
     }
-    // Snapshot target rect once.
-    let Some(target_rect) = arena
-        .get(target_key)
-        .map(|n| n.element.box_model_snapshot())
-    else {
+    let Some(target_rect) = arena.get(target_key).map(|n| {
+        let snapshot = n.element.box_model_snapshot();
+        crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height)
+    }) else {
         return false;
     };
-    // Walk ancestors looking for the first node that can scroll in any
-    // direction. `find_scroll_handler_bubble` already searches upward by
-    // probing `can_scroll_by`; passing both axes covers either direction.
-    let scroller = find_scroll_handler_bubble(arena, target_key, 1.0, 1.0)
-        .or_else(|| find_scroll_handler_bubble(arena, target_key, -1.0, -1.0))
-        .or_else(|| find_scroll_handler_bubble(arena, target_key, 1.0, -1.0))
-        .or_else(|| find_scroll_handler_bubble(arena, target_key, -1.0, 1.0));
-    let Some(scroller_key) = scroller else {
+    scroll_rect_into_view_from(arena, target_key, target_rect, options, true, false)
+}
+
+pub(crate) fn scroll_rect_into_view_from(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    target_rect: crate::ui::Rect,
+    options: crate::ui::ScrollIntoViewOptions,
+    include_target: bool,
+    reveal_all_ancestors: bool,
+) -> bool {
+    if !arena.contains_key(target_key) {
         return false;
+    }
+
+    let mut current = if include_target {
+        Some(target_key)
+    } else {
+        arena.parent_of(target_key)
     };
-    let Some(scroller_rect) = arena
-        .get(scroller_key)
-        .map(|n| n.element.box_model_snapshot())
-    else {
-        return false;
-    };
-    // Nearest alignment: smallest delta that fits target within ancestor
-    // viewport on each axis. (Block = Y, Inline = X.)
+    let mut rect = target_rect;
+    let mut scrolled = false;
     let _ = options; // Start/Center/End: future work.
+
+    while let Some(scroller_key) = current {
+        current = arena.parent_of(scroller_key);
+        let Some(scroller_rect) = arena.get(scroller_key).map(|n| {
+            let snapshot = n.element.box_model_snapshot();
+            crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height)
+        }) else {
+            continue;
+        };
+
+        let (dx, dy) = nearest_scroll_delta(rect, scroller_rect);
+        if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+            continue;
+        }
+
+        let changed = arena
+            .with_element_taken_ref(scroller_key, |element, _arena| {
+                let before = element.get_scroll_offset();
+                let handled = element.scroll_by(dx, dy);
+                let after = element.get_scroll_offset();
+                let actual_dx = after.0 - before.0;
+                let actual_dy = after.1 - before.1;
+                if handled {
+                    rect.x -= actual_dx;
+                    rect.y -= actual_dy;
+                }
+                handled
+            })
+            .unwrap_or(false);
+        scrolled |= changed;
+        if changed && !reveal_all_ancestors {
+            break;
+        }
+    }
+
+    scrolled
+}
+
+fn nearest_scroll_delta(
+    target_rect: crate::ui::Rect,
+    scroller_rect: crate::ui::Rect,
+) -> (f32, f32) {
     let mut dy = 0.0;
     if target_rect.y < scroller_rect.y {
         dy = target_rect.y - scroller_rect.y;
@@ -1097,10 +1142,7 @@ pub(crate) fn scroll_into_view_impl(
     } else if target_rect.x + target_rect.width > scroller_rect.x + scroller_rect.width {
         dx = (target_rect.x + target_rect.width) - (scroller_rect.x + scroller_rect.width);
     }
-    if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
-        return false;
-    }
-    dispatch_scroll_bubble(arena, scroller_key, dx, dy)
+    (dx, dy)
 }
 
 pub fn get_scroll_offset_by_id(

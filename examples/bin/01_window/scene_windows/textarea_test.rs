@@ -39,11 +39,13 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
     let multiline = use_state(|| true);
     let projection = use_state(|| true);
     let fixed_width = use_state(|| true);
+    let fixed_height = use_state(|| true);
     let auto_wrap = use_state(|| true);
 
     let multiline_value = multiline.get();
     let projection_value = projection.get();
     let fixed_width_value = fixed_width.get();
+    let fixed_height_value = fixed_height.get();
     let auto_wrap_value = auto_wrap.get();
 
     let badge_background = Color::hex("#233241");
@@ -107,12 +109,14 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                 <Switch label="Multiline" binding={multiline.binding()} />
                 <Switch label="Projection" binding={projection.binding()} />
                 <Switch label="Fixed width" binding={fixed_width.binding()} />
+                <Switch label="Fixed height" binding={fixed_height.binding()} />
                 <Switch label="Auto wrap" binding={auto_wrap.binding()} />
             </Element>
-            <Text>{format!("chars={} lines={} width={} projection={} wrap={}",
+            <Text>{format!("chars={} lines={} width={} height={} projection={} wrap={}",
                 content.get().chars().count(),
                 content.get().lines().count(),
                 if fixed_width_value { "fixed" } else { "auto" },
+                if fixed_height_value { "fixed" } else { "auto" },
                 projection_value,
                 auto_wrap_value,
             )}</Text>
@@ -122,7 +126,7 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
             // style is text-side only (color / font / font-size).
             <Element style={{
                 width: fixed_width_value.then_some(textarea_width),
-                height: textarea_height,
+                height: fixed_height_value.then_some(textarea_height),
                 background: theme.color.background.base.clone(),
                 border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
                 border_radius: theme.radius.md,

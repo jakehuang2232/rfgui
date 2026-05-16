@@ -75,6 +75,7 @@ pub(crate) fn measure_axis_children(inputs: MeasureChildrenInputs<'_>, arena: &m
                         InlineMeasureContext {
                             first_available_width,
                             full_available_width: inner_width,
+                            available_height: child_available_height,
                             viewport_width,
                             viewport_height,
                             percent_base_width: child_percent_base_width,

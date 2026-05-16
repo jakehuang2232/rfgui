@@ -24,7 +24,7 @@ use crate::view::render_pass::draw_rect_pass::{
 };
 
 use super::TextArea;
-use super::run::TextAreaTextRun;
+use super::run::{TextAreaLineBreak, TextAreaTextRun};
 use crate::view::base_component::Text;
 
 const CARET_BLINK_PERIOD: Duration = Duration::from_millis(1060);
@@ -89,7 +89,9 @@ impl TextArea {
             .and_then(|idx| self.children.get(idx).copied())
             .map(|key| {
                 !arena
-                    .with_element_taken_ref(key, |el, _| el.as_any().is::<TextAreaTextRun>())
+                    .with_element_taken_ref(key, |el, _| {
+                        el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
+                    })
                     .unwrap_or(false)
             })
             .unwrap_or(false);
@@ -100,37 +102,23 @@ impl TextArea {
             }
         }
 
-        // v1-aligned rule: walk children in order, first child whose
-        // half-open range contains the cursor wins. This makes boundary
-        // positions prefer the following child (cursor == projection.start
-        // belongs to that projection), with tail-of-content falling back
-        // to the last Run drawn at its end. One child-kind special:
-        //   * Run with `has_trailing_newline` AND `cursor == range.end`:
-        //     caret jumps to the *next* child's top-left (CSS "after the
-        //     newline = start of next visual line"). Mirrors v1's
-        //     `Newline && cursor == source_range.end` branch.
+        // Fallback for projection-hosted carets and legacy callers:
+        // walk children in order, first child whose half-open range
+        // contains the cursor wins. Boundary positions prefer the
+        // following child (`cursor == projection.start` belongs to that
+        // projection), with tail-of-content falling back to the last text
+        // run or line break.
         let mut chosen_idx: Option<usize> = None;
-        let mut upstream_newline_idx: Option<usize> = None;
-        let mut last_run_idx: Option<usize> = None;
+        let mut last_text_idx: Option<usize> = None;
         for (idx, child_range) in self.child_char_ranges.iter().enumerate() {
             let &child_key = self.children.get(idx)?;
-            let is_run = arena
-                .with_element_taken_ref(child_key, |el, _| el.as_any().is::<TextAreaTextRun>())
+            let is_text = arena
+                .with_element_taken_ref(child_key, |el, _| {
+                    el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
+                })
                 .unwrap_or(false);
-            if is_run {
-                last_run_idx = Some(idx);
-                if self.cursor_affinity == super::caret_map::CaretAffinity::Upstream
-                    && self.cursor_char == child_range.end
-                    && arena
-                        .with_element_taken_ref(child_key, |el, _| {
-                            el.as_any()
-                                .downcast_ref::<TextAreaTextRun>()
-                                .is_some_and(|run| run.has_trailing_newline)
-                        })
-                        .unwrap_or(false)
-                {
-                    upstream_newline_idx = Some(idx);
-                }
+            if is_text {
+                last_text_idx = Some(idx);
             }
             if chosen_idx.is_none()
                 && self.cursor_char >= child_range.start
@@ -140,60 +128,40 @@ impl TextArea {
                 break;
             }
         }
-        let idx = upstream_newline_idx.or(chosen_idx).or(last_run_idx)?;
+        let idx = chosen_idx.or(last_text_idx)?;
         let &key = self.children.get(idx)?;
         let range = self.child_char_ranges.get(idx)?.clone();
         let line_h = self.font_size.max(1.0) * self.line_height;
-
-        // Run "trailing-newline at end" special case: the cursor is past
-        // the `\n`, so the caret belongs to the *following* sibling's
-        // top-left. Read the next sibling's layout up front so the
-        // closure below isn't double-borrowed.
-        let next_sibling_origin = if self.cursor_char == range.end {
-            self.children.get(idx + 1).and_then(|&next_key| {
-                arena.with_element_taken_ref(next_key, |el, _| {
-                    let snap = el.box_model_snapshot();
-                    (snap.x, snap.y)
-                })
-            })
-        } else {
-            None
-        };
 
         // Branch on host kind without holding a take-borrow on `key`,
         // since the projection branch needs to DFS the same subtree
         // (calling `with_element_taken_ref(key, ...)` recursively would
         // deadlock on the host slot).
-        let host_is_run = arena
-            .with_element_taken_ref(key, |el, _| el.as_any().is::<TextAreaTextRun>())
+        let host_is_text = arena
+            .with_element_taken_ref(key, |el, _| {
+                el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
+            })
             .unwrap_or(false);
 
-        if host_is_run {
+        if host_is_text {
             return arena.with_element_taken_ref(key, |el, _| {
-                let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                if run.has_trailing_newline && self.cursor_char == range.end {
-                    if self.cursor_affinity == super::caret_map::CaretAffinity::Upstream {
-                        let local = run.text.chars().count();
-                        let (x, y_top, lh) = run.local_char_to_screen_position_with_affinity(
-                            local,
-                            self.cursor_affinity,
-                        )?;
-                        return Some((
-                            run.layout_state.layout_position.x + x,
-                            run.layout_state.layout_position.y + y_top,
-                            lh,
-                        ));
-                    }
-                    if let Some((nx, ny)) = next_sibling_origin {
-                        return Some((nx, ny, line_h));
-                    }
-                    // No next sibling: pin caret to the start of the
-                    // following visual line directly under the Run.
-                    let x = run.layout_state.layout_position.x;
-                    let y =
-                        run.layout_state.layout_position.y + run.layout_state.layout_size.height;
-                    return Some((x, y, line_h));
+                if let Some(line_break) = el.as_any().downcast_ref::<TextAreaLineBreak>() {
+                    let local = self.cursor_char.saturating_sub(range.start).min(1);
+                    let line = line_break
+                        .caret_stops()
+                        .into_iter()
+                        .find(|line| line.stops.iter().any(|stop| stop.local_char == local))?;
+                    let stop = line
+                        .stops
+                        .into_iter()
+                        .find(|stop| stop.local_char == local)?;
+                    return Some((
+                        line_break.layout_state.layout_position.x + stop.local_x,
+                        line_break.layout_state.layout_position.y + stop.local_y_top,
+                        stop.height,
+                    ));
                 }
+                let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
                 let (x, y_top, lh) = if run.inline_preedit.is_some() {
                     run.preedit_caret_local_position()?
                 } else {
@@ -377,7 +345,9 @@ impl TextArea {
             }
             let &child_key = self.children.get(idx)?;
             let is_projection = arena
-                .with_element_taken_ref(child_key, |el, _| !el.as_any().is::<TextAreaTextRun>())
+                .with_element_taken_ref(child_key, |el, _| {
+                    !el.as_any().is::<TextAreaTextRun>() && !el.as_any().is::<TextAreaLineBreak>()
+                })
                 .unwrap_or(false);
             if !is_projection {
                 return None;
@@ -1009,6 +979,54 @@ mod tests {
         arena.get(key).expect("node").element.box_model_snapshot()
     }
 
+    fn plain_preedit_fixture(content: &str, cursor_char: usize) -> (NodeArena, NodeKey) {
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.cursor_char = cursor_char;
+        text_area.ime_preedit = "\u{4E2D}".to_string();
+        text_area.ime_preedit_cursor = Some((3, 3));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 300.0,
+                max_height: 300.0,
+                viewport_width: 300.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            LayoutPlacement {
+                parent_x: 10.0,
+                parent_y: 20.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 300.0,
+                available_height: 300.0,
+                viewport_width: 300.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+        );
+        (arena, root)
+    }
+
     #[test]
     fn projection_fallback_caret_start_uses_projection_left_edge() {
         let (arena, root) = projection_fixture(2, false);
@@ -1491,6 +1509,53 @@ mod tests {
         assert!(
             (down_y - lower_y).abs() < (lower_y - upper_y) * 0.5,
             "[lower-head] Downstream y ({down_y}) should match lower line ({lower_y})",
+        );
+    }
+
+    #[test]
+    fn preedit_underline_uses_middle_empty_paragraph_run() {
+        let (arena, root) = plain_preedit_fixture("a\n\nb", 2);
+
+        let rects = arena
+            .with_element_taken_ref(root, |el, arena| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .preedit_underline_screen_rects(arena)
+            })
+            .expect("root exists");
+
+        assert!(!rects.is_empty(), "expected empty-line IME underline");
+        assert!(
+            rects
+                .iter()
+                .all(|rect| rect.height == 1.0 && rect.width >= 1.0),
+            "IME underline should be visible 1px strokes: {rects:?}"
+        );
+    }
+
+    #[test]
+    fn preedit_underline_uses_trailing_empty_paragraph_run() {
+        let (arena, root) = plain_preedit_fixture("a\n", 2);
+
+        let rects = arena
+            .with_element_taken_ref(root, |el, arena| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .preedit_underline_screen_rects(arena)
+            })
+            .expect("root exists");
+
+        assert!(
+            !rects.is_empty(),
+            "expected trailing empty-line IME underline"
+        );
+        assert!(
+            rects
+                .iter()
+                .all(|rect| rect.height == 1.0 && rect.width >= 1.0),
+            "IME underline should be visible 1px strokes: {rects:?}"
         );
     }
 

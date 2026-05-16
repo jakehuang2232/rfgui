@@ -11,11 +11,11 @@ use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use crate::view::text_layout::{TextGlyph, TextLayout};
 use parley::FontData as ParleyFontData;
 use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 #[cfg(test)]
 use std::collections::hash_map::DefaultHasher;
 #[cfg(test)]
 use std::hash::{Hash, Hasher};
-use std::cell::RefCell;
 use std::sync::Arc;
 use swash::FontRef as SwashFontRef;
 use swash::scale::image::{Content as SwashRasterContent, Image as SwashRasterImage};
@@ -434,7 +434,9 @@ fn prepare_text_pass(
             &queue,
             &mut resources,
             AtlasKind::Color,
-            pending.iter().filter(|glyph| glyph.kind == AtlasKind::Color),
+            pending
+                .iter()
+                .filter(|glyph| glyph.kind == AtlasKind::Color),
         );
         resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Mask);
         resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Color);
@@ -474,9 +476,13 @@ fn collect_fragment_glyphs(
     for line in layout.lines() {
         let baseline_y = line.y + line.baseline;
         for glyph in line.glyphs {
-            let Some(image) =
-                rasterize_glyph(scale_context, raster_cache, frame_epoch, &glyph, scale_factor)
-            else {
+            let Some(image) = rasterize_glyph(
+                scale_context,
+                raster_cache,
+                frame_epoch,
+                &glyph,
+                scale_factor,
+            ) else {
                 continue;
             };
             let width = image.placement.width.max(1) as f32;

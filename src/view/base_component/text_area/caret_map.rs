@@ -3,8 +3,10 @@
 //!
 //! See `docs/design/textarea-caret-navigation.md` for the design.
 //!
-//! Both Run and projection children contribute stops:
+//! Text runs, line breaks, and projection children contribute stops:
 //! - `TextAreaTextRun` exposes per-line caret stops via `caret_stops()`.
+//! - `TextAreaLineBreak` owns the `\n` source char and exposes the caret
+//!   positions before and after the hard break.
 //! - Projection roots DFS for the first text-bearing descendant
 //!   (`<Text>` / `TextAreaTextRun`) and use its real glyph stops, mirroring
 //!   `render.rs` / `hit_test.rs`. Icon-only projections (no text descendant)
@@ -17,7 +19,7 @@ use crate::view::base_component::{Element, Text};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::TextArea;
-use super::run::TextAreaTextRun;
+use super::run::{TextAreaLineBreak, TextAreaTextRun};
 
 /// One caret stop in screen coordinates. `char_index` is in the root
 /// content's char space (i.e. directly comparable with
@@ -81,18 +83,33 @@ impl CaretNavigationMap {
     pub(super) fn build(text_area: &TextArea, arena: &NodeArena) -> Self {
         let mut raw_lines: Vec<CaretVisualLine> = Vec::new();
         for (idx, &child_key) in text_area.children.iter().enumerate() {
-            let is_run = arena
-                .with_element_taken_ref(child_key, |el, _| el.as_any().is::<TextAreaTextRun>())
+            let is_text_child = arena
+                .with_element_taken_ref(child_key, |el, _| {
+                    el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
+                })
                 .unwrap_or(false);
-            if is_run {
+            if is_text_child {
                 let lines = arena
                     .with_element_taken_ref(child_key, |el, _| {
-                        let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                        let origin_x = run.layout_state.layout_position.x;
-                        let origin_y = run.layout_state.layout_position.y;
-                        let char_offset = run.char_range.start;
+                        let (origin_x, origin_y, char_offset, caret_lines) =
+                            if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
+                                (
+                                    run.layout_state.layout_position.x,
+                                    run.layout_state.layout_position.y,
+                                    run.char_range.start,
+                                    run.caret_stops(),
+                                )
+                            } else {
+                                let line_break = el.as_any().downcast_ref::<TextAreaLineBreak>()?;
+                                (
+                                    line_break.layout_state.layout_position.x,
+                                    line_break.layout_state.layout_position.y,
+                                    line_break.char_range.start,
+                                    line_break.caret_stops(),
+                                )
+                            };
                         let mut translated: Vec<CaretVisualLine> = Vec::new();
-                        for line in run.caret_stops() {
+                        for line in caret_lines {
                             let stops = line
                                 .stops
                                 .into_iter()
@@ -159,6 +176,10 @@ impl CaretNavigationMap {
                 deduped.push(stop);
             }
             line.stops = deduped;
+            for stop in line.stops.iter_mut() {
+                stop.y_top = line.y_top;
+                stop.height = (line.y_bottom - line.y_top).max(1.0);
+            }
         }
         Self { lines }
     }
@@ -260,7 +281,7 @@ impl CaretNavigationMap {
             let bd = (b.x - x).abs();
             ad.partial_cmp(&bd)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.char_index.cmp(&a.char_index))
+                .then_with(|| a.char_index.cmp(&b.char_index))
         })?;
         Some(VerticalTarget {
             char_index: stop.char_index,
