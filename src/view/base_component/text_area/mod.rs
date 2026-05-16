@@ -26,7 +26,7 @@ mod state;
 pub use ime_context::TextAreaImeContext;
 pub use render_string::{TextAreaRenderProjection, TextAreaRenderString};
 #[allow(unused_imports)] // re-exported for P2+; not yet referenced outside the module.
-pub(crate) use run::TextAreaTextRun;
+pub(crate) use run::{TextAreaLineBreak, TextAreaTextRun};
 #[allow(unused_imports)] // P8 M1+: emitted by TextArea schema render.
 pub(crate) use segment::TextAreaProjectionSegment;
 

@@ -925,6 +925,7 @@ impl LayoutPlacement {
 pub struct InlineMeasureContext {
     pub first_available_width: f32,
     pub full_available_width: f32,
+    pub available_height: f32,
     pub viewport_width: f32,
     pub viewport_height: f32,
     pub percent_base_width: Option<f32>,

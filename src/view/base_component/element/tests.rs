@@ -5950,6 +5950,7 @@ mod tests {
             el.measure_inline(super::InlineMeasureContext {
                 first_available_width: 200.0,
                 full_available_width: 200.0,
+                available_height: 1_000_000.0,
                 viewport_width: 200.0,
                 viewport_height: 120.0,
                 percent_base_width: Some(200.0),
@@ -5964,6 +5965,7 @@ mod tests {
             el.measure_inline(super::InlineMeasureContext {
                 first_available_width: 40.0,
                 full_available_width: 200.0,
+                available_height: 1_000_000.0,
                 viewport_width: 200.0,
                 viewport_height: 120.0,
                 percent_base_width: Some(200.0),
@@ -7171,6 +7173,7 @@ mod tests {
             InlineMeasureContext {
                 first_available_width: 200.0,
                 full_available_width: 200.0,
+                available_height: 1_000_000.0,
                 viewport_width: 200.0,
                 viewport_height: 200.0,
                 percent_base_width: Some(200.0),
@@ -7207,6 +7210,7 @@ mod tests {
             InlineMeasureContext {
                 first_available_width: 220.0,
                 full_available_width: 220.0,
+                available_height: 1_000_000.0,
                 viewport_width: 220.0,
                 viewport_height: 200.0,
                 percent_base_width: Some(220.0),
@@ -7682,7 +7686,7 @@ mod tests {
     /// up with multiple fragments instead of a single atomic one.
     #[test]
     fn force_break_after_resets_measure_line_state_for_fragmentable_chip() {
-        use crate::view::base_component::text_area::TextAreaTextRun;
+        use crate::view::base_component::text_area::{TextAreaLineBreak, TextAreaTextRun};
 
         let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
@@ -7693,14 +7697,17 @@ mod tests {
         let parent_key = commit_element(&mut arena, Box::new(parent));
 
         // Force-break source: a text run filling most of the row width,
-        // with `\n` trailing (force_break_after=true on its single
-        // fragment).
-        let mut prev = TextAreaTextRun::new(
+        // followed by an explicit `\n` formatting object.
+        let prev = TextAreaTextRun::new(
             "First line filling almost the whole row.".to_string(),
             0..40,
         );
-        prev.set_has_trailing_newline(true);
         commit_child(&mut arena, parent_key, Box::new(prev));
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(TextAreaLineBreak::new(40..41)),
+        );
 
         // Fragmentable chip: Auto/Auto inline Element wrapping a Text.
         // Text content is short enough to fit on a fresh line; with a
@@ -7877,6 +7884,7 @@ mod tests {
                 super::InlineMeasureContext {
                     first_available_width: 120.0,
                     full_available_width: 120.0,
+                    available_height: 1_000_000.0,
                     viewport_width: 120.0,
                     viewport_height: 240.0,
                     percent_base_width: Some(120.0),
@@ -7942,6 +7950,7 @@ mod tests {
                 super::InlineMeasureContext {
                     first_available_width: 120.0,
                     full_available_width: 120.0,
+                    available_height: 1_000_000.0,
                     viewport_width: 120.0,
                     viewport_height: 240.0,
                     percent_base_width: Some(120.0),
@@ -8049,6 +8058,7 @@ mod tests {
         let measure_ctx = crate::view::base_component::InlineMeasureContext {
             first_available_width: 200.0,
             full_available_width: 200.0,
+            available_height: 1_000_000.0,
             viewport_width: 200.0,
             viewport_height: 200.0,
             percent_base_width: Some(200.0),
@@ -8079,6 +8089,7 @@ mod tests {
         let measure_ctx = InlineMeasureContext {
             first_available_width: 200.0,
             full_available_width: 200.0,
+            available_height: 1_000_000.0,
             viewport_width: 200.0,
             viewport_height: 200.0,
             percent_base_width: Some(200.0),
@@ -8154,6 +8165,7 @@ mod tests {
         let measure_ctx = InlineMeasureContext {
             first_available_width: 200.0,
             full_available_width: 200.0,
+            available_height: 1_000_000.0,
             viewport_width: 200.0,
             viewport_height: 200.0,
             percent_base_width: Some(200.0),

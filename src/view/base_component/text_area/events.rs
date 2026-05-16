@@ -554,6 +554,127 @@ mod tests {
     }
 
     #[test]
+    fn arrow_right_crosses_projected_hard_newline_to_tail_line() {
+        let content = "First line with a long value that can wrap when auto wrap is enabled.{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\nTail line";
+        let mut text_area = HostTextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.auto_wrap = true;
+        text_area.is_focused = true;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            let ranges = [(69..81), (91..102)];
+            for range in ranges {
+                let slice: String = content
+                    .chars()
+                    .skip(range.start)
+                    .take(range.len())
+                    .collect();
+                render.range(range.clone(), move |_node| {
+                    let slice = slice.clone();
+                    crate::ui::RsxNode::tagged(
+                        "Element",
+                        crate::ui::RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                    )
+                    .with_prop(
+                        "style",
+                        crate::view::ElementStylePropSchema {
+                            padding: Some(
+                                crate::style::Padding::uniform(crate::style::Length::px(0.0))
+                                    .x(crate::style::Length::px(20.0)),
+                            ),
+                            font_size: Some(crate::style::FontSize::Px(24.0)),
+                            border: Some(crate::style::Border::uniform(
+                                crate::style::Length::px(1.0),
+                                &crate::style::Color::hex("#42566f"),
+                            )),
+                            ..Default::default()
+                        },
+                    )
+                    .with_child(
+                        crate::ui::RsxNode::tagged(
+                            "Text",
+                            crate::ui::RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+                        )
+                        .with_child(crate::ui::RsxNode::text(slice)),
+                    )
+                });
+            }
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 342.0,
+                max_height: 176.0,
+                viewport_width: 342.0,
+                viewport_height: 176.0,
+                percent_base_width: Some(342.0),
+                percent_base_height: Some(176.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 342.0,
+                available_height: 176.0,
+                viewport_width: 342.0,
+                viewport_height: 176.0,
+                percent_base_width: Some(342.0),
+                percent_base_height: Some(176.0),
+            },
+        );
+
+        arena.with_element_taken(root, |el, arena| {
+            let text_area = el
+                .as_any_mut()
+                .downcast_mut::<HostTextArea>()
+                .expect("TextArea root");
+            let newline = text_area
+                .content
+                .chars()
+                .position(|ch| ch == '\n')
+                .expect("newline");
+            text_area.cursor_char = newline.saturating_sub(1);
+            text_area.cursor_affinity = CaretAffinity::Downstream;
+
+            while text_area.cursor_char < newline + 1 {
+                assert!(text_area.handle_horizontal_arrow(arena, true));
+            }
+            assert_eq!(text_area.cursor_char, newline + 1);
+            assert_eq!(text_area.cursor_affinity, CaretAffinity::Downstream);
+            let (tail_start_x, tail_start_y, _) =
+                text_area.caret_screen_position(arena).expect("tail start caret");
+
+            assert!(text_area.handle_horizontal_arrow(arena, true));
+            assert_eq!(text_area.cursor_char, newline + 2);
+            let (tail_next_x, tail_next_y, _) =
+                text_area.caret_screen_position(arena).expect("tail next caret");
+            assert!(
+                (tail_next_y - tail_start_y).abs() <= 0.5,
+                "ArrowRight from Tail start must stay on Tail line, start_y={tail_start_y}, next_y={tail_next_y}",
+            );
+            assert!(
+                tail_next_x > tail_start_x + 0.5,
+                "ArrowRight from Tail start must move right, start_x={tail_start_x}, next_x={tail_next_x}",
+            );
+        });
+    }
+
+    #[test]
     fn arrow_right_advances_from_shared_wrap_boundary_to_visible_next_stop() {
         let (mut arena, root) =
             wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);

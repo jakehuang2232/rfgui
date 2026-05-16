@@ -138,6 +138,7 @@ fn inline_text_caret_position_uses_fragment_screen_coordinates_once() {
         InlineMeasureContext {
             first_available_width: 120.0,
             full_available_width: 120.0,
+            available_height: 1_000_000.0,
             viewport_width: 300.0,
             viewport_height: 200.0,
             percent_base_width: Some(120.0),
@@ -453,6 +454,7 @@ fn inline_measure_clears_layout_dirty() {
         InlineMeasureContext {
             first_available_width: 200.0,
             full_available_width: 200.0,
+            available_height: 1_000_000.0,
             viewport_width: 200.0,
             viewport_height: 120.0,
             percent_base_width: Some(200.0),
@@ -543,6 +545,7 @@ fn inline_measure_does_not_split_word_when_available_width_matches_precise_measu
         InlineMeasureContext {
             first_available_width: precise_width,
             full_available_width: precise_width,
+            available_height: 1_000_000.0,
             viewport_width: 400.0,
             viewport_height: 200.0,
             percent_base_width: Some(precise_width),
@@ -569,6 +572,7 @@ fn inline_wrap_uses_one_fragment_per_wrapped_line() {
         InlineMeasureContext {
             first_available_width: available_width,
             full_available_width: available_width,
+            available_height: 1_000_000.0,
             viewport_width: 400.0,
             viewport_height: 200.0,
             percent_base_width: Some(available_width),
@@ -598,6 +602,7 @@ fn inline_wrap_uses_first_available_width_for_first_fragment() {
         InlineMeasureContext {
             first_available_width: 48.0,
             full_available_width: 160.0,
+            available_height: 1_000_000.0,
             viewport_width: 200.0,
             viewport_height: 120.0,
             percent_base_width: Some(160.0),
@@ -622,6 +627,7 @@ fn inline_wrap_moves_first_token_to_full_width_line_when_remaining_width_too_sma
         InlineMeasureContext {
             first_available_width: 12.0,
             full_available_width: 160.0,
+            available_height: 1_000_000.0,
             viewport_width: 200.0,
             viewport_height: 120.0,
             percent_base_width: Some(160.0),
@@ -654,6 +660,7 @@ fn wrapped_inline_fragments_force_break_so_parent_does_not_pack_them() {
         InlineMeasureContext {
             first_available_width: 52.0,
             full_available_width: 52.0,
+            available_height: 1_000_000.0,
             viewport_width: 800.0,
             viewport_height: 600.0,
             percent_base_width: Some(52.0),

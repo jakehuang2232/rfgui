@@ -74,9 +74,14 @@ impl TextArea {
             return deleted;
         }
 
-        let insert_at_byte = byte_index_at_char(&self.content, self.cursor_char);
+        let insert_at_char = if deleted {
+            self.cursor_char
+        } else {
+            self.insert_char_for_current_visual_slot()
+        };
+        let insert_at_byte = byte_index_at_char(&self.content, insert_at_char);
         self.content.insert_str(insert_at_byte, &incoming);
-        self.cursor_char += incoming.chars().count();
+        self.cursor_char = insert_at_char + incoming.chars().count();
         self.mark_content_dirty();
         self.reset_caret_blink();
         self.clear_vertical_goal();
@@ -270,6 +275,25 @@ impl TextArea {
             None => usize::MAX,
         }
     }
+
+    fn insert_char_for_current_visual_slot(&self) -> usize {
+        if self.cursor_affinity
+            != crate::view::base_component::text_area::caret_map::CaretAffinity::Upstream
+            || self.cursor_char == 0
+        {
+            return self.cursor_char;
+        }
+        if self
+            .content
+            .chars()
+            .nth(self.cursor_char - 1)
+            .is_some_and(|ch| ch == '\n')
+        {
+            self.cursor_char - 1
+        } else {
+            self.cursor_char
+        }
+    }
 }
 
 pub(super) fn normalize_multiline(text: &str, multiline: bool) -> String {
@@ -298,6 +322,7 @@ pub(super) fn byte_index_at_char(value: &str, char_index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::base_component::text_area::caret_map::CaretAffinity;
 
     fn ta(text: &str, cursor: usize) -> TextArea {
         let mut t = TextArea::new();
@@ -350,6 +375,29 @@ mod tests {
         let mut t = ta("foo", 3);
         assert!(!t.delete_next_word());
         assert_eq!(t.content, "foo");
+    }
+
+    #[test]
+    fn insert_at_hard_newline_upstream_slot_stays_on_previous_line() {
+        let mut t = ta("line1\nline2", "line1\n".chars().count());
+        t.cursor_affinity = CaretAffinity::Upstream;
+
+        assert!(t.insert_text("X"));
+
+        assert_eq!(t.content, "line1X\nline2");
+        assert_eq!(t.cursor_char, "line1X".chars().count());
+        assert_eq!(t.cursor_affinity, CaretAffinity::Downstream);
+    }
+
+    #[test]
+    fn insert_at_hard_newline_downstream_slot_stays_on_next_line() {
+        let mut t = ta("line1\nline2", "line1\n".chars().count());
+        t.cursor_affinity = CaretAffinity::Downstream;
+
+        assert!(t.insert_text("X"));
+
+        assert_eq!(t.content, "line1\nXline2");
+        assert_eq!(t.cursor_char, "line1\nX".chars().count());
     }
 
     #[test]

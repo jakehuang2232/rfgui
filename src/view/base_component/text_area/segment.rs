@@ -138,6 +138,19 @@ impl TextAreaProjectionSegment {
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.flex_info = Some(outputs.flex_info);
     }
+
+    fn projection_root_vertical_align(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> VerticalAlign {
+        self.children
+            .iter()
+            .filter_map(|child_key| arena.get(*child_key))
+            .flat_map(|child| child.element.get_inline_nodes_size(arena))
+            .next()
+            .map(|node| node.vertical_align)
+            .unwrap_or(VerticalAlign::Baseline)
+    }
 }
 
 impl Layoutable for TextAreaProjectionSegment {
@@ -228,15 +241,16 @@ impl Layoutable for TextAreaProjectionSegment {
 
     fn get_inline_nodes_size(
         &self,
-        _arena: &crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
     ) -> Vec<InlineNodeSize> {
+        let vertical_align = self.projection_root_vertical_align(arena);
         let Some(info) = self.flex_info.as_ref() else {
             let (width, height) = self.measured_size();
             return vec![InlineNodeSize {
                 width,
                 height,
                 baseline: height,
-                vertical_align: VerticalAlign::Baseline,
+                vertical_align,
                 ..Default::default()
             }];
         };
@@ -256,7 +270,7 @@ impl Layoutable for TextAreaProjectionSegment {
                         .max(0.0),
                     height: (baseline + descent).max(0.0),
                     baseline,
-                    vertical_align: VerticalAlign::Baseline,
+                    vertical_align,
                     force_break_after: line_idx < last,
                     ..Default::default()
                 }

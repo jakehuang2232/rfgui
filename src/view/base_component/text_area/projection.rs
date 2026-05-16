@@ -26,7 +26,7 @@ use crate::view::base_component::{ElementTrait, TextAreaRenderProjection, TextAr
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::ime_context::TextAreaImeContext;
-use super::run::{InlinePreedit, TextAreaTextRun};
+use super::run::{InlinePreedit, TextAreaLineBreak, TextAreaTextRun};
 use super::{TextArea, TextAreaProjectionSegment};
 
 /// P6 reconcile metadata, one per `TextArea.children[i]`. Parallel to
@@ -37,6 +37,7 @@ use super::{TextArea, TextAreaProjectionSegment};
 #[derive(Clone, Debug)]
 pub(crate) enum ChildSlot {
     Run,
+    LineBreak,
     Projection {
         identity: RsxNodeIdentity,
         last_node: RsxNode,
@@ -57,14 +58,13 @@ pub(crate) fn projection_root_identity(node: &RsxNode) -> RsxNodeIdentity {
 /// One slot in the post-slice children list.
 enum Segment {
     Plain {
-        /// One paragraph's visible text. **Never contains `\n`.** A
-        /// trailing newline (if any) is recorded in `has_trailing_newline`
-        /// and counted in `range` (so this segment's char range claims
-        /// the boundary `\n` char).
+        /// One paragraph's visible text. **Never contains `\n`.**
         text: String,
         range: Range<usize>,
         is_placeholder: bool,
-        has_trailing_newline: bool,
+    },
+    LineBreak {
+        range: Range<usize>,
     },
     Projection {
         range: Range<usize>,
@@ -162,7 +162,8 @@ impl TextArea {
 
         // Empty → non-empty (no Run yet, but we now need one). Mint a
         // fresh Run and parent it to self.
-        if !display_text.is_empty()
+        let preedit_active = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
+        if (!display_text.is_empty() || preedit_active)
             && let Some(self_key) = self.self_node_key
         {
             let run_key = self.commit_run_segment(
@@ -171,7 +172,6 @@ impl TextArea {
                 display_text,
                 0..char_count,
                 is_placeholder,
-                false,
             );
             self.children = vec![run_key];
             self.child_char_ranges = vec![0..char_count];
@@ -180,8 +180,8 @@ impl TextArea {
             return;
         }
 
-        // Both content + placeholder empty: clear everything.
-        if display_text.is_empty() {
+        // Both content + placeholder empty and no active preedit: clear everything.
+        if display_text.is_empty() && !preedit_active {
             for &k in &self.children.clone() {
                 arena.remove_subtree(k);
             }
@@ -239,11 +239,14 @@ impl TextArea {
         self.child_char_ranges.clear();
 
         let mut run_queue: std::collections::VecDeque<NodeKey> = std::collections::VecDeque::new();
+        let mut line_break_queue: std::collections::VecDeque<NodeKey> =
+            std::collections::VecDeque::new();
         let mut proj_buckets: rustc_hash::FxHashMap<RsxNodeIdentity, Vec<(NodeKey, RsxNode)>> =
             rustc_hash::FxHashMap::default();
         for (key, slot) in old_children.iter().zip(old_slots.into_iter()) {
             match slot {
                 ChildSlot::Run => run_queue.push_back(*key),
+                ChildSlot::LineBreak => line_break_queue.push_back(*key),
                 ChildSlot::Projection {
                     identity,
                     last_node,
@@ -273,7 +276,6 @@ impl TextArea {
                     text,
                     range,
                     is_placeholder,
-                    has_trailing_newline,
                 } => {
                     let key = match run_queue.pop_front() {
                         Some(existing_key) => {
@@ -283,7 +285,6 @@ impl TextArea {
                                 &text,
                                 range.clone(),
                                 is_placeholder,
-                                has_trailing_newline,
                             );
                             existing_key
                         }
@@ -293,12 +294,27 @@ impl TextArea {
                             text,
                             range.clone(),
                             is_placeholder,
-                            has_trailing_newline,
                         ),
                     };
                     new_children.push(key);
                     new_ranges.push(range);
                     new_slots.push(ChildSlot::Run);
+                }
+                Segment::LineBreak { range } => {
+                    let key = match line_break_queue.pop_front() {
+                        Some(existing_key) => {
+                            self.update_line_break_in_place_for_segment(
+                                arena,
+                                existing_key,
+                                range.clone(),
+                            );
+                            existing_key
+                        }
+                        None => self.commit_line_break_segment(arena, self_key, range.clone()),
+                    };
+                    new_children.push(key);
+                    new_ranges.push(range);
+                    new_slots.push(ChildSlot::LineBreak);
                 }
                 Segment::Projection { range, node } => {
                     // P6/M4: always wrap projection segments in a
@@ -400,6 +416,9 @@ impl TextArea {
         for stale in run_queue.drain(..) {
             arena.remove_subtree(stale);
         }
+        for stale in line_break_queue.drain(..) {
+            arena.remove_subtree(stale);
+        }
         for (_, bucket) in proj_buckets.drain() {
             for (stale_key, _) in bucket {
                 arena.remove_subtree(stale_key);
@@ -422,7 +441,6 @@ impl TextArea {
         text: &str,
         range: Range<usize>,
         is_placeholder: bool,
-        has_trailing_newline: bool,
     ) {
         let cascade_color = if is_placeholder {
             self.placeholder_color
@@ -435,7 +453,6 @@ impl TextArea {
                 return;
             };
             run.is_placeholder = is_placeholder;
-            run.set_has_trailing_newline(has_trailing_newline);
             run.set_text(text_owned, range);
             run.cascade_style(
                 self.font_families.clone(),
@@ -446,6 +463,21 @@ impl TextArea {
                 self.cursor,
                 self.auto_wrap,
             );
+        });
+    }
+
+    fn update_line_break_in_place_for_segment(
+        &self,
+        arena: &mut NodeArena,
+        key: NodeKey,
+        range: Range<usize>,
+    ) {
+        arena.with_element_taken(key, |child, _| {
+            let Some(line_break) = child.as_any_mut().downcast_mut::<TextAreaLineBreak>() else {
+                return;
+            };
+            line_break.set_char_range(range);
+            line_break.cascade_style(self.font_size, self.line_height);
         });
     }
 
@@ -469,8 +501,8 @@ impl TextArea {
 
     /// Walk content [0..N], emit Plain / Projection segments interleaved
     /// against the (sorted, disjoint) projection list. Each Plain is
-    /// further split at `\n` boundaries so that no Run carries an
-    /// embedded newline — see `Segment::Plain.has_trailing_newline`.
+    /// further split at `\n` boundaries so that newline characters are
+    /// explicit `LineBreak` formatting objects instead of hidden Run flags.
     fn slice_into_segments(&self, projections: &[TextAreaRenderProjection]) -> Vec<Segment> {
         let total_chars = self.content.chars().count();
 
@@ -525,7 +557,6 @@ impl TextArea {
         text: String,
         range: Range<usize>,
         is_placeholder: bool,
-        has_trailing_newline: bool,
     ) -> NodeKey {
         let cascade_color = if is_placeholder {
             self.placeholder_color
@@ -534,7 +565,6 @@ impl TextArea {
         };
         let mut run = TextAreaTextRun::new(text, range);
         run.is_placeholder = is_placeholder;
-        run.has_trailing_newline = has_trailing_newline;
         run.cascade_style(
             self.font_families.clone(),
             self.font_size,
@@ -546,6 +576,20 @@ impl TextArea {
         );
         let desc = crate::view::renderer_adapter::ElementDescriptor::leaf(
             Box::new(run) as Box<dyn ElementTrait>
+        );
+        crate::view::renderer_adapter::commit_descriptor_tree(arena, Some(parent_key), desc)
+    }
+
+    fn commit_line_break_segment(
+        &self,
+        arena: &mut NodeArena,
+        parent_key: NodeKey,
+        range: Range<usize>,
+    ) -> NodeKey {
+        let mut line_break = TextAreaLineBreak::new(range);
+        line_break.cascade_style(self.font_size, self.line_height);
+        let desc = crate::view::renderer_adapter::ElementDescriptor::leaf(
+            Box::new(line_break) as Box<dyn ElementTrait>
         );
         crate::view::renderer_adapter::commit_descriptor_tree(arena, Some(parent_key), desc)
     }
@@ -677,6 +721,7 @@ impl TextArea {
             cursor_in_projection = arena
                 .with_element_taken_ref(key, |child, _| {
                     child.as_any().downcast_ref::<TextAreaTextRun>().is_none()
+                        && child.as_any().downcast_ref::<TextAreaLineBreak>().is_none()
                 })
                 .unwrap_or(false);
             break;
@@ -710,7 +755,9 @@ impl TextArea {
                     continue;
                 };
                 last_run_idx = Some(i);
-                if target_idx_local.is_none() && cursor_char < range.end {
+                let cursor_hits_empty_run = range.start == range.end && cursor_char == range.start;
+                if target_idx_local.is_none() && (cursor_hits_empty_run || cursor_char < range.end)
+                {
                     let local = cursor_char
                         .saturating_sub(range.start)
                         .min(range.end.saturating_sub(range.start));
@@ -765,6 +812,13 @@ fn normalize_projections(
             let end = p.range.end.min(total);
             if end <= start {
                 None
+            } else if slice_chars(content, start..end).contains('\n') {
+                // A projection node is produced by a FnOnce render
+                // closure for the original slice, so it cannot be
+                // safely split across paragraphs. Reject cross-line
+                // projections and let the plain paragraph path own the
+                // hard newline semantics.
+                None
             } else {
                 Some(TextAreaRenderProjection {
                     range: start..end,
@@ -818,12 +872,9 @@ fn slice_chars(s: &str, range: Range<usize>) -> String {
         .collect()
 }
 
-/// Split `text` (covering global char range `range`) at `\n` boundaries
-/// and append one `Segment::Plain` per paragraph. Each Plain's
-/// `has_trailing_newline` reflects whether the source had a `\n` at that
-/// paragraph's end; the `\n` char itself is counted in the segment's
-/// `range.end`. Empty paragraphs (consecutive `\n`s, or trailing `\n`)
-/// produce empty-text Runs that still claim the `\n` boundary.
+/// Split `text` (covering global char range `range`) at `\n` boundaries.
+/// Visible paragraph text becomes `Segment::Plain`; each newline character
+/// becomes an explicit `Segment::LineBreak` that owns that source char.
 fn expand_plain_paragraphs(
     out: &mut Vec<Segment>,
     text: &str,
@@ -839,29 +890,32 @@ fn expand_plain_paragraphs(
     for ch in text.chars() {
         if ch == '\n' {
             let para_end_excl_nl = char_index;
-            let para_end_incl_nl = char_index + 1;
-            out.push(Segment::Plain {
-                text: paragraph_chars.iter().collect(),
-                range: paragraph_start..para_end_incl_nl,
-                is_placeholder,
-                has_trailing_newline: true,
+            if para_end_excl_nl > paragraph_start || paragraph_start == char_index {
+                out.push(Segment::Plain {
+                    text: paragraph_chars.iter().collect(),
+                    range: paragraph_start..para_end_excl_nl,
+                    is_placeholder,
+                });
+            }
+            out.push(Segment::LineBreak {
+                range: char_index..char_index + 1,
             });
-            let _ = para_end_excl_nl;
             paragraph_chars.clear();
-            paragraph_start = para_end_incl_nl;
+            paragraph_start = char_index + 1;
             char_index += 1;
         } else {
             paragraph_chars.push(ch);
             char_index += 1;
         }
     }
-    // Final paragraph (no trailing `\n` in source).
-    if !paragraph_chars.is_empty() || paragraph_start == range.start {
+    // Final paragraph (no trailing `\n` in source). A trailing newline
+    // leaves an empty paragraph after it; keep a zero-length Run there so
+    // caret placement and IME preedit have a line-local host.
+    if !paragraph_chars.is_empty() || paragraph_start == range.end {
         out.push(Segment::Plain {
             text: paragraph_chars.iter().collect(),
             range: paragraph_start..char_index,
             is_placeholder,
-            has_trailing_newline: false,
         });
     }
 }
@@ -945,6 +999,19 @@ mod tests {
         DirtyFlags, ElementTrait, LayoutConstraints, LayoutPlacement, Text, TextArea,
     };
     use crate::view::node_arena::{NodeArena, NodeKey};
+
+    #[test]
+    fn normalize_rejects_projection_ranges_that_cross_newline() {
+        let projections = vec![super::TextAreaRenderProjection {
+            range: 1..4,
+            node: RsxNode::text("a\nb"),
+        }];
+        let normalized = super::normalize_projections("xa\nby", &projections);
+        assert!(
+            normalized.is_empty(),
+            "cross-line projections must not swallow hard newline semantics"
+        );
+    }
 
     fn fixture_with_caret_in_projection(
         ime_preedit: &str,
@@ -1130,6 +1197,106 @@ mod tests {
             following_pe.is_none(),
             "Run after projection should not host the preedit; got {following_pe:?}",
         );
+    }
+
+    #[test]
+    fn preedit_routes_to_middle_empty_paragraph_run() {
+        let (arena, root) = plain_textarea_with_preedit("a\n\nb", 2, "\u{4E2D}");
+
+        let children = arena.children_of(root);
+        assert_eq!(
+            children.len(),
+            5,
+            "expected Run / LineBreak / empty Run / LineBreak / Run"
+        );
+        assert_run_text_range(&arena, children[2], "", 2..2);
+        assert_eq!(
+            run_inline_preedit(&arena, children[2]).map(|pe| (pe.insert_at_local, pe.preedit_text)),
+            Some((0, "\u{4E2D}".to_string())),
+            "middle empty paragraph should host the preedit"
+        );
+        assert!(run_inline_preedit(&arena, children[0]).is_none());
+        assert!(run_inline_preedit(&arena, children[4]).is_none());
+    }
+
+    #[test]
+    fn preedit_routes_to_trailing_empty_paragraph_run() {
+        let (arena, root) = plain_textarea_with_preedit("a\n", 2, "\u{4E2D}");
+
+        let children = arena.children_of(root);
+        assert_eq!(
+            children.len(),
+            3,
+            "expected Run / LineBreak / trailing empty Run"
+        );
+        assert_run_text_range(&arena, children[2], "", 2..2);
+        assert_eq!(
+            run_inline_preedit(&arena, children[2]).map(|pe| (pe.insert_at_local, pe.preedit_text)),
+            Some((0, "\u{4E2D}".to_string())),
+            "trailing empty paragraph should host the preedit"
+        );
+        assert!(run_inline_preedit(&arena, children[0]).is_none());
+    }
+
+    #[test]
+    fn preedit_routes_to_empty_textarea_run() {
+        let (arena, root) = plain_textarea_with_preedit("", 0, "\u{4E2D}");
+
+        let children = arena.children_of(root);
+        assert_eq!(children.len(), 1, "empty TextArea should create a host Run");
+        assert_run_text_range(&arena, children[0], "", 0..0);
+        assert_eq!(
+            run_inline_preedit(&arena, children[0]).map(|pe| (pe.insert_at_local, pe.preedit_text)),
+            Some((0, "\u{4E2D}".to_string())),
+            "empty TextArea should host the preedit"
+        );
+    }
+
+    fn plain_textarea_with_preedit(
+        content: &str,
+        cursor_char: usize,
+        ime_preedit: &str,
+    ) -> (NodeArena, NodeKey) {
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.cursor_char = cursor_char;
+        text_area.ime_preedit = ime_preedit.to_string();
+        text_area.ime_preedit_cursor = Some((ime_preedit.len(), ime_preedit.len()));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        relayout(&mut arena, root);
+        (arena, root)
+    }
+
+    fn assert_run_text_range(
+        arena: &NodeArena,
+        key: NodeKey,
+        text: &str,
+        range: std::ops::Range<usize>,
+    ) {
+        arena
+            .with_element_taken_ref(key, |child, _| {
+                let run = child
+                    .as_any()
+                    .downcast_ref::<crate::view::base_component::text_area::TextAreaTextRun>()
+                    .expect("TextAreaTextRun");
+                assert_eq!(run.text, text);
+                assert_eq!(run.char_range, range);
+            })
+            .expect("run exists");
     }
 
     fn run_inline_preedit(
@@ -1363,9 +1530,14 @@ mod tests {
         relayout(&mut arena, root);
 
         let kids_before = arena.children_of(root);
-        assert_eq!(kids_before.len(), 2, "two paragraphs → two Runs");
+        assert_eq!(
+            kids_before.len(),
+            3,
+            "two paragraphs → two Runs plus one LineBreak"
+        );
         let run_a_before = kids_before[0];
-        let run_b_before = kids_before[1];
+        let break_before = kids_before[1];
+        let run_b_before = kids_before[2];
 
         // Append a third paragraph.
         arena.with_element_taken(root, |el, _| {
@@ -1377,9 +1549,10 @@ mod tests {
         relayout(&mut arena, root);
 
         let kids_after = arena.children_of(root);
-        assert_eq!(kids_after.len(), 3);
+        assert_eq!(kids_after.len(), 5);
         assert_eq!(kids_after[0], run_a_before, "para 0 Run reused");
-        assert_eq!(kids_after[1], run_b_before, "para 1 Run reused");
+        assert_eq!(kids_after[1], break_before, "line break reused");
+        assert_eq!(kids_after[2], run_b_before, "para 1 Run reused");
     }
 
     /// Two keyed projections in reverse order: identity-keyed match

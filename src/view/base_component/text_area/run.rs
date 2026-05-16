@@ -49,15 +49,9 @@ pub(crate) struct TextAreaTextRun {
     pub(crate) text: String,
     pub(crate) char_range: Range<usize>,
     pub(crate) is_placeholder: bool,
-    /// `text` is the visible content of one paragraph; the trailing `\n`
-    /// boundary (if any) is *not* in `text` but IS counted in `char_range`
-    /// (so this Run claims that newline char in the global content's char
-    /// space). When set, `get_inline_nodes_size` reports an extra
-    /// zero-height force-wrap fragment so the inline solver advances
-    /// to the next line, mirroring CSS `\n` behavior without us having
-    /// to fragment text layout across multiple shaped runs.
-    pub(crate) has_trailing_newline: bool,
-
+    /// `text` is the visible content of one paragraph. Hard newline
+    /// characters are represented by a sibling [`TextAreaLineBreak`], not
+    /// by flags on the text run.
     // style cascaded from owning TextArea
     pub(crate) font_families: Vec<String>,
     pub(crate) font_size: f32,
@@ -92,7 +86,6 @@ impl TextAreaTextRun {
             text,
             char_range,
             is_placeholder: false,
-            has_trailing_newline: false,
             font_families: Vec::new(),
             font_size: 14.0,
             line_height: 1.25,
@@ -132,14 +125,6 @@ impl TextAreaTextRun {
         self.text = text;
         self.char_range = char_range;
         self.invalidate_text_layout();
-    }
-
-    pub(crate) fn set_has_trailing_newline(&mut self, has_trailing_newline: bool) {
-        if self.has_trailing_newline == has_trailing_newline {
-            return;
-        }
-        self.has_trailing_newline = has_trailing_newline;
-        self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
     }
 
     /// Cascade-style cascaded set: owner TextArea calls this after edit/
@@ -293,13 +278,14 @@ impl TextAreaTextRun {
 
     fn inline_line_nodes(&self) -> Vec<InlineNodeSize> {
         let Some(layout) = self.text_layout.as_ref() else {
-            return vec![InlineNodeSize {
+            let nodes = vec![InlineNodeSize {
                 width: self.layout_state.layout_size.width,
                 height: self.layout_state.layout_size.height,
                 baseline: self.fallback_first_baseline(),
                 vertical_align: self.vertical_align,
-                force_break_after: self.has_trailing_newline,
+                force_break_after: false,
             }];
+            return nodes;
         };
         let effective = self.effective_text();
         let mut nodes: Vec<InlineNodeSize> = layout
@@ -319,12 +305,12 @@ impl TextAreaTextRun {
                 height: self.font_size.max(1.0) * self.line_height.max(0.8),
                 baseline: self.fallback_first_baseline(),
                 vertical_align: self.vertical_align,
-                force_break_after: self.has_trailing_newline,
+                force_break_after: false,
             });
         }
         let last = nodes.len().saturating_sub(1);
         for (idx, node) in nodes.iter_mut().enumerate() {
-            node.force_break_after = idx < last || (idx == last && self.has_trailing_newline);
+            node.force_break_after = idx < last;
         }
         nodes
     }
@@ -418,7 +404,7 @@ impl TextAreaTextRun {
     pub fn caret_stops(&self) -> Vec<RunCaretLine> {
         if let Some(layout) = self.text_layout.as_ref() {
             let effective = self.effective_text();
-            let mut lines: Vec<RunCaretLine> = layout
+            let lines: Vec<RunCaretLine> = layout
                 .visual_caret_lines(&effective)
                 .into_iter()
                 .map(|line| RunCaretLine {
@@ -430,40 +416,12 @@ impl TextAreaTextRun {
                         .map(|stop| RunCaretStop {
                             local_char: self.effective_char_to_plain_local_char(stop.char_index),
                             local_x: stop.x,
-                            local_y_top: stop.y_top,
+                            local_y_top: line.y_top,
                             height: stop.height,
                         })
                         .collect(),
                 })
                 .collect();
-            if self.has_trailing_newline {
-                let line_height = self.font_size.max(1.0) * self.line_height.max(0.8);
-                let trailing_local_char = self.char_range.end.saturating_sub(self.char_range.start);
-                if let Some(last_line) = lines.last_mut() {
-                    let tail_x = last_line
-                        .stops
-                        .last()
-                        .map(|stop| stop.local_x)
-                        .unwrap_or(0.0);
-                    last_line.stops.push(RunCaretStop {
-                        local_char: trailing_local_char,
-                        local_x: tail_x,
-                        local_y_top: last_line.local_y_top,
-                        height: line_height,
-                    });
-                }
-                let y_top = lines.last().map(|line| line.local_y_bottom).unwrap_or(0.0);
-                lines.push(RunCaretLine {
-                    local_y_top: y_top,
-                    local_y_bottom: y_top + line_height,
-                    stops: vec![RunCaretStop {
-                        local_char: trailing_local_char,
-                        local_x: 0.0,
-                        local_y_top: y_top,
-                        height: line_height,
-                    }],
-                });
-            }
             return lines;
         }
 
@@ -513,6 +471,106 @@ pub struct RunCaretLine {
     pub local_y_top: f32,
     pub local_y_bottom: f32,
     pub stops: Vec<RunCaretStop>,
+}
+
+pub(crate) struct TextAreaLineBreak {
+    pub(crate) char_range: Range<usize>,
+    pub(crate) font_size: f32,
+    pub(crate) line_height: f32,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
+    pub(crate) caret_fragments: [Option<Rect>; 2],
+    pub(crate) layout_state: LayoutState,
+    pub(crate) dirty_flags: DirtyFlags,
+    pub(crate) node_id: u64,
+    pub(crate) parent_id: Option<u64>,
+    pub(crate) children: Vec<NodeKey>,
+}
+
+impl TextAreaLineBreak {
+    pub(crate) fn new(char_range: Range<usize>) -> Self {
+        Self {
+            char_range,
+            font_size: 14.0,
+            line_height: 1.25,
+            vertical_align: crate::style::VerticalAlign::Baseline,
+            caret_fragments: [None, None],
+            layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
+            dirty_flags: DirtyFlags::ALL,
+            node_id: next_ui_node_id(),
+            parent_id: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub(crate) fn set_char_range(&mut self, char_range: Range<usize>) {
+        if self.char_range == char_range {
+            return;
+        }
+        self.char_range = char_range;
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
+    }
+
+    pub(crate) fn cascade_style(&mut self, font_size: f32, line_height: f32) {
+        if self.font_size == font_size && self.line_height == line_height {
+            return;
+        }
+        self.font_size = font_size;
+        self.line_height = line_height;
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
+    }
+
+    fn line_height_px(&self) -> f32 {
+        self.font_size.max(1.0) * self.line_height.max(0.8)
+    }
+
+    fn baseline(&self) -> f32 {
+        let font_size = self.font_size.max(1.0);
+        let line_height = self.line_height_px();
+        let approx_ascent = font_size * 0.8779297;
+        let leading = (line_height - font_size).max(0.0);
+        (approx_ascent + leading / 2.0).max(0.0)
+    }
+
+    pub(crate) fn caret_stops(&self) -> Vec<RunCaretLine> {
+        let line_height = self.line_height_px();
+        self.caret_fragments
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, rect)| {
+                let rect = rect.as_ref()?;
+                let local_x = rect.x - self.layout_state.layout_position.x;
+                let local_y_top = rect.y - self.layout_state.layout_position.y;
+                let stops = if idx == 0 {
+                    vec![
+                        RunCaretStop {
+                            local_char: 0,
+                            local_x,
+                            local_y_top,
+                            height: line_height,
+                        },
+                        RunCaretStop {
+                            local_char: 1,
+                            local_x,
+                            local_y_top,
+                            height: line_height,
+                        },
+                    ]
+                } else {
+                    vec![RunCaretStop {
+                        local_char: 1,
+                        local_x,
+                        local_y_top,
+                        height: line_height,
+                    }]
+                };
+                Some(RunCaretLine {
+                    local_y_top,
+                    local_y_bottom: local_y_top + line_height,
+                    stops,
+                })
+            })
+            .collect()
+    }
 }
 
 impl Layoutable for TextAreaTextRun {
@@ -580,6 +638,7 @@ impl Layoutable for TextAreaTextRun {
             InlineMeasureContext {
                 first_available_width: constraints.max_width,
                 full_available_width: constraints.max_width,
+                available_height: 1_000_000.0,
                 viewport_width: constraints.viewport_width,
                 viewport_height: constraints.viewport_height,
                 percent_base_width: constraints.percent_base_width,
@@ -706,6 +765,150 @@ impl Layoutable for TextAreaTextRun {
     }
 }
 
+impl Layoutable for TextAreaLineBreak {
+    fn measure_inline(
+        &mut self,
+        _context: InlineMeasureContext,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        let line_height = self.line_height_px();
+        self.layout_state.layout_size = Size {
+            width: 0.0,
+            height: line_height,
+        };
+        self.layout_state.content_size = self.layout_state.layout_size;
+        self.dirty_flags = self
+            .dirty_flags
+            .without(DirtyFlags::LAYOUT)
+            .union(DirtyFlags::PLACE)
+            .union(DirtyFlags::BOX_MODEL)
+            .union(DirtyFlags::HIT_TEST)
+            .union(DirtyFlags::PAINT);
+    }
+
+    fn measure(
+        &mut self,
+        constraints: LayoutConstraints,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.measure_inline(
+            InlineMeasureContext {
+                first_available_width: constraints.max_width,
+                full_available_width: constraints.max_width,
+                available_height: constraints.max_height,
+                viewport_width: constraints.viewport_width,
+                viewport_height: constraints.viewport_height,
+                percent_base_width: constraints.percent_base_width,
+                percent_base_height: constraints.percent_base_height,
+            },
+            arena,
+        );
+    }
+
+    fn place(
+        &mut self,
+        placement: LayoutPlacement,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        let x = placement.parent_x + placement.visual_offset_x;
+        let y = placement.parent_y + placement.visual_offset_y;
+        self.layout_state.layout_position = Position { x, y };
+        self.layout_state.layout_inner_position = Position { x, y };
+        self.layout_state.layout_flow_position = Position { x, y };
+        self.layout_state.layout_flow_inner_position = Position { x, y };
+        self.layout_state.should_render = false;
+        self.dirty_flags = self.dirty_flags.without(
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
+        );
+    }
+
+    fn place_inline(
+        &mut self,
+        placement: InlinePlacement,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        let line_height = self.line_height_px();
+        let rect = Rect {
+            x: placement.x,
+            y: placement.y,
+            width: 0.0,
+            height: line_height,
+        };
+        if placement.node_index == 0 {
+            self.caret_fragments = [None, None];
+            self.layout_state.layout_position = Position {
+                x: placement.x,
+                y: placement.y,
+            };
+            self.layout_state.layout_size = Size {
+                width: 0.0,
+                height: line_height,
+            };
+            self.layout_state.should_render = false;
+        }
+        if let Some(slot) = self.caret_fragments.get_mut(placement.node_index) {
+            *slot = Some(rect);
+        }
+        let left = self.layout_state.layout_position.x.min(rect.x);
+        let top = self.layout_state.layout_position.y.min(rect.y);
+        let right =
+            (self.layout_state.layout_position.x + self.layout_state.layout_size.width).max(rect.x);
+        let bottom = (self.layout_state.layout_position.y + self.layout_state.layout_size.height)
+            .max(rect.y + rect.height);
+        self.layout_state.layout_position = Position { x: left, y: top };
+        self.layout_state.layout_size = Size {
+            width: (right - left).max(0.0),
+            height: (bottom - top).max(0.0),
+        };
+        self.layout_state.layout_inner_position = self.layout_state.layout_position;
+        self.layout_state.layout_inner_size = self.layout_state.layout_size;
+        self.layout_state.layout_flow_position = self.layout_state.layout_position;
+        self.layout_state.layout_flow_inner_position = self.layout_state.layout_inner_position;
+        self.dirty_flags = self.dirty_flags.without(
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
+        );
+    }
+
+    fn measured_size(&self) -> (f32, f32) {
+        (0.0, self.line_height_px())
+    }
+
+    fn set_layout_width(&mut self, width: f32) {
+        self.layout_state.layout_size.width = width.max(0.0);
+    }
+
+    fn set_layout_height(&mut self, height: f32) {
+        self.layout_state.layout_size.height = height.max(0.0);
+    }
+
+    fn get_inline_nodes_size(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> Vec<InlineNodeSize> {
+        let line_height = self.line_height_px();
+        vec![
+            InlineNodeSize {
+                width: 0.0,
+                height: line_height,
+                baseline: self.baseline(),
+                vertical_align: self.vertical_align,
+                force_break_after: true,
+            },
+            InlineNodeSize {
+                width: 0.0,
+                height: line_height,
+                baseline: self.baseline(),
+                vertical_align: self.vertical_align,
+                force_break_after: false,
+            },
+        ]
+    }
+}
+
 impl Renderable for TextAreaTextRun {
     fn build(
         &mut self,
@@ -763,11 +966,25 @@ impl Renderable for TextAreaTextRun {
     }
 }
 
+impl Renderable for TextAreaLineBreak {
+    fn build(
+        &mut self,
+        _graph: &mut FrameGraph,
+        _arena: &mut crate::view::node_arena::NodeArena,
+        ctx: UiBuildContext,
+    ) -> BuildState {
+        self.dirty_flags = self.dirty_flags.without(DirtyFlags::PAINT);
+        ctx.into_state()
+    }
+}
+
 impl EventTarget for TextAreaTextRun {
     fn cursor(&self) -> Cursor {
         self.cursor
     }
 }
+
+impl EventTarget for TextAreaLineBreak {}
 
 impl ElementTrait for TextAreaTextRun {
     fn stable_id(&self) -> u64 {
@@ -871,6 +1088,74 @@ impl ElementTrait for TextAreaTextRun {
         } else {
             u64::MAX.hash(&mut hasher);
         }
+        hasher.finish()
+    }
+}
+
+impl ElementTrait for TextAreaLineBreak {
+    fn stable_id(&self) -> u64 {
+        self.node_id
+    }
+
+    fn box_model_snapshot(&self) -> BoxModelSnapshot {
+        BoxModelSnapshot {
+            node_id: self.node_id,
+            parent_id: self.parent_id,
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.layout_state.layout_size.width,
+            height: self.layout_state.layout_size.height,
+            border_radius: 0.0,
+            should_render: false,
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn children(&self) -> &[NodeKey] {
+        &self.children
+    }
+
+    fn parent_id(&self) -> Option<u64> {
+        self.parent_id
+    }
+
+    fn set_parent_id(&mut self, parent_id: Option<u64>) {
+        self.parent_id = parent_id;
+    }
+
+    fn local_dirty_flags(&self) -> DirtyFlags {
+        self.dirty_flags
+    }
+
+    fn clear_local_dirty_flags(&mut self, flags: DirtyFlags) {
+        self.dirty_flags = self.dirty_flags.without(flags);
+    }
+
+    fn promotion_self_signature(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.char_range.start.hash(&mut hasher);
+        self.char_range.end.hash(&mut hasher);
+        self.font_size.to_bits().hash(&mut hasher);
+        self.line_height.to_bits().hash(&mut hasher);
+        self.layout_state
+            .layout_position
+            .x
+            .to_bits()
+            .hash(&mut hasher);
+        self.layout_state
+            .layout_position
+            .y
+            .to_bits()
+            .hash(&mut hasher);
         hasher.finish()
     }
 }
