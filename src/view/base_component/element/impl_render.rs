@@ -228,20 +228,18 @@ impl Element {
             proposal.viewport_height,
         );
 
-        let (layout_w, layout_h) = self.current_layout_target_size();
+        let sizes = self.resolve_layout_sizes(proposal);
         let measure_w = if self.computed_style.width == SizeValue::Auto
             && proposal.percent_base_width.is_some()
         {
             proposal.width.max(0.0)
         } else {
-            layout_w
+            sizes.axis_measure_constraint.width
         };
-        let measure_h = if self.computed_style.height == SizeValue::Auto
-            && self.height_is_known(proposal)
-        {
+        let measure_h = if self.computed_style.height == SizeValue::Auto {
             proposal.height.max(0.0)
         } else {
-            layout_h
+            sizes.axis_measure_constraint.height
         };
         let inner_w = (measure_w - insets.horizontal()).max(0.0);
         let inner_h = (measure_h - insets.vertical()).max(0.0);

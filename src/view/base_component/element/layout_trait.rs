@@ -57,7 +57,9 @@ impl Layoutable for Element {
                 proposal.viewport_height,
             );
 
-            let (layout_w, layout_h) = self.current_layout_transition_size();
+            let sizes = self.resolve_layout_sizes(proposal);
+            let layout_w = sizes.target.width;
+            let layout_h = sizes.target.height;
             let measure_w = if self.computed_style.width == SizeValue::Auto
                 && proposal.percent_base_width.is_some()
             {
@@ -205,10 +207,10 @@ impl Layoutable for Element {
             Layout::Inline | Layout::Flex { .. } | Layout::Flow { .. }
         );
         let child_layout_inner_size = if is_axis_layout {
-            let (target_w, target_h) = self.current_layout_target_size();
+            let sizes = self.resolve_layout_sizes(proposal);
             Size {
-                width: (target_w - inset_left - inset_right).max(0.0),
-                height: (target_h - inset_top - inset_bottom).max(0.0),
+                width: (sizes.axis_place_constraint.width - inset_left - inset_right).max(0.0),
+                height: (sizes.axis_place_constraint.height - inset_top - inset_bottom).max(0.0),
             }
         } else {
             self.layout_state.layout_inner_size
@@ -256,7 +258,12 @@ impl Layoutable for Element {
     }
 
     fn measured_size(&self) -> (f32, f32) {
-        self.current_layout_transition_size()
+        let size = self.current_parent_measure_size();
+        (size.width, size.height)
+    }
+
+    fn layout_target_size(&self) -> (f32, f32) {
+        self.current_layout_target_size()
     }
 
     fn set_layout_width(&mut self, width: f32) {

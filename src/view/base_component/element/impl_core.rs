@@ -426,6 +426,111 @@ impl Element {
         )
     }
 
+    fn resolved_layout_target_size(&self) -> Size {
+        let (width, height) = self.current_layout_target_size();
+        Size { width, height }
+    }
+
+    fn has_width_layout_transition(&self) -> bool {
+        self.computed_style.transition.as_slice().iter().any(|t| {
+            matches!(
+                t.property,
+                TransitionProperty::All | TransitionProperty::Width
+            )
+        })
+    }
+
+    fn has_height_layout_transition(&self) -> bool {
+        self.computed_style.transition.as_slice().iter().any(|t| {
+            matches!(
+                t.property,
+                TransitionProperty::All | TransitionProperty::Height
+            )
+        })
+    }
+
+    fn resolve_layout_transition_state(&self, target: Size) -> LayoutTransitionState {
+        let previous_width = self.layout_state.layout_size.width.max(0.0);
+        let previous_height = self.layout_state.layout_size.height.max(0.0);
+        let width_active = self.layout_transition_override_width.is_some();
+        let height_active = self.layout_transition_override_height.is_some();
+        let width_will_start = self.has_layout_snapshot && !approx_eq(previous_width, target.width);
+        let height_will_start =
+            self.has_layout_snapshot && !approx_eq(previous_height, target.height);
+        let width_keeps_content_constraint = self.has_width_layout_transition()
+            && (width_active || (width_will_start && previous_width > target.width));
+        let height_keeps_content_constraint = self.has_height_layout_transition()
+            && (height_active || (height_will_start && previous_height > target.height));
+
+        LayoutTransitionState {
+            frame: Size {
+                width: self
+                    .layout_transition_override_width
+                    .unwrap_or(target.width)
+                    .max(0.0),
+                height: self
+                    .layout_transition_override_height
+                    .or_else(|| {
+                        (self.has_height_layout_transition() && height_will_start)
+                            .then_some(previous_height)
+                    })
+                    .unwrap_or(target.height)
+                    .max(0.0),
+            },
+            width_keeps_content_constraint,
+            height_keeps_content_constraint,
+        }
+    }
+
+    fn resolve_layout_sizes(&self, proposal: LayoutProposal) -> ResolvedLayoutSizes {
+        let target = self.resolved_layout_target_size();
+        let transition = self.resolve_layout_transition_state(target);
+        let axis_measure_constraint = Size {
+            width: if (self.computed_style.width == SizeValue::Auto
+                && proposal.percent_base_width.is_some())
+                || (approx_eq(target.width, 0.0) && transition.width_keeps_content_constraint)
+            {
+                proposal.width.max(0.0)
+            } else {
+                target.width
+            },
+            height: if self.computed_style.height == SizeValue::Auto
+                || (approx_eq(target.height, 0.0) && transition.height_keeps_content_constraint)
+            {
+                proposal.height.max(0.0)
+            } else {
+                target.height
+            },
+        };
+        let axis_place_constraint = Size {
+            width: if approx_eq(target.width, 0.0) && transition.width_keeps_content_constraint {
+                proposal.width.max(0.0)
+            } else {
+                target.width
+            },
+            height: if approx_eq(target.height, 0.0) && transition.height_keeps_content_constraint {
+                proposal.height.max(0.0)
+            } else {
+                target.height
+            },
+        };
+
+        ResolvedLayoutSizes {
+            target,
+            axis_measure_constraint,
+            axis_place_constraint,
+        }
+    }
+
+    fn current_parent_measure_size(&self) -> Size {
+        let target = self.resolved_layout_target_size();
+        let transition = self.resolve_layout_transition_state(target);
+        Size {
+            width: transition.frame.width,
+            height: transition.frame.height,
+        }
+    }
+
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self::new_with_id(0, x, y, width, height)
     }
