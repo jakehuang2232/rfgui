@@ -125,6 +125,8 @@ pub(super) struct FrameTimings {
     /// Time spent in `App::build()` producing the RSX tree.  Measured in
     /// `render_frame` and injected before the trace tree is built.
     pub rsx_build_ms: f64,
+
+    pub frame_number: u64,
 }
 
 /// Result of a single layout pass (measure → place → collect_box_models).
