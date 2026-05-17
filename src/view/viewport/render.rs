@@ -266,7 +266,7 @@ impl Viewport {
         };
 
         TraceRenderNode::with_children(
-            "render_frame",
+            format!("render_frame #{}", t.frame_number),
             t.rsx_build_ms + t.total_ms,
             vec![
                 TraceRenderNode::new("rsx_build", t.rsx_build_ms),
@@ -283,6 +283,8 @@ impl Viewport {
 
     fn render_render_tree(&mut self, dt: f32, now_seconds: f64) -> bool {
         let frame_start = Instant::now();
+        self.frame.frame_number = self.frame.frame_number.saturating_add(1);
+        let frame_number = self.frame.frame_number;
         set_debug_trace_enabled(self.debug_options.trace_reuse_path);
         trace_promoted_build_frame_marker();
         begin_debug_reuse_path_frame();
@@ -299,6 +301,7 @@ impl Viewport {
             begin_frame_create_view_ms: begin_frame_profile.create_view_ms,
             begin_frame_create_encoder_ms: begin_frame_profile.create_encoder_ms,
             rsx_build_ms: self.frame.rsx_build_ms,
+            frame_number,
             ..Default::default()
         };
 

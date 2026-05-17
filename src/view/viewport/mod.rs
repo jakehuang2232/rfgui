@@ -284,6 +284,7 @@ struct FrameRuntime {
     /// can include RSX build cost.  Set in `render_frame`, consumed in
     /// `render_render_tree`.
     rsx_build_ms: f64,
+    frame_number: u64,
 }
 
 impl FrameRuntime {
@@ -305,6 +306,7 @@ impl FrameRuntime {
             debug_overlay_vertices: Vec::new(),
             debug_overlay_indices: Vec::new(),
             rsx_build_ms: 0.0,
+            frame_number: 0,
         }
     }
 }
