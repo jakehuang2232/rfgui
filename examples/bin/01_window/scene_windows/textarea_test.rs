@@ -140,6 +140,8 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                 <Switch label="Fixed width" binding={fixed_width.binding()} />
                 <Switch label="Fixed height" binding={fixed_height.binding()} />
                 <Switch label="Auto wrap" binding={auto_wrap.binding()} />
+            </Element>
+            <Element style={{layout: Layout::flow().no_wrap()}}>
                 <Text>vertical-align:</Text>
                 <ToggleButtonGroup
                     value={vertical_align_group.binding()}
