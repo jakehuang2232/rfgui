@@ -766,6 +766,14 @@ impl Viewport {
                     .iter()
                     .all(|w| w.is_committable(&self.scene.node_arena));
                 if all_committable {
+                    // Cross-parent keyed moves can translate as delete+create;
+                    // preserve host scroll state by stable id across the batch.
+                    let mut incremental_scroll_offsets = FxHashMap::default();
+                    Self::save_scroll_states(
+                        &self.scene.node_arena,
+                        &self.scene.ui_root_keys,
+                        &mut incremental_scroll_offsets,
+                    );
                     let apply_ctx = crate::view::fiber_work::ApplyContext {
                         viewport_style: &self.style,
                         viewport_width: self.logical_width,
@@ -781,6 +789,11 @@ impl Viewport {
                     // the arena after a committed batch.
                     let refreshed_roots = self.scene.node_arena.roots().to_vec();
                     self.scene.ui_root_keys = refreshed_roots;
+                    Self::restore_scroll_states(
+                        &self.scene.node_arena,
+                        &self.scene.ui_root_keys,
+                        &incremental_scroll_offsets,
+                    );
                     self.scene.last_rsx_root = Some(root.clone());
                     needs_rebuild = false;
                 }

@@ -11,9 +11,6 @@ use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::JsFuture;
 
-#[cfg(target_arch = "wasm32")]
-const WASM_FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../assets/NotoSans-Regular.ttf");
-
 static RUNTIME_FONTS: Mutex<Vec<Arc<Vec<u8>>>> = Mutex::new(Vec::new());
 
 thread_local! {
@@ -38,19 +35,6 @@ fn create_parley_text_context() -> ParleyTextContext {
                 .register_fonts(Blob::new(font.clone()), None);
         }
     }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        ctx.font.collection.register_fonts(
-            Blob::from(WASM_FALLBACK_FONT_BYTES.to_vec()),
-            Some(parley::fontique::FontInfoOverride {
-                family_name: Some("Noto Sans"),
-                ..Default::default()
-            }),
-        );
-        set_parley_default_font_families(&mut ctx, "Noto Sans", "Noto Sans", "Noto Sans");
-    }
-
     ctx
 }
 

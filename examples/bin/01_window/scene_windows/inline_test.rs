@@ -3,8 +3,11 @@ use crate::rfgui::style::{
 };
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
-use crate::rfgui_components::{Button, NumberField, Theme};
+use crate::rfgui_components::{
+    ButtonSize, NumberField, Theme, ToggleButton, ToggleButtonGroup, ToggleGroupChangeHandler,
+};
 use rfgui::style::Align::Center;
+use std::rc::Rc;
 
 fn inline_chip(
     label: impl Into<String>,
@@ -55,12 +58,31 @@ fn demo_section(
 #[component]
 pub fn InlineTest(theme: Theme) -> RsxNode {
     let vertical_align = use_state(|| VerticalAlign::Baseline);
+    let vertical_align_group = use_state(|| Some(String::from("baseline")));
     let line_height = use_state(|| 1.2_f64);
 
-    let va_baseline = vertical_align.binding();
-    let va_top = vertical_align.binding();
-    let va_middle = vertical_align.binding();
-    let va_bottom = vertical_align.binding();
+    let vertical_align_change = {
+        let vertical_align = vertical_align.binding();
+        let vertical_align_group = vertical_align_group.binding();
+        Rc::new(
+            move |_: &mut crate::rfgui::ui::ClickEvent, value: Option<String>| {
+                let selected = value.unwrap_or_else(|| match vertical_align.get() {
+                    VerticalAlign::Top => String::from("top"),
+                    VerticalAlign::Middle => String::from("middle"),
+                    VerticalAlign::Bottom => String::from("bottom"),
+                    _ => String::from("baseline"),
+                });
+                let next = match selected.as_str() {
+                    "top" => VerticalAlign::Top,
+                    "middle" => VerticalAlign::Middle,
+                    "bottom" => VerticalAlign::Bottom,
+                    _ => VerticalAlign::Baseline,
+                };
+                vertical_align.set(next);
+                vertical_align_group.set(Some(selected));
+            },
+        ) as ToggleGroupChangeHandler
+    };
 
     let va = vertical_align.get();
     let lh = line_height.get();
@@ -92,10 +114,16 @@ pub fn InlineTest(theme: Theme) -> RsxNode {
                     gap: theme.spacing.sm,
                 }}>
                     <Text>vertical-align:</Text>
-                    <Button on_click={move |_| { va_baseline.set(VerticalAlign::Baseline); }}>Baseline</Button>
-                    <Button on_click={move |_| { va_top.set(VerticalAlign::Top); }}>Top</Button>
-                    <Button on_click={move |_| { va_middle.set(VerticalAlign::Middle); }}>Middle</Button>
-                    <Button on_click={move |_| { va_bottom.set(VerticalAlign::Bottom); }}>Bottom</Button>
+                    <ToggleButtonGroup
+                        value={vertical_align_group.binding()}
+                        on_change={Some(vertical_align_change)}
+                        size={Some(ButtonSize::Small)}
+                    >
+                        <ToggleButton value="baseline">Baseline</ToggleButton>
+                        <ToggleButton value="top">Top</ToggleButton>
+                        <ToggleButton value="middle">Middle</ToggleButton>
+                        <ToggleButton value="bottom">Bottom</ToggleButton>
+                    </ToggleButtonGroup>
                 </Element>
                 <Element>
                     <NumberField

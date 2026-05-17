@@ -1869,6 +1869,7 @@ pub struct Element {
     pub(crate) layout_state: crate::view::layout::LayoutState,
     intrinsic_size_is_percent_base: bool,
     parsed_style: Style,
+    text_cascade_style: Option<Style>,
     computed_style: ComputedStyle,
     padding: EdgeInsets,
     background_color: Box<dyn ColorLike>,
@@ -2464,12 +2465,66 @@ impl ElementTrait for Element {
         self.core.parent_id = parent_id;
     }
 
+    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::InheritedTextStyle) {
+        use crate::style::{LineHeight, ParsedValue, PropertyId};
+
+        let authored = self.text_cascade_style();
+        let mut next = self.parsed_style.clone();
+        let mut changed = false;
+
+        if authored.get(PropertyId::LineHeight).is_none() {
+            let next_value = inherited
+                .line_height
+                .map(|lh| ParsedValue::LineHeight(LineHeight::new(lh)));
+            if next.get(PropertyId::LineHeight) != next_value.as_ref() {
+                match next_value {
+                    Some(value) => next.insert(PropertyId::LineHeight, value),
+                    None => {
+                        let _ = next.remove(PropertyId::LineHeight);
+                    }
+                }
+                changed = true;
+            }
+        }
+
+        if authored.get(PropertyId::VerticalAlign).is_none() {
+            let next_value = inherited.vertical_align.map(ParsedValue::VerticalAlign);
+            if next.get(PropertyId::VerticalAlign) != next_value.as_ref() {
+                match next_value {
+                    Some(value) => next.insert(PropertyId::VerticalAlign, value),
+                    None => {
+                        let _ = next.remove(PropertyId::VerticalAlign);
+                    }
+                }
+                changed = true;
+            }
+        }
+
+        if authored.get(PropertyId::Cursor).is_none() {
+            let next_value = inherited.cursor.map(ParsedValue::Cursor);
+            if next.get(PropertyId::Cursor) != next_value.as_ref() {
+                match next_value {
+                    Some(value) => next.insert(PropertyId::Cursor, value),
+                    None => {
+                        let _ = next.remove(PropertyId::Cursor);
+                    }
+                }
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.parsed_style = next;
+            self.recompute_style();
+        }
+    }
+
     fn child_inherited_text_style(
         &self,
         parent: &crate::view::renderer_adapter::InheritedTextStyle,
     ) -> crate::view::renderer_adapter::InheritedTextStyle {
         let mut child = parent.clone();
-        child.merge_style(self.parsed_style());
+        child.merge_style(self.text_cascade_style());
         child
     }
 
@@ -2504,24 +2559,44 @@ impl ElementTrait for Element {
 
     fn apply_prop(
         &mut self,
-        _arena: &mut crate::view::node_arena::NodeArena,
-        _self_key: crate::view::node_arena::NodeKey,
-        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
+        ctx: &crate::view::fiber_work::ApplyContext<'_>,
         name: &'static str,
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
-        use crate::view::renderer_adapter::{as_element_style, as_owned_string};
+        use crate::view::renderer_adapter::{
+            InheritedTextStyle, as_element_style, as_owned_string,
+            element_base_style_from_inherited, inherited_text_style_at_parent,
+        };
 
         match name {
             "style" => {
                 let Ok(style) = as_element_style(&value, name) else {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
-                // M4 #1: non-additive `replace_style` so dropped
-                // declarations clear. Cold path uses `apply_style`
-                // (layered base + user) and is unaffected.
-                self.replace_style(style);
+                let inherited = arena.parent_of(self_key).map_or_else(
+                    || {
+                        InheritedTextStyle::from_viewport_style(
+                            ctx.viewport_style,
+                            ctx.viewport_width,
+                            ctx.viewport_height,
+                        )
+                    },
+                    |parent| {
+                        inherited_text_style_at_parent(
+                            arena,
+                            parent,
+                            ctx.viewport_style,
+                            ctx.viewport_width,
+                            ctx.viewport_height,
+                        )
+                    },
+                );
+                let effective_style = element_base_style_from_inherited(&inherited) + style.clone();
+                self.replace_style(effective_style);
+                self.set_text_cascade_style(style);
                 PropApplyOutcome::Applied
             }
             "anchor" => {
@@ -2547,15 +2622,37 @@ impl ElementTrait for Element {
 
     fn reset_prop(
         &mut self,
-        _arena: &mut crate::view::node_arena::NodeArena,
-        _self_key: crate::view::node_arena::NodeKey,
-        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
+        ctx: &crate::view::fiber_work::ApplyContext<'_>,
         name: &'static str,
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
+        use crate::view::renderer_adapter::{
+            InheritedTextStyle, element_base_style_from_inherited, inherited_text_style_at_parent,
+        };
         match name {
             "style" => {
-                self.replace_style(Style::new());
+                let inherited = arena.parent_of(self_key).map_or_else(
+                    || {
+                        InheritedTextStyle::from_viewport_style(
+                            ctx.viewport_style,
+                            ctx.viewport_width,
+                            ctx.viewport_height,
+                        )
+                    },
+                    |parent| {
+                        inherited_text_style_at_parent(
+                            arena,
+                            parent,
+                            ctx.viewport_style,
+                            ctx.viewport_width,
+                            ctx.viewport_height,
+                        )
+                    },
+                );
+                self.replace_style(element_base_style_from_inherited(&inherited));
+                self.set_text_cascade_style(Style::new());
                 PropApplyOutcome::Applied
             }
             "anchor" => {

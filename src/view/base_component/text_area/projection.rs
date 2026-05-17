@@ -144,6 +144,7 @@ impl TextArea {
                         self.font_families.clone(),
                         self.font_size,
                         self.line_height,
+                        self.vertical_align,
                         self.font_weight,
                         cascade_color,
                         self.cursor,
@@ -373,7 +374,10 @@ impl TextArea {
                                     )
                                 });
                             match result {
-                                Ok(()) => Some(existing_key),
+                                Ok(()) => {
+                                    self.update_projection_segment_style(arena, existing_key);
+                                    Some(existing_key)
+                                }
                                 Err(_) => {
                                     arena.remove_subtree(existing_key);
                                     self.commit_projection_segment(
@@ -458,6 +462,7 @@ impl TextArea {
                 self.font_families.clone(),
                 self.font_size,
                 self.line_height,
+                self.vertical_align,
                 self.font_weight,
                 cascade_color,
                 self.cursor,
@@ -477,7 +482,19 @@ impl TextArea {
                 return;
             };
             line_break.set_char_range(range);
-            line_break.cascade_style(self.font_size, self.line_height);
+            line_break.cascade_style(self.font_size, self.line_height, self.vertical_align);
+        });
+    }
+
+    fn update_projection_segment_style(&self, arena: &mut NodeArena, key: NodeKey) {
+        arena.with_element_taken(key, |child, _| {
+            let Some(segment) = child
+                .as_any_mut()
+                .downcast_mut::<TextAreaProjectionSegment>()
+            else {
+                return;
+            };
+            segment.set_vertical_align(self.vertical_align);
         });
     }
 
@@ -569,6 +586,7 @@ impl TextArea {
             self.font_families.clone(),
             self.font_size,
             self.line_height,
+            self.vertical_align,
             self.font_weight,
             cascade_color,
             self.cursor,
@@ -587,7 +605,7 @@ impl TextArea {
         range: Range<usize>,
     ) -> NodeKey {
         let mut line_break = TextAreaLineBreak::new(range);
-        line_break.cascade_style(self.font_size, self.line_height);
+        line_break.cascade_style(self.font_size, self.line_height, self.vertical_align);
         let desc = crate::view::renderer_adapter::ElementDescriptor::leaf(
             Box::new(line_break) as Box<dyn ElementTrait>
         );
@@ -623,7 +641,13 @@ impl TextArea {
         if children.is_empty() {
             return None;
         }
-        let desc = wrap_projection_children(self.stable_id(), segment_index, range, children);
+        let desc = wrap_projection_children(
+            self.stable_id(),
+            segment_index,
+            range,
+            self.vertical_align,
+            children,
+        );
         Some(crate::view::renderer_adapter::commit_descriptor_tree(
             arena,
             Some(parent_key),
@@ -652,7 +676,7 @@ impl TextArea {
     /// color from TextArea itself. Mirrors v1.
     fn projection_inherited_style(&self) -> crate::style::Style {
         use crate::style::{
-            FontFamily, FontSize, FontWeight, ParsedValue, PropertyId, Style, TextWrap,
+            FontFamily, FontSize, FontWeight, LineHeight, ParsedValue, PropertyId, Style, TextWrap,
         };
         let mut style = Style::new();
         if !self.font_families.is_empty() {
@@ -668,6 +692,14 @@ impl TextArea {
         style.insert(
             PropertyId::FontWeight,
             ParsedValue::FontWeight(FontWeight::new(self.font_weight)),
+        );
+        style.insert(
+            PropertyId::LineHeight,
+            ParsedValue::LineHeight(LineHeight::new(self.line_height)),
+        );
+        style.insert(
+            PropertyId::VerticalAlign,
+            ParsedValue::VerticalAlign(self.vertical_align),
         );
         style.insert(PropertyId::Color, ParsedValue::Color(self.color.into()));
         style.insert(PropertyId::Cursor, ParsedValue::Cursor(self.cursor));
@@ -965,6 +997,7 @@ fn wrap_projection_children(
     text_area_stable_id: u64,
     segment_index: usize,
     range: Range<usize>,
+    vertical_align: crate::style::VerticalAlign,
     children: Vec<crate::view::renderer_adapter::ElementDescriptor>,
 ) -> crate::view::renderer_adapter::ElementDescriptor {
     let wrapper_id = text_area_stable_id
@@ -972,6 +1005,7 @@ fn wrap_projection_children(
         .wrapping_add(segment_index as u64 + 1);
     let mut wrapper = TextAreaProjectionSegment::with_stable_id(wrapper_id);
     wrapper.set_char_range(range);
+    wrapper.set_vertical_align(vertical_align);
 
     crate::view::renderer_adapter::ElementDescriptor {
         element: Box::new(wrapper) as Box<dyn ElementTrait>,
