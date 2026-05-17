@@ -2,6 +2,7 @@
 
 #[allow(missing_docs)]
 pub mod base_component;
+pub mod debug;
 pub mod fiber_work;
 pub(crate) mod font_system;
 pub mod frame_graph;

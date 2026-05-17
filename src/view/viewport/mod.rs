@@ -572,6 +572,27 @@ impl Viewport {
         self.debug_options
     }
 
+    pub fn capture_debug(
+        &self,
+        options: crate::view::debug::DebugCaptureOptions,
+    ) -> crate::view::debug::DebugCapture {
+        crate::view::debug::DebugCapture::from_arena(
+            options,
+            &self.scene.node_arena,
+            &self.scene.ui_root_keys,
+            crate::view::debug::DebugViewportCaptureInput {
+                logical_size: self.logical_size(),
+                scale_factor: self.scale_factor(),
+                focused_node: self.focused_node_id(),
+                hovered_node: self.hovered_node_id(),
+                pointer_capture_node: self.pointer_capture_node_id(),
+                keyboard_capture_node: self.keyboard_capture_node_id(),
+                pointer_position: self.pointer_position_viewport(),
+                pressed_pointer_buttons: self.pressed_pointer_buttons().collect(),
+            },
+        )
+    }
+
     pub fn msaa_sample_count(&self) -> u32 {
         self.gpu.msaa_sample_count
     }
